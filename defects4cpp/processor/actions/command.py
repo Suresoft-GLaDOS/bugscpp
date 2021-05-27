@@ -1,7 +1,7 @@
 import subprocess
 
 
-class AbstractAction():
+class AbstractAction:
     def run(self):
         pass
 

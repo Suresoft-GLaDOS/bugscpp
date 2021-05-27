@@ -1,19 +1,21 @@
-import os
-import lib
-import sys
 import argparse
+import os
 import subprocess
-import hjson
+import sys
 
+import hjson
+import lib
+from lib import AssertFailed, ValidateFailed
 from processor.actions import CommandAction
-from lib import ValidateFailed, AssertFailed
 
 
 def checkout_factory(checkout_info, build_tool_name, checkout_dir):
-    if checkout_info['generator'] == 'command':
+    if checkout_info["generator"] == "command":
         commands = []
-        for c in checkout_info['command']:
-            commands.append(f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}')
+        for c in checkout_info["command"]:
+            commands.append(
+                f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}'
+            )
         return CommandAction(commands)
     else:
         return None
@@ -21,25 +23,31 @@ def checkout_factory(checkout_info, build_tool_name, checkout_dir):
 
 def run_checkout():
     try:
-        parser = argparse.ArgumentParser(usage="d++ checkout --project=[project_name] --no=[number]")
+        parser = argparse.ArgumentParser(
+            usage="d++ checkout --project=[project_name] --no=[number]"
+        )
         # lib.io.kindness_message("HOME = %s" % lib.io.DPP_HOME)
 
         parser.add_argument("-p", "--project", required=True, help="specified project")
         parser.add_argument("-n", "--no", required=True, help="specified bug number")
-        parser.add_argument("-b", "--buggy", action="store_true", help="checkout buggy version")
+        parser.add_argument(
+            "-b", "--buggy", action="store_true", help="checkout buggy version"
+        )
         parser.add_argument("-t", "--target", default=None)
         args = parser.parse_args(sys.argv[2:])
 
-        version = 'buggy' if args.buggy else 'fixed'
+        version = "buggy" if args.buggy else "fixed"
         # validation check
-        project_dir = os.path.join(lib.io.DPP_HOME, 'taxonomy', args.project)
+        project_dir = os.path.join(lib.io.DPP_HOME, "taxonomy", args.project)
         if not os.path.exists(project_dir):
             raise ValidateFailed
 
         if args.target is not None:
             target_dir = args.target
         else:
-            target_dir = os.path.join(os.getcwd(), "%s_%s_%s" % (args.project, args.no, version))
+            target_dir = os.path.join(
+                os.getcwd(), "%s_%s_%s" % (args.project, args.no, version)
+            )
         lib.io.kindness_message("checkout current directory = %s" % target_dir)
 
         if not os.path.exists(target_dir):
@@ -57,19 +65,21 @@ def run_checkout():
         if not os.path.exists(meta_file_path):
             raise AssertFailed("File not exists: ", meta_file_path)
 
-        with open(meta_file_path, "r", encoding='utf-8') as meta_file:
+        with open(meta_file_path, "r", encoding="utf-8") as meta_file:
             meta = hjson.load(meta_file)
 
-        action = 'checkout'
-        version_checkout_info = meta['defects'][str(args.no)][version][action]
-        from_command = meta['from']
-        from_command = f'docker run -v "{target_dir}":/workspace {args.project} {from_command}'
+        action = "checkout"
+        version_checkout_info = meta["defects"][str(args.no)][version][action]
+        from_command = meta["from"]
+        from_command = (
+            f'docker run -v "{target_dir}":/workspace {args.project} {from_command}'
+        )
         print(from_command)
         checkout = checkout_factory(version_checkout_info, args.project, target_dir)
 
         # from
         os.chdir(target_dir)
-        cloned = os.path.exists(os.path.join(target_dir, '.git'))
+        cloned = os.path.exists(os.path.join(target_dir, ".git"))
         if not cloned and subprocess.call(from_command) != 0:
             raise AssertFailed("Cloning Failed")
 
