@@ -5,30 +5,16 @@ import argparse
 import subprocess
 import hjson
 
-# Exceptions
-class ValidataionFailed(Exception): pass
-class AssertFailed(Exception): pass
-
-class AbstractAction():
-    def run(self):
-        pass
+from processor.actions import CommandAction
+from lib import ValidateFailed, AssertFailed
 
 
-class CommandAction(AbstractAction):
-    def __init__(self, commands):
-        self._COMMANDS = commands
-
-    def run(self):
-        for c in self._COMMANDS:
-            print("RUN: ", c)
-            if subprocess.call(c) != 0:
-                return False
-        return True
-
-
-def checkout_factory(checkout_info):
+def checkout_factory(checkout_info, build_tool_name, checkout_dir):
     if checkout_info['generator'] == 'command':
-        return CommandAction(checkout_info['command'])
+        commands = []
+        for c in checkout_info['command']:
+            commands.append(f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}')
+        return CommandAction(commands)
     else:
         return None
 
@@ -48,7 +34,7 @@ def run_checkout():
         # validation check
         project_dir = os.path.join(lib.io.DPP_HOME, 'taxonomy', args.project)
         if not os.path.exists(project_dir):
-            raise ValidataionFailed
+            raise ValidateFailed
 
         if args.target is not None:
             target_dir = args.target
@@ -77,8 +63,9 @@ def run_checkout():
         action = 'checkout'
         version_checkout_info = meta['defects'][str(args.no)][version][action]
         from_command = meta['from']
-
-        checkout = checkout_factory(version_checkout_info)
+        from_command = f'docker run -v "{target_dir}":/workspace {args.project} {from_command}'
+        print(from_command)
+        checkout = checkout_factory(version_checkout_info, args.project, target_dir)
 
         # from
         os.chdir(target_dir)
@@ -91,13 +78,7 @@ def run_checkout():
         if not succeed:
             raise AssertFailed("Checkout Failed")
 
-        # 2. connect to target_dir to docker image
-        # commands = [['git', 'clone', 'https://github.com/libsndfile/libsndfile.git']]
-        # for c in commands:
-        #     run = f'docker run -v "{target_dir}":/workspace {args.project} "{c}"'
-        #     print(run)
-
-    except ValidataionFailed:
+    except ValidateFailed:
         lib.io.error_message("invalid arguments, check project name or bug numbers")
     except AssertFailed as e:
         lib.io.error_message(e)

@@ -2,26 +2,24 @@ import os
 import lib
 import sys
 import argparse
+import hjson
 
 
 def run_show():
     try:
-        parser = argparse.ArgumentParser(usage="d++ show [options]")
-        # lib.io.kindness_message("HOME = %s" % lib.io.DPP_HOME)
-
-        parser.add_argument("-p", "--project", default=False, action="store_true", help="show only project lists")
-        args = parser.parse_args(sys.argv[2:])
-
         # display project list
-        if args.project:
-            lib.io.kindness_message("=== Taxonomy Project Lists ===")
-            dirs = os.listdir(os.path.join(lib.io.DPP_HOME, "taxonomy"))
-            for d in dirs:
-                lib.io.kindness_message("%s" % d)
-            pass
-        # display all status summary
-        else:
-            lib.io.kindness_message("=== Taxonomy Summaries ===")
+        lib.io.kindness_message("=== Taxonomy Project Lists ===")
+        dirs = os.listdir(os.path.join(lib.io.DPP_HOME, "taxonomy"))
+        for d in dirs:
+            meta_file_path = os.path.join(lib.io.DPP_HOME, "taxonomy", d, "meta.hjson")
+            with open(meta_file_path, "r", encoding='utf-8') as meta_file:
+                meta = hjson.load(meta_file)
+                taxonomy_cnt = len(meta['defects'])
+                lib.io.info_message("[%s], # of taxonomies: %d" % (d, taxonomy_cnt))
+                lib.io.info2_message("URL: %s" % meta['info']['url'])
+                lib.io.info2_message("DESC: %s" % meta['info']['short-desc'])
+        pass
+
 
     except:
         pass
