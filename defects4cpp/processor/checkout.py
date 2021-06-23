@@ -87,6 +87,8 @@ def run_checkout():
 
         if not succeed:
             raise AssertFailed("Checkout Failed")
+        else:
+            lib.io.kindness_message("Completed")
 
     except ValidateFailed:
         lib.io.error_message("invalid arguments, check project name or bug numbers")
