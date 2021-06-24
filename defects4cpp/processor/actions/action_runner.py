@@ -34,7 +34,7 @@ class ActionRunner(object):
         self.parser.add_argument(
             "-b", "--buggy", action="store_true", help="whether buggy version or not"
         )
-        self.parser.add_argument("checkout")
+        self.parser.add_argument("-t", "--target", required=True, help="checkout directory")
 
     def run(self):
         args = self.parser.parse_args(sys.argv[2:])
@@ -46,7 +46,7 @@ class ActionRunner(object):
         if not os.path.exists(project_dir):
             raise ValidateFailed
 
-        if not os.path.exists(args.checkout):
+        if not os.path.exists(args.target):
             raise AssertFailed("checkout folder not exists")
 
         meta_file_path = os.path.join(project_dir, "meta.hjson")
@@ -63,6 +63,6 @@ class ActionRunner(object):
             actions = meta["common"][self.action_name]
             lib.io.kindness_message("%s procedure [COMMON]" % self.action_name)
 
-        builder = tester_factory(actions, args.project, args.checkout)
+        builder = tester_factory(actions, args.project, args.target)
         return builder.run()
 
