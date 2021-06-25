@@ -2,7 +2,7 @@ from defects4cpp.processor.core.argparser import BuildParser
 from defects4cpp.processor.core.command import SimpleBuildCommand
 
 
-class TestCommandParser(BuildParser):
+class CoverageTestCommandParser(BuildParser):
     def __init__(self):
         super().__init__()
         self.parser.usage = (
@@ -10,10 +10,11 @@ class TestCommandParser(BuildParser):
         )
 
 
-class TestCommand(SimpleBuildCommand):
+class CoverageTestCommand(SimpleBuildCommand):
     def __init__(self):
+        # action: "tester-cov"
         pass
 
     @property
     def help(self) -> str:
-        return "Do test without coverage"
+        return "Do test with coverage result"

@@ -1,9 +1,8 @@
 from defects4cpp.processor.core.argparser import BuildParser
 from defects4cpp.processor.core.command import SimpleBuildCommand
-from defects4cpp.taxonomy import MetaData
 
 
-class BuildCommandParser(BuildParser):
+class CoverageBuildCommandParser(BuildParser):
     def __init__(self):
         super().__init__()
         self.parser.usage = (
@@ -11,16 +10,11 @@ class BuildCommandParser(BuildParser):
         )
 
 
-class BuildCommand(SimpleBuildCommand):
-    parser = BuildCommandParser()
-
+class CoverageBuildCommand(SimpleBuildCommand):
     def __init__(self):
-        # action: builder
+        # action: "builder-cov",
         pass
-
-    def run(self, metadata: MetaData, index: int, buggy=True) -> bool:
-        raise RuntimeError("I am called!")
 
     @property
     def help(self) -> str:
-        return "Build local with a build tool from docker"
+        return "Coverage build local with a build tool from docker"

@@ -1,23 +1,32 @@
-import os
+import defects4cpp.lib.message as message
+from defects4cpp.processor.core.argparser import ParserBase
+from defects4cpp.processor.core.command import SimpleCommand
+from defects4cpp.taxonomy import Taxonomy
 
-import hjson
-import lib
+
+class ShowCommandParser:
+    def __init__(self):
+        self.value = None
+
+    def __get__(self, instance, owner):
+        return self.value
+
+    def __set__(self, instance, value):
+        self.value = float(value)
 
 
-def run_show():
-    try:
-        # display project list
-        lib.io.kindness_message("=== Taxonomy Project Lists ===")
-        dirs = os.listdir(os.path.join(lib.io.DPP_HOME, "taxonomy"))
-        for d in dirs:
-            meta_file_path = os.path.join(lib.io.DPP_HOME, "taxonomy", d, "meta.hjson")
-            with open(meta_file_path, "r", encoding="utf-8") as meta_file:
-                meta = hjson.load(meta_file)
-                taxonomy_cnt = len(meta["defects"])
-                lib.io.info_message("[%s], # of taxonomies: %d" % (d, taxonomy_cnt))
-                lib.io.info2_message("URL: %s" % meta["info"]["url"])
-                lib.io.info2_message("DESC: %s" % meta["info"]["short-desc"])
-        pass
+class ShowCommand(SimpleCommand):
+    parser = ShowCommandParser()
 
-    except:
-        pass
+    @property
+    def help(self) -> str:
+        return "Display defect taxonomies status"
+
+    def run(self) -> bool:
+        message.kind("=== Taxonomy Project Lists ===")
+        t = Taxonomy()
+        for key, value in t.items():
+            message.info(f"[{key}], # of taxonomies: {len(value.defects)}")
+            message.info2(f"URL: {value.info.url}")
+            message.info2(f"Description: {value.info.description}")
+        return True

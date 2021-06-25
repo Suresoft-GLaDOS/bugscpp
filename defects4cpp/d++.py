@@ -2,11 +2,11 @@ import multiprocessing
 import sys
 import time
 
-import lib.debug as debug
-import lib.io as io
-import processor
+import defects4cpp.lib.debug as debug
+import defects4cpp.lib.io as io
+import defects4cpp.processor
 
-commands = processor.COMMAND_LIST
+commands = defects4cpp.processor.COMMAND_LIST
 
 
 def display_general_usage():
@@ -30,7 +30,6 @@ def main_driver():
         io.kindness_message("MIT Licensed, Suresoft Technologies Inc.")
         io.blank()
         display_general_usage()
-        return False
 
 
 if __name__ == "__main__":
@@ -41,6 +40,5 @@ if __name__ == "__main__":
     except:
         traceback_msg = debug.get_trace_back()
         io.error_message(traceback_msg)
-        pass
     finally:
         sys.exit(0)

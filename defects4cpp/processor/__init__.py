@@ -1,6 +1,7 @@
-from .build import run_build, run_cov_build
-from .checkout import run_checkout
-from .help import run_help
-from .show import run_show
-from .test import run_test, run_cov_test
-from .processor_list import *
+import defects4cpp.processor.build
+import defects4cpp.processor.checkout
+import defects4cpp.processor.cov_build
+import defects4cpp.processor.cov_test
+import defects4cpp.processor.help
+import defects4cpp.processor.show
+import defects4cpp.processor.test
