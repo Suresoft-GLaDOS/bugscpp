@@ -1,4 +1,4 @@
-import subprocess
+import lib
 
 
 class AbstractAction:
@@ -13,6 +13,6 @@ class CommandAction(AbstractAction):
     def run(self):
         for c in self._COMMANDS:
             print("RUN: ", c)
-            if subprocess.call(c) != 0:
+            if lib.exe.run_cmd(c) != 0:
                 return False
         return True

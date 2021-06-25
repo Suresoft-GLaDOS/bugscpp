@@ -1,6 +1,5 @@
 import argparse
 import os
-import subprocess
 import sys
 
 import hjson
@@ -58,7 +57,7 @@ def run_checkout():
         # 1. build docker image
         build = f'docker build -t "{args.project}" .'
         print(build)
-        if subprocess.call(build) != 0:
+        if lib.exe.run_cmd(build) != 0:
             raise AssertFailed("docker is not working properly: ", build)
 
         meta_file_path = os.path.join(project_dir, "meta.hjson")
@@ -80,7 +79,7 @@ def run_checkout():
         # from
         os.chdir(target_dir)
         cloned = os.path.exists(os.path.join(target_dir, ".git"))
-        if not cloned and subprocess.call(from_command) != 0:
+        if not cloned and lib.exe.run_cmd(from_command) != 0:
             raise AssertFailed("Cloning Failed")
 
         succeed = checkout.run()
