@@ -1,8 +1,8 @@
-from defects4cpp.processor.core.argparser import BuildParser
-from defects4cpp.processor.core.command import SimpleBuildCommand
+from processor.core.argparser import TaxonomyParser
+from processor.core.command import DockerCommand
 
 
-class CoverageTestCommandParser(BuildParser):
+class CoverageTestCommandParser(TaxonomyParser):
     def __init__(self):
         super().__init__()
         self.parser.usage = (
@@ -10,7 +10,7 @@ class CoverageTestCommandParser(BuildParser):
         )
 
 
-class CoverageTestCommand(SimpleBuildCommand):
+class CoverageTestCommand(DockerCommand):
     def __init__(self):
         # action: "tester-cov"
         pass

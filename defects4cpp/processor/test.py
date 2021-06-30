@@ -1,8 +1,8 @@
-from defects4cpp.processor.core.argparser import BuildParser
-from defects4cpp.processor.core.command import SimpleBuildCommand
+from processor.core.argparser import TaxonomyParser
+from processor.core.command import DockerCommand
 
 
-class TestCommandParser(BuildParser):
+class TestCommandParser(TaxonomyParser):
     def __init__(self):
         super().__init__()
         self.parser.usage = (
@@ -10,7 +10,7 @@ class TestCommandParser(BuildParser):
         )
 
 
-class TestCommand(SimpleBuildCommand):
+class TestCommand(DockerCommand):
     def __init__(self):
         pass
 

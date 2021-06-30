@@ -1,24 +1,37 @@
 import argparse
 from abc import ABCMeta
+from dataclasses import dataclass
+from os import getcwd
 from os.path import exists
-from typing import List, Tuple
+from typing import List
 
-from defects4cpp.taxonomy import MetaData, Taxonomy
+from taxonomy import MetaData, Taxonomy
+
+
+def check_taxonomy_index(namespace):
+    pass
 
 
 class ValidateProject(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         t = Taxonomy()
         if values not in t.keys():
-            # TODO:
-            raise KeyError("")
+            raise KeyError(f"Taxonomy '{values}' does not exist")
         setattr(namespace, self.dest, t[values])
 
 
-class ValidateCheckout(argparse.Action):
+class ValidateIndex(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
-        # TODO: ?
-        assert exists(values)
+        try:
+            project: MetaData = namespace.project
+        except AttributeError:
+            raise AttributeError(
+                f"project is not set, but {__class__.__name__} is invoked first"
+            )
+
+        if len(project.defects) <= values:
+            raise IndexError(f"invalid index '{values}' of defects")
+
         setattr(namespace, self.dest, values)
 
 
@@ -26,7 +39,15 @@ class ParserBase(metaclass=ABCMeta):
     pass
 
 
-class BuildParser(ParserBase):
+@dataclass
+class TaxonomyArguments:
+    metadata: MetaData
+    index: int
+    buggy: bool
+    root: str
+
+
+class TaxonomyParser(ParserBase):
     def __init__(self):
         self.parser = argparse.ArgumentParser()
         self.parser.add_argument(
@@ -37,29 +58,28 @@ class BuildParser(ParserBase):
             action=ValidateProject,
         )
         self.parser.add_argument(
-            "-n", "--no", type=int, required=True, help="specified bug number"
+            "-n",
+            "--no",
+            type=int,
+            required=True,
+            help="specified bug number",
+            action=ValidateIndex,
         )
         self.parser.add_argument(
             "-b",
             "--buggy",
-            default="fixed",
-            const="fixed",
-            nargs="?",
-            choices=["buggy", "fixed"],
+            dest="buggy",
             help="whether buggy version or not",
+            action="store_true",
         )
-        # TODO: ?
-        # self.parser.add_argument("checkout", action=ValidateCheckout)
+        # 'dest', 'root', 'workspace', 'checkout_directory'...
+        self.parser.add_argument("-t", "--target", type=str, help="checkout directory")
 
-    def __call__(self, argv: List[str]) -> Tuple[MetaData, int, bool]:
+    def __call__(self, argv: List[str]) -> TaxonomyArguments:
         args = self.parser.parse_args(argv)
         metadata: MetaData = args.project
         index: int = args.no
-        # TODO: should be enum
-        buggy = True if args.buggy == "buggy" else False
-        try:
-            defect = metadata.defects[index]
-        except IndexError:
-            # TODO:
-            raise IndexError("")
-        return (metadata, index, buggy)
+        buggy = True if args.buggy else False
+        # TODO: default value
+        root = args.target or f"{getcwd()}"
+        return TaxonomyArguments(metadata, index - 1, buggy, root)

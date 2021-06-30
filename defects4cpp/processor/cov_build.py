@@ -1,8 +1,8 @@
-from defects4cpp.processor.core.argparser import BuildParser
-from defects4cpp.processor.core.command import SimpleBuildCommand
+from processor.core.argparser import TaxonomyParser
+from processor.core.command import DockerCommand
 
 
-class CoverageBuildCommandParser(BuildParser):
+class CoverageBuildCommandParser(TaxonomyParser):
     def __init__(self):
         super().__init__()
         self.parser.usage = (
@@ -10,7 +10,7 @@ class CoverageBuildCommandParser(BuildParser):
         )
 
 
-class CoverageBuildCommand(SimpleBuildCommand):
+class CoverageBuildCommand(DockerCommand):
     def __init__(self):
         # action: "builder-cov",
         pass

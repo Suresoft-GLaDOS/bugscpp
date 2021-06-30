@@ -1,9 +1,11 @@
-import subprocess
 from abc import ABCMeta, abstractmethod, abstractproperty
+from dataclasses import dataclass
 from typing import List
 
-from defects4cpp.processor.core.argparser import BuildParser, ParserBase
-from defects4cpp.taxonomy import MetaData
+from processor.core.argparser import TaxonomyParser
+from processor.core.docker import Docker
+from processor.core.shell import Shell
+from taxonomy import MetaData
 
 
 class RegisterCommand(type):
@@ -44,63 +46,58 @@ class SimpleCommand(Command):
         return self.run()
 
 
-class SimpleBuildCommand(Command):
-    # def __init__(self, action_name, parser: ParserBase):
-    #     self.action_name = action_name
-    #     self.parser = parser
+@dataclass
+class ShellCommandArguments:
+    commands: List[str]
+
+
+class ShellCommand(Command):
     @property
     def group(self) -> str:
         return "v1"
 
     def __call__(self, argv: List[str]):
-        return self.run(*self.parser(argv))
+        taxonomy = self.parser(argv)
+        args = self.run(taxonomy.metadata, taxonomy.index, taxonomy.buggy)
+        with Shell() as shell:
+            shell.send(args.commands)
 
     @abstractmethod
-    def run(self, metadata: MetaData, index: int, buggy=True) -> bool:
+    def run(self, metadata: MetaData, index: int, buggy: bool) -> ShellCommandArguments:
         raise NotImplementedError
 
     @abstractproperty
-    def parser(self) -> BuildParser:
+    def parser(self) -> TaxonomyParser:
         raise NotImplementedError
 
-    # def run(self, metadata: MetaData, index: int, buggy=True):
-    #     try:
-    #         defect = metadata.defects[index]
-    #     except IndexError:
-    #         # TODO:
-    #         raise IndexError("")
 
-    #     if buggy:
-    #         defect.buggy_checkout_command
-    #         defect.buggy_checkout_generator
-    #     else:
-    #         defect.fixed_checkout_command
-    #         defect.fixed_checkout_generator
-
-    #     # if self.action_name in meta["defects"][str(args.no)][version]:
-    #     #     actions = meta["defects"][str(args.no)][version][self.action_name]
-    #     #     kindness_message("%s procedure [DEFECT]" % self.action_name)
-    #     # else:
-    #     #     actions = meta["common"][self.action_name]
-    #     #     kindness_message("%s procedure [COMMON]" % self.action_name)
-
-    #     # builder = tester_factory(actions, args.project, args.checkout)
-    #     # for c in self._commands:
-    #     #     pass
-    #     #     print("RUN: ", c)
-    #     #     if subprocess.call(c) != 0:
-    #     #         return False
-    #     return True
+@dataclass
+class DockerCommandArguments:
+    commands: List[str]
 
 
-def tester_factory(actions, build_tool_name, checkout_dir):
-    if actions["generator"] == "command":
-        # build_tool_name, checkout_dir
-        commands = []
-        for c in actions["command"]:
-            commands.append(
-                f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}'
-            )
-        return SimpleCommand(commands)
-    else:
-        return None
+class DockerCommand(Command):
+    @property
+    def group(self) -> str:
+        return "v1"
+
+    def __call__(self, argv: List[str]):
+        taxonomy = self.parser(argv)
+        args = self.run(taxonomy.metadata, taxonomy.index, taxonomy.buggy)
+
+        with Docker(
+            taxonomy.metadata.dockerfile,
+            "/home/haku/workspace/github/defects4cpp/home",
+            "/workspace",
+        ) as docker:
+            docker.send(args.commands)
+
+    @abstractmethod
+    def run(
+        self, metadata: MetaData, index: int, buggy: bool
+    ) -> DockerCommandArguments:
+        raise NotImplementedError
+
+    @abstractproperty
+    def parser(self) -> TaxonomyParser:
+        raise NotImplementedError

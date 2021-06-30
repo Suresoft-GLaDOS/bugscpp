@@ -1,6 +1,6 @@
-import defects4cpp.lib.message as message
-from defects4cpp.processor.core.argparser import ParserBase
-from defects4cpp.processor.core.command import SimpleCommand
+import message
+from processor.core.argparser import ParserBase
+from processor.core.command import SimpleCommand
 
 
 class HelpCommandParser:
@@ -22,5 +22,5 @@ class HelpCommand(SimpleCommand):
         return "Display help messages"
 
     def run(self) -> bool:
-        message("HELP")
+        message.info("HELP")
         return True

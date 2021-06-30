@@ -1,5 +1,5 @@
+import defects4cpp.processor
 from defects4cpp.processor.action import Action
-from defects4cpp.processor.build import BuildCommand
 
 
 def test_check_build_attr():
@@ -8,5 +8,5 @@ def test_check_build_attr():
 
 
 def test_build_command():
-    cmd = BuildCommand()
-    cmd(["--project=libsndfile", "--no=0"])
+    cmd = defects4cpp.processor.BuildCommand()
+    # cmd(["--project=libsndfile", "--no=0"])

@@ -1,7 +1,7 @@
-import defects4cpp.lib.message as message
-from defects4cpp.processor.core.argparser import ParserBase
-from defects4cpp.processor.core.command import SimpleCommand
-from defects4cpp.taxonomy import Taxonomy
+import message
+from processor.core.argparser import ParserBase
+from processor.core.command import SimpleCommand
+from taxonomy import Taxonomy
 
 
 class ShowCommandParser:

@@ -1,6 +1,5 @@
 from collections.abc import MutableMapping
 from dataclasses import dataclass
-from importlib import import_module
 from os.path import dirname, exists, join
 from pkgutil import iter_modules
 from typing import Dict, List, Optional
@@ -24,26 +23,28 @@ class Common:
 
 @dataclass
 class Defect:
-    index: int
-    buggy_checkout_generator: str
-    buggy_checkout_command: List[str]
-    fixed_checkout_generator: str
-    fixed_checkout_command: List[str]
+    hash: str
+    patch: str
 
 
 @dataclass
 class MetaInfo:
     url: str
     description: str
-    clone_command: str
+    vcs: str
 
 
 class MetaData:
-    def __init__(self, path: str):
+    def __init__(self, name: str, path: str):
+        self.name = name
         self._path: str = path
         self._info: Optional[MetaInfo] = None
         self._common: Optional[Common] = None
         self._defects: List[Defect] = []
+
+    @property
+    def dockerfile(self) -> str:
+        return f"{self._path}/Dockerfile"
 
     @property
     def info(self):
@@ -64,7 +65,7 @@ class MetaData:
         return self._defects
 
     def _load(self):
-        with open(f"{self._path}", "r", encoding="utf-8") as fp:
+        with open(f"{self._path}/meta.hjson", "r", encoding="utf-8") as fp:
             meta = hjson.load(fp)
         self._load_info(meta)
         self._load_common(meta)
@@ -74,13 +75,10 @@ class MetaData:
         try:
             self._defects = [
                 Defect(
-                    key,
-                    defect["buggy"]["checkout"]["generator"],
-                    defect["buggy"]["checkout"]["command"],
-                    defect["fixed"]["checkout"]["generator"],
-                    defect["fixed"]["checkout"]["command"],
+                    defect["hash"],
+                    f"{self._path}/patch/{int(defect['patch']):04}-buggy.patch",
                 )
-                for key, defect in meta["defects"].items()
+                for defect in meta["defects"]
             ]
         except KeyError:
             pass
@@ -105,7 +103,7 @@ class MetaData:
     def _load_defects(self, meta: Dict):
         try:
             self._info = MetaInfo(
-                meta["info"]["url"], meta["info"]["short-desc"], meta["from"]
+                meta["info"]["url"], meta["info"]["short-desc"], meta["info"]["vcs"]
             )
         except KeyError:
             pass
@@ -116,7 +114,7 @@ class Taxonomy(MutableMapping):
         self.base: str = dirname(__file__)
         self.store: Dict[str, MetaData] = dict(
             [
-                (name, MetaData(f"{join(self.base, name, 'meta.hjson')}"))
+                (name, MetaData(name, f"{join(self.base, name)}"))
                 for _, name, _ in iter_modules([dirname(__file__)])
             ]
         )
@@ -144,3 +142,6 @@ class Taxonomy(MutableMapping):
             join(self.base, key, "meta.hjson")
         ), f"Taxonomy '{key}' does not exist"
         return key
+
+
+__all__ = ["Taxonomy", "MetaData", "MetaInfo", "Defect", "Common"]

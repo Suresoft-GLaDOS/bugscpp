@@ -1,101 +1,55 @@
-from defects4cpp.processor.core.command import SimpleCommand
+from os.path import exists
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import git
+from processor.core.argparser import TaxonomyArguments, TaxonomyParser
+from processor.core.command import Command
 
 
-def checkout_factory(checkout_info, build_tool_name, checkout_dir):
-    if checkout_info["generator"] == "command":
-        commands = []
-        for c in checkout_info["command"]:
-            commands.append(
-                f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}'
-            )
-        # return CommandAction(commands)
-    else:
-        return None
+class CheckoutCommandParser(TaxonomyParser):
+    def __init__(self):
+        super().__init__()
+        self.parser.usage = "d++ checkout --project=[project_name] --no=[number]"
 
 
-def run_checkout():
-    pass
-    # try:
-    #     parser = argparse.ArgumentParser(
-    #         usage="d++ checkout --project=[project_name] --no=[number]"
-    #     )
-    #     # lib.io.kindness_message("HOME = %s" % lib.io.DPP_HOME)
+class CheckoutCommand(Command):
+    parser = CheckoutCommandParser()
 
-    #     parser.add_argument("-p", "--project", required=True, help="specified project")
-    #     parser.add_argument("-n", "--no", required=True, help="specified bug number")
-    #     parser.add_argument(
-    #         "-b", "--buggy", action="store_true", help="checkout buggy version"
-    #     )
-    #     parser.add_argument("-t", "--target", default=None)
-    #     args = parser.parse_args(sys.argv[2:])
+    def __init__(self):
+        pass
 
-    #     version = "buggy" if args.buggy else "fixed"
-    #     # validation check
-    #     project_dir = os.path.join(DPP_HOME, "taxonomy", args.project)
-    #     if not os.path.exists(project_dir):
-    #         raise ValidateFailed
+    def __call__(self, argv: List[str]):
+        taxonomy = self.parser(argv)
+        metadata = taxonomy.metadata
+        root = f"{taxonomy.root}/{metadata.name}"
+        defect = metadata.defects[taxonomy.index]
 
-    #     if args.target is not None:
-    #         target_dir = args.target
-    #     else:
-    #         target_dir = os.path.join(
-    #             os.getcwd(), "%s_%s_%s" % (args.project, args.no, version)
-    #         )
-    #     kindness_message("checkout current directory = %s" % target_dir)
+        try:
+            repo = git.Repo(root)
+        except git.NoSuchPathError:
+            repo = git.Repo.clone_from(metadata.info.url, root)
 
-    #     if not os.path.exists(target_dir):
-    #         os.makedirs(target_dir)
+        checkout_dir = (
+            Path(root).parent
+            / f"{'buggy' if taxonomy.buggy else 'fixed'}#{taxonomy.index}"
+        )
+        if not exists(checkout_dir):
+            try:
+                # Pass '-f' in case worktree directory could be registered but removed.
+                message = repo.git.worktree("add", "-f", checkout_dir, defect.hash)
+                print(message)
+            except git.GitCommandError:
+                pass
 
-    #     os.chdir(project_dir)
-    #     # do checkout
-    #     # 1. build docker image
-    #     build = f'docker build -t "{args.project}" .'
-    #     print(build)
-    #     if subprocess.call(build) != 0:
-    #         raise AssertFailed("docker is not working properly: ", build)
+            if taxonomy.buggy:
+                buggy_repo = git.Repo(checkout_dir)
+                buggy_repo.git.am(defect.patch)
 
-    #     meta_file_path = os.path.join(project_dir, "meta.hjson")
-    #     if not os.path.exists(meta_file_path):
-    #         raise AssertFailed("File not exists: ", meta_file_path)
+    @property
+    def group(self) -> str:
+        return "v1"
 
-    #     with open(meta_file_path, "r", encoding="utf-8") as meta_file:
-    #         meta = hjson.load(meta_file)
-
-    #     action = "checkout"
-    #     version_checkout_info = meta["defects"][str(args.no)][version][action]
-    #     from_command = meta["from"]
-    #     from_command = (
-    #         f'docker run -v "{target_dir}":/workspace {args.project} {from_command}'
-    #     )
-    #     print(from_command)
-    #     checkout = checkout_factory(version_checkout_info, args.project, target_dir)
-
-    #     # from
-    #     os.chdir(target_dir)
-    #     cloned = os.path.exists(os.path.join(target_dir, ".git"))
-    #     if not cloned and subprocess.call(from_command) != 0:
-    #         raise AssertFailed("Cloning Failed")
-
-    #     succeed = checkout.run()
-
-    #     if not succeed:
-    #         raise AssertFailed("Checkout Failed")
-    #     else:
-    #         kindness_message("Completed")
-
-    # except ValidateFailed:
-    #     error_message("invalid arguments, check project name or bug numbers")
-    # except AssertFailed as e:
-    #     error_message(e)
-    # except:
-    #     error_message(get_trace_back())
-
-
-class CheckoutCommandParser:
-    pass
-
-
-class CheckoutCommand(SimpleCommand):
     @property
     def help(self) -> str:
         return "Get a specific defect snapshot"
