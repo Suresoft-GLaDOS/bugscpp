@@ -1,5 +1,4 @@
 import message
-from processor.core.argparser import ParserBase
 from processor.core.command import SimpleCommand
 from taxonomy import Taxonomy
 

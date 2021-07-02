@@ -1,6 +1,6 @@
-from defects4cpp.processor.action import Action
+import defects4cpp.processor
 
 
 def test_check_help_attr():
-    a = Action()
-    assert hasattr(a, "help")
+    commands = defects4cpp.processor.CommandList()
+    assert "help" in commands

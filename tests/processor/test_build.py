@@ -1,12 +1,20 @@
+from pathlib import Path
+
 import defects4cpp.processor
-from defects4cpp.processor.action import Action
 
 
 def test_check_build_attr():
-    a = Action()
-    assert hasattr(a, "build")
+    commands = defects4cpp.processor.CommandList()
+    assert "build" in commands
 
 
 def test_build_command():
     cmd = defects4cpp.processor.BuildCommand()
-    # cmd(["--project=libsndfile", "--no=0"])
+    project = "libsndfile"
+
+    arguments = cmd.run(["--project", project, "--no", "0"])
+    dockerfile = Path(arguments.dockerfile)
+
+    assert dockerfile.name == "Dockerfile"
+    assert dockerfile.parent.name == project
+    assert arguments.commands

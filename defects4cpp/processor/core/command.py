@@ -2,10 +2,9 @@ from abc import ABCMeta, abstractmethod, abstractproperty
 from dataclasses import dataclass
 from typing import List
 
-from processor.core.argparser import TaxonomyParser
+import message
 from processor.core.docker import Docker
 from processor.core.shell import Shell
-from taxonomy import MetaData
 
 
 class RegisterCommand(type):
@@ -32,6 +31,10 @@ class Command(metaclass=CommandMeta):
     def help(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def __call__(self, argv: List[str]):
+        raise NotImplementedError
+
 
 class SimpleCommand(Command):
     @property
@@ -39,11 +42,11 @@ class SimpleCommand(Command):
         return "v1"
 
     @abstractmethod
-    def run(self) -> bool:
+    def run(self, argv: List[str]) -> bool:
         raise NotImplementedError
 
-    def __call__(self) -> bool:
-        return self.run()
+    def __call__(self, argv: List[str]) -> bool:
+        return self.run(argv)
 
 
 @dataclass
@@ -52,52 +55,53 @@ class ShellCommandArguments:
 
 
 class ShellCommand(Command):
+    def __init__(self):
+        pass
+
     @property
     def group(self) -> str:
         return "v1"
 
     def __call__(self, argv: List[str]):
-        taxonomy = self.parser(argv)
-        args = self.run(taxonomy.metadata, taxonomy.index, taxonomy.buggy)
+        shell_args = self.run(argv)
         with Shell() as shell:
-            shell.send(args.commands)
+            shell.send(shell_args.commands)
 
     @abstractmethod
-    def run(self, metadata: MetaData, index: int, buggy: bool) -> ShellCommandArguments:
-        raise NotImplementedError
-
-    @abstractproperty
-    def parser(self) -> TaxonomyParser:
+    def run(self, argv: List[str]) -> ShellCommandArguments:
         raise NotImplementedError
 
 
 @dataclass
 class DockerCommandArguments:
+    dockerfile: str
+    volume: str
     commands: List[str]
 
 
 class DockerCommand(Command):
+    def __init__(self):
+        pass
+
     @property
     def group(self) -> str:
         return "v1"
 
     def __call__(self, argv: List[str]):
-        taxonomy = self.parser(argv)
-        args = self.run(taxonomy.metadata, taxonomy.index, taxonomy.buggy)
-
+        docker_args = self.run(argv)
         with Docker(
-            taxonomy.metadata.dockerfile,
-            "/home/haku/workspace/github/defects4cpp/home",
-            "/workspace",
+            docker_args.dockerfile, docker_args.volume, "/home/workspace"
         ) as docker:
-            docker.send(args.commands)
+            for command in docker_args.commands:
+                _, stream = docker.send(command)
+                for line in stream:
+                    message.docker(line.decode("utf-8"))
+        self.done()
 
     @abstractmethod
-    def run(
-        self, metadata: MetaData, index: int, buggy: bool
-    ) -> DockerCommandArguments:
+    def run(self, argv: List[str]) -> DockerCommandArguments:
         raise NotImplementedError
 
-    @abstractproperty
-    def parser(self) -> TaxonomyParser:
+    @abstractmethod
+    def done(self) -> DockerCommandArguments:
         raise NotImplementedError

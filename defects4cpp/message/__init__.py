@@ -1,4 +1,4 @@
-from message.message import blank, command, error, info, info2, kind, step, warning
+from message.message import blank, command, docker, error, info, info2, kind, step, warning
 
 __all__ = [
     "kind",
@@ -7,6 +7,7 @@ __all__ = [
     "command",
     "info",
     "info2",
+    "docker",
     "step",
     "blank",
 ]

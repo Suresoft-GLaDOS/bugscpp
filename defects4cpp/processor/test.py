@@ -1,17 +1,29 @@
-from processor.core.argparser import TaxonomyParser
-from processor.core.command import DockerCommand
+from typing import List
 
-
-class TestCommandParser(TaxonomyParser):
-    def __init__(self):
-        super().__init__()
-        self.parser.usage = (
-            "d++ test --project=[project_name] --no=[number] [checkout directory]"
-        )
+import message
+from processor.core.argparser import create_taxonomy_parser
+from processor.core.command import DockerCommand, DockerCommandArguments
+from taxonomy import MetaData
 
 
 class TestCommand(DockerCommand):
     def __init__(self):
+        super().__init__()
+        self.parser = create_taxonomy_parser()
+        self.parser.usage = (
+            "d++ test --project=[project_name] --no=[number] [checkout directory]"
+        )
+
+    def run(self, argv: List[str]) -> DockerCommandArguments:
+        args = self.parser.parse_args(argv)
+        metadata: MetaData = args.metadata
+        commands = [*metadata.common.test_cov_command]
+        volume = f"{args.workspace}/{metadata.name}/{'buggy' if args.buggy else 'fixed'}#{args.index}"
+
+        message.info(f"Running {metadata.name} test")
+        return DockerCommandArguments(metadata.dockerfile, volume, commands)
+
+    def done(self):
         pass
 
     @property

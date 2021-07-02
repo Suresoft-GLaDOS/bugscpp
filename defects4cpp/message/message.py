@@ -28,6 +28,10 @@ def info2(message: str):
     print(f"    > {Fore.LIGHTCYAN_EX}{message}{Fore.RESET}")
 
 
+def docker(message: str):
+    print(f"{Fore.LIGHTBLUE_EX}{message}{Fore.RESET}", end="")
+
+
 def step(message: str):
     print(f"-- {Fore.YELLOW}[{message}]{Fore.RESET}")
 

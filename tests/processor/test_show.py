@@ -1,6 +1,6 @@
-from defects4cpp.processor.action import Action
+import defects4cpp.processor
 
 
 def test_check_show_attr():
-    a = Action()
-    assert hasattr(a, "show")
+    commands = defects4cpp.processor.CommandList()
+    assert "show" in commands
