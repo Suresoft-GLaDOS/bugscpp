@@ -13,6 +13,5 @@ class CommandAction(AbstractAction):
     def run(self):
         for c in self._COMMANDS:
             print("RUN: ", c)
-            if lib.exe.run_cmd(c) != 0:
-                return False
+            lib.exe.run_cmd(c)
         return True

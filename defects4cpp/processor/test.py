@@ -5,7 +5,7 @@ from processor.actions import ActionRunner
 
 def run_internal(action):
     try:
-        action_runner = ActionRunner('d++ test --project=[project_name] --no=[number] [checkout directory]', action)
+        action_runner = ActionRunner('d++ test --project=[project_name] --no=[number] [checkout directory] [test list]', action)
         succeed = action_runner.run()
 
         if not succeed:

@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 
 import hjson
 
@@ -9,7 +10,7 @@ from lib import AssertFailed, ValidateFailed
 from processor.actions import CommandAction
 
 
-def tester_factory(actions, build_tool_name, checkout_dir):
+def tester_factory(actions, build_tool_name, checkout_dir, test_list, action_name):
     if actions["generator"] == "command":
         # build_tool_name, checkout_dir
         commands = []
@@ -17,6 +18,41 @@ def tester_factory(actions, build_tool_name, checkout_dir):
             commands.append(
                 f'docker run -v "{checkout_dir}":/workspace {build_tool_name} {c}'
             )
+
+        for test_info in test_list:
+            test_name = test_info["name"]
+            tester = test_info["tester"]
+            date = time.strftime('%Y%m%d_%H%M')
+            if action_name.startswith("tester"):
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} mkdir -p result'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} mkdir -p result/{test_name}_{date}'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} sh -c "{tester} > result.txt"'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} '
+                    f'cp result.txt result/{test_name}_{date}'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} rm result.txt'
+                )
+            if action_name == "tester-cov":
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} gcov {tester}'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} '
+                    f'cp {test_name}.c.gcov result/{test_name}_{date}'
+                )
+                commands.append(
+                    f'docker run -v "{checkout_dir}":/workspace {build_tool_name} '
+                    f'rm {test_name}.c.gcov'
+                )
+
         return CommandAction(commands)
     else:
         return None
@@ -35,6 +71,7 @@ class ActionRunner(object):
             "-b", "--buggy", action="store_true", help="whether buggy version or not"
         )
         self.parser.add_argument("-t", "--target", required=True, help="checkout directory")
+        self.parser.add_argument("-tl", "--test_list", required=False, nargs="+", help="test list")
 
     def run(self):
         args = self.parser.parse_args(sys.argv[2:])
@@ -63,6 +100,15 @@ class ActionRunner(object):
             actions = meta["common"][self.action_name]
             lib.io.kindness_message("%s procedure [COMMON]" % self.action_name)
 
-        builder = tester_factory(actions, args.project, args.target)
+        test_list = []
+        if args.test_list:
+            for test_name in args.test_list:
+                for test_info in meta["defects"][str(args.no)][version]["test"]:
+                    if test_name == test_info["name"]:
+                        test_list.append(test_info)
+                        lib.io.kindness_message("test %s for [DEFECT]" % test_name)
+                        break
+
+        builder = tester_factory(actions, args.project, args.target, test_list, self.action_name)
         return builder.run()
 

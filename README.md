@@ -78,14 +78,14 @@ For some reasons, if you want to build a target project with code coverage measu
 
 It is same as above:
 ```console
-> d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 -tl error_test
 ```
 
 #### test-cov
 
 Quite simple right?
 ```console
-> d++ test-cov -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ test-cov -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 -tl error_test
 ```
 
 When this command is finished, you can get a gcov meta data from your target directory('x:\workspace\libsndfile_buggy_1'), and also you can get HTML for gcov summary by lcov. 
