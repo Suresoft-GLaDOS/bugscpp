@@ -1,5 +1,5 @@
 import sys
-from os.path import dirname
-from os.path import abspath, join
-root_dir = join(dirname(dirname(abspath(__file__))), "defects4cpp")
-sys.path.append(root_dir)
+from os.path import abspath, dirname, join
+
+root_dir = dirname(dirname(abspath(__file__)))
+sys.path.extend([root_dir, join(root_dir, "defects4cpp")])
