@@ -1,32 +1,31 @@
-import lib
-from lib import AssertFailed, ValidateFailed
-from processor.actions import ActionRunner
+from typing import List
+
+import message
+from processor.core.argparser import create_taxonomy_parser
+from processor.core.command import DockerCommand, DockerCommandArguments
+from taxonomy import MetaData
 
 
-def run_internal(action):
-    try:
-        action_runner = ActionRunner('d++ test --project=[project_name] --no=[number] [checkout directory] [test list]', action)
-        succeed = action_runner.run()
+class TestCommand(DockerCommand):
+    def __init__(self):
+        super().__init__()
+        self.parser = create_taxonomy_parser()
+        self.parser.usage = (
+            "d++ test --project=[project_name] --no=[number] [checkout directory]"
+        )
 
-        if not succeed:
-            raise AssertFailed("Test Failed")
-        else:
-            lib.io.kindness_message("Completed")
+    def run(self, argv: List[str]) -> DockerCommandArguments:
+        args = self.parser.parse_args(argv)
+        metadata: MetaData = args.metadata
+        commands = [*metadata.common.test_cov_command]
+        volume = f"{args.workspace}/{metadata.name}/{'buggy' if args.buggy else 'fixed'}#{args.index}"
 
-    except ValidateFailed:
-        lib.io.error_message("invalid arguments, check project name or bug numbers")
-    except AssertFailed as e:
-        lib.io.error_message(e)
-    except SystemExit:
+        message.info(f"Running {metadata.name} test")
+        return DockerCommandArguments(metadata.dockerfile, volume, commands)
+
+    def done(self):
         pass
-    except:
-        lib.io.error_message(lib.get_trace_back())
-        pass
 
-
-def run_cov_test():
-    run_internal('tester-cov')
-
-
-def run_test():
-    run_internal('tester')
+    @property
+    def help(self) -> str:
+        return "Do test without coverage"

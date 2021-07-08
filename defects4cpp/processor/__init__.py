@@ -1,6 +1,19 @@
-from .build import run_build, run_cov_build
-from .checkout import run_checkout
-from .help import run_help
-from .show import run_show
-from .test import run_test, run_cov_test
-from .processor_list import *
+from processor.build import BuildCommand
+from processor.checkout import CheckoutCommand
+from processor.command_list import CommandList
+from processor.cov_test import CoverageTestCommand
+from processor.coverage import CoverageCommand
+from processor.help import HelpCommand
+from processor.show import ShowCommand
+from processor.test import TestCommand
+
+__all__ = [
+    "CommandList",
+    "BuildCommand",
+    "CheckoutCommand",
+    "CoverageCommand",
+    "CoverageTestCommand",
+    "HelpCommand",
+    "ShowCommand",
+    "TestCommand",
+]
