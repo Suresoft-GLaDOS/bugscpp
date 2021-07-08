@@ -4,7 +4,10 @@
 FROM ubuntu:18.04
 WORKDIR workspace
 RUN apt update
-RUN apt install -y git python autoconf automake libtool libjansson-dev libmagic-dev libssl-dev protobuf-compiler protobuf-c-compiler libprotobuf-c-dev make flex bison pkg-config lcov
+RUN apt install -y git python autoconf automake libtool libjansson-dev \
+                   libmagic-dev libssl-dev protobuf-compiler protobuf-c-compiler libprotobuf-c-dev \
+                   make flex bison pkg-config python3 python3-pip
 
+RUN pip3 install gcovr
 RUN git config --global user.email "minhyuk@suresofttech.com"
 RUN git config --global user.name "Peter Kwon"
