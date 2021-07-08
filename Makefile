@@ -6,4 +6,4 @@ format:
 	black .; isort .
 
 test:
-	PYTHONPATH=./defects4cpp pytest
+	pytest
