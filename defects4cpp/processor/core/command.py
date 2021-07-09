@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List
 
 import message
-from processor.core.docker import Docker
+from processor.core.docker import Docker, Worktree
 from processor.core.shell import Shell
 
 
@@ -75,7 +75,7 @@ class ShellCommand(Command):
 @dataclass
 class DockerCommandArguments:
     dockerfile: str
-    volume: str
+    worktree: Worktree
     commands: List[str]
 
 
@@ -88,20 +88,23 @@ class DockerCommand(Command):
         return "v1"
 
     def __call__(self, argv: List[str]):
+        self.setup()
         docker_args = self.run(argv)
-        with Docker(
-            docker_args.dockerfile, docker_args.volume, "/home/workspace"
-        ) as docker:
+        with Docker(docker_args.dockerfile, docker_args.worktree) as docker:
             for command in docker_args.commands:
                 _, stream = docker.send(command)
                 for line in stream:
                     message.docker(line.decode("utf-8"))
-        self.done()
+        self.teardown()
 
     @abstractmethod
     def run(self, argv: List[str]) -> DockerCommandArguments:
         raise NotImplementedError
 
     @abstractmethod
-    def done(self) -> DockerCommandArguments:
+    def setup(self) -> DockerCommandArguments:
+        raise NotImplementedError
+
+    @abstractmethod
+    def teardown(self) -> DockerCommandArguments:
         raise NotImplementedError

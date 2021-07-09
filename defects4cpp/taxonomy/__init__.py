@@ -9,6 +9,8 @@ import hjson
 
 @dataclass
 class Common:
+    root: str
+    exclude: List[str]
     checkout: List[str]
     build_generator: str
     build_command: List[str]
@@ -24,7 +26,9 @@ class Common:
 @dataclass
 class Defect:
     hash: str
-    patch: str
+    buggy_patch: str
+    split_patch: str
+    cases: int
 
 
 @dataclass
@@ -76,7 +80,9 @@ class MetaData:
             self._defects = [
                 Defect(
                     defect["hash"],
-                    f"{self._path}/patch/{int(defect['patch']):04}-buggy.patch",
+                    f"{self._path}/patch/{defect['patch']:04}-buggy.patch",
+                    f"{self._path}/patch/{defect['patch']:04}-split.patch",
+                    defect["cases"],
                 )
                 for defect in meta["defects"]
             ]
@@ -86,6 +92,8 @@ class MetaData:
     def _load_common(self, meta: Dict):
         try:
             self._common = Common(
+                meta["common"]["root"],
+                [dir for dir in meta["common"]["exclude"]],
                 meta["common"]["checkout"],
                 meta["common"]["builder"]["generator"],
                 meta["common"]["builder"]["command"],

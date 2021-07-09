@@ -1,9 +1,12 @@
+from dataclasses import dataclass
+from os import getcwd
 from pathlib import Path
-from typing import Dict, List, Optional, cast
+from typing import Dict, Optional, cast
 
 import docker
 import docker.errors
 import message
+import taxonomy
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 
@@ -29,12 +32,38 @@ def build_image(client, tag, path) -> Image:
     return client.images.build(rm=True, tag=tag, path=path)[0]
 
 
+@dataclass
+class Worktree:
+    """
+    Manages host and container git directory structure.
+    """
+
+    def __init__(self):
+        self._name: str = ""
+        self._index: int = 1
+        self._buggy: bool = False
+        self._workspace: str = ""
+
+    @property
+    def base(self):
+        return Path(f"{self._workspace}/{self._name}")
+
+    @property
+    def host(self):
+        return self.base / f"{'buggy' if self._buggy else 'fixed'}#{self._index}"
+
+    @property
+    def container(self):
+        return Path("/home/workspace")
+
+    def __repr__(self):
+        return f"{self._name=} {self._index=}, {self._buggy=}, {self._workspace=}"
+
+
 class Docker:
     client = docker.from_env()
 
-    def __init__(
-        self, dockerfile: str, mount_from: str, mount_to: str = "/home/workspace"
-    ):
+    def __init__(self, dockerfile: str, worktree: Worktree):
         self.dockerfile = dockerfile
         # Assumes that the name of its parent directory is the same with that of the target.
         tag = Path(dockerfile).parent.name
@@ -42,8 +71,10 @@ class Docker:
         self.tag: str = f"{tag}/dppgen"
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
-        self.volume: Dict[str, Dict] = {mount_from: {"bind": mount_to, "mode": "rw"}}
-        self.working_dir: str = mount_to
+        self.volume: Dict[str, Dict] = {
+            str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
+        }
+        self.working_dir: str = str(worktree.container)
 
     @property
     def image(self):

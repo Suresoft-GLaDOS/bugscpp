@@ -17,14 +17,16 @@ class BuildCommand(DockerCommand):
     def run(self, argv: List[str]) -> DockerCommandArguments:
         args = self.parser.parse_args(argv)
         metadata: MetaData = args.metadata
-        commands = [*metadata.common.build_cov_command]
-        volume = f"{args.workspace}/{metadata.name}/{'buggy' if args.buggy else 'fixed'}#{args.index}"
+        commands = [*metadata.common.build_command]
 
         message.info(f"Building {metadata.name}")
-        return DockerCommandArguments(metadata.dockerfile, volume, commands)
+        return DockerCommandArguments(metadata.dockerfile, args.worktree, commands)
 
-    def done(self):
-        return
+    def setup(self):
+        pass
+
+    def teardown(self):
+        pass
 
     @property
     def help(self) -> str:

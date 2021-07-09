@@ -16,8 +16,8 @@ class CheckoutCommand(Command):
     def __call__(self, argv: List[str]):
         args = self.parser.parse_args(argv)
         metadata = args.metadata
-        # TODO: share this method
-        repo_path: Path = Path(f"{args.workspace}/{metadata.name}/.repo")
+        worktree = args.worktree
+        repo_path: Path = worktree.base / ".repo"
         # args.index is 1 based.
         defect = metadata.defects[args.index - 1]
 
@@ -31,19 +31,21 @@ class CheckoutCommand(Command):
         else:
             pass
 
-        checkout_dir = (
-            repo_path.parent / f"{'buggy' if args.buggy else 'fixed'}#{args.index}"
-        )
-        if not checkout_dir.exists():
+        if not worktree.host.exists():
+            checkout_dir = str(worktree.host)
             try:
                 # Pass '-f' in case worktree directory could be registered but removed.
-                output = repo.git.worktree("add", "-f", str(checkout_dir), defect.hash)
+                output = repo.git.worktree("add", "-f", checkout_dir, defect.hash)
             except git.GitCommandError:
                 pass
 
+            # Apply buggy patch
+            checkout_repo = git.Repo(checkout_dir)
             if args.buggy:
-                buggy_repo = git.Repo(str(checkout_dir))
-                buggy_repo.git.am(defect.patch)
+                checkout_repo.git.am(defect.buggy_patch)
+            # Apply split patch
+            checkout_repo.git.am(defect.split_patch)
+
         message.info(f"{metadata.name}: {defect.hash}")
 
     @property
