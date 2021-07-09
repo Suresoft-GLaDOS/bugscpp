@@ -80,5 +80,5 @@ class Docker:
     def __exit__(self, type, value, traceback):
         self._container.stop()
 
-    def send(self, command: str) -> ExecResult:
-        return self._container.exec_run(command, stream=True)
+    def send(self, command: str, stream=True) -> ExecResult:
+        return self._container.exec_run(command, stream=stream)
