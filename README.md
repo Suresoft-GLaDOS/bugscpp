@@ -71,24 +71,24 @@ If you have done checkout, you can build the checkout project like this (just ch
 For some reasons, if you want to build a target project with code coverage measurement features you can use the 'build-cov' command like this(just change 'build' to 'build-cov'):
 
 ```console
-> d++ build-cov -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ coverage -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
 ```
 
 #### test
 
 It is same as above:
 ```console
-> d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 -tl error_test
+> d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
 ```
 
 #### test-cov
 
 Quite simple right?
 ```console
-> d++ test-cov -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 -tl error_test
+> d++ cpverage_test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
 ```
 
-When this command is finished, you can get a gcov meta data from your target directory('x:\workspace\libsndfile_buggy_1'), and also you can get HTML for gcov summary by lcov. 
+When this command is finished, you can get a gcov meta data from your target directory('x:\workspace\libsndfile_buggy_1'), and also you can get HTML for gcov summary by lcov.
 
 
 ## Contributions
