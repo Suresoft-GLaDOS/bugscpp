@@ -66,9 +66,9 @@ If you have done checkout, you can build the checkout project like this (just ch
 > d++ build -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
 ```
 
-#### build-cov
+#### coverage
 
-For some reasons, if you want to build a target project with code coverage measurement features you can use the 'build-cov' command like this(just change 'build' to 'build-cov'):
+For some reasons, if you want to build a target project with code coverage measurement features you can use the 'build-cov' command like this(just change 'build' to 'coverage'):
 
 ```console
 > d++ coverage -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
@@ -81,11 +81,11 @@ It is same as above:
 > d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
 ```
 
-#### test-cov
+#### coverage_test
 
 Quite simple right?
 ```console
-> d++ cpverage_test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
+> d++ coverage_test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
 ```
 
 When this command is finished, you can get a gcov meta data from your target directory('x:\workspace\libsndfile_buggy_1'), and also you can get HTML for gcov summary by lcov.
