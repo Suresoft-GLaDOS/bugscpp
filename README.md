@@ -49,13 +49,13 @@ Otherwise, you have to run with full command like this:
 It checkout first buggy version of the libsndfile project into "x:\workspace\libsndfile_buggy_1"
 
 ```console
-> d++ checkout -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ checkout -p libsndfile -n 1 --buggy -t x:\workspace
 ```
 
 or you can get a fixed version of the first one, just remove "--buggy" option
 
 ```console
-> d++ checkout -p libsndfile -n 1 -t x:\workspace\libsndfile_fixed_1
+> d++ checkout -p libsndfile -n 1 -t x:\workspace
 ```
 
 #### build
@@ -63,7 +63,7 @@ or you can get a fixed version of the first one, just remove "--buggy" option
 If you have done checkout, you can build the checkout project like this (just change 'checkout' to 'build'):
 
 ```console
-> d++ build -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ build -p libsndfile -n 1 --buggy -t x:\workspace
 ```
 
 #### coverage
@@ -71,21 +71,21 @@ If you have done checkout, you can build the checkout project like this (just ch
 For some reasons, if you want to build a target project with code coverage measurement features you can use the 'build-cov' command like this(just change 'build' to 'coverage'):
 
 ```console
-> d++ coverage -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1
+> d++ coverage -p libsndfile -n 1 --buggy -t x:\workspace
 ```
 
 #### test
 
 It is same as above:
 ```console
-> d++ test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
+> d++ test -p libsndfile -n 1 --buggy -t x:\workspace [-tl error_test]
 ```
 
 #### coverage_test
 
 Quite simple right?
 ```console
-> d++ coverage_test -p libsndfile -n 1 --buggy -t x:\workspace\libsndfile_buggy_1 [-tl error_test]
+> d++ coverage_test -p libsndfile -n 1 --buggy -t x:\workspace [-tl error_test]
 ```
 
 When this command is finished, you can get a gcov meta data from your target directory('x:\workspace\libsndfile_buggy_1'), and also you can get HTML for gcov summary by lcov.
