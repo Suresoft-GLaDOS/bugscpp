@@ -1,12 +1,11 @@
 from dataclasses import dataclass
-from os import getcwd
 from pathlib import Path
 from typing import Dict, Optional, cast
 
 import docker
 import docker.errors
 import message
-import taxonomy
+from config.env import DPP_DOCKER_HOME, DPP_DOCKER_USER
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 
@@ -54,7 +53,7 @@ class Worktree:
 
     @property
     def container(self):
-        return Path("/home/workspace")
+        return Path(DPP_DOCKER_HOME)
 
     def __repr__(self):
         return f"{self._name=} {self._index=}, {self._buggy=}, {self._workspace=}"
@@ -103,6 +102,7 @@ class Docker:
                 volumes=self.volume,
                 name=self.name,
                 command="bash",
+                user=DPP_DOCKER_USER,
                 working_dir=self.working_dir,
             )
         )

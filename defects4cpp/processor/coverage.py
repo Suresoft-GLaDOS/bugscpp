@@ -1,38 +1,57 @@
+import argparse
 from os import getcwd
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import message
-from processor.core.argparser import create_taxonomy_parser
-from processor.core.command import DockerCommand, DockerCommandArguments
+from processor.core.command import TestCommandMixin, DockerCommand, DockerCommandArguments
 from processor.core.docker import Worktree
+from processor.test import TestCommand, ValidateCase
 from taxonomy import MetaData
 
 
-class CoverageCommand(DockerCommand):
+class ValidateTest(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, True)
+
+
+class CoverageCommand(TestCommandMixin, DockerCommand):
+    """
+    Run test and generate coverage data.
+    """
+
     def __init__(self):
         super().__init__()
-        self.parser = create_taxonomy_parser()
         self.parser.usage = (
-            "d++ build --project=[project_name] --no=[number] [checkout directory]"
+            "d++ build --project=[project_name] --no=[number] --case=[index] [checkout directory]"
+        )
+        self.parser.add_argument(
+            "--test",
+            help="Run test and coverage at once",
+            dest="test",
+            nargs=0,
+            action=ValidateTest,
         )
 
     def run(self, argv: List[str]) -> DockerCommandArguments:
         args = self.parser.parse_args(argv)
-        metadata: MetaData = args.metadata
-        prefix: str = f"{'buggy' if args.buggy else 'fixed'}#{args.index}"
-        self._coverage_name: str = f"coverage-{prefix}.json"
-        self._worktree: Worktree = args.worktree
-        exclude_options = (
-            [f"--gcov-exclude {dir}" for dir in metadata.common.exclude]
-            if metadata.common.exclude
-            else ""
-        )
-        commands = [
-            f"gcovr -r {metadata.common.root} {' '.join(exclude_options)} --branches --json {self._coverage_name}"
-        ]
+        commands = []
+        if args.test:
+            commands.extend(self.generate_test_command(argv).commands)
 
-        message.info(f"Generating coverage data for {metadata.name} {prefix}")
+        metadata: MetaData = args.metadata
+        self._coverage_name: str = f"{Path(args.worktree.host).stem}.json"
+        self._worktree: Worktree = args.worktree
+
+        exclude_options = [f"--gcov-exclude {dir}" for dir in metadata.common.exclude]
+        options = ["--print-summary", "--delete", "--json", self._coverage_name]
+        commands.append(
+            f"gcovr -r {metadata.common.root} {' '.join(exclude_options)} {' '.join(options)}"
+        )
+
+        message.info(
+            f"Generating coverage data for {metadata.name} {self._coverage_name}"
+        )
         return DockerCommandArguments(metadata.dockerfile, self._worktree, commands)
 
     def setup(self):
