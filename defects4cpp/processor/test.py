@@ -11,7 +11,7 @@ from processor.core.command import DockerCommand, DockerCommandLine, DockerExecI
 class ValidateCase(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         """
-        case == INCLUDE[:EXCLUDE]
+        case_expression == INCLUDE[:EXCLUDE]
           INCLUDE | EXCLUDE
           * select: ','
           * range:  '-'
@@ -20,23 +20,34 @@ class ValidateCase(argparse.Action):
           20-30,40-88:47-52 (to 30 from 20 and to 88 from 40 except to 62 from 47)
         """
 
-        def select_cases(expr: str) -> Set[int]:
+        def expr2set(expr: str) -> Set[int]:
             if not expr:
                 return set()
-            cases: Set[int] = set()
+            val: Set[int] = set()
             partitions = expr.split(",")
             for partition in partitions:
                 tokens = partition.split("-")
                 if len(tokens) == 1:
-                    cases.add(int(tokens[0]))
+                    val.add(int(tokens[0]))
                 else:
-                    cases.update(range(int(tokens[0]), int(tokens[1]) + 1))
-            return cases
+                    val.update(range(int(tokens[0]), int(tokens[1]) + 1))
+            return val
 
-        values = values.split(":")
-        included_cases = select_cases(values[0])
-        excluded_cases = select_cases(values[1]) if len(values) > 1 else set()
-        # TODO: the range must be validated by taxonomy lookup.
+        try:
+            metadata: taxonomy.MetaData = namespace.metadata
+            index: int = namespace.index
+        except AttributeError:
+            raise AttributeError(f"{namespace=}")
+        cases = metadata.defects[index].cases
+
+        def validate_each_case(case_set: Set[int]) -> Set[int]:
+            if all(0 < case < cases for case in case_set):
+                return case_set
+            raise IndexError(f"Defect#{index} of {metadata.name} has {cases}, but expression was: {values}")
+
+        expr = values.split(":")
+        included_cases = validate_each_case(expr2set(expr[0]))
+        excluded_cases = validate_each_case(expr2set(expr[1]) if len(expr) > 1 else set())
         setattr(namespace, self.dest, (included_cases, excluded_cases))
 
 
