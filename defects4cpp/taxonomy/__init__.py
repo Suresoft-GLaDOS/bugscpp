@@ -4,6 +4,7 @@ from os.path import dirname, exists, join
 from pkgutil import iter_modules
 from typing import Dict, List, Optional
 
+import config
 import hjson
 
 
@@ -90,19 +91,24 @@ class MetaData:
             pass
 
     def _load_common(self, meta: Dict):
+        def replace_make_job_flags(options: List[str]) -> List[str]:
+            return [
+                opt.replace("@DPP_MAKE_JOB@", config.DPP_MAKE_JOB) for opt in options
+            ]
+
         try:
             self._common = Common(
                 meta["common"]["root"],
                 [dir for dir in meta["common"]["exclude"]],
                 meta["common"]["checkout"],
                 meta["common"]["builder"]["generator"],
-                meta["common"]["builder"]["command"],
+                replace_make_job_flags(meta["common"]["builder"]["command"]),
                 meta["common"]["builder-cov"]["generator"],
-                meta["common"]["builder-cov"]["command"],
+                replace_make_job_flags(meta["common"]["builder-cov"]["command"]),
                 meta["common"]["tester"]["generator"],
-                meta["common"]["tester"]["command"],
+                replace_make_job_flags(meta["common"]["tester"]["command"]),
                 meta["common"]["tester-cov"]["generator"],
-                meta["common"]["tester-cov"]["command"],
+                replace_make_job_flags(meta["common"]["tester-cov"]["command"]),
                 meta["common"]["clean"],
             )
         except KeyError:
