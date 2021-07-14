@@ -22,7 +22,6 @@ class BuildCommand(DockerCommand):
         super().__init__()
         self.parser = create_taxonomy_parser()
         self.parser.add_argument(
-            "-c",
             "--coverage",
             dest="coverage",
             help="build with gcov flags",
