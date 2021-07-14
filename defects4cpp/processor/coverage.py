@@ -1,13 +1,10 @@
 import argparse
 from os import getcwd
-from pathlib import Path
 from typing import List
 
 import message
-from processor.core.command import TestCommandMixin, DockerCommand, DockerCommandArguments
-from processor.core.docker import Worktree
-from processor.test import TestCommand, ValidateCase
-from taxonomy import MetaData
+from processor.core.command import (DockerCommand, DockerCommandLine, DockerExecInfo, TestCommandMixin,
+                                    TestCommandMixinLine)
 
 
 class ValidateTest(argparse.Action):
@@ -15,61 +12,54 @@ class ValidateTest(argparse.Action):
         setattr(namespace, self.dest, True)
 
 
+class CoverageCommandLine(TestCommandMixinLine):
+    def before(self, info: DockerExecInfo):
+        message.info2(f"case #{self.case}")
+
+    def after(self, info: DockerExecInfo):
+        coverage = info.worktree.host / CoverageCommand.coverage_output
+        name = f"{coverage.parent.name}-{self.case:04}.json"
+        if not coverage.exists():
+            message.warning(f"Failed to generate coverage data. {name} is not created")
+            return
+        # TODO: add option to control where to place json files.
+        coverage = coverage.rename(f"{getcwd()}/{name}")
+        message.info2(f"{name} is created at {str(coverage)}")
+
+
 class CoverageCommand(TestCommandMixin, DockerCommand):
     """
     Run test and generate coverage data.
     """
 
+    coverage_output = "coverage.json"
+    default_options = ["--print-summary", "--delete", "--json", coverage_output]
+
     def __init__(self):
-        super().__init__()
-        self.parser.usage = (
-            "d++ build --project=[project_name] --no=[number] --case=[index] [checkout directory]"
-        )
-        self.parser.add_argument(
-            "--test",
-            help="Run test and coverage at once",
-            dest="test",
-            nargs=0,
-            action=ValidateTest,
-        )
+        super().__init__(instance=CoverageCommandLine)
+        self.parser.usage = "d++ build --project=[project_name] --no=[number] --case=[index] [checkout directory]"
 
-    def run(self, argv: List[str]) -> DockerCommandArguments:
+    def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
-        commands = []
-        if args.test:
-            commands.extend(self.generate_test_command(argv).commands)
+        self._metadata = args.metadata
+        self._worktree = args.worktree
+        return self.generate(argv, coverage=True)
 
-        metadata: MetaData = args.metadata
-        self._coverage_name: str = f"{Path(args.worktree.host).stem}.json"
-        self._worktree: Worktree = args.worktree
-
-        exclude_options = [f"--gcov-exclude {dir}" for dir in metadata.common.exclude]
-        options = ["--print-summary", "--delete", "--json", self._coverage_name]
+    def each_command(self, commands: List[str]) -> List[str]:
+        exclude = " ".join(
+            [f"--gcov-exclude {dir}" for dir in self._metadata.common.exclude]
+        )
         commands.append(
-            f"gcovr -r {metadata.common.root} {' '.join(exclude_options)} {' '.join(options)}"
+            f"gcovr {' '.join(self.default_options)} {exclude} --root {self._metadata.common.root}"
         )
+        return commands
 
-        message.info(
-            f"Generating coverage data for {metadata.name} {self._coverage_name}"
-        )
-        return DockerCommandArguments(metadata.dockerfile, self._worktree, commands)
+    def setup(self, info: DockerExecInfo):
+        message.info(f"Generating coverage data for {info.metadata.name}")
 
-    def setup(self):
-        pass
-
-    def teardown(self):
-        assert self._coverage_name and self._worktree
-
-        coverage = Path(self._worktree.host) / self._coverage_name
-        if not coverage.exists():
-            message.warning(
-                f"Failed to generate coverage data. {self._coverage_name} is not created"
-            )
-            return
-
-        coverage = coverage.rename(f"{getcwd()}/{self._coverage_name}")
-        message.info(f"{self._coverage_name} is created at {str(coverage)}")
+    def teardown(self, info: DockerExecInfo):
+        message.info(f"Finished {info.metadata.name}")
 
     @property
     def help(self) -> str:
-        return "Coverage build local with a build tool from docker"
+        return "Run test and generate coverage information about it"

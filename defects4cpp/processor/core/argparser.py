@@ -89,4 +89,11 @@ def create_taxonomy_parser():
         help="checkout directory",
         action=ValidateWorkspace,
     )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        dest="quiet",
+        help="suppress stream output of container",
+        action="store_true",
+    )
     return parser

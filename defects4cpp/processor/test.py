@@ -1,9 +1,8 @@
 import argparse
-from typing import List, Optional, Set
+from typing import List, Set
 
 import message
-import taxonomy
-from processor.core.command import DockerCommand, DockerCommandArguments, TestCommandMixin
+from processor.core.command import DockerCommand, DockerExecInfo, TestCommandMixin, TestCommandMixinLine
 
 
 class ValidateCase(argparse.Action):
@@ -38,27 +37,35 @@ class ValidateCase(argparse.Action):
         setattr(namespace, self.dest, (included_cases, excluded_cases))
 
 
+class TestCommandLine(TestCommandMixinLine):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def before(self, info: DockerExecInfo):
+        message.info2(f"case #{self.case}")
+
+    def after(self, info: DockerExecInfo):
+        pass
+
+
 class TestCommand(TestCommandMixin, DockerCommand):
     """
     Run test.
     """
+
     def __init__(self):
-        super().__init__()
+        super().__init__(instance=TestCommandLine)
         self.parser.usage = "d++ test --project=[project_name] --no=[number] --case=[number] [checkout directory]"
 
-    def run(self, argv: List[str]) -> DockerCommandArguments:
-        args = self.parser.parse_args(argv)
-        metadata: taxonomy.MetaData = args.metadata
+    def run(self, argv: List[str]) -> DockerExecInfo:
+        return self.generate(argv)
 
-        message.info(f"Running {metadata.name} test")
-        return self.generate_test_command(argv)
+    def setup(self, info: DockerExecInfo):
+        message.info(f"Start running {info.metadata.name}")
 
-    def setup(self):
-        pass
-
-    def teardown(self):
-        pass
+    def teardown(self, info: DockerExecInfo):
+        message.info(f"Finished {info.metadata.name}")
 
     @property
     def help(self) -> str:
-        return "Do test without coverage"
+        return "Run test"

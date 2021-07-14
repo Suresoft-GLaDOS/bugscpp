@@ -60,6 +60,11 @@ class Worktree:
 
 
 class Docker:
+    """
+    Docker RAII
+    Host machine must be running docker daemon in background.
+    """
+
     client = docker.from_env()
 
     def __init__(self, dockerfile: str, worktree: Worktree):
@@ -68,12 +73,13 @@ class Docker:
         tag = Path(dockerfile).parent.name
         self.name: str = f"{tag}-dpp-generated-container"
         self.tag: str = f"{tag}/dppgen"
-        self._image: Optional[Image] = None
-        self._container: Optional[Container] = None
         self.volume: Dict[str, Dict] = {
             str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
         }
         self.working_dir: str = str(worktree.container)
+
+        self._image: Optional[Image] = None
+        self._container: Optional[Container] = None
 
     @property
     def image(self):
@@ -82,7 +88,7 @@ class Docker:
             try:
                 self._image = cast_image(self.client.images.get(self.tag))
             except docker.errors.ImageNotFound:
-                message.info(
+                message.info2(
                     f"Creating a new docker image for {Path(self.dockerfile).parent.name}"
                 )
                 self._image = build_image(
@@ -93,6 +99,7 @@ class Docker:
         return self._image
 
     def __enter__(self):
+        message.info(f"Starting container {Path(self.dockerfile).parent.name}")
         self._container = cast_container(
             self.client.containers.run(
                 self.image,
@@ -109,6 +116,7 @@ class Docker:
         return self
 
     def __exit__(self, type, value, traceback):
+        message.info(f"Closing container {Path(self.dockerfile).parent.name}")
         self._container.stop()
 
     def send(self, command: str, stream=True) -> ExecResult:
