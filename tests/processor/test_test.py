@@ -49,6 +49,25 @@ def test_validate_case():
     assert args.case == (set(), {1, 2, 3, 9})
 
 
+def test_invalid_case_expression():
+    cmd = defects4cpp.processor.TestCommand()
+    project_name = "yara"
+    index = 1
+    default_cmds = ["--project", project_name, "--no", str(index), "--case"]
+
+    t = defects4cpp.taxonomy.Taxonomy()
+    project = t[project_name]
+    cases = project.defects[index].cases
+
+    expr = f"{cases+1}"
+    try:
+        args = cmd.parser.parse_args([*default_cmds, expr])
+    except IndexError:
+        assert True
+    else:
+        assert False
+
+
 def test_no_case_is_provided():
     cmd = defects4cpp.processor.TestCommand()
     default_cmds = ["--project", "yara", "--no", "1"]
@@ -59,7 +78,7 @@ def test_no_case_is_provided():
     selected_defect: defects4cpp.taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.commands)) == (selected_defect.cases * 2)
+    assert len(list(docker_cmd.commands)) == selected_defect.cases
 
 
 def test_exclude_only():
@@ -72,4 +91,4 @@ def test_exclude_only():
     selected_defect: defects4cpp.taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.commands)) == (selected_defect.cases - 100) * 2
+    assert len(list(docker_cmd.commands)) == (selected_defect.cases - 100)
