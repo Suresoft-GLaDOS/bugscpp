@@ -83,7 +83,6 @@ class Docker:
 
     @property
     def image(self):
-        # TODO: message
         if not self._image:
             try:
                 self._image = cast_image(self.client.images.get(self.tag))

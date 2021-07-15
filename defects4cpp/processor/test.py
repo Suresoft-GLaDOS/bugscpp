@@ -1,5 +1,6 @@
 import argparse
 from os import getcwd
+from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Set
 
 import message
@@ -43,12 +44,23 @@ class ValidateCase(argparse.Action):
         def validate_each_case(case_set: Set[int]) -> Set[int]:
             if all(0 < case < cases for case in case_set):
                 return case_set
-            raise IndexError(f"Defect#{index} of {metadata.name} has {cases}, but expression was: {values}")
+            raise IndexError(
+                f"Defect#{index} of {metadata.name} has {cases}, but expression was: {values}"
+            )
 
         expr = values.split(":")
         included_cases = validate_each_case(expr2set(expr[0]))
-        excluded_cases = validate_each_case(expr2set(expr[1]) if len(expr) > 1 else set())
+        excluded_cases = validate_each_case(
+            expr2set(expr[1]) if len(expr) > 1 else set()
+        )
         setattr(namespace, self.dest, (included_cases, excluded_cases))
+
+
+class ValidateOutputDirectory(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if not Path(values).exists():
+            raise FileNotFoundError
+        setattr(namespace, self.dest, values)
 
 
 class TestCommandLine(DockerCommandLine):
@@ -64,22 +76,17 @@ class TestCommandLine(DockerCommandLine):
 
 
 class CoverageCommandLine(DockerCommandLine):
-    def __init__(self, commands: Iterable[str], case: int):
+    def __init__(self, commands: Iterable[str], case: int, parent: "TestCommand"):
         self.commands = commands
         self.case = case
+        self.parent = parent
 
     def before(self, info: DockerExecInfo):
         message.info2(f"case #{self.case}")
 
     def after(self, info: DockerExecInfo):
-        coverage = info.worktree.host / TestCommand.coverage_output
-        name = f"{coverage.parent.name}-{self.case:04}.json"
-        if not coverage.exists():
-            message.warning(f"Failed to generate coverage data. {name} is not created")
-            return
-        # TODO: add option to control where to place json files.
-        coverage = coverage.rename(f"{getcwd()}/{name}")
-        message.info2(f"{name} is created at {str(coverage)}")
+        # Callback parent each step.
+        self.parent.callback_after(self.case, info)
 
 
 class TestCommand(DockerCommand):
@@ -107,16 +114,30 @@ class TestCommand(DockerCommand):
             dest="case",
             action=ValidateCase,
         )
+        self.parser.add_argument(
+            "--output-directory",
+            help="Output directory to place json files",
+            type=str,
+            dest="output_directory",
+            action=ValidateOutputDirectory,
+        )
         self.parser.usage = "d++ test --project=[project_name] --no=[number] --case=[number] [checkout directory]"
-        self._coverage = False
+        self.coverage: Optional[bool] = None
+        self.output_directory: Optional[str] = None
+        self.coverage_files = []
+        self.failed_coverage_files = []
 
     def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
-        self._coverage = True if args.coverage else False
+        self.coverage = True if args.coverage else False
+        self.output_directory = (
+            args.output_directory if args.output_directory else getcwd()
+        )
+
         metadata: taxonomy.MetaData = args.metadata
         test_command = (
             metadata.common.test_cov_command
-            if self._coverage
+            if self.coverage
             else metadata.common.test_command
         )
         index = args.index
@@ -132,9 +153,9 @@ class TestCommand(DockerCommand):
             cases = included_cases.difference(excluded_cases)
 
         filter_command = self._make_filter_command(selected_defect)
-        if self._coverage:
+        if self.coverage:
             coverage_command = self._make_coverage_command(metadata)
-            generator = (
+            command_generator = (
                 CoverageCommandLine(
                     coverage_command(
                         [
@@ -143,11 +164,12 @@ class TestCommand(DockerCommand):
                         ]
                     ),
                     case,
+                    self,
                 )
                 for case in cases
             )
         else:
-            generator = (
+            command_generator = (
                 TestCommandLine(
                     [
                         filter_command(case),
@@ -159,21 +181,45 @@ class TestCommand(DockerCommand):
             )
         stream = False if args.quiet else True
 
-        return DockerExecInfo(metadata, args.worktree, generator, stream)
+        return DockerExecInfo(metadata, args.worktree, command_generator, stream)
 
     def setup(self, info: DockerExecInfo):
-        if not self._coverage:
+        if not self.coverage:
             message.info(f"Start running {info.metadata.name}")
         else:
             message.info(f"Generating coverage data for {info.metadata.name}")
 
     def teardown(self, info: DockerExecInfo):
-        if not self._coverage:
-            message.info(f"Finished {info.metadata.name}")
+        message.info(f"Finished {info.metadata.name}")
+        if self.coverage:
+            created = [f"    - {c}\n" for c in self.coverage_files]
+            message.info2(f"Successfully created:\n{''.join(created)}")
+            if self.failed_coverage_files:
+                not_created = [f"    - {c}\n" for c in self.failed_coverage_files]
+                message.info2(f"Could not create files:\n{''.join(not_created)}")
+
+    def callback_after(self, case: int, info: DockerExecInfo):
+        """
+        Move json files to somewhere specified by a user or the current working directory.
+
+        Should be invoked only after each coverage command is executed.
+        """
+        coverage = info.worktree.host / TestCommand.coverage_output
+        name = f"{coverage.parent.name}-{case:04}.json"
+        if coverage.exists():
+            self.coverage_files.append(
+                coverage.rename(f"{self.output_directory}/{name}")
+            )
+        else:
+            self.failed_coverage_files.append(f"{self.output_directory}/{name}")
 
     def _make_coverage_command(
         self, metadata: taxonomy.MetaData
     ) -> Callable[[List[str]], List[str]]:
+        """
+        Returns gcovr command to run inside docker.
+        """
+
         def coverage_command(commands: List[str]) -> List[str]:
             commands.append(command)
             return commands
