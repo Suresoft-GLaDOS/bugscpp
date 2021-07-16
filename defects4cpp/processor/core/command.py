@@ -1,10 +1,9 @@
 from abc import ABCMeta, abstractmethod, abstractproperty
 from dataclasses import dataclass
-from typing import Iterable, List, Type
+from typing import Iterable, List
 
 import message
 import taxonomy
-from processor.core.argparser import create_taxonomy_parser
 from processor.core.docker import Docker, Worktree
 from processor.core.shell import Shell
 

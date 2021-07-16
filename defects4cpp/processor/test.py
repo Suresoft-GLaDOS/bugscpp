@@ -231,7 +231,8 @@ class TestCommand(DockerCommand):
 
     def _make_filter_command(self, defect: taxonomy.Defect) -> Callable[[int], str]:
         """
-        Returns command to run inside docker that modifies lua script return value which will be used to select which test case to run.
+        Returns command to run inside docker that modifies lua script 'return value'
+        which will be used to select which test case to run.
 
         Assume that "split.patch" newly creates "defects4cpp.lua" file.
         Read "split.patch" and get line containing "create mode ... defects4cpp.lua"

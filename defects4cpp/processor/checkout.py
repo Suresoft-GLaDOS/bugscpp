@@ -35,7 +35,7 @@ class CheckoutCommand(Command):
             checkout_dir = str(worktree.host)
             try:
                 # Pass '-f' in case worktree directory could be registered but removed.
-                output = repo.git.worktree("add", "-f", checkout_dir, defect.hash)
+                repo.git.worktree("add", "-f", checkout_dir, defect.hash)
             except git.GitCommandError:
                 pass
 
