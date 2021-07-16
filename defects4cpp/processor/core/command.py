@@ -1,9 +1,10 @@
 from abc import ABCMeta, abstractmethod, abstractproperty
 from dataclasses import dataclass
-from typing import List
+from typing import Iterable, List
 
 import message
-from processor.core.docker import Docker
+import taxonomy
+from processor.core.docker import Docker, Worktree
 from processor.core.shell import Shell
 
 
@@ -72,11 +73,34 @@ class ShellCommand(Command):
         raise NotImplementedError
 
 
+class DockerCommandLine(metaclass=ABCMeta):
+    def __init__(self, commands: List[str]):
+        self.commands = commands
+
+    @abstractmethod
+    def before(self, info: "DockerExecInfo"):
+        """
+        Invoked before every time each command is executed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def after(self, info: "DockerExecInfo"):
+        """
+        Invoked after every time each command is executed.
+        """
+        raise NotImplementedError
+
+    def __iter__(self):
+        return iter(self.commands)
+
+
 @dataclass
-class DockerCommandArguments:
-    dockerfile: str
-    volume: str
-    commands: List[str]
+class DockerExecInfo:
+    metadata: taxonomy.MetaData
+    worktree: Worktree
+    commands: Iterable[DockerCommandLine]
+    stream: bool
 
 
 class DockerCommand(Command):
@@ -88,20 +112,30 @@ class DockerCommand(Command):
         return "v1"
 
     def __call__(self, argv: List[str]):
-        docker_args = self.run(argv)
-        with Docker(
-            docker_args.dockerfile, docker_args.volume, "/home/workspace"
-        ) as docker:
-            for command in docker_args.commands:
-                _, stream = docker.send(command)
-                for line in stream:
-                    message.docker(line.decode("utf-8"))
-        self.done()
+        info = self.run(argv)
+        self.setup(info)
+        with Docker(info.metadata.dockerfile, info.worktree) as docker:
+            for commands in info.commands:
+                commands.before(info)
+                for cmd in commands:
+                    # Depending on 'stream' value, return value is a bit different.
+                    # 'exit_code' is None when 'steam' is True.
+                    # https://docker-py.readthedocs.io/en/stable/containers.html
+                    exit_code, stream = docker.send(cmd, info.stream)
+                    if exit_code is None:
+                        for line in stream:
+                            message.docker(line.decode("utf-8"))
+                commands.after(info)
+        self.teardown(info)
 
     @abstractmethod
-    def run(self, argv: List[str]) -> DockerCommandArguments:
+    def run(self, argv: List[str]) -> DockerExecInfo:
         raise NotImplementedError
 
     @abstractmethod
-    def done(self) -> DockerCommandArguments:
+    def setup(self, info: DockerExecInfo):
+        raise NotImplementedError
+
+    @abstractmethod
+    def teardown(self, info: DockerExecInfo):
         raise NotImplementedError

@@ -21,11 +21,11 @@ def command(message: str):
 
 
 def info(message: str):
-    print(f"  > {Fore.CYAN}{message}{Fore.RESET}")
+    print(f"> {Fore.CYAN}{message}{Fore.RESET}")
 
 
 def info2(message: str):
-    print(f"    > {Fore.LIGHTCYAN_EX}{message}{Fore.RESET}")
+    print(f"  > {Fore.GREEN}{message}{Fore.RESET}")
 
 
 def docker(message: str):

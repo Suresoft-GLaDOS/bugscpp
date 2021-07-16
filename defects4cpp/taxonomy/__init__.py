@@ -1,30 +1,29 @@
+import json
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from os.path import dirname, exists, join
 from pkgutil import iter_modules
 from typing import Dict, List, Optional
 
-import hjson
+import config
 
 
 @dataclass
 class Common:
-    checkout: List[str]
-    build_generator: str
+    root: str
+    exclude: List[str]
     build_command: List[str]
-    build_cov_generator: str
-    build_cov_command: List[str]
-    test_generator: str
+    build_coverage_command: List[str]
     test_command: List[str]
-    test_cov_generator: str
-    test_cov_command: List[str]
-    clean: List[str]
+    test_coverage_command: List[str]
 
 
 @dataclass
 class Defect:
     hash: str
-    patch: str
+    buggy_patch: str
+    split_patch: str
+    cases: int
 
 
 @dataclass
@@ -65,8 +64,8 @@ class MetaData:
         return self._defects
 
     def _load(self):
-        with open(f"{self._path}/meta.hjson", "r", encoding="utf-8") as fp:
-            meta = hjson.load(fp)
+        with open(f"{self._path}/meta.json", "r", encoding="utf-8") as fp:
+            meta = json.load(fp)
         self._load_info(meta)
         self._load_common(meta)
         self._load_defects(meta)
@@ -76,7 +75,9 @@ class MetaData:
             self._defects = [
                 Defect(
                     defect["hash"],
-                    f"{self._path}/patch/{int(defect['patch']):04}-buggy.patch",
+                    f"{self._path}/patch/{defect['patch']:04}-buggy.patch",
+                    f"{self._path}/patch/{defect['patch']:04}-split.patch",
+                    defect["cases"],
                 )
                 for defect in meta["defects"]
             ]
@@ -84,18 +85,19 @@ class MetaData:
             pass
 
     def _load_common(self, meta: Dict):
+        def replace_make_job_flags(options: List[str]) -> List[str]:
+            return [
+                opt.replace("@DPP_MAKE_JOB@", config.DPP_MAKE_JOB) for opt in options
+            ]
+
         try:
             self._common = Common(
-                meta["common"]["checkout"],
-                meta["common"]["builder"]["generator"],
-                meta["common"]["builder"]["command"],
-                meta["common"]["builder-cov"]["generator"],
-                meta["common"]["builder-cov"]["command"],
-                meta["common"]["tester"]["generator"],
-                meta["common"]["tester"]["command"],
-                meta["common"]["tester-cov"]["generator"],
-                meta["common"]["tester-cov"]["command"],
-                meta["common"]["clean"],
+                meta["common"]["root"],
+                [dir for dir in meta["common"]["exclude"]],
+                replace_make_job_flags(meta["common"]["build"]["command"]),
+                replace_make_job_flags(meta["common"]["build-coverage"]["command"]),
+                replace_make_job_flags(meta["common"]["test"]["command"]),
+                replace_make_job_flags(meta["common"]["test-coverage"]["command"]),
             )
         except KeyError:
             pass
@@ -139,7 +141,7 @@ class Taxonomy(MutableMapping):
 
     def _keytransform(self, key: str):
         assert exists(
-            join(self.base, key, "meta.hjson")
+            join(self.base, key, "meta.json")
         ), f"Taxonomy '{key}' does not exist"
         return key
 
