@@ -25,6 +25,8 @@ def main(argv: List[str]):
         elif line.startswith("-"):
             if not line.startswith("--") and line != "-\n":
                 print(f"Warning '{line[:-1]}'")
+        elif line == "<<<<<<< HEAD":
+            print(f"Error '{line[:-1]}'")
         new_contents.append(line)
 
     with open("./new_patch.patch", "w+") as fp:
