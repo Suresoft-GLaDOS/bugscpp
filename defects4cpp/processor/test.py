@@ -38,7 +38,7 @@ class ValidateCase(argparse.Action):
             metadata: taxonomy.MetaData = namespace.metadata
             index: int = namespace.index
         except AttributeError:
-            raise AttributeError(f"{namespace=}")
+            raise AttributeError(f"namespace={namespace}")
         cases = metadata.defects[index].cases
 
         def validate_each_case(case_set: Set[int]) -> Set[int]:
