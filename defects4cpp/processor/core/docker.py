@@ -55,9 +55,6 @@ class Worktree:
     def container(self):
         return Path(DPP_DOCKER_HOME)
 
-    def __repr__(self):
-        return f"{self._name=} {self._index=}, {self._buggy=}, {self._workspace=}"
-
 
 class Docker:
     """
