@@ -1,3 +1,4 @@
+import json
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from os.path import dirname, exists, join
@@ -5,7 +6,6 @@ from pkgutil import iter_modules
 from typing import Dict, List, Optional
 
 import config
-import hjson
 
 
 @dataclass
@@ -64,8 +64,8 @@ class MetaData:
         return self._defects
 
     def _load(self):
-        with open(f"{self._path}/meta.hjson", "r", encoding="utf-8") as fp:
-            meta = hjson.load(fp)
+        with open(f"{self._path}/meta.json", "r", encoding="utf-8") as fp:
+            meta = json.load(fp)
         self._load_info(meta)
         self._load_common(meta)
         self._load_defects(meta)
@@ -141,7 +141,7 @@ class Taxonomy(MutableMapping):
 
     def _keytransform(self, key: str):
         assert exists(
-            join(self.base, key, "meta.hjson")
+            join(self.base, key, "meta.json")
         ), f"Taxonomy '{key}' does not exist"
         return key
 

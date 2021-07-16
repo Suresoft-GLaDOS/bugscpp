@@ -1,9 +1,10 @@
 import os
+from pathlib import Path
 
 import defects4cpp.taxonomy
-from pathlib import Path
-from defects4cpp.processor.core.docker import Docker, Worktree
 from defects4cpp.processor.core.argparser import create_taxonomy_parser
+from defects4cpp.processor.core.docker import Docker, Worktree
+
 
 def create_dummy_worktree(path: Path) -> Worktree:
     parser = create_taxonomy_parser()
