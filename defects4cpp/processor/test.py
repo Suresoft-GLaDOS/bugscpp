@@ -1,7 +1,7 @@
 import argparse
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Set
+from typing import Callable, Iterable, Tuple, List, Optional, Set
 
 import message
 import taxonomy
@@ -94,8 +94,8 @@ class TestCommand(DockerCommand):
     Run test.
     """
 
-    coverage_output = "coverage.json"
-    default_options = ["--print-summary", "--delete", "--json", coverage_output]
+    coverage_output = "summary.json"
+    default_options = ["--print-summary", "--delete", "--keep", "--html", "result.html", "--json", coverage_output]
 
     def __init__(self):
         super().__init__()
@@ -124,8 +124,8 @@ class TestCommand(DockerCommand):
         self.parser.usage = "d++ test --project=[project_name] --no=[number] --case=[number] [checkout directory]"
         self.coverage: Optional[bool] = None
         self.output_directory: Optional[str] = None
-        self.coverage_files = []
-        self.failed_coverage_files = []
+        self.coverage_files: List[str] = []
+        self.failed_coverage_files: List[str] = []
 
     def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
@@ -192,8 +192,9 @@ class TestCommand(DockerCommand):
     def teardown(self, info: DockerExecInfo):
         message.info(f"Finished {info.metadata.name}")
         if self.coverage:
-            created = [f"    - {c}\n" for c in self.coverage_files]
-            message.info2(f"Successfully created:\n{''.join(created)}")
+            if self.coverage_files:
+                created = [f"    - {c}\n" for c in self.coverage_files]
+                message.info2(f"Successfully created:\n{''.join(created)}")
             if self.failed_coverage_files:
                 not_created = [f"    - {c}\n" for c in self.failed_coverage_files]
                 message.info2(f"Could not create files:\n{''.join(not_created)}")
@@ -201,17 +202,29 @@ class TestCommand(DockerCommand):
     def callback_after(self, case: int, info: DockerExecInfo):
         """
         Move json files to somewhere specified by a user or the current working directory.
+        Output format:
+            {project-name}-{type}#{index}-{case}/summary.json
 
         Should be invoked only after each coverage command is executed.
         """
-        coverage = info.worktree.host / TestCommand.coverage_output
-        name = f"{coverage.parent.name}-{case:04}.json"
+        assert self.output_directory
+
+        worktree = info.worktree
+        coverage = worktree.host / TestCommand.coverage_output
+        summary_dir = Path(self.output_directory) / f"{info.metadata.name}-{worktree.suffix}-{case}"
+        summary_path = summary_dir / TestCommand.coverage_output
+
         if coverage.exists():
-            self.coverage_files.append(
-                coverage.rename(f"{self.output_directory}/{name}")
-            )
+            summary_dir.mkdir(parents=True, exist_ok=True)
+            # TODO: python3.8: Path.rename() returns pathlib.Path
+            coverage.rename(summary_path)
+            root = info.metadata.common.root
+            for gcov_data in worktree.host.glob(f"{root}/**/*.gcov"):
+                # FIXME: Possibility to name collision
+                gcov_data.rename(f"{summary_dir}/{gcov_data.name}")
+            self.coverage_files.append(str(summary_path))
         else:
-            self.failed_coverage_files.append(f"{self.output_directory}/{name}")
+            self.failed_coverage_files.append(f"{summary_path}")
 
     def _make_coverage_command(
         self, metadata: taxonomy.MetaData
@@ -224,7 +237,7 @@ class TestCommand(DockerCommand):
             commands.append(command)
             return commands
 
-        exclude = " ".join([f"--gcov-exclude {dir}" for dir in metadata.common.exclude])
+        exclude = " ".join([f"--exclude {dir}" for dir in metadata.common.exclude])
         command = f"gcovr {' '.join(self.default_options)} {exclude} --root {metadata.common.root}"
 
         return coverage_command

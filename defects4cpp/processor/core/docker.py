@@ -44,15 +44,19 @@ class Worktree:
         self._workspace: str = ""
 
     @property
-    def base(self):
+    def base(self) -> Path:
         return Path(f"{self._workspace}/{self._name}")
 
     @property
-    def host(self):
-        return self.base / f"{'buggy' if self._buggy else 'fixed'}#{self._index}"
+    def suffix(self) -> Path:
+        return Path(f"{'buggy' if self._buggy else 'fixed'}#{self._index}")
 
     @property
-    def container(self):
+    def host(self) -> Path:
+        return self.base / self.suffix
+
+    @property
+    def container(self) -> Path:
         return Path(DPP_DOCKER_HOME)
 
 

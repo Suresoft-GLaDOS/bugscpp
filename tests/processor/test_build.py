@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import defects4cpp.processor
 import defects4cpp.taxonomy
 
