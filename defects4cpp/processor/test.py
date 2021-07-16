@@ -136,7 +136,7 @@ class TestCommand(DockerCommand):
 
         metadata: taxonomy.MetaData = args.metadata
         test_command = (
-            metadata.common.test_cov_command
+            metadata.common.test_coverage_command
             if self.coverage
             else metadata.common.test_command
         )

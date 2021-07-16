@@ -12,16 +12,10 @@ import hjson
 class Common:
     root: str
     exclude: List[str]
-    checkout: List[str]
-    build_generator: str
     build_command: List[str]
-    build_cov_generator: str
-    build_cov_command: List[str]
-    test_generator: str
+    build_coverage_command: List[str]
     test_command: List[str]
-    test_cov_generator: str
-    test_cov_command: List[str]
-    clean: List[str]
+    test_coverage_command: List[str]
 
 
 @dataclass
@@ -100,16 +94,10 @@ class MetaData:
             self._common = Common(
                 meta["common"]["root"],
                 [dir for dir in meta["common"]["exclude"]],
-                meta["common"]["checkout"],
-                meta["common"]["builder"]["generator"],
-                replace_make_job_flags(meta["common"]["builder"]["command"]),
-                meta["common"]["builder-cov"]["generator"],
-                replace_make_job_flags(meta["common"]["builder-cov"]["command"]),
-                meta["common"]["tester"]["generator"],
-                replace_make_job_flags(meta["common"]["tester"]["command"]),
-                meta["common"]["tester-cov"]["generator"],
-                replace_make_job_flags(meta["common"]["tester-cov"]["command"]),
-                meta["common"]["clean"],
+                replace_make_job_flags(meta["common"]["build"]["command"]),
+                replace_make_job_flags(meta["common"]["build-coverage"]["command"]),
+                replace_make_job_flags(meta["common"]["test"]["command"]),
+                replace_make_job_flags(meta["common"]["test-coverage"]["command"]),
             )
         except KeyError:
             pass

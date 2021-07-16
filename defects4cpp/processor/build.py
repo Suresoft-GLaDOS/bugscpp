@@ -33,7 +33,7 @@ class BuildCommand(DockerCommand):
         args = self.parser.parse_args(argv)
         metadata: MetaData = args.metadata
         commands = (
-            [BuildCommandLine(metadata.common.build_cov_command)]
+            [BuildCommandLine(metadata.common.build_coverage_command)]
             if args.coverage
             else [BuildCommandLine(metadata.common.build_command)]
         )
