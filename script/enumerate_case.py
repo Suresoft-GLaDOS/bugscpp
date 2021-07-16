@@ -19,7 +19,7 @@ def main(argv: List[str]):
         if line.startswith("+"):
             if "case" in line:
                 line = re.sub(
-                    "(?P<switch>\+\s*case\s*)\d*:\n", f"\g<switch>{count}:\n", line
+                    "(?P<switch>\\s*case\\s*)\\d*:\n", f"\\g<switch>{count}:\n", line
                 )
                 count += 1
         elif line.startswith("-"):
