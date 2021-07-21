@@ -24,11 +24,11 @@ class CommandMeta(RegisterCommand, ABCMeta):
 
 
 class Command(metaclass=CommandMeta):
-    @abstractproperty
+    @property
     def group(self) -> str:
         raise NotImplementedError
 
-    @abstractproperty
+    @property
     def help(self) -> str:
         raise NotImplementedError
 
@@ -74,7 +74,7 @@ class ShellCommand(Command):
 
 
 class DockerCommandLine(metaclass=ABCMeta):
-    def __init__(self, commands: List[str]):
+    def __init__(self, commands: Iterable[str]):
         self.commands = commands
 
     @abstractmethod

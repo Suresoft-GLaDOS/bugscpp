@@ -65,7 +65,7 @@ class ValidateOutputDirectory(argparse.Action):
 
 class TestCommandLine(DockerCommandLine):
     def __init__(self, commands: Iterable[str], case: int):
-        self.commands = commands
+        super().__init__(commands)
         self.case = case
 
     def before(self, info: DockerExecInfo):
@@ -77,7 +77,7 @@ class TestCommandLine(DockerCommandLine):
 
 class CoverageCommandLine(DockerCommandLine):
     def __init__(self, commands: Iterable[str], case: int, parent: "TestCommand"):
-        self.commands = commands
+        super().__init__(commands)
         self.case = case
         self.parent = parent
 
@@ -87,6 +87,51 @@ class CoverageCommandLine(DockerCommandLine):
     def after(self, info: DockerExecInfo):
         # Callback parent each step.
         self.parent.callback_after(self.case, info)
+
+
+def _make_coverage_command(
+    metadata: taxonomy.MetaData
+) -> Callable[[List[str]], List[str]]:
+    """
+    Returns gcovr command to run inside docker.
+    """
+
+    def coverage_command(commands: List[str]) -> List[str]:
+        commands.append(command)
+        return commands
+
+    exclude = " ".join([f"--exclude {d}" for d in metadata.common.exclude])
+    command = f"gcovr {' '.join(TestCommand.default_options)} {exclude} --root {metadata.common.root}"
+
+    return coverage_command
+
+
+def _make_filter_command(defect: taxonomy.Defect) -> Callable[[int], str]:
+    """
+    Returns command to run inside docker that modifies lua script 'return value'
+    which will be used to select which test case to run.
+
+    Assume that "split.patch" newly creates "defects4cpp.lua" file.
+    Read "split.patch" and get line containing "create mode ... defects4cpp.lua"
+    This should retrieve the path to "defects4cpp.lua" relative to the project directory.
+    """
+
+    def filter_command(case: int) -> str:
+        return f"bash -c 'echo return {case} > {lua_path}'"
+
+    with open(defect.split_patch) as fp:
+        lines = [line for line in fp if "create mode" in line]
+
+    lua_path: Optional[str] = None
+    for line in lines:
+        if "defects4cpp.lua" in line:
+            # "create mode number filename"[-1] == filename
+            lua_path = line.split()[-1]
+            break
+    if not lua_path:
+        raise AssertionError(f"could not get lua_path in {defect.split_patch}")
+
+    return filter_command
 
 
 class TestCommand(DockerCommand):
@@ -152,9 +197,9 @@ class TestCommand(DockerCommand):
                 included_cases = set(range(1, selected_defect.cases + 1))
             cases = included_cases.difference(excluded_cases)
 
-        filter_command = self._make_filter_command(selected_defect)
+        filter_command = _make_filter_command(selected_defect)
         if self.coverage:
-            coverage_command = self._make_coverage_command(metadata)
+            coverage_command = _make_coverage_command(metadata)
             command_generator = (
                 CoverageCommandLine(
                     coverage_command(
@@ -225,49 +270,6 @@ class TestCommand(DockerCommand):
             self.coverage_files.append(str(summary_path))
         else:
             self.failed_coverage_files.append(f"{summary_path}")
-
-    def _make_coverage_command(
-        self, metadata: taxonomy.MetaData
-    ) -> Callable[[List[str]], List[str]]:
-        """
-        Returns gcovr command to run inside docker.
-        """
-
-        def coverage_command(commands: List[str]) -> List[str]:
-            commands.append(command)
-            return commands
-
-        exclude = " ".join([f"--exclude {dir}" for dir in metadata.common.exclude])
-        command = f"gcovr {' '.join(self.default_options)} {exclude} --root {metadata.common.root}"
-
-        return coverage_command
-
-    def _make_filter_command(self, defect: taxonomy.Defect) -> Callable[[int], str]:
-        """
-        Returns command to run inside docker that modifies lua script 'return value'
-        which will be used to select which test case to run.
-
-        Assume that "split.patch" newly creates "defects4cpp.lua" file.
-        Read "split.patch" and get line containing "create mode ... defects4cpp.lua"
-        This should retrieve the path to "defects4cpp.lua" relative to the project directory.
-        """
-
-        def filter_command(case: int) -> str:
-            return f"bash -c 'echo return {case} > {lua_path}'"
-
-        with open(defect.split_patch) as fp:
-            lines = [line for line in fp if "create mode" in line]
-
-        lua_path: Optional[str] = None
-        for line in lines:
-            if "defects4cpp.lua" in line:
-                # "create mode number filename"[-1] == filename
-                lua_path = line.split()[-1]
-                break
-        if not lua_path:
-            raise AssertionError(f"could not get lua_path in {defect.split_patch}")
-
-        return filter_command
 
     @property
     def help(self) -> str:
