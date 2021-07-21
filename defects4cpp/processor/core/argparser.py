@@ -1,6 +1,7 @@
 import argparse
 from os import getcwd
 
+import errors
 from processor.core.docker import Worktree
 from taxonomy import MetaData, Taxonomy
 
@@ -15,7 +16,7 @@ class ValidateProject(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         t = Taxonomy()
         if values not in t.keys():
-            raise KeyError(f"Taxonomy '{values}' does not exist")
+            raise errors.DppTaxonomyNotFoundError(values)
         worktree = _get_worktree_attr(namespace)
         worktree._name = t[values].name
         setattr(namespace, self.dest, t[values])
@@ -26,12 +27,10 @@ class ValidateIndex(argparse.Action):
         try:
             metadata: MetaData = namespace.metadata
         except AttributeError:
-            raise AttributeError(
-                f"project is not set, but {__class__.__name__} is invoked first"
-            )
+            raise errors.DppCommandLineInternalError(__class__.__name__)
 
-        if len(metadata.defects) < values:
-            raise IndexError(f"invalid index '{values}' of defects")
+        if 0 < len(metadata.defects) < values:
+            raise errors.DppDefectIndexError(values)
 
         worktree = _get_worktree_attr(namespace)
         worktree._index = values
@@ -53,6 +52,9 @@ class ValidateWorkspace(argparse.Action):
 
 
 def create_taxonomy_parser():
+    """
+    Returns argparse.ArgumentParser that parses common taxonomy options.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-p",

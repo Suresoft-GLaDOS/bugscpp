@@ -74,6 +74,10 @@ class ShellCommand(Command):
 
 
 class DockerCommandLine(metaclass=ABCMeta):
+    """
+    A bulk of commands which is executed one by one by DockerCommand.
+    """
+
     def __init__(self, commands: Iterable[str]):
         self.commands = commands
 
@@ -104,6 +108,10 @@ class DockerExecInfo:
 
 
 class DockerCommand(Command):
+    """
+    Executes each command of DockerCommandLine one by one inside docker container.
+    """
+
     def __init__(self):
         pass
 
@@ -130,12 +138,21 @@ class DockerCommand(Command):
 
     @abstractmethod
     def run(self, argv: List[str]) -> DockerExecInfo:
+        """
+        Return DockerExecInfo which has information of a command list to run inside docker container.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def setup(self, info: DockerExecInfo):
+        """
+        Invoked before container is created.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def teardown(self, info: DockerExecInfo):
+        """
+        Invoked after container is destroyed.
+        """
         raise NotImplementedError

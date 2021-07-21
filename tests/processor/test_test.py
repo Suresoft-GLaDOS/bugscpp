@@ -1,6 +1,7 @@
 import defects4cpp.processor
 import defects4cpp.taxonomy
 from defects4cpp.processor.test import _make_filter_command
+import defects4cpp.errors
 
 
 def test_checkout_modify_lua_script():
@@ -62,7 +63,7 @@ def test_invalid_case_expression():
     expr = f"{cases+1}"
     try:
         args = cmd.parser.parse_args([*default_cmds, expr])
-    except IndexError:
+    except defects4cpp.errors.DppInvalidCaseExpressionError:
         assert True
     else:
         assert False
