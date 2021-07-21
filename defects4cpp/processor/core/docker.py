@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, cast
 
 import docker
@@ -45,19 +45,23 @@ class Worktree:
 
     @property
     def base(self) -> Path:
+        """Return base path which will be used to test and build defect taxonomies"""
         return Path(f"{self._workspace}/{self._name}")
 
     @property
     def suffix(self) -> Path:
+        """Return suffix path which is appended to base path"""
         return Path(f"{'buggy' if self._buggy else 'fixed'}#{self._index}")
 
     @property
     def host(self) -> Path:
+        """Return path from which is mounted"""
         return self.base / self.suffix
 
     @property
-    def container(self) -> Path:
-        return Path(DPP_DOCKER_HOME)
+    def container(self) -> PurePosixPath:
+        """Return path to which is mounted inside docker"""
+        return PurePosixPath(DPP_DOCKER_HOME)
 
 
 class Docker:
