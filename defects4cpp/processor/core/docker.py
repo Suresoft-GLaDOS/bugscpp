@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, cast
@@ -70,8 +71,6 @@ class Docker:
     Host machine must be running docker daemon in background.
     """
 
-    client = docker.from_env()
-
     def __init__(self, dockerfile: str, worktree: Worktree):
         self.dockerfile = dockerfile
         # Assumes that the name of its parent directory is the same with that of the target.
@@ -85,6 +84,18 @@ class Docker:
 
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
+
+    @property
+    def client(self):
+        if getattr(Docker, "_client", None) is None:
+            try:
+                Docker._client = docker.from_env()
+            except docker.errors.DockerException:
+                message.warning(
+                    "Could not get response from docker. Is your docker-daemon running?"
+                )
+                sys.exit(0)
+        return Docker._client
 
     @property
     def image(self):

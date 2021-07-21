@@ -93,7 +93,7 @@ class MetaData:
         try:
             self._common = Common(
                 meta["common"]["root"],
-                [dir for dir in meta["common"]["exclude"]],
+                [d for d in meta["common"]["exclude"]],
                 replace_make_job_flags(meta["common"]["build"]["command"]),
                 replace_make_job_flags(meta["common"]["build-coverage"]["command"]),
                 replace_make_job_flags(meta["common"]["test"]["command"]),

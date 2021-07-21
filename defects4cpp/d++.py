@@ -35,8 +35,7 @@ def main():
         else:
             commands[name](argv)
     except SystemExit:
-        message.error("Exited abnormally")
-        print(debug.get_trace_back())
+        pass
     except:
         traceback_msg = debug.get_trace_back()
         message.error(traceback_msg)

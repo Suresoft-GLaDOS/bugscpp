@@ -1,7 +1,7 @@
 import argparse
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Iterable, Tuple, List, Optional, Set
+from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 import message
 import taxonomy
@@ -90,7 +90,7 @@ class CoverageCommandLine(DockerCommandLine):
 
 
 def _make_coverage_command(
-    metadata: taxonomy.MetaData
+    metadata: taxonomy.MetaData,
 ) -> Callable[[List[str]], List[str]]:
     """
     Returns gcovr command to run inside docker.
@@ -140,7 +140,15 @@ class TestCommand(DockerCommand):
     """
 
     coverage_output = "summary.json"
-    default_options = ["--print-summary", "--delete", "--keep", "--html", "result.html", "--json", coverage_output]
+    default_options = [
+        "--print-summary",
+        "--delete",
+        "--keep",
+        "--html",
+        "result.html",
+        "--json",
+        coverage_output,
+    ]
 
     def __init__(self):
         super().__init__()
@@ -256,7 +264,10 @@ class TestCommand(DockerCommand):
 
         worktree = info.worktree
         coverage = worktree.host / TestCommand.coverage_output
-        summary_dir = Path(self.output_directory) / f"{info.metadata.name}-{worktree.suffix}-{case}"
+        summary_dir = (
+            Path(self.output_directory)
+            / f"{info.metadata.name}-{worktree.suffix}-{case}"
+        )
         summary_path = summary_dir / TestCommand.coverage_output
 
         if coverage.exists():
