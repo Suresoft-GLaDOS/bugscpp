@@ -24,7 +24,7 @@ class HelpCommand(SimpleCommand):
         return "Display help messages"
 
     def run(self, argv: List[str]) -> bool:
-        message.kind("Defects4C++: Defected Taxonomies for Automated Debugging Tools")
+        message.kind("Defects4C++: Defect Taxonomies for Automated Debugging Tools")
         message.kind("MIT Licensed, Suresoft Technologies Inc.")
         message.blank()
         message.kind("Usage:")

@@ -1,13 +1,13 @@
 import defects4cpp.processor
 import defects4cpp.taxonomy
+from defects4cpp.processor.test import _make_filter_command
 
 
 def test_checkout_modify_lua_script():
-    cmd = defects4cpp.processor.TestCommand()
     t = defects4cpp.taxonomy.Taxonomy()
     yara = t["yara"]
 
-    filter_command = cmd._make_filter_command(yara.defects[0])
+    filter_command = _make_filter_command(yara.defects[0])
     assert "return 1" in filter_command(1)
     assert "return 3" in filter_command(3)
 

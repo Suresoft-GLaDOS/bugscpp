@@ -1,5 +1,6 @@
+import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, cast
 
 import docker
@@ -44,16 +45,24 @@ class Worktree:
         self._workspace: str = ""
 
     @property
-    def base(self):
+    def base(self) -> Path:
+        """Return base path which will be used to test and build defect taxonomies"""
         return Path(f"{self._workspace}/{self._name}")
 
     @property
-    def host(self):
-        return self.base / f"{'buggy' if self._buggy else 'fixed'}#{self._index}"
+    def suffix(self) -> Path:
+        """Return suffix path which is appended to base path"""
+        return Path(f"{'buggy' if self._buggy else 'fixed'}#{self._index}")
 
     @property
-    def container(self):
-        return Path(DPP_DOCKER_HOME)
+    def host(self) -> Path:
+        """Return path from which is mounted"""
+        return self.base / self.suffix
+
+    @property
+    def container(self) -> PurePosixPath:
+        """Return path to which is mounted inside docker"""
+        return PurePosixPath(DPP_DOCKER_HOME)
 
 
 class Docker:
@@ -61,8 +70,6 @@ class Docker:
     Docker RAII
     Host machine must be running docker daemon in background.
     """
-
-    client = docker.from_env()
 
     def __init__(self, dockerfile: str, worktree: Worktree):
         self.dockerfile = dockerfile
@@ -77,6 +84,18 @@ class Docker:
 
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
+
+    @property
+    def client(self):
+        if getattr(Docker, "_client", None) is None:
+            try:
+                Docker._client = docker.from_env()
+            except docker.errors.DockerException:
+                message.warning(
+                    "Could not get response from docker. Is your docker-daemon running?"
+                )
+                sys.exit(0)
+        return Docker._client
 
     @property
     def image(self):

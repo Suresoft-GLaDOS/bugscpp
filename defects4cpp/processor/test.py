@@ -1,7 +1,7 @@
 import argparse
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Set
+from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 import message
 import taxonomy
@@ -65,7 +65,7 @@ class ValidateOutputDirectory(argparse.Action):
 
 class TestCommandLine(DockerCommandLine):
     def __init__(self, commands: Iterable[str], case: int):
-        self.commands = commands
+        super().__init__(commands)
         self.case = case
 
     def before(self, info: DockerExecInfo):
@@ -77,7 +77,7 @@ class TestCommandLine(DockerCommandLine):
 
 class CoverageCommandLine(DockerCommandLine):
     def __init__(self, commands: Iterable[str], case: int, parent: "TestCommand"):
-        self.commands = commands
+        super().__init__(commands)
         self.case = case
         self.parent = parent
 
@@ -89,13 +89,66 @@ class CoverageCommandLine(DockerCommandLine):
         self.parent.callback_after(self.case, info)
 
 
+def _make_coverage_command(
+    metadata: taxonomy.MetaData,
+) -> Callable[[List[str]], List[str]]:
+    """
+    Returns gcovr command to run inside docker.
+    """
+
+    def coverage_command(commands: List[str]) -> List[str]:
+        commands.append(command)
+        return commands
+
+    exclude = " ".join([f"--exclude {d}" for d in metadata.common.exclude])
+    command = f"gcovr {' '.join(TestCommand.default_options)} {exclude} --root {metadata.common.root}"
+
+    return coverage_command
+
+
+def _make_filter_command(defect: taxonomy.Defect) -> Callable[[int], str]:
+    """
+    Returns command to run inside docker that modifies lua script 'return value'
+    which will be used to select which test case to run.
+
+    Assume that "split.patch" newly creates "defects4cpp.lua" file.
+    Read "split.patch" and get line containing "create mode ... defects4cpp.lua"
+    This should retrieve the path to "defects4cpp.lua" relative to the project directory.
+    """
+
+    def filter_command(case: int) -> str:
+        return f"bash -c 'echo return {case} > {lua_path}'"
+
+    with open(defect.split_patch) as fp:
+        lines = [line for line in fp if "create mode" in line]
+
+    lua_path: Optional[str] = None
+    for line in lines:
+        if "defects4cpp.lua" in line:
+            # "create mode number filename"[-1] == filename
+            lua_path = line.split()[-1]
+            break
+    if not lua_path:
+        raise AssertionError(f"could not get lua_path in {defect.split_patch}")
+
+    return filter_command
+
+
 class TestCommand(DockerCommand):
     """
     Run test.
     """
 
-    coverage_output = "coverage.json"
-    default_options = ["--print-summary", "--delete", "--json", coverage_output]
+    coverage_output = "summary.json"
+    default_options = [
+        "--print-summary",
+        "--delete",
+        "--keep",
+        "--html",
+        "result.html",
+        "--json",
+        coverage_output,
+    ]
 
     def __init__(self):
         super().__init__()
@@ -124,8 +177,8 @@ class TestCommand(DockerCommand):
         self.parser.usage = "d++ test --project=[project_name] --no=[number] --case=[number] [checkout directory]"
         self.coverage: Optional[bool] = None
         self.output_directory: Optional[str] = None
-        self.coverage_files = []
-        self.failed_coverage_files = []
+        self.coverage_files: List[str] = []
+        self.failed_coverage_files: List[str] = []
 
     def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
@@ -152,9 +205,9 @@ class TestCommand(DockerCommand):
                 included_cases = set(range(1, selected_defect.cases + 1))
             cases = included_cases.difference(excluded_cases)
 
-        filter_command = self._make_filter_command(selected_defect)
+        filter_command = _make_filter_command(selected_defect)
         if self.coverage:
-            coverage_command = self._make_coverage_command(metadata)
+            coverage_command = _make_coverage_command(metadata)
             command_generator = (
                 CoverageCommandLine(
                     coverage_command(
@@ -192,8 +245,9 @@ class TestCommand(DockerCommand):
     def teardown(self, info: DockerExecInfo):
         message.info(f"Finished {info.metadata.name}")
         if self.coverage:
-            created = [f"    - {c}\n" for c in self.coverage_files]
-            message.info2(f"Successfully created:\n{''.join(created)}")
+            if self.coverage_files:
+                created = [f"    - {c}\n" for c in self.coverage_files]
+                message.info2(f"Successfully created:\n{''.join(created)}")
             if self.failed_coverage_files:
                 not_created = [f"    - {c}\n" for c in self.failed_coverage_files]
                 message.info2(f"Could not create files:\n{''.join(not_created)}")
@@ -201,60 +255,32 @@ class TestCommand(DockerCommand):
     def callback_after(self, case: int, info: DockerExecInfo):
         """
         Move json files to somewhere specified by a user or the current working directory.
+        Output format:
+            {project-name}-{type}#{index}-{case}/summary.json
 
         Should be invoked only after each coverage command is executed.
         """
-        coverage = info.worktree.host / TestCommand.coverage_output
-        name = f"{coverage.parent.name}-{case:04}.json"
+        assert self.output_directory
+
+        worktree = info.worktree
+        coverage = worktree.host / TestCommand.coverage_output
+        summary_dir = (
+            Path(self.output_directory)
+            / f"{info.metadata.name}-{worktree.suffix}-{case}"
+        )
+        summary_path = summary_dir / TestCommand.coverage_output
+
         if coverage.exists():
-            self.coverage_files.append(
-                coverage.rename(f"{self.output_directory}/{name}")
-            )
+            summary_dir.mkdir(parents=True, exist_ok=True)
+            # TODO: python3.8: Path.rename() returns pathlib.Path
+            coverage.rename(summary_path)
+            root = info.metadata.common.root
+            for gcov_data in worktree.host.glob(f"{root}/**/*.gcov"):
+                # FIXME: Possibility to name collision
+                gcov_data.rename(f"{summary_dir}/{gcov_data.name}")
+            self.coverage_files.append(str(summary_path))
         else:
-            self.failed_coverage_files.append(f"{self.output_directory}/{name}")
-
-    def _make_coverage_command(
-        self, metadata: taxonomy.MetaData
-    ) -> Callable[[List[str]], List[str]]:
-        """
-        Returns gcovr command to run inside docker.
-        """
-
-        def coverage_command(commands: List[str]) -> List[str]:
-            commands.append(command)
-            return commands
-
-        exclude = " ".join([f"--gcov-exclude {dir}" for dir in metadata.common.exclude])
-        command = f"gcovr {' '.join(self.default_options)} {exclude} --root {metadata.common.root}"
-
-        return coverage_command
-
-    def _make_filter_command(self, defect: taxonomy.Defect) -> Callable[[int], str]:
-        """
-        Returns command to run inside docker that modifies lua script 'return value'
-        which will be used to select which test case to run.
-
-        Assume that "split.patch" newly creates "defects4cpp.lua" file.
-        Read "split.patch" and get line containing "create mode ... defects4cpp.lua"
-        This should retrieve the path to "defects4cpp.lua" relative to the project directory.
-        """
-
-        def filter_command(case: int) -> str:
-            return f"bash -c 'echo return {case} > {lua_path}'"
-
-        with open(defect.split_patch) as fp:
-            lines = [line for line in fp if "create mode" in line]
-
-        lua_path: Optional[str] = None
-        for line in lines:
-            if "defects4cpp.lua" in line:
-                # "create mode number filename"[-1] == filename
-                lua_path = line.split()[-1]
-                break
-        if not lua_path:
-            raise AssertionError(f"could not get lua_path in {defect.split_patch}")
-
-        return filter_command
+            self.failed_coverage_files.append(f"{summary_path}")
 
     @property
     def help(self) -> str:
