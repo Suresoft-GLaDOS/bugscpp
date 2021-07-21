@@ -6,6 +6,7 @@ from pkgutil import iter_modules
 from typing import Dict, List, Optional
 
 import config
+import errors
 
 
 @dataclass
@@ -81,8 +82,8 @@ class MetaData:
                 )
                 for defect in meta["defects"]
             ]
-        except KeyError:
-            pass
+        except KeyError as e:
+            raise errors.DppTaxonomyInitError(e.args[0], MetaInfo.__name__)
 
     def _load_common(self, meta: Dict):
         def replace_make_job_flags(options: List[str]) -> List[str]:
@@ -99,16 +100,16 @@ class MetaData:
                 replace_make_job_flags(meta["common"]["test"]["command"]),
                 replace_make_job_flags(meta["common"]["test-coverage"]["command"]),
             )
-        except KeyError:
-            pass
+        except KeyError as e:
+            raise errors.DppTaxonomyInitError(e.args[0], Common.__name__)
 
     def _load_defects(self, meta: Dict):
         try:
             self._info = MetaInfo(
                 meta["info"]["url"], meta["info"]["short-desc"], meta["info"]["vcs"]
             )
-        except KeyError:
-            pass
+        except KeyError as e:
+            raise errors.DppTaxonomyInitError(e.args[0], Defect.__name__)
 
 
 class Taxonomy(MutableMapping):

@@ -3,6 +3,7 @@ from os import getcwd
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
+import errors
 import message
 import taxonomy
 from processor.core.argparser import create_taxonomy_parser
@@ -38,20 +39,20 @@ class ValidateCase(argparse.Action):
             metadata: taxonomy.MetaData = namespace.metadata
             index: int = namespace.index
         except AttributeError:
-            raise AttributeError(f"namespace={namespace}")
+            raise errors.DppCaseExpressionInternalError(namespace)
         cases = metadata.defects[index].cases
 
         def validate_each_case(case_set: Set[int]) -> Set[int]:
             if all(0 < case < cases for case in case_set):
                 return case_set
-            raise IndexError(
-                f"Defect#{index} of {metadata.name} has {cases}, but expression was: {values}"
+            raise errors.DppInvalidCaseExpressionError(
+                index, metadata.name, cases, values
             )
 
-        expr = values.split(":")
-        included_cases = validate_each_case(expr2set(expr[0]))
+        expr_tokens = values.split(":")
+        included_cases = validate_each_case(expr2set(expr_tokens[0]))
         excluded_cases = validate_each_case(
-            expr2set(expr[1]) if len(expr) > 1 else set()
+            expr2set(expr_tokens[1]) if len(expr_tokens) > 1 else set()
         )
         setattr(namespace, self.dest, (included_cases, excluded_cases))
 
@@ -59,11 +60,15 @@ class ValidateCase(argparse.Action):
 class ValidateOutputDirectory(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         if not Path(values).exists():
-            raise FileNotFoundError
+            raise errors.DppFileNotFoundError(values)
         setattr(namespace, self.dest, values)
 
 
 class TestCommandLine(DockerCommandLine):
+    """
+    Test command
+    """
+
     def __init__(self, commands: Iterable[str], case: int):
         super().__init__(commands)
         self.case = case
@@ -76,6 +81,10 @@ class TestCommandLine(DockerCommandLine):
 
 
 class CoverageCommandLine(DockerCommandLine):
+    """
+    Test command with coverage
+    """
+
     def __init__(self, commands: Iterable[str], case: int, parent: "TestCommand"):
         super().__init__(commands)
         self.case = case
@@ -129,14 +138,14 @@ def _make_filter_command(defect: taxonomy.Defect) -> Callable[[int], str]:
             lua_path = line.split()[-1]
             break
     if not lua_path:
-        raise AssertionError(f"could not get lua_path in {defect.split_patch}")
+        raise errors.DppPatchError(defect)
 
     return filter_command
 
 
 class TestCommand(DockerCommand):
     """
-    Run test.
+    Run test command either with or without coverage.
     """
 
     coverage_output = "summary.json"
@@ -174,7 +183,10 @@ class TestCommand(DockerCommand):
             dest="output_directory",
             action=ValidateOutputDirectory,
         )
-        self.parser.usage = "d++ test --project=[project_name] --no=[number] --case=[number] [checkout directory]"
+        self.parser.usage = (
+            "d++ test --project=[project_name] --no=[number] [--coverage] "
+            "--case=[number] [checkout directory]"
+        )
         self.coverage: Optional[bool] = None
         self.output_directory: Optional[str] = None
         self.coverage_files: List[str] = []

@@ -8,6 +8,10 @@ from processor.core.command import Command
 
 
 class CheckoutCommand(Command):
+    """
+    Checkout command which handles VCS commands based on taxonomy information.
+    """
+
     def __init__(self):
         super().__init__()
         self.parser = create_taxonomy_parser()
@@ -37,6 +41,7 @@ class CheckoutCommand(Command):
                 # Pass '-f' in case worktree directory could be registered but removed.
                 repo.git.worktree("add", "-f", checkout_dir, defect.hash)
             except git.GitCommandError:
+                # TODO: hmm..
                 pass
 
             # Apply buggy patch

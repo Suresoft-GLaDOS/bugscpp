@@ -135,4 +135,7 @@ class Docker:
         self._container.stop()
 
     def send(self, command: str, stream=True) -> ExecResult:
+        """
+        Send a single line command to the running container.
+        """
         return self._container.exec_run(command, stream=stream)

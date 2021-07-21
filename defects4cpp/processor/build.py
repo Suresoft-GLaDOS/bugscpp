@@ -18,6 +18,10 @@ class BuildCommandLine(DockerCommandLine):
 
 
 class BuildCommand(DockerCommand):
+    """
+    Run build command either with or without coverage.
+    """
+
     def __init__(self):
         super().__init__()
         self.parser = create_taxonomy_parser()
