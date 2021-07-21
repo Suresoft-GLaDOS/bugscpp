@@ -16,13 +16,10 @@ def test_build_fixed(tmp_path, gitenv):
     project = "yara"
     index = 1
 
-    try:
-        checkout(["--project", project, "--no", f"{index}", "--target", str(d)])
-        build(["--project", project, "--no", f"{index}", "--target", str(d)])
-    except:
-        assert False
-    else:
-        assert not list((d / "yara" / "fixed#1").glob("**/*.gcno"))
+    checkout(["--project", project, "--no", f"{index}", "--target", str(d)])
+    build(["--project", project, "--no", f"{index}", "--target", str(d)])
+
+    assert not list((d / "yara" / "fixed#1").glob("**/*.gcno"))
 
 
 def test_build_fixed_with_coverage(tmp_path, gitenv):
@@ -34,23 +31,20 @@ def test_build_fixed_with_coverage(tmp_path, gitenv):
     project = "yara"
     index = 1
 
-    try:
-        checkout(["--project", project, "--no", f"{index}", "--target", str(d)])
-        build(
-            [
-                "--coverage",
-                "--project",
-                project,
-                "--no",
-                f"{index}",
-                "--target",
-                str(d),
-            ]
-        )
-    except:
-        assert False
-    else:
-        assert list((d / "yara" / "fixed#1").glob("**/*.gcno"))
+    checkout(["--project", project, "--no", f"{index}", "--target", str(d)])
+    build(
+        [
+            "--coverage",
+            "--project",
+            project,
+            "--no",
+            f"{index}",
+            "--target",
+            str(d),
+        ]
+    )
+
+    assert list((d / "yara" / "fixed#1").glob("**/*.gcno"))
 
 
 def test_build_buggy(tmp_path, gitenv):
@@ -62,15 +56,12 @@ def test_build_buggy(tmp_path, gitenv):
     project = "yara"
     index = 1
 
-    try:
-        checkout(
-            ["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)]
-        )
-        build(["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)])
-    except:
-        assert False
-    else:
-        assert not list((d / "yara" / "buggy#1").glob("**/*.gcno"))
+    checkout(
+        ["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)]
+    )
+    build(["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)])
+
+    assert not list((d / "yara" / "buggy#1").glob("**/*.gcno"))
 
 
 def test_build_buggy_with_coverage(tmp_path, gitenv):
@@ -82,23 +73,20 @@ def test_build_buggy_with_coverage(tmp_path, gitenv):
     project = "yara"
     index = 1
 
-    try:
-        checkout(
-            ["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)]
-        )
-        build(
-            [
-                "--coverage",
-                "--project",
-                project,
-                "--no",
-                f"{index}",
-                "--buggy",
-                "--target",
-                str(d),
-            ]
-        )
-    except:
-        assert False
-    else:
-        assert list((d / "yara" / "buggy#1").glob("**/*.gcno"))
+    checkout(
+        ["--project", project, "--no", f"{index}", "--buggy", "--target", str(d)]
+    )
+    build(
+        [
+            "--coverage",
+            "--project",
+            project,
+            "--no",
+            f"{index}",
+            "--buggy",
+            "--target",
+            str(d),
+        ]
+    )
+
+    assert list((d / "yara" / "buggy#1").glob("**/*.gcno"))
