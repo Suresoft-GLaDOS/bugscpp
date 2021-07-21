@@ -40,7 +40,7 @@ class DppCaseExpressionInternalError(Exception):
 class DppInvalidCaseExpressionError(Exception):
     def __init__(self, index: int, name: str, cases: int, expr: str):
         super().__init__(
-            f"Defect#{index} of {name} has {cases}, but expression was: {expr}"
+            f"Defect#{index} of {name} has {cases} test cases, but expression was: {expr}"
         )
         self.index: int = index
         self.name: str = name
