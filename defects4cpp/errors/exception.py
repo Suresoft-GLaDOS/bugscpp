@@ -1,4 +1,6 @@
 import argparse
+from pathlib import Path
+from typing import Dict
 
 import taxonomy
 
@@ -14,21 +16,21 @@ class DppTaxonomyInitError(Exception):
 
 
 class DppTaxonomyNotFoundError(Exception):
-    def __init__(self, taxonomy: str):
-        super().__init__(f"taxonomy '{taxonomy}' does not exist")
-        self.taxonomy: str = taxonomy
+    def __init__(self, taxonomy_name: str):
+        super().__init__(f"taxonomy '{taxonomy_name}' does not exist")
+        self.taxonomy_name: str = taxonomy_name
+
+
+class DppTaxonomyNotProjectDirectory(Exception):
+    def __init__(self, path: Path):
+        super().__init__(f"directory '{str(path)}' is not a defect taxonomy project")
+        self.path: Path = path
 
 
 class DppDefectIndexError(Exception):
     def __init__(self, index: int):
         super().__init__(f"invalid index '{index}' of defects")
         self.index: int = index
-
-
-class DppCommandLineInternalError(Exception):
-    def __init__(self, attr: str):
-        super().__init__(f"project is not set, but {attr} is invoked first")
-        self.attr: str = attr
 
 
 class DppCaseExpressionInternalError(Exception):
@@ -52,6 +54,22 @@ class DppFileNotFoundError(FileNotFoundError):
     def __init__(self, path: str):
         super().__init__()
         self.path: str = path
+
+
+class DppInvalidConfigError(Exception):
+    def __init__(self):
+        super().__init__()
+
+
+class DppConfigCorruptedError(Exception):
+    def __init__(self, data: Dict):
+        super().__init__(f"config is corrupted: {data}")
+        self.data = data
+
+
+class DppConfigNotInitialized(Exception):
+    def __init__(self):
+        super().__init__("config is used before initialized")
 
 
 class DppPatchError(Exception):

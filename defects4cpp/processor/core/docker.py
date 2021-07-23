@@ -1,5 +1,6 @@
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from os import getcwd
 from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, cast
 
@@ -38,21 +39,20 @@ class Worktree:
     Manages host and container git directory structure.
     """
 
-    def __init__(self):
-        self._name: str = ""
-        self._index: int = 1
-        self._buggy: bool = False
-        self._workspace: str = ""
+    project_name: str
+    index: int
+    buggy: bool = field(default=False)
+    workspace: str = field(default=getcwd())
 
     @property
     def base(self) -> Path:
         """Return base path which will be used to test and build defect taxonomies"""
-        return Path(f"{self._workspace}/{self._name}")
+        return Path(f"{self.workspace}/{self.project_name}")
 
     @property
     def suffix(self) -> Path:
         """Return suffix path which is appended to base path"""
-        return Path(f"{'buggy' if self._buggy else 'fixed'}#{self._index}")
+        return Path(f"{'buggy' if self.buggy else 'fixed'}#{self.index}")
 
     @property
     def host(self) -> Path:

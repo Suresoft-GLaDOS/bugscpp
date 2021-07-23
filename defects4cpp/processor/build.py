@@ -1,9 +1,9 @@
-from typing import List
+import argparse
+from typing import List, Tuple
 
 import message
-from processor.core.argparser import create_taxonomy_parser
+from processor.core.argparser import create_common_project_parser, read_config
 from processor.core.command import DockerCommand, DockerCommandLine, DockerExecInfo
-from taxonomy import MetaData
 
 
 class BuildCommandLine(DockerCommandLine):
@@ -24,18 +24,13 @@ class BuildCommand(DockerCommand):
 
     def __init__(self):
         super().__init__()
-        self.parser = create_taxonomy_parser()
-        self.parser.add_argument(
-            "--coverage",
-            dest="coverage",
-            help="build with gcov flags",
-            action="store_true",
-        )
+        self.parser = create_common_project_parser()
         self.parser.usage = "d++ build --project=[project_name] --no=[number] [--coverage] [checkout directory]"
 
     def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
-        metadata: MetaData = args.metadata
+        metadata, worktree = read_config(args.path)
+
         commands = (
             [BuildCommandLine(metadata.common.build_coverage_command)]
             if args.coverage
@@ -43,7 +38,7 @@ class BuildCommand(DockerCommand):
         )
         stream = False if args.quiet else True
 
-        return DockerExecInfo(metadata, args.worktree, commands, stream)
+        return DockerExecInfo(metadata, worktree, commands, stream)
 
     def setup(self, info: DockerExecInfo):
         message.info(f"Building {info.metadata.name}")

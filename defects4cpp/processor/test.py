@@ -1,12 +1,12 @@
 import argparse
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Set, Tuple
+from typing import Callable, Iterable, List, Optional, Set
 
 import errors
 import message
 import taxonomy
-from processor.core.argparser import create_taxonomy_parser
+from processor.core.argparser import create_common_project_parser, read_config
 from processor.core.command import DockerCommand, DockerCommandLine, DockerExecInfo
 
 
@@ -35,19 +35,19 @@ class ValidateCase(argparse.Action):
                     val.update(range(int(tokens[0]), int(tokens[1]) + 1))
             return val
 
-        try:
-            metadata: taxonomy.MetaData = namespace.metadata
-            index: int = namespace.index
-        except AttributeError:
-            raise errors.DppCaseExpressionInternalError(namespace)
-        cases = metadata.defects[index].cases
-
         def validate_each_case(case_set: Set[int]) -> Set[int]:
             if all(0 < case < cases for case in case_set):
                 return case_set
             raise errors.DppInvalidCaseExpressionError(
                 index, metadata.name, cases, values
             )
+
+        try:
+            metadata: taxonomy.MetaData = namespace.metadata
+            index: int = namespace.worktree.index
+        except AttributeError:
+            raise errors.DppCaseExpressionInternalError(namespace)
+        cases = metadata.defects[index].cases
 
         expr_tokens = values.split(":")
         included_cases = validate_each_case(expr2set(expr_tokens[0]))
@@ -161,13 +161,7 @@ class TestCommand(DockerCommand):
 
     def __init__(self):
         super().__init__()
-        self.parser = create_taxonomy_parser()
-        self.parser.add_argument(
-            "--coverage",
-            dest="coverage",
-            help="build with gcov flags",
-            action="store_true",
-        )
+        self.parser = create_common_project_parser()
         self.parser.add_argument(
             "-c",
             "--case",
@@ -194,18 +188,19 @@ class TestCommand(DockerCommand):
 
     def run(self, argv: List[str]) -> DockerExecInfo:
         args = self.parser.parse_args(argv)
+        metadata, worktree = read_config(args.path)
+
         self.coverage = True if args.coverage else False
         self.output_directory = (
             args.output_directory if args.output_directory else getcwd()
         )
 
-        metadata: taxonomy.MetaData = args.metadata
         test_command = (
             metadata.common.test_coverage_command
             if self.coverage
             else metadata.common.test_command
         )
-        index = args.index
+        index = worktree.index
 
         # Default value is to run all cases.
         selected_defect = metadata.defects[index - 1]
@@ -246,7 +241,7 @@ class TestCommand(DockerCommand):
             )
         stream = False if args.quiet else True
 
-        return DockerExecInfo(metadata, args.worktree, command_generator, stream)
+        return DockerExecInfo(metadata, worktree, command_generator, stream)
 
     def setup(self, info: DockerExecInfo):
         if not self.coverage:

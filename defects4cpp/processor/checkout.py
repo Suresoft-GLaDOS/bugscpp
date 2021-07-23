@@ -3,7 +3,7 @@ from typing import List
 
 import git
 import message
-from processor.core.argparser import create_taxonomy_parser
+from processor.core.argparser import create_common_vcs_parser, write_config
 from processor.core.command import Command
 
 
@@ -14,8 +14,8 @@ class CheckoutCommand(Command):
 
     def __init__(self):
         super().__init__()
-        self.parser = create_taxonomy_parser()
-        self.parser.usage = "d++ checkout --project=[project_name] --no=[number]"
+        self.parser = create_common_vcs_parser()
+        self.parser.usage = "d++ checkout project index"
 
     def __call__(self, argv: List[str]):
         args = self.parser.parse_args(argv)
@@ -51,6 +51,8 @@ class CheckoutCommand(Command):
             # Apply split patch
             checkout_repo.git.am(defect.split_patch)
 
+        # Write .defects4cpp.json in the directory.
+        write_config(worktree)
         message.info(f"{metadata.name}: {defect.hash}")
 
     @property
