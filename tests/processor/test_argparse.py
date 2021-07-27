@@ -120,7 +120,7 @@ def test_vsc_parser(tmp_path):
     project_name = "yara"
 
     try:
-        parser.parse_args(f"foobar 1 --buggy".split())
+        parser.parse_args("foobar 1 --buggy".split())
     except SystemExit:
         assert True
     else:
