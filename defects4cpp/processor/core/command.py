@@ -11,8 +11,8 @@ from processor.core.shell import Shell
 class RegisterCommand(type):
     commands = {}
 
-    def __new__(cls, name, bases, attrs):
-        new_class = type.__new__(cls, name, bases, attrs)
+    def __new__(mcs, name, bases, attrs):
+        new_class = type.__new__(mcs, name, bases, attrs)
         m = attrs["__module__"]
         if m != __name__:
             RegisterCommand.commands[m.split(".")[-1]] = new_class

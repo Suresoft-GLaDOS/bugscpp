@@ -1,6 +1,6 @@
-import defects4cpp.processor
+import processor
 
 
 def test_check_help_attr():
-    commands = defects4cpp.processor.CommandList()
+    commands = processor.CommandList()
     assert "help" in commands

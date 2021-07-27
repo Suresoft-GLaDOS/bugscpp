@@ -123,14 +123,14 @@ class Taxonomy(MutableMapping):
         )
         # self.update(dict(*args, **kwargs))
 
-    def __getitem__(self, key: str):
+    def __getitem__(self, key: str) -> MetaData:
         return self.store[self._keytransform(key)]
 
-    def __setitem__(self, key: str, value: MetaData):
+    def __setitem__(self, key: str, value: MetaData) -> None:
         # self.store[self._keytransform(key)] = value
         raise RuntimeError("set operator is not allowed")
 
-    def __delitem__(self, key: str):
+    def __delitem__(self, key: str) -> None:
         # del self.store[self._keytransform(key)]
         raise RuntimeError("del operator is not allowed")
 

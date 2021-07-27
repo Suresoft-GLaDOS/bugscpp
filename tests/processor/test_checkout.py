@@ -1,21 +1,19 @@
-import pytest
-
-import defects4cpp.processor
+import processor
 
 
 def test_checkout_fixed(tmp_path, gitenv):
-    cmd = defects4cpp.processor.CheckoutCommand()
+    checkout = processor.CheckoutCommand()
     project = "yara"
     number = "1"
     # Run twice
-    cmd(["--project", project, "--no", number, "--target", str(tmp_path)])
-    cmd(["--project", project, "--no", number, "--target", str(tmp_path)])
+    checkout(f"{project} {number} --target {str(tmp_path)}".split())
+    checkout(f"{project} {number} --target {str(tmp_path)}".split())
 
 
 def test_checkout_buggy(tmp_path, gitenv):
-    cmd = defects4cpp.processor.CheckoutCommand()
+    checkout = processor.CheckoutCommand()
     project = "yara"
     number = "1"
     # Run twice
-    cmd(["--project", project, "--no", number, "--buggy", "--target", str(tmp_path)])
-    cmd(["--project", project, "--no", number, "--buggy", "--target", str(tmp_path)])
+    checkout(f"{project} {number} --buggy --target {str(tmp_path)}".split())
+    checkout(f"{project} {number} --buggy --target {str(tmp_path)}".split())
