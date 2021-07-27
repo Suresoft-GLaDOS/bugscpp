@@ -1,4 +1,4 @@
-.PHONY: test format
+.PHONY: all install format lint test
 
 default: test
 
@@ -10,10 +10,10 @@ format:
 	black .
 	isort .
 
-test:
-	pytest
-
 lint:
 	flake8 . --config setup.cfg
 
-all: install lint test
+test:
+	pytest
+
+all: install test
