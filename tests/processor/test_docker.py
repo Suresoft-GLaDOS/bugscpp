@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
-import defects4cpp.taxonomy
-from defects4cpp.processor.core.argparser import create_common_vcs_parser
-from defects4cpp.processor.core.docker import Docker, Worktree
+import taxonomy
+from processor.core.argparser import create_common_vcs_parser
+from processor.core.docker import Docker, Worktree
 
 
 def create_dummy_worktree(path: Path) -> Worktree:
@@ -13,7 +13,7 @@ def create_dummy_worktree(path: Path) -> Worktree:
 
 
 def test_docker_image(tmp_path):
-    t = defects4cpp.taxonomy.Taxonomy()
+    t = taxonomy.Taxonomy()
     metadata = t["yara"]
     worktree = create_dummy_worktree(tmp_path)
 
@@ -22,7 +22,7 @@ def test_docker_image(tmp_path):
 
 
 def test_docker_container(tmp_path):
-    t = defects4cpp.taxonomy.Taxonomy()
+    t = taxonomy.Taxonomy()
     metadata = t["yara"]
     worktree = create_dummy_worktree(tmp_path)
 
@@ -31,7 +31,7 @@ def test_docker_container(tmp_path):
 
 
 def test_docker_mount_directory(tmpdir):
-    t = defects4cpp.taxonomy.Taxonomy()
+    t = taxonomy.Taxonomy()
     metadata = t["yara"]
     worktree = create_dummy_worktree(tmpdir)
     worktree.host.mkdir(parents=True)

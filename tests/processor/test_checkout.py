@@ -1,8 +1,8 @@
-import defects4cpp.processor
+import processor
 
 
 def test_checkout_fixed(tmp_path, gitenv):
-    checkout = defects4cpp.processor.CheckoutCommand()
+    checkout = processor.CheckoutCommand()
     project = "yara"
     number = "1"
     # Run twice
@@ -11,7 +11,7 @@ def test_checkout_fixed(tmp_path, gitenv):
 
 
 def test_checkout_buggy(tmp_path, gitenv):
-    checkout = defects4cpp.processor.CheckoutCommand()
+    checkout = processor.CheckoutCommand()
     project = "yara"
     number = "1"
     # Run twice

@@ -1,6 +1,6 @@
-import defects4cpp.processor
+import processor
 
 
 def test_check_show_attr():
-    commands = defects4cpp.processor.CommandList()
+    commands = processor.CommandList()
     assert "show" in commands

@@ -1,5 +1,4 @@
-import argparse
-from typing import List, Tuple
+from typing import List
 
 import message
 from processor.core.argparser import create_common_project_parser, read_config

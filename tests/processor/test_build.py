@@ -1,19 +1,18 @@
-import defects4cpp.processor
-import defects4cpp.taxonomy
+import processor
 
 CONFIG_NAME = ".defects4cpp.json"
 
 
 def test_check_build_attr():
-    commands = defects4cpp.processor.CommandList()
+    commands = processor.CommandList()
     assert "build" in commands
 
 
 def test_build_fixed(dummy_config, gitenv):
     d = dummy_config("test_build_fixed")
 
-    checkout = defects4cpp.processor.CheckoutCommand()
-    build = defects4cpp.processor.BuildCommand()
+    checkout = processor.CheckoutCommand()
+    build = processor.BuildCommand()
     project = "yara"
     index = 1
     checkout_dir = d / project / f"fixed#{index}"
@@ -28,8 +27,8 @@ def test_build_fixed(dummy_config, gitenv):
 def test_build_fixed_with_coverage(dummy_config, gitenv):
     d = dummy_config("test_build_fixed_with_coverage")
 
-    checkout = defects4cpp.processor.CheckoutCommand()
-    build = defects4cpp.processor.BuildCommand()
+    checkout = processor.CheckoutCommand()
+    build = processor.BuildCommand()
     project = "yara"
     index = 1
     checkout_dir = d / project / f"fixed#{index}"
@@ -44,8 +43,8 @@ def test_build_fixed_with_coverage(dummy_config, gitenv):
 def test_build_buggy(dummy_config, gitenv):
     d = dummy_config("test_build_buggy")
 
-    checkout = defects4cpp.processor.CheckoutCommand()
-    build = defects4cpp.processor.BuildCommand()
+    checkout = processor.CheckoutCommand()
+    build = processor.BuildCommand()
     project = "yara"
     index = 1
     checkout_dir = d / project / f"buggy#{index}"
@@ -60,8 +59,8 @@ def test_build_buggy(dummy_config, gitenv):
 def test_build_buggy_with_coverage(dummy_config, gitenv):
     d = dummy_config("test_build_buggy_with_coverage")
 
-    checkout = defects4cpp.processor.CheckoutCommand()
-    build = defects4cpp.processor.BuildCommand()
+    checkout = processor.CheckoutCommand()
+    build = processor.BuildCommand()
     project = "yara"
     index = 1
     checkout_dir = d / project / f"buggy#{index}"

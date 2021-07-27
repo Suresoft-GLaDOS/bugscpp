@@ -2,11 +2,8 @@ import json
 from dataclasses import asdict
 
 import errors
-
-import defects4cpp.errors
-from defects4cpp.processor.core.argparser import (create_common_project_parser, create_common_vcs_parser, read_config,
-                                                  write_config)
-from defects4cpp.processor.core.docker import Worktree
+from processor.core.argparser import create_common_project_parser, create_common_vcs_parser, read_config, write_config
+from processor.core.docker import Worktree
 
 CONFIG_NAME = ".defects4cpp.json"
 
@@ -14,7 +11,7 @@ CONFIG_NAME = ".defects4cpp.json"
 def test_read_config_not_exist(tmp_path):
     try:
         read_config(str(tmp_path / "foo.json"))
-    except defects4cpp.errors.DppFileNotFoundError:
+    except errors.DppFileNotFoundError:
         assert True
     else:
         assert False
@@ -27,7 +24,7 @@ def test_read_config_invalid_json(tmp_path):
 
     try:
         read_config(tmp_path)
-    except defects4cpp.errors.DppInvalidConfigError:
+    except errors.DppInvalidConfigError:
         assert True
     else:
         assert False
@@ -41,7 +38,7 @@ def test_read_config_corrupted_json(tmp_path):
 
     try:
         read_config(tmp_path)
-    except defects4cpp.errors.DppConfigCorruptedError:
+    except errors.DppConfigCorruptedError:
         assert True
     else:
         assert False
@@ -60,6 +57,7 @@ def test_read_config(tmp_path):
 
     metadata, worktree = read_config(tmp_path)
 
+    assert metadata.name == obj["project_name"]
     assert worktree.project_name == obj["project_name"]
     assert worktree.index == obj["index"]
     assert worktree.buggy == obj["buggy"]

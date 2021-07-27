@@ -1,4 +1,4 @@
-from defects4cpp.taxonomy import Taxonomy
+from taxonomy import Taxonomy
 
 
 def test_taxonomy():

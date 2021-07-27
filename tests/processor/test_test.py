@@ -1,11 +1,11 @@
-import defects4cpp.errors
-import defects4cpp.processor
-import defects4cpp.taxonomy
-from defects4cpp.processor.test import _make_filter_command
+import errors
+import processor
+import taxonomy
+from processor.test import _make_filter_command
 
 
 def test_checkout_modify_lua_script():
-    t = defects4cpp.taxonomy.Taxonomy()
+    t = taxonomy.Taxonomy()
     yara = t["yara"]
 
     filter_command = _make_filter_command(yara.defects[0])
@@ -15,7 +15,7 @@ def test_checkout_modify_lua_script():
 
 def test_validate_case(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = defects4cpp.processor.TestCommand()
+    cmd = processor.TestCommand()
     default_cmds = f"{str(d)} --case".split()
 
     expr = "1,2,5,9"
@@ -53,19 +53,19 @@ def test_validate_case(dummy_config):
 
 def test_invalid_case_expression(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = defects4cpp.processor.TestCommand()
+    cmd = processor.TestCommand()
     project_name = "yara"
     index = 1
     default_cmds = f"{str(d)} --case".split()
 
-    t = defects4cpp.taxonomy.Taxonomy()
+    t = taxonomy.Taxonomy()
     project = t[project_name]
     cases = project.defects[index].cases
 
     expr = f"{cases+1}"
     try:
         cmd.parser.parse_args([*default_cmds, expr])
-    except defects4cpp.errors.DppInvalidCaseExpressionError:
+    except errors.DppInvalidCaseExpressionError:
         assert True
     else:
         assert False
@@ -73,13 +73,13 @@ def test_invalid_case_expression(dummy_config):
 
 def test_no_case_is_provided(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = defects4cpp.processor.TestCommand()
+    cmd = processor.TestCommand()
     default_cmds = f"{str(d)}".split()
 
     args = cmd.parser.parse_args(default_cmds)
     metadata = args.metadata
     index = args.worktree.index
-    selected_defect: defects4cpp.taxonomy.Defect = metadata.defects[index - 1]
+    selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
     assert len(list(docker_cmd.commands)) == selected_defect.cases
@@ -87,13 +87,13 @@ def test_no_case_is_provided(dummy_config):
 
 def test_exclude_only(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = defects4cpp.processor.TestCommand()
+    cmd = processor.TestCommand()
     default_cmds = f"{str(d)} --case :1-100".split()
 
     args = cmd.parser.parse_args(default_cmds)
     metadata = args.metadata
     index = args.worktree.index
-    selected_defect: defects4cpp.taxonomy.Defect = metadata.defects[index - 1]
+    selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
     assert len(list(docker_cmd.commands)) == (selected_defect.cases - 100)
