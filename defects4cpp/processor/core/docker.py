@@ -114,7 +114,7 @@ class Docker:
         return self._image
 
     def __enter__(self):
-        message.info(f"Starting container {Path(self.dockerfile).parent.name}")
+        message.info(f"Starting container")
         self._container = cast_container(
             self.client.containers.run(
                 self.image,
@@ -131,7 +131,7 @@ class Docker:
         return self
 
     def __exit__(self, type, value, traceback):
-        message.info(f"Closing container {Path(self.dockerfile).parent.name}")
+        message.info(f"Closing container")
         self._container.stop()
 
     def send(self, command: str, stream=True) -> ExecResult:

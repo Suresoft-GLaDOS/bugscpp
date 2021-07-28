@@ -90,7 +90,7 @@ def test_project_parser(tmp_path):
     project_name = "yara"
 
     try:
-        parser.parse_args(f"{tmp_path} --quiet --coverage".split())
+        parser.parse_args(f"{tmp_path} --coverage".split())
     except errors.DppTaxonomyNotProjectDirectory:
         assert True
     else:
@@ -105,7 +105,7 @@ def test_project_parser(tmp_path):
         }
         json.dump(obj, fp)
 
-    args = parser.parse_args(f"{tmp_path} --quiet --coverage".split())
+    args = parser.parse_args(f"{tmp_path} --coverage".split())
 
     assert hasattr(args, "metadata")
     assert args.metadata.name == project_name
