@@ -1,15 +1,18 @@
-from typing import List
+from typing import Iterable, List, Optional, Union
 
 import message
 from processor.core.argparser import create_common_project_parser, read_config
-from processor.core.command import DockerCommand, DockerCommandLine, DockerExecInfo
+from processor.core.command import DockerCommand, DockerCommandScript, DockerExecInfo
 
 
-class BuildCommandLine(DockerCommandLine):
+class BuildCommandScript(DockerCommandScript):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def before(self, info: DockerExecInfo):
+        pass
+
+    def output(self, exit_code: int, stream: str):
         pass
 
     def after(self, info: DockerExecInfo):
@@ -31,11 +34,11 @@ class BuildCommand(DockerCommand):
         metadata, worktree = read_config(args.path)
 
         commands = (
-            [BuildCommandLine(metadata.common.build_coverage_command)]
+            [BuildCommandScript(metadata.common.build_coverage_command)]
             if args.coverage
-            else [BuildCommandLine(metadata.common.build_command)]
+            else [BuildCommandScript(metadata.common.build_command)]
         )
-        stream = False if args.quiet else True
+        stream = True if args.verbose else False
 
         return DockerExecInfo(metadata, worktree, commands, stream)
 

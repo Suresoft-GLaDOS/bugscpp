@@ -202,10 +202,10 @@ def create_common_project_parser() -> argparse.ArgumentParser:
         action=ValidateProjectPath,
     )
     parser.add_argument(
-        "-q",
-        "--quiet",
-        dest="quiet",
-        help="suppress stream output of container",
+        "-v",
+        "--verbose",
+        dest="verbose",
+        help="stream output to stdout (output will not be written to file)",
         action="store_true",
     )
     parser.add_argument(

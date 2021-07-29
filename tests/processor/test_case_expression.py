@@ -82,7 +82,7 @@ def test_no_case_is_provided(dummy_config):
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.commands)) == selected_defect.cases
+    assert len(list(docker_cmd.scripts)) == selected_defect.cases
 
 
 def test_exclude_only(dummy_config):
@@ -96,4 +96,4 @@ def test_exclude_only(dummy_config):
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.commands)) == (selected_defect.cases - 100)
+    assert len(list(docker_cmd.scripts)) == (selected_defect.cases - 100)

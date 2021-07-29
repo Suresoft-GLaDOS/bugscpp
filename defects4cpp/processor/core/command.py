@@ -1,6 +1,6 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Optional, Union
 
 import message
 import taxonomy
@@ -73,37 +73,49 @@ class ShellCommand(Command):
         raise NotImplementedError
 
 
-class DockerCommandLine(metaclass=ABCMeta):
+class DockerCommandScript(metaclass=ABCMeta):
     """
     A bulk of commands which is executed one by one by DockerCommand.
     """
 
-    def __init__(self, commands: Iterable[str]):
-        self.commands = commands
+    def __init__(self, lines: Iterable[str]):
+        self.lines = lines
 
     @abstractmethod
     def before(self, info: "DockerExecInfo"):
         """
-        Invoked before every time each command is executed.
+        Invoked before script is executed.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def after(self, info: "DockerExecInfo"):
+    def output(self, exit_code: Optional[int], output: str):
         """
-        Invoked after every time each command is executed.
+        Invoked after each line is executed only if docker is executed with stream set to False.
+        """
+        pass
+
+    @abstractmethod
+    def after(
+        self,
+        info: "DockerExecInfo",
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ):
+        """
+        Invoked after script is executed.
         """
         raise NotImplementedError
 
     def __iter__(self):
-        return iter(self.commands)
+        return iter(self.lines)
 
 
 @dataclass
 class DockerExecInfo:
     metadata: taxonomy.MetaData
     worktree: Worktree
-    commands: Iterable[DockerCommandLine]
+    scripts: Iterable[DockerCommandScript]
     stream: bool
 
 
@@ -123,17 +135,21 @@ class DockerCommand(Command):
         info = self.run(argv)
         self.setup(info)
         with Docker(info.metadata.dockerfile, info.worktree) as docker:
-            for commands in info.commands:
-                commands.before(info)
-                for cmd in commands:
+            for script in info.scripts:
+                script.before(info)
+                exit_code = None
+                stream = None
+                for line in script:
                     # Depending on 'stream' value, return value is a bit different.
-                    # 'exit_code' is None when 'steam' is True.
+                    # 'exit_code' is None when 'stream' is True.
                     # https://docker-py.readthedocs.io/en/stable/containers.html
-                    exit_code, stream = docker.send(cmd, info.stream)
+                    exit_code, stream = docker.send(line, info.stream)
                     if exit_code is None:
                         for line in stream:
                             message.docker(line.decode("utf-8"))
-                commands.after(info)
+                    else:
+                        script.output(exit_code, stream.decode("utf-8"))
+                script.after(info)
         self.teardown(info)
 
     @abstractmethod
