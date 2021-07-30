@@ -6,7 +6,7 @@ from typing import Dict, List
 
 import git
 
-KEY_WORDS = ("fix", "bug")
+KEYWORDS = ("fix", "bug")
 DIRECTORY = ("src", "test")
 
 
