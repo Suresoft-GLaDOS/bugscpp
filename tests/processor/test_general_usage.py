@@ -59,7 +59,9 @@ def test_build_test_fixed_with_coverage(tmp_path, gitenv):
     assert list(checkout_dir.glob("**/*.gcno"))
 
     test = processor.TestCommand()
-    test(f"{str(checkout_dir)} --coverage --case {case} --output-dir {str(tmp_path)}".split())
+    test(
+        f"{str(checkout_dir)} --coverage --case {case} --output-dir {str(tmp_path)}".split()
+    )
     assert list(tmp_path.glob("**/*.gcov"))
 
     output_dir: Path = tmp_path / f"{project}-fixed#{index}-{case}"
@@ -70,7 +72,6 @@ def test_build_test_fixed_with_coverage(tmp_path, gitenv):
     with open(index_test, "r") as fp:
         line = fp.readline()
     assert line == "passed"
-
 
 
 def test_build_test_buggy(tmp_path, gitenv):
