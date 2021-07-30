@@ -11,7 +11,7 @@ DIRECTORY = ("src", "test")
 
 
 def check_message(commit_msg: str):
-    return any(k in commit_msg.lower() for k in KEY_WORDS)
+    return any(k in commit_msg.lower() for k in KEYWORDS)
 
 
 def check_files(commit_files: Dict[str, Dict[str, int]]):
