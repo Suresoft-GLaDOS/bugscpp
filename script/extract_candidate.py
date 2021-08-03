@@ -34,9 +34,9 @@ def main(argv: List[str]):
 
         p = Path(getcwd()) / commit.hexsha
         p.mkdir(parents=True)
-        with open(p / "commit-message", "w+") as fp:
+        with open(p / "commit-message", "w+", encoding='utf-8') as fp:
             fp.write(str(commit.message))
-        with open(p / "diff.patch", "w+") as patch_file:
+        with open(p / "diff.patch", "w+", encoding='utf-8') as patch_file:
             for patch in commit.diff(create_patch=True):
                 patch_file.write(patch.diff.decode("utf-8"))
 
