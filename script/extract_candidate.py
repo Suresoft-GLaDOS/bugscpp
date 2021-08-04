@@ -95,7 +95,7 @@ def main(argv: List[str]):
         with open(p / "commit-message", "w+", encoding="utf-8") as fp:
             fp.write(str(current_commit.message))
         with open(p / "diff.patch", "w+", encoding="utf-8") as patch_file:
-            for patch in current_commit.diff(next_commit, create_patch=True):
+            for patch in next_commit.diff(current_commit, create_patch=True):
                 patch_file.write(patch.diff.decode("utf-8", errors="ignore"))
         # Progress info
         count += 1
