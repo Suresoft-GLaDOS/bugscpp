@@ -96,7 +96,9 @@ def main(argv: List[str]):
             fp.write(str(current_commit.message))
         with open(p / "diff.patch", "w+", encoding="utf-8") as patch_file:
             for patch in next_commit.diff(current_commit, create_patch=True):
+                patch_file.write(f"diff --git {patch.a_path} {patch.b_path}\n")
                 patch_file.write(patch.diff.decode("utf-8", errors="ignore"))
+                patch_file.write("\n")
         # Progress info
         count += 1
         print(f"Current # of candidate: {count}")
