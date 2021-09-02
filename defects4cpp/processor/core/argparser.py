@@ -93,7 +93,7 @@ class ValidateIndex(argparse.Action):
         option_string=None,
     ):
         metadata = namespace.metadata
-        if 0 < len(metadata.defects) < values:
+        if values < 1 or len(metadata.defects) < values:
             raise errors.DppDefectIndexError(values)
 
         setattr(namespace, _NAMESPACE_ATTR_WORKTREE, Worktree(metadata.name, values))
