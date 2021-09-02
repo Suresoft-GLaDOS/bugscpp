@@ -21,7 +21,7 @@ class ShowCommand(SimpleCommand):
     def help(self) -> str:
         return "Display defect taxonomies status"
 
-    def run(self) -> bool:
+    def run(self, *args, **kwargs) -> bool:
         message.kind("=== Taxonomy Project Lists ===")
         t = Taxonomy()
         for key, value in t.items():
