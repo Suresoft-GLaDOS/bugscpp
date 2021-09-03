@@ -48,7 +48,6 @@ class ValidateCase(argparse.Action):
             index: int = namespace.worktree.index
         except AttributeError:
             raise errors.DppCaseExpressionInternalError(namespace)
-        cases = metadata.defects[index].cases
         cases = metadata.defects[index - 1].cases
 
         expr_tokens = values.split(":")
