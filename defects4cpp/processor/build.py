@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional
 
 import message
 from processor.core.argparser import create_common_project_parser, read_config
@@ -15,7 +15,12 @@ class BuildCommandScript(DockerCommandScript):
     def output(self, exit_code: int, stream: str):
         pass
 
-    def after(self, info: DockerExecInfo):
+    def after(
+        self,
+        info: "DockerExecInfo",
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ):
         pass
 
 

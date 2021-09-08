@@ -1,16 +1,6 @@
 import errors
 import processor
 import taxonomy
-from processor.test import _make_filter_command
-
-
-def test_checkout_modify_lua_script():
-    t = taxonomy.Taxonomy()
-    yara = t["yara"]
-
-    filter_command = _make_filter_command(yara.defects[0])
-    assert "return 1" in filter_command(1)
-    assert "return 3" in filter_command(3)
 
 
 def test_validate_case(dummy_config):

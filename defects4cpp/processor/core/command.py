@@ -1,6 +1,6 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional
 
 import message
 import taxonomy
@@ -137,16 +137,14 @@ class DockerCommand(Command):
         with Docker(info.metadata.dockerfile, info.worktree) as docker:
             for script in info.scripts:
                 script.before(info)
-                exit_code = None
-                stream = None
                 for line in script:
                     # Depending on 'stream' value, return value is a bit different.
                     # 'exit_code' is None when 'stream' is True.
                     # https://docker-py.readthedocs.io/en/stable/containers.html
                     exit_code, stream = docker.send(line, info.stream)
                     if exit_code is None:
-                        for line in stream:
-                            message.docker(line.decode("utf-8"))
+                        for stream_line in stream:
+                            message.docker(stream_line.decode("utf-8"))
                     else:
                         script.output(exit_code, stream.decode("utf-8"))
                 script.after(info)
