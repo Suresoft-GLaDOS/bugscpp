@@ -1,6 +1,18 @@
+from typing import List
+
 import errors
 import processor
 import taxonomy
+from errors import DppInvalidCaseExpressionError
+
+
+def out_of_index_error(cmd: processor.TestCommand, default_cmds: List[str], expr: str):
+    try:
+        cmd.parser.parse_args([*default_cmds, expr])
+    except DppInvalidCaseExpressionError:
+        return True
+    else:
+        return False
 
 
 def test_validate_case(dummy_config):
@@ -8,37 +20,49 @@ def test_validate_case(dummy_config):
     cmd = processor.TestCommand()
     default_cmds = f"{str(d)} --case".split()
 
-    expr = "1,2,5,9"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1,2,5,9"])
     assert args.case == ({1, 2, 5, 9}, set())
 
-    expr = "1-5,5-9"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1-5,5-9"])
     assert args.case == ({1, 2, 3, 4, 5, 6, 7, 8, 9}, set())
 
-    expr = "1-5,5-9:"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1-5,5-9:"])
     assert args.case == ({1, 2, 3, 4, 5, 6, 7, 8, 9}, set())
 
-    expr = "1-5,5-9:1"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1-5,5-9:1"])
     assert args.case == ({1, 2, 3, 4, 5, 6, 7, 8, 9}, {1})
 
-    expr = "1-5,5-9:1,2"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1-5,5-9:1,2"])
     assert args.case == ({1, 2, 3, 4, 5, 6, 7, 8, 9}, {1, 2})
 
-    expr = "1-5,5-9:1-3"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "1-5,5-9:1-3"])
     assert args.case == ({1, 2, 3, 4, 5, 6, 7, 8, 9}, {1, 2, 3})
 
-    expr = "4-8:1-3,9"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, "4-8:1-3,9"])
     assert args.case == ({4, 5, 6, 7, 8}, {1, 2, 3, 9})
 
-    expr = ":1-3,9"
-    args = cmd.parser.parse_args([*default_cmds, expr])
+    args = cmd.parser.parse_args([*default_cmds, ":1-3,9"])
     assert args.case == (set(), {1, 2, 3, 9})
+
+    lower_bound = 1
+    assert out_of_index_error(cmd, default_cmds, f"{lower_bound-1}")
+    assert not out_of_index_error(cmd, default_cmds, f"{lower_bound}")
+    assert out_of_index_error(cmd, default_cmds, f":{lower_bound-1}")
+    assert not out_of_index_error(cmd, default_cmds, f":{lower_bound}")
+    assert out_of_index_error(cmd, default_cmds, f"{lower_bound-1},{lower_bound}")
+    assert out_of_index_error(
+        cmd, default_cmds, f"{lower_bound}-{lower_bound+10}:{lower_bound-1}"
+    )
+
+    upper_bound = 201
+    assert out_of_index_error(cmd, default_cmds, f"{upper_bound+1}")
+    assert not out_of_index_error(cmd, default_cmds, f"{upper_bound}")
+    assert out_of_index_error(cmd, default_cmds, f":{upper_bound+1}")
+    assert not out_of_index_error(cmd, default_cmds, f":{upper_bound}")
+    assert out_of_index_error(cmd, default_cmds, f"{upper_bound},{upper_bound+1}")
+    assert out_of_index_error(
+        cmd, default_cmds, f"{upper_bound-10}-{upper_bound}:{upper_bound+1}"
+    )
 
 
 def test_invalid_case_expression(dummy_config):
