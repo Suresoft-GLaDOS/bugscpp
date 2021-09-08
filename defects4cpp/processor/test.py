@@ -1,7 +1,8 @@
 import argparse
+import shutil
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Iterable, List, NamedTuple, Optional, Set
+from typing import Iterable, List, NamedTuple, Optional, Set
 
 import errors
 import message
@@ -65,34 +66,7 @@ class ValidateOutputDirectory(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-Line = NamedTuple("Line", [("line", str), ("save_output", bool)])
-
-
-def _make_filter_command(defect: taxonomy.Defect) -> Callable[[int], str]:
-    """
-    Returns command to run inside docker that modifies lua script 'return value'
-    which will be used to select which test case to run.
-
-    Assume that "split.patch" newly creates "defects4cpp.lua" file.
-    Read "split.patch" and get line containing "create mode ... defects4cpp.lua"
-    This should retrieve the path to "defects4cpp.lua" relative to the project directory.
-    """
-
-    def filter_command(case: int) -> str:
-        return f"bash -c 'echo return {case} > {lua_path}'"
-
-    with open(defect.split_patch) as fp:
-        lines = [line for line in fp if "create mode" in line]
-
-    lua_path: Optional[str] = None
-    for line in lines:
-        if "defects4cpp.lua" in line:
-            # "create mode number filename"[-1] == filename
-            lua_path = line.split()[-1]
-            break
-    if not lua_path:
-        raise errors.DppPatchError(defect)
-    return filter_command
+Line = NamedTuple("Line", [("cmd", str), ("save_output", bool)])
 
 
 class TestCommandScript(DockerCommandScript):
@@ -101,7 +75,7 @@ class TestCommandScript(DockerCommandScript):
     """
 
     def __init__(self, script: Iterable[Line], case: int, parent: "TestCommand"):
-        super().__init__([line.line for line in script])
+        super().__init__([line.cmd for line in script])
         self.case = case
         self.parent = parent
         self.current_linenr: int = 1
@@ -119,35 +93,13 @@ class TestCommandScript(DockerCommandScript):
             )
         self.current_linenr += 1
 
-    def after(self, info: DockerExecInfo):
+    def after(
+        self,
+        info: "DockerExecInfo",
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ):
         pass
-
-
-class TestCommandScriptGenerator:
-    """
-    Factory class of TestComandScript
-    """
-
-    def __init__(self, parent: "TestCommand", defect: taxonomy.Defect):
-        self._parent = parent
-        self._filter_command = _make_filter_command(defect)
-
-    def __call__(
-        self, cases: Set[int], test_command: List[str]
-    ) -> Iterable[DockerCommandScript]:
-        """
-        Set True to the last command of test_command.
-        """
-        test_lines: List[Line] = [Line(cmd, False) for cmd in test_command[:-1]]
-        test_lines.append(Line(test_command[-1], True))
-        return (
-            TestCommandScript(
-                [Line(self._filter_command(case), False), *test_lines],
-                case,
-                self._parent,
-            )
-            for case in cases
-        )
 
 
 class CoverageCommandScript(TestCommandScript):
@@ -158,13 +110,18 @@ class CoverageCommandScript(TestCommandScript):
     def __init__(self, script: Iterable[Line], case: int, parent: "TestCommand"):
         super().__init__(script, case, parent)
 
-    def after(self, info: DockerExecInfo):
+    def after(
+        self,
+        info: "DockerExecInfo",
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ):
         self.parent.save_coverage(self.case, info)
 
 
-class CoverageCommandScriptGenerator:
+class CommandScriptGenerator:
     """
-    Factory class of CoverageCommandScript
+    Factory class of CommandScript
     """
 
     def __init__(
@@ -172,52 +129,86 @@ class CoverageCommandScriptGenerator:
         parent: "TestCommand",
         defect: taxonomy.Defect,
         metadata: taxonomy.MetaData,
+        coverage=False,
     ):
         self._parent = parent
-        self._filter_command = _make_filter_command(defect)
-        exclude = " ".join([f"--exclude {d}" for d in metadata.common.exclude])
-        self._coverage_command: Line = Line(
-            f"gcovr {' '.join(TestCommand.default_options)} {exclude} --root {metadata.common.root}",
-            False,
-        )
+        self._test_type = metadata.common.test_type
+        self._defect = defect
+        self._gcov = metadata.common.gcov
+        self._coverage = coverage
+
+    def _generate_command(self, test_lines: List[Line], case) -> DockerCommandScript:
+        if self._coverage:
+            test_lines.extend([Line(cmd, False) for cmd in self._gcov.command])
+            exclude = " ".join(
+                [
+                    f"--gcov-exclude {excluded_gcov}"
+                    for excluded_gcov in self._gcov.exclude
+                ]
+            )
+            test_lines.append(
+                Line(
+                    f"gcovr {exclude} --keep --use-gcov-files --json gcov/summary.json gcov",
+                    False,
+                )
+            )
+            return CoverageCommandScript(
+                test_lines,
+                case,
+                self._parent,
+            )
+        else:
+            return TestCommandScript(test_lines, case, self._parent)
 
     def __call__(
         self, cases: Set[int], test_command: List[str]
     ) -> Iterable[DockerCommandScript]:
         """
-        Set True to the last command of test_command.
+        Converts integer input appropriately to run a specific test case only inside docker,
+        and returns that command.
+
+        For instance, if project uses automake, it returns command that modifies lua script
+        which will be used to select which test case to run.
+        If it uses ctest, it tries to get a list of test labels via "ctest --show-only=human"
+        and select a label at index from top to bottom.
         """
+        # Set True to the last command of test_command to save output of the result.
         test_lines: List[Line] = [Line(cmd, False) for cmd in test_command[:-1]]
         test_lines.append(Line(test_command[-1], True))
-        return (
-            CoverageCommandScript(
-                [
-                    Line(self._filter_command(case), False),
-                    *test_lines,
-                    self._coverage_command,
-                ],
-                case,
-                self._parent,
+
+        if self._test_type == taxonomy.TestType.Automake:
+            return (
+                self._generate_command(
+                    [
+                        Line(f"bash -c 'echo {case} > DPP_TEST_INDEX'", False),
+                        *test_lines,
+                    ],
+                    case,
+                )
+                for case in cases
             )
-            for case in cases
-        )
+        elif self._test_type == taxonomy.TestType.CTest:
+            return (
+                self._generate_command(
+                    [
+                        Line(f"bash -c 'echo {case} > DPP_TEST_INDEX'", False),
+                        *test_lines,
+                    ],
+                    case,
+                )
+                for case in cases
+            )
+        elif self._test_type == taxonomy.TestType.GoogleTest:
+            # TODO: generate gtest filter command
+            raise NotImplementedError
+
+        raise errors.DppCommandScriptGeneratorInternalError(self._test_type)
 
 
 class TestCommand(DockerCommand):
     """
     Run test command either with or without coverage.
     """
-
-    coverage_output = "summary.json"
-    default_options = [
-        "--print-summary",
-        "--delete",
-        "--keep",
-        "--html",
-        "result.html",
-        "--json",
-        coverage_output,
-    ]
 
     def __init__(self):
         super().__init__()
@@ -275,12 +266,7 @@ class TestCommand(DockerCommand):
             cases = included_cases.difference(excluded_cases)
 
         # Generate script to run inside docker.
-        writer = (
-            CoverageCommandScriptGenerator(self, selected_defect, metadata)
-            if self.coverage
-            else TestCommandScriptGenerator(self, selected_defect)
-        )
-
+        writer = CommandScriptGenerator(self, selected_defect, metadata, self.coverage)
         return DockerExecInfo(
             metadata,
             worktree,
@@ -318,10 +304,10 @@ class TestCommand(DockerCommand):
 
         Should be invoked only after test command is executed.
         """
-        dir = self.summary_dir(case)
-        with open(dir / f"{case}.output", "w+") as output_file:
+        d = self.summary_dir(case)
+        with open(d / f"{case}.output", "w+") as output_file:
             output_file.write(output)
-        with open(dir / f"{case}.test", "w+") as result_file:
+        with open(d / f"{case}.test", "w+") as result_file:
             result_file.write("passed" if passed else "failed")
 
     def save_coverage(self, case: int, info: DockerExecInfo):
@@ -333,19 +319,17 @@ class TestCommand(DockerCommand):
         Should be invoked only after each coverage command is executed.
         """
         worktree = info.worktree
-        coverage = worktree.host / TestCommand.coverage_output
+        coverage = worktree.host / "gcov"
         coverage_dest = self.summary_dir(case)
 
         if coverage.exists():
-            # TODO: python3.8: Path.rename() returns pathlib.Path
-            coverage.rename(coverage_dest / coverage.name)
-            root = info.metadata.common.root
-            for gcov_data in worktree.host.glob(f"{root}/**/*.gcov"):
-                # FIXME: Possibility to name collision
-                gcov_data.rename(f"{coverage_dest}/{gcov_data.name}")
-            self.coverage_files.append(str(coverage))
+            for file in coverage.glob("*"):
+                # Full path should be passed to overwrite if already exists.
+                shutil.move(str(file), str(coverage_dest / file.name))
+            else:
+                coverage.rmdir()
         else:
-            self.failed_coverage_files.append(str(coverage))
+            self.failed_coverage_files.append(str(coverage_dest / coverage.name))
 
     @property
     def help(self) -> str:

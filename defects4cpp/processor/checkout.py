@@ -1,3 +1,4 @@
+from os.path import exists
 from pathlib import Path
 from typing import List
 
@@ -48,8 +49,9 @@ class CheckoutCommand(Command):
             checkout_repo = git.Repo(checkout_dir)
             if args.buggy:
                 checkout_repo.git.am(defect.buggy_patch)
-            # Apply split patch
-            checkout_repo.git.am(defect.split_patch)
+            # Apply split patch if it exists.
+            if exists(defect.split_patch):
+                checkout_repo.git.am(defect.split_patch)
 
         # Write .defects4cpp.json in the directory.
         write_config(worktree)

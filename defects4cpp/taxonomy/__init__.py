@@ -1,3 +1,4 @@
+import enum
 import json
 from collections.abc import MutableMapping
 from dataclasses import dataclass
@@ -9,14 +10,26 @@ import config
 import errors
 
 
+class TestType(enum.IntEnum):
+    Automake = 1
+    CTest = 2
+    GoogleTest = 3
+
+
 @dataclass
 class Common:
-    root: str
-    exclude: List[str]
     build_command: List[str]
     build_coverage_command: List[str]
+    test_type: TestType
     test_command: List[str]
     test_coverage_command: List[str]
+    gcov: "Gcov"
+
+
+@dataclass
+class Gcov:
+    exclude: List[str]
+    command: List[str]
 
 
 @dataclass
@@ -91,14 +104,25 @@ class MetaData:
                 opt.replace("@DPP_MAKE_JOB@", config.DPP_MAKE_JOB) for opt in options
             ]
 
+        def to_enum(value: str) -> TestType:
+            if value == "automake":
+                return TestType.Automake
+            elif value == "ctest":
+                return TestType.CTest
+            elif value == "gtest":
+                return TestType.GoogleTest
+
         try:
             self._common = Common(
-                meta["common"]["root"],
-                [d for d in meta["common"]["exclude"]],
                 replace_make_job_flags(meta["common"]["build"]["command"]),
                 replace_make_job_flags(meta["common"]["build-coverage"]["command"]),
+                to_enum(meta["common"]["test-type"]),
                 replace_make_job_flags(meta["common"]["test"]["command"]),
                 replace_make_job_flags(meta["common"]["test-coverage"]["command"]),
+                Gcov(
+                    [d for d in meta["common"]["gcov"]["exclude"]],
+                    meta["common"]["gcov"]["command"],
+                ),
             )
         except KeyError as e:
             raise errors.DppTaxonomyInitError(e.args[0], Common.__name__)

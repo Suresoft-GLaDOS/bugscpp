@@ -39,6 +39,12 @@ class DppCaseExpressionInternalError(Exception):
         self.namespace: argparse.Namespace = namespace
 
 
+class DppCommandScriptGeneratorInternalError(Exception):
+    def __init__(self, test_type: taxonomy.TestType):
+        super().__init__(f"test_type={test_type}")
+        self.test_type: taxonomy.TestType = test_type
+
+
 class DppInvalidCaseExpressionError(Exception):
     def __init__(self, index: int, name: str, cases: int, expr: str):
         super().__init__(
