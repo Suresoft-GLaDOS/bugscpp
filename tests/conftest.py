@@ -55,7 +55,7 @@ def dummy_config(tmp_path: Path):
 def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
     def create_defect_path(index: int, case: int) -> TestDirectory:
         # test_PROJECT_NAME
-        regex = re.compile("test_(.*)\[.*\]")
+        regex = re.compile(r"test_(.*)\[.*\]")
         project = regex.match(request.node.name).groups()[0]
 
         d = tmp_path / request.node.name
