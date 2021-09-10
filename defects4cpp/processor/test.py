@@ -37,11 +37,11 @@ class ValidateCase(argparse.Action):
                     val.update(range(int(tokens[0]), int(tokens[1]) + 1))
             return val
 
-        def validate_each_case(case_set: Set[int]) -> Set[int]:
-            if all(0 < case <= cases for case in case_set):
+        def validate_each_case(max_num_cases: int, case_set: Set[int]) -> Set[int]:
+            if all(0 < case <= max_num_cases for case in case_set):
                 return case_set
             raise errors.DppInvalidCaseExpressionError(
-                index, metadata.name, cases, values
+                index, metadata.name, max_num_cases, values
             )
 
         try:
@@ -49,12 +49,12 @@ class ValidateCase(argparse.Action):
             index: int = namespace.worktree.index
         except AttributeError:
             raise errors.DppCaseExpressionInternalError(namespace)
-        cases = metadata.defects[index - 1].cases
 
+        num_cases = metadata.defects[index - 1].num_cases
         expr_tokens = values.split(":")
-        included_cases = validate_each_case(expr2set(expr_tokens[0]))
+        included_cases = validate_each_case(num_cases, expr2set(expr_tokens[0]))
         excluded_cases = validate_each_case(
-            expr2set(expr_tokens[1]) if len(expr_tokens) > 1 else set()
+            num_cases, expr2set(expr_tokens[1]) if len(expr_tokens) > 1 else set()
         )
         setattr(namespace, self.dest, (included_cases, excluded_cases))
 
@@ -258,11 +258,11 @@ class TestCommand(DockerCommand):
         # Select cases to run. If none is given, select all.
         selected_defect = metadata.defects[index - 1]
         if not args.case:
-            cases = set(range(1, selected_defect.cases + 1))
+            cases = set(range(1, selected_defect.num_cases + 1))
         else:
             included_cases, excluded_cases = args.case
             if not included_cases:
-                included_cases = set(range(1, selected_defect.cases + 1))
+                included_cases = set(range(1, selected_defect.num_cases + 1))
             cases = included_cases.difference(excluded_cases)
 
         # Generate script to run inside docker.

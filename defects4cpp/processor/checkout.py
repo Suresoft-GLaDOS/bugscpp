@@ -45,13 +45,19 @@ class CheckoutCommand(Command):
                 # TODO: hmm..
                 pass
 
-            # Apply buggy patch
             checkout_repo = git.Repo(checkout_dir)
+            # Invoke command manually, because it seems like GitPython has a bug with updating submodules.
+            if checkout_repo.submodules:
+                checkout_repo.git.execute(["git", "submodule", "update"])
+            # Apply buggy patch
             if args.buggy:
                 checkout_repo.git.am(defect.buggy_patch)
             # Apply split patch if it exists.
             if exists(defect.split_patch):
                 checkout_repo.git.am(defect.split_patch)
+            # Apply fix patch if it exists.
+            if exists(defect.fix_patch):
+                checkout_repo.git.am(defect.fix_patch)
 
         # Write .defects4cpp.json in the directory.
         write_config(worktree)
