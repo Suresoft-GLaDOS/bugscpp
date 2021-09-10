@@ -36,8 +36,10 @@ class Gcov:
 class Defect:
     hash: str
     buggy_patch: str
+    fix_patch: str
     split_patch: str
-    cases: int
+    num_cases: int
+    case: int
 
 
 @dataclass
@@ -89,11 +91,13 @@ class MetaData:
             self._defects = [
                 Defect(
                     defect["hash"],
-                    f"{self._path}/patch/{defect['patch']:04}-buggy.patch",
-                    f"{self._path}/patch/{defect['patch']:04}-split.patch",
-                    defect["cases"],
+                    f"{self._path}/patch/{index:04}-buggy.patch",
+                    f"{self._path}/patch/{index:04}-fix.patch",
+                    f"{self._path}/patch/{index:04}-split.patch",
+                    defect["num_cases"],
+                    defect["case"]
                 )
-                for defect in meta["defects"]
+                for index, defect in enumerate(meta["defects"], start=1)
             ]
         except KeyError as e:
             raise errors.DppTaxonomyInitError(e.args[0], MetaInfo.__name__)

@@ -21,6 +21,7 @@ class TestDirectory:
     fixed_output_dir: Path
     buggy_target_dir: Path
     buggy_output_dir: Path
+    __test__ = False
 
 
 @pytest.fixture
