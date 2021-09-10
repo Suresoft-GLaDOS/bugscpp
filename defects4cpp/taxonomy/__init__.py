@@ -39,7 +39,7 @@ class Defect:
     fix_patch: str
     split_patch: str
     num_cases: int
-    case: int
+    case: List[int]
 
 
 @dataclass
