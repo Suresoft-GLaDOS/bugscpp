@@ -19,11 +19,12 @@ RUN pip3 install gcovr
 RUN git clone git://git.samba.org/socket_wrapper.git
 RUN cmake -S socket_wrapper -B socket_wrapper_build
 RUN cmake --build socket_wrapper_build
-RUN cmake --install socket_wrapper_build 
+RUN cmake --install socket_wrapper_build
 
 RUN git config --global user.email "minhyuk@suresofttech.com"
 RUN git config --global user.name "Peter Kwon"
 
 RUN useradd --create-home --home-dir /home/workspace --shell /bin/bash defects4cpp
 USER defects4cpp
+ENV USER defects4cpp
 WORKDIR /home/workspace

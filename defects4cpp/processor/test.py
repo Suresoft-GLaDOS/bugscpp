@@ -38,7 +38,7 @@ class ValidateCase(argparse.Action):
             return val
 
         def validate_each_case(case_set: Set[int]) -> Set[int]:
-            if all(0 < case < cases for case in case_set):
+            if all(0 < case <= cases for case in case_set):
                 return case_set
             raise errors.DppInvalidCaseExpressionError(
                 index, metadata.name, cases, values
