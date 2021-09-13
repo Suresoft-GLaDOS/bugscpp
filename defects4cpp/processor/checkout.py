@@ -48,7 +48,7 @@ class CheckoutCommand(Command):
             checkout_repo = git.Repo(checkout_dir)
             # Invoke command manually, because it seems like GitPython has a bug with updating submodules.
             if checkout_repo.submodules:
-                checkout_repo.git.execute(["git", "submodule", "update"])
+                checkout_repo.git.execute(["git", "submodule", "update", "--init"])
             # Apply buggy patch
             if args.buggy:
                 checkout_repo.git.am(defect.buggy_patch)
