@@ -117,3 +117,10 @@ def test_libucl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv
     index, case = defect
     test_dir = defect_path(index, case)
     validate_taxonomy(test_dir, index, case)
+
+
+@pytest.mark.parametrize("defect", [(1, 65), (2, 23), (3, 64)])
+def test_wget2(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+    index, case = defect
+    test_dir = defect_path(index, case)
+    validate_taxonomy(test_dir, index, case)
