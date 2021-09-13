@@ -180,7 +180,7 @@ class CommandScriptGenerator:
             return (
                 self._generate_command(
                     [
-                        Line(f"bash -c 'echo {case} > DPP_TEST_INDEX'", False),
+                        Line(f"sh -c 'echo {case} > DPP_TEST_INDEX'", False),
                         *test_lines,
                     ],
                     case,
@@ -191,7 +191,7 @@ class CommandScriptGenerator:
             return (
                 self._generate_command(
                     [
-                        Line(f"bash -c 'echo {case} > DPP_TEST_INDEX'", False),
+                        Line(f"sh -c 'echo {case} > DPP_TEST_INDEX'", False),
                         *test_lines,
                     ],
                     case,

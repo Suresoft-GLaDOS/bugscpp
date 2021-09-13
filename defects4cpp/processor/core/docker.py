@@ -123,7 +123,7 @@ class Docker:
                 stdin_open=True,
                 volumes=self.volume,
                 name=self.name,
-                command="/bin/bash",
+                command="/bin/sh",
                 user=DPP_DOCKER_USER,
                 working_dir=self.working_dir,
             )
