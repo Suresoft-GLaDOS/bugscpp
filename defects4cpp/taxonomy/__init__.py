@@ -95,7 +95,7 @@ class MetaData:
                     f"{self._path}/patch/{index:04}-fix.patch",
                     f"{self._path}/patch/{index:04}-split.patch",
                     defect["num_cases"],
-                    defect["case"]
+                    defect["case"],
                 )
                 for index, defect in enumerate(meta["defects"], start=1)
             ]

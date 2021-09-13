@@ -2,10 +2,11 @@ import os
 
 # Docker username (should be the same with Dockerfile)
 DPP_DOCKER_USER: str = "defects4cpp"
-# Docker workspace (should be the same with Dockerfiel)
+# Docker workspace (should be the same with Dockerfile)
 DPP_DOCKER_HOME: str = "/home/workspace"
-# Makefile job flag
-DPP_MAKE_JOB: str = "-j1"
+
+# meta.json variables
+DPP_PARALLEL_BUILD: str = "1"
 
 # Directory at which d++.py is placed
 DPP_HOME: str = os.path.realpath(
