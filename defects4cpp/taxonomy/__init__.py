@@ -1,5 +1,6 @@
 import enum
 import json
+import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from os.path import dirname, exists, join
@@ -56,6 +57,9 @@ class MetaData:
         self._info: Optional[MetaInfo] = None
         self._common: Optional[Common] = None
         self._defects: List[Defect] = []
+        self._variables: Dict[str, str] = {
+            "DPP_PARALLEL_BUILD": config.DPP_PARALLEL_BUILD
+        }
 
     @property
     def dockerfile(self) -> str:
@@ -81,7 +85,10 @@ class MetaData:
 
     def _load(self):
         with open(f"{self._path}/meta.json", "r", encoding="utf-8") as fp:
-            meta = json.load(fp)
+            contents: str = fp.read()
+            for key, value in self._variables.items():
+                contents = re.sub(f"@{key}@", value, contents)
+            meta = json.loads(contents)
         self._load_info(meta)
         self._load_common(meta)
         self._load_defects(meta)
@@ -103,11 +110,6 @@ class MetaData:
             raise errors.DppTaxonomyInitError(e.args[0], MetaInfo.__name__)
 
     def _load_common(self, meta: Dict):
-        def replace_make_job_flags(options: List[str]) -> List[str]:
-            return [
-                opt.replace("@DPP_MAKE_JOB@", config.DPP_MAKE_JOB) for opt in options
-            ]
-
         def to_enum(value: str) -> TestType:
             if value == "automake":
                 return TestType.Automake
@@ -118,11 +120,11 @@ class MetaData:
 
         try:
             self._common = Common(
-                replace_make_job_flags(meta["common"]["build"]["command"]),
-                replace_make_job_flags(meta["common"]["build-coverage"]["command"]),
+                meta["common"]["build"]["command"],
+                meta["common"]["build-coverage"]["command"],
                 to_enum(meta["common"]["test-type"]),
-                replace_make_job_flags(meta["common"]["test"]["command"]),
-                replace_make_job_flags(meta["common"]["test-coverage"]["command"]),
+                meta["common"]["test"]["command"],
+                meta["common"]["test-coverage"]["command"],
                 Gcov(
                     [d for d in meta["common"]["gcov"]["exclude"]],
                     meta["common"]["gcov"]["command"],
