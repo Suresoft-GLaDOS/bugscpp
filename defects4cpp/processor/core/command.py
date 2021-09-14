@@ -144,9 +144,9 @@ class DockerCommand(Command):
                     exit_code, stream = docker.send(line, info.stream)
                     if exit_code is None:
                         for stream_line in stream:
-                            message.docker(stream_line.decode("utf-8"))
+                            message.docker(stream_line.decode("utf-8", "ignore"))
                     else:
-                        script.output(exit_code, stream.decode("utf-8"))
+                        script.output(exit_code, stream.decode("utf-8", "ignore"))
                 script.after(info)
         self.teardown(info)
 
