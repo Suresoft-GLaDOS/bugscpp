@@ -108,3 +108,12 @@ def test_libchewing(defect, defect_path: Callable[[int, int], TestDirectory], gi
     index, case = defect
     test_dir = defect_path(index, case)
     validate_taxonomy(test_dir, index, case)
+
+
+@pytest.mark.parametrize(
+    "defect", [(1, 4), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1)]
+)
+def test_libucl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+    index, case = defect
+    test_dir = defect_path(index, case)
+    validate_taxonomy(test_dir, index, case)
