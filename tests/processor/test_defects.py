@@ -94,6 +94,7 @@ def test_libssh(defect, defect_path: Callable[[int, int], TestDirectory], gitenv
     validate_taxonomy(test_dir, index, case)
 
 
+<<<<<<< HEAD
 @pytest.mark.parametrize("defect", [(1, 3), (2, 34), (3, 29), (4, 3), (5, 28), (6, 34)])
 def test_wireshark(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
     index, case = defect
@@ -201,6 +202,15 @@ def test_openssl(defect, defect_path: Callable[[int, int], TestDirectory], giten
     ],
 )
 def test_proj(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+    index, case = defect
+    test_dir = defect_path(index, case)
+    validate_taxonomy(test_dir, index, case)
+
+
+@pytest.mark.parametrize(
+    "defect", [(1, 1), (2, 56), (3, 22), (4, 29)]
+)
+def test_zsh(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
     index, case = defect
     test_dir = defect_path(index, case)
     validate_taxonomy(test_dir, index, case)
