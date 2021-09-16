@@ -15,7 +15,7 @@ def main():
             message.info(f"Elapsed: {elapsed:.2f}s")
         else:
             minutes, seconds = divmod(elapsed, 60)
-            message.info(f"Elapsed: {minutes}m {seconds:.2f}s")
+            message.info(f"Elapsed: {int(minutes)}m {seconds:.2f}s")
 
     commands = processor.CommandList()
 
