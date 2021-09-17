@@ -24,7 +24,7 @@ class TestDirectory:
     __test__ = False
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def gitenv():
     environ["GIT_COMMITTER_NAME"] = "defects4cpp"
     environ["GIT_COMMITTER_EMAIL"] = "defects4cpp@email.com"
