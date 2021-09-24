@@ -2,13 +2,13 @@
 # Licensed under the MIT
 FROM ubuntu:18.04
 
-RUN apt-get update
+RUN apt-get update -y && apt-get upgrade -y
 RUN apt-get install -y git automake autoconf build-essential libncurses5-dev \
     bsdmainutils groff-base man-db python3 python3-pip
 
 # Install gcovr
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100
-RUN pip install gcovr
+RUN pip3 install gcovr
 
 RUN git config --global user.email "minhyuk@suresofttech.com"
 RUN git config --global user.name "Peter Kwon"
