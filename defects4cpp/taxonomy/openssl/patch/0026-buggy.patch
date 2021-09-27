@@ -1,0 +1,93 @@
+From 87538b963a1fac90b47e80d3dbbbcb46e48f0fcf Mon Sep 17 00:00:00 2001
+From: yckim <yckim@suresofttech.com>
+Date: Wed, 15 Sep 2021 09:06:34 +0900
+Subject: [PATCH] buggy
+
+---
+ crypto/cmp/cmp_hdr.c     | 19 ++++++-------------
+ crypto/cmp/cmp_local.h   |  1 -
+ crypto/cmp/cmp_protect.c |  8 +-------
+ 3 files changed, 7 insertions(+), 21 deletions(-)
+
+diff --git a/crypto/cmp/cmp_hdr.c b/crypto/cmp/cmp_hdr.c
+index 9d6d6ceb2c..f6a28a8eab 100644
+--- a/crypto/cmp/cmp_hdr.c
++++ b/crypto/cmp/cmp_hdr.c
+@@ -63,17 +63,6 @@ ASN1_OCTET_STRING *OSSL_CMP_HDR_get0_recipNonce(const OSSL_CMP_PKIHEADER *hdr)
+     return hdr->recipNonce;
+ }
+ 
+-int ossl_cmp_general_name_is_NULL_DN(GENERAL_NAME *name)
+-{
+-    X509_NAME *null = X509_NAME_new();
+-    int res = name == NULL || null == NULL
+-        || (name->type == GEN_DIRNAME
+-                && X509_NAME_cmp(name->d.directoryName, null) == 0);
+-
+-    X509_NAME_free(null);
+-    return res;
+-}
+-
+ /* assign to *tgt a copy of src (which may be NULL to indicate an empty DN) */
+ static int set1_general_name(GENERAL_NAME **tgt, const X509_NAME *src)
+ {
+@@ -276,12 +265,16 @@ int ossl_cmp_hdr_init(OSSL_CMP_CTX *ctx, OSSL_CMP_PKIHEADER *hdr)
+     if (!ossl_cmp_hdr_set_pvno(hdr, OSSL_CMP_PVNO))
+         return 0;
+ 
++    sender = ctx->clCert != NULL ?
++        X509_get_subject_name(ctx->clCert) : ctx->subjectName;
+     /*
+      * The sender name is copied from the subject of the client cert, if any,
+      * or else from the subject name provided for certification requests.
+      */
+-    sender = ctx->clCert != NULL ?
+-        X509_get_subject_name(ctx->clCert) : ctx->subjectName;
++    if (sender == NULL && ctx->referenceValue == NULL) {
++        CMPerr(0, CMP_R_MISSING_SENDER_IDENTIFICATION);
++        return 0;
++    }
+     if (!ossl_cmp_hdr_set1_sender(hdr, sender))
+         return 0;
+ 
+diff --git a/crypto/cmp/cmp_local.h b/crypto/cmp/cmp_local.h
+index 353c7ce995..ebc42d8c52 100644
+--- a/crypto/cmp/cmp_local.h
++++ b/crypto/cmp/cmp_local.h
+@@ -798,7 +798,6 @@ int ossl_cmp_pkisi_check_pkifailureinfo(const OSSL_CMP_PKISI *si, int index);
+ int ossl_cmp_hdr_set_pvno(OSSL_CMP_PKIHEADER *hdr, int pvno);
+ int ossl_cmp_hdr_get_pvno(const OSSL_CMP_PKIHEADER *hdr);
+ ASN1_OCTET_STRING *ossl_cmp_hdr_get0_senderNonce(const OSSL_CMP_PKIHEADER *hdr);
+-int ossl_cmp_general_name_is_NULL_DN(GENERAL_NAME *name);
+ int ossl_cmp_hdr_set1_sender(OSSL_CMP_PKIHEADER *hdr, const X509_NAME *nm);
+ int ossl_cmp_hdr_set1_recipient(OSSL_CMP_PKIHEADER *hdr, const X509_NAME *nm);
+ int ossl_cmp_hdr_update_messageTime(OSSL_CMP_PKIHEADER *hdr);
+diff --git a/crypto/cmp/cmp_protect.c b/crypto/cmp/cmp_protect.c
+index ce20ef203e..270ceb4b75 100644
+--- a/crypto/cmp/cmp_protect.c
++++ b/crypto/cmp/cmp_protect.c
+@@ -286,8 +286,6 @@ int ossl_cmp_msg_protect(OSSL_CMP_CTX *ctx, OSSL_CMP_MSG *msg)
+              * to section 5.1.1
+              */
+             subjKeyIDStr = X509_get0_subject_key_id(ctx->clCert);
+-            if (subjKeyIDStr == NULL)
+-                subjKeyIDStr = ctx->referenceValue; /* fallback */
+             if (subjKeyIDStr != NULL
+                     && !ossl_cmp_hdr_set1_senderKID(msg->header, subjKeyIDStr))
+                 goto err;
+@@ -314,11 +312,7 @@ int ossl_cmp_msg_protect(OSSL_CMP_CTX *ctx, OSSL_CMP_MSG *msg)
+      * the senderKID must be set, where we took the referenceValue as fallback.
+      */
+ 
+-    if (ossl_cmp_general_name_is_NULL_DN(msg->header->sender)
+-            && msg->header->senderKID == NULL)
+-        CMPerr(0, CMP_R_MISSING_SENDER_IDENTIFICATION);
+-    else
+-        return 1;
++    return 1;
+ 
+  err:
+     CMPerr(0, CMP_R_ERROR_PROTECTING_MESSAGE);
+-- 
+2.23.0.windows.1
+
