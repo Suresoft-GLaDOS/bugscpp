@@ -1,7 +1,7 @@
 # Copyright 2021 Suresoft Technologies Inc.
 # Licensed under the MIT
 FROM ubuntu:18.04
-WORKDIR workspace
+
 RUN apt update
 RUN apt install -y git pkg-config autogen automake libtool liblua5.3-dev python3 python3-pip
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100

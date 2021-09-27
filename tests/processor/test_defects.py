@@ -204,3 +204,10 @@ def test_proj(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
     index, case = defect
     test_dir = defect_path(index, case)
     validate_taxonomy(test_dir, index, case)
+
+
+@pytest.mark.parametrize("defect", [(1, 1), (2, 56), (3, 22), (4, 29), (5, 42)])
+def test_zsh(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+    index, case = defect
+    test_dir = defect_path(index, case)
+    validate_taxonomy(test_dir, index, case)
