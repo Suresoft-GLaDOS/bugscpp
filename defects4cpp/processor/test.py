@@ -148,7 +148,7 @@ class CommandScriptGenerator:
             )
             test_lines.append(
                 Line(
-                    f"gcovr {exclude} --keep --use-gcov-files --json gcov/summary.json gcov",
+                    f"gcovr {exclude} --keep --use-gcov-files --json --output gcov/summary.json gcov",
                     False,
                 )
             )
@@ -176,33 +176,16 @@ class CommandScriptGenerator:
         test_lines: List[Line] = [Line(cmd, False) for cmd in test_command[:-1]]
         test_lines.append(Line(test_command[-1], True))
 
-        if self._test_type == taxonomy.TestType.Automake:
-            return (
-                self._generate_command(
-                    [
-                        Line(f"sh -c 'echo {case} > DPP_TEST_INDEX'", False),
-                        *test_lines,
-                    ],
-                    case,
-                )
-                for case in cases
+        return (
+            self._generate_command(
+                [
+                    Line(f"sh -c 'echo {case} > DPP_TEST_INDEX'", False),
+                    *test_lines,
+                ],
+                case,
             )
-        elif self._test_type == taxonomy.TestType.CTest:
-            return (
-                self._generate_command(
-                    [
-                        Line(f"sh -c 'echo {case} > DPP_TEST_INDEX'", False),
-                        *test_lines,
-                    ],
-                    case,
-                )
-                for case in cases
-            )
-        elif self._test_type == taxonomy.TestType.GoogleTest:
-            # TODO: generate gtest filter command
-            raise NotImplementedError
-
-        raise errors.DppCommandScriptGeneratorInternalError(self._test_type)
+            for case in cases
+        )
 
 
 class TestCommand(DockerCommand):

@@ -15,6 +15,7 @@ class TestType(enum.IntEnum):
     Automake = 1
     CTest = 2
     GoogleTest = 3
+    Kyua = 4
 
 
 @dataclass
