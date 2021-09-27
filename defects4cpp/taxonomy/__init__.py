@@ -178,4 +178,4 @@ class Taxonomy(MutableMapping):
         return key
 
 
-__all__ = ["Taxonomy", "MetaData", "MetaInfo", "Defect", "Common"]
+__all__ = ["Taxonomy", "MetaData", "MetaInfo", "TestType", "Defect", "Common"]

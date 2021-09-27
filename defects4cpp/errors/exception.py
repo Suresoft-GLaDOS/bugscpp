@@ -2,8 +2,6 @@ import argparse
 from pathlib import Path
 from typing import Dict
 
-import taxonomy
-
 
 class DppTaxonomyInitError(Exception):
     def __init__(self, key: str, data_name: str):
@@ -37,12 +35,6 @@ class DppCaseExpressionInternalError(Exception):
     def __init__(self, namespace: argparse.Namespace):
         super().__init__(f"namespace={namespace}")
         self.namespace: argparse.Namespace = namespace
-
-
-class DppCommandScriptGeneratorInternalError(Exception):
-    def __init__(self, test_type: taxonomy.TestType):
-        super().__init__(f"test_type={test_type}")
-        self.test_type: taxonomy.TestType = test_type
 
 
 class DppInvalidCaseExpressionError(Exception):
@@ -79,6 +71,6 @@ class DppConfigNotInitialized(Exception):
 
 
 class DppPatchError(Exception):
-    def __init__(self, defect: taxonomy.Defect):
+    def __init__(self, defect):
         super().__init__(f"could not get lua_path in {defect.split_patch}")
-        self.defect: taxonomy.Defect = defect
+        self.defect = defect
