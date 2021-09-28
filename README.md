@@ -1,5 +1,9 @@
 # Defects4Cpp
 
+![build](https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/python-ci.yml/badge.svg)
+[![Tests Status](https://suresoft-glados.github.io/defects4cpp/reports/junit/tests-badge.svg?dummy=8484744)](https://suresoft-glados.github.io/defects4cpp/reports/junit/report.html)
+[![Coverage Status](https://suresoft-glados.github.io/defects4cpp/reports/coverage/coverage-badge.svg?dummy=8484744)](https://suresoft-glados.github.io/defects4cpp/reports/coverage/index.html)
+
 Defects4Cpp is a collection of reproducible bugs and a supporting infrastructure with the goal of automatic program debugging research.
 
 *It was the inspiration from Defects4J(https://github.com/rjust/defects4j)*
@@ -67,7 +71,7 @@ If you have done checkout, you can build the checkout project like this (just ch
 > d++.py build "/home/user/workspace/libsndfile/buggy#1"
 ```
 
-or 
+or
 
 ```console
 > d++.py checkout libsndfile 1 --target "/home/user/workspace"
@@ -109,7 +113,7 @@ When this command is finished, you can get a gcov meta data from your target dir
 
 ## Contributions
 
-There are several ways to contribute to this project. 
+There are several ways to contribute to this project.
 The first thing is just let me know, about your requirements for using Defects4Cpp. we want to provide researcher friendly manner.
 
 if you want directly provide bug information. please check out "/defects4cpp/defects4cpp/taxonomy" structure and bug collection scheme for defects(all information in .hjson). In later, we will be documenting this scheme.
