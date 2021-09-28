@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, List
 
 import processor
 import pytest
@@ -12,6 +12,12 @@ CONFIG_NAME = ".defects4cpp.json"
 
 def checkout_dir_valid(d: Path) -> bool:
     return (d / CONFIG_NAME).exists()
+
+
+def read_captured_output(d: Path, case: int) -> str:
+    with open(d / f"{case}.output") as fp:
+        test_output = fp.readlines()
+    return " ".join(test_output)
 
 
 def should_pass(d: Path, case: int) -> bool:
@@ -56,7 +62,9 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
     )
 
     fixed_output_dir = test_dir.fixed_output_dir
-    assert should_pass(fixed_output_dir, case)
+    assert should_pass(fixed_output_dir, case), read_captured_output(
+        fixed_output_dir, case
+    )
     assert should_create_gcov(fixed_output_dir)
     assert should_create_summary_json(fixed_output_dir)
 
@@ -73,7 +81,9 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
     )
 
     buggy_output_dir = test_dir.buggy_output_dir
-    assert should_fail(buggy_output_dir, case)
+    assert should_fail(buggy_output_dir, case), read_captured_output(
+        buggy_output_dir, case
+    )
     assert should_create_gcov(buggy_output_dir)
     assert should_create_summary_json(buggy_output_dir)
 
