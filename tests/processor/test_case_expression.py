@@ -95,8 +95,8 @@ def test_no_case_is_provided(dummy_config):
     index = args.worktree.index
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
-    docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.scripts)) == selected_defect.num_cases
+    script_generator = cmd.create_script_generator(default_cmds)
+    assert len(list(script_generator.create())) == (selected_defect.num_cases * 3)
 
 
 def test_exclude_only(dummy_config):
@@ -109,5 +109,5 @@ def test_exclude_only(dummy_config):
     index = args.worktree.index
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
-    docker_cmd = cmd.run(default_cmds)
-    assert len(list(docker_cmd.scripts)) == (selected_defect.num_cases - 100)
+    script_generator = cmd.create_script_generator(default_cmds)
+    assert len(list(script_generator.create())) == (selected_defect.num_cases - 100) * 3

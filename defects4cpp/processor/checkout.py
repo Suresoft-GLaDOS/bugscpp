@@ -52,12 +52,10 @@ class CheckoutCommand(Command):
             # Apply buggy patch
             if args.buggy:
                 checkout_repo.git.am(defect.buggy_patch)
-            # Apply split patch if it exists.
-            if exists(defect.split_patch):
-                checkout_repo.git.am(defect.split_patch)
-            # Apply fix patch if it exists.
-            if exists(defect.fix_patch):
-                checkout_repo.git.am(defect.fix_patch)
+            # Apply additional patch if it exists.
+            for patch in [defect.split_patch, defect.fix_patch]:
+                if patch:
+                    checkout_repo.git.am(patch)
 
         # Write .defects4cpp.json in the directory.
         write_config(worktree)
