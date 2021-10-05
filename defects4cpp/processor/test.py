@@ -175,6 +175,10 @@ class SetupTestCommandScript(TestCommandScript):
             [f"sh -c 'echo {case} > {SetupTestCommandScript.OUTPUT_NAME}'"],
         )
 
+    def before(self):
+        # Override TestCommandScript.before method to prevent echoing.
+        pass
+
 
 class CoverageTestCommandScript(TestCommandScript):
     """
