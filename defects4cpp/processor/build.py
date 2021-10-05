@@ -1,4 +1,4 @@
-from typing import Generator, List
+from typing import Generator, List, Optional
 
 import message
 import taxonomy
@@ -14,7 +14,7 @@ class BuildCommandScript(DockerCommandScript):
     def before(self):
         pass
 
-    def output(self, linenr: int, exit_code: int, stream: str):
+    def output(self, linenr: Optional[int], exit_code: int, stream: str):
         pass
 
     def after(self):

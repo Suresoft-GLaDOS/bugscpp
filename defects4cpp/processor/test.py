@@ -145,7 +145,7 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     def before(self):
         message.info2(f"case #{self._case}")
 
-    def output(self, linenr: int, exit_code: int, output: str):
+    def output(self, linenr: Optional[int], exit_code: int, output: str):
         if linenr == len(self.lines):
             self.captured_output = CapturedOutput(exit_code, output)
 
@@ -209,7 +209,7 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     def before(self):
         pass
 
-    def output(self, linenr, exit_code: Optional[int], output: str):
+    def output(self, linenr: Optional[int], exit_code: Optional[int], output: str):
         if linenr == len(self.lines):
             self.captured_output = CapturedOutput(exit_code, output)
 

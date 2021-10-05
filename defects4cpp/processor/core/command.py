@@ -92,9 +92,10 @@ class DockerCommandScript(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    def output(self, linenr: int, exit_code: Optional[int], output: str):
+    def output(self, linenr: Optional[int], exit_code: Optional[int], output: str):
         """
         Invoked after each line is executed only if docker is executed with stream set to False.
+        linenr is None if all commands are executed as if it is a script.
         """
         pass
 
@@ -122,6 +123,7 @@ class DockerCommandScriptGenerator(metaclass=ABCMeta):
     """
 
     def __init__(self, metadata: taxonomy.MetaData, worktree: Worktree, stream: bool):
+        # TODO: property?
         self.metadata = metadata
         self.worktree = worktree
         self.stream = stream
@@ -146,7 +148,7 @@ class DockerCommand(Command):
         return "v1"
 
     def __call__(self, argv: List[str]):
-        def parse_exec_result(ec, output) -> None:
+        def parse_exec_result(ec, output, line_number: Optional[int] = None) -> None:
             # Depending on 'stream' value, return value is a bit different.
             # 'exit_code' is None when 'stream' is True.
             # https://docker-py.readthedocs.io/en/stable/containers.html
@@ -154,7 +156,7 @@ class DockerCommand(Command):
                 for stream_line in output:
                     message.docker(stream_line.decode("utf-8", errors="ignore"))
             else:
-                script.output(linenr, ec, output.decode("utf-8", errors="ignore"))
+                script.output(line_number, ec, output.decode("utf-8", errors="ignore"))
 
         script_generator = self.create_script_generator(argv)
         worktree = script_generator.worktree
@@ -169,7 +171,7 @@ class DockerCommand(Command):
                 if script.should_be_run_at_once():
                     file = Path(f"{worktree.host}/{DockerCommand.SCRIPT_NAME}")
                     with open(file, "w+") as fp:
-                        fp.write(" ".join(script))
+                        fp.write("\n".join(script))
                     file.chmod(
                         file.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
                     )
@@ -180,7 +182,7 @@ class DockerCommand(Command):
                 else:
                     for linenr, line in enumerate(script, start=1):
                         exit_code, output_stream = docker.send(line, stream)
-                        parse_exec_result(linenr, exit_code, output_stream)
+                        parse_exec_result(exit_code, output_stream, linenr)
                 script.after()
         self.teardown(script_generator)
 
