@@ -196,7 +196,11 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     """
 
     def __init__(
-        self, exclude: List[str], command_type: taxonomy.CommandType, command: List[str]
+        self,
+        case: int,
+        exclude: List[str],
+        command_type: taxonomy.CommandType,
+        command: List[str],
     ):
         exclude_flags = " ".join(
             [f"--gcov-exclude {excluded_gcov}" for excluded_gcov in exclude]
@@ -205,6 +209,11 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
             f"gcovr {exclude_flags} --keep --use-gcov-files --json --output gcov/summary.json gcov"
         )
         super().__init__(command_type, command)
+        self._case = case
+
+    @property
+    def case(self) -> int:
+        return self._case
 
     def before(self):
         pass
@@ -272,7 +281,10 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
                 self._test_command.lines,
             )
             yield GcovCommandScript(
-                self._gcov.exclude, self._gcov.command.type, self._gcov.command.lines
+                case,
+                self._gcov.exclude,
+                self._gcov.command.type,
+                self._gcov.command.lines,
             )
 
 
@@ -372,7 +384,7 @@ class TestCommand(DockerCommand):
     def script_callback(self, script: TestCommandScript, *args, **kwargs):
         if type(script) is TestCommandScript:
             self._save_result(script)
-        elif type(script) is CoverageTestCommandScript:
+        elif type(script) is GcovCommandScript:
             self._save_coverage(script)
         else:
             pass
@@ -393,7 +405,7 @@ class TestCommand(DockerCommand):
                 "passed" if script.captured_output.exit_code == 0 else "failed"
             )
 
-    def _save_coverage(self, script: CoverageTestCommandScript):
+    def _save_coverage(self, script: GcovCommandScript):
         """
         Move json files to somewhere specified by a user or the current working directory.
         Output format:
