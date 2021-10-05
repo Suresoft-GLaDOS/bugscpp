@@ -1,6 +1,8 @@
+import stat
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from pathlib import Path
+from typing import Generator, List, Optional
 
 import message
 import taxonomy
@@ -78,30 +80,27 @@ class DockerCommandScript(metaclass=ABCMeta):
     A bulk of commands which is executed one by one by DockerCommand.
     """
 
-    def __init__(self, lines: Iterable[str]):
-        self.lines = lines
+    def __init__(self, command_type: taxonomy.CommandType, command: List[str]):
+        self.type = command_type
+        self.lines = command
 
     @abstractmethod
-    def before(self, info: "DockerExecInfo"):
+    def before(self):
         """
         Invoked before script is executed.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def output(self, exit_code: Optional[int], output: str):
+    def output(self, linenr: Optional[int], exit_code: Optional[int], output: str):
         """
         Invoked after each line is executed only if docker is executed with stream set to False.
+        linenr is None if all commands are executed as if it is a script.
         """
         pass
 
     @abstractmethod
-    def after(
-        self,
-        info: "DockerExecInfo",
-        exit_code: Optional[int] = None,
-        output: Optional[str] = None,
-    ):
+    def after(self):
         """
         Invoked after script is executed.
         """
@@ -110,19 +109,36 @@ class DockerCommandScript(metaclass=ABCMeta):
     def __iter__(self):
         return iter(self.lines)
 
+    def should_be_run_at_once(self):
+        """
+        Returns true if it should be written to a file and executed at once,
+        otherwise if it is sent to a container line by line.
+        """
+        return self.type == taxonomy.CommandType.Script
 
-@dataclass
-class DockerExecInfo:
-    metadata: taxonomy.MetaData
-    worktree: Worktree
-    scripts: Iterable[DockerCommandScript]
-    stream: bool
+
+class DockerCommandScriptGenerator(metaclass=ABCMeta):
+    """
+    Factory class of DockerCommandScript
+    """
+
+    def __init__(self, metadata: taxonomy.MetaData, worktree: Worktree, stream: bool):
+        # TODO: property?
+        self.metadata = metadata
+        self.worktree = worktree
+        self.stream = stream
+
+    @abstractmethod
+    def create(self) -> Generator[DockerCommandScript, None, None]:
+        raise NotImplementedError
 
 
 class DockerCommand(Command):
     """
     Executes each command of DockerCommandLine one by one inside docker container.
     """
+
+    SCRIPT_NAME = "DPP_COMMAND_SCRIPT"
 
     def __init__(self):
         pass
@@ -132,42 +148,60 @@ class DockerCommand(Command):
         return "v1"
 
     def __call__(self, argv: List[str]):
-        info = self.run(argv)
-        self.setup(info)
-        with Docker(info.metadata.dockerfile, info.worktree) as docker:
-            for script in info.scripts:
-                script.before(info)
-                for line in script:
-                    # Depending on 'stream' value, return value is a bit different.
-                    # 'exit_code' is None when 'stream' is True.
-                    # https://docker-py.readthedocs.io/en/stable/containers.html
-                    exit_code, stream = docker.send(line, info.stream)
-                    if exit_code is None:
-                        for stream_line in stream:
-                            message.docker(stream_line.decode("utf-8", errors="ignore"))
-                    else:
-                        script.output(
-                            exit_code, stream.decode("utf-8", errors="ignore")
-                        )
-                script.after(info)
-        self.teardown(info)
+        def parse_exec_result(ec, output, line_number: Optional[int] = None) -> None:
+            # Depending on 'stream' value, return value is a bit different.
+            # 'exit_code' is None when 'stream' is True.
+            # https://docker-py.readthedocs.io/en/stable/containers.html
+            if ec is None:
+                for stream_line in output:
+                    message.docker(stream_line.decode("utf-8", errors="ignore"))
+            else:
+                script.output(line_number, ec, output.decode("utf-8", errors="ignore"))
+
+        script_generator = self.create_script_generator(argv)
+        worktree = script_generator.worktree
+        stream = script_generator.stream
+
+        self.setup(script_generator)
+        with Docker(
+            script_generator.metadata.dockerfile, script_generator.worktree
+        ) as docker:
+            for script in script_generator.create():
+                script.before()
+                if script.should_be_run_at_once():
+                    file = Path(f"{worktree.host}/{DockerCommand.SCRIPT_NAME}")
+                    with open(file, "w+") as fp:
+                        fp.write("\n".join(script))
+                    file.chmod(
+                        file.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                    )
+                    exit_code, output_stream = docker.send(
+                        f"{worktree.container}/{DockerCommand.SCRIPT_NAME}", stream
+                    )
+                    parse_exec_result(exit_code, output_stream)
+                else:
+                    for linenr, line in enumerate(script, start=1):
+                        exit_code, output_stream = docker.send(line, stream)
+                        parse_exec_result(exit_code, output_stream, linenr)
+                script.after()
+        self.teardown(script_generator)
 
     @abstractmethod
-    def run(self, argv: List[str]) -> DockerExecInfo:
+    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
         """
         Return DockerExecInfo which has information of a command list to run inside docker container.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def setup(self, info: DockerExecInfo):
+    def setup(self, generator: DockerCommandScriptGenerator):
         """
         Invoked before container is created.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def teardown(self, info: DockerExecInfo):
+    def teardown(self, generator: DockerCommandScriptGenerator):
         """
         Invoked after container is destroyed.
         """

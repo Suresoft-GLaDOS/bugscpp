@@ -1,27 +1,39 @@
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 import message
+import taxonomy
 from processor.core.argparser import create_common_project_parser, read_config
-from processor.core.command import DockerCommand, DockerCommandScript, DockerExecInfo
+from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
+from processor.core.docker import Worktree
 
 
 class BuildCommandScript(DockerCommandScript):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def before(self, info: DockerExecInfo):
+    def before(self):
         pass
 
-    def output(self, exit_code: int, stream: str):
+    def output(self, linenr: Optional[int], exit_code: int, stream: str):
         pass
 
-    def after(
+    def after(self):
+        pass
+
+
+class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
+    def __init__(
         self,
-        info: "DockerExecInfo",
-        exit_code: Optional[int] = None,
-        output: Optional[str] = None,
+        command: taxonomy.Command,
+        metadata: taxonomy.MetaData,
+        worktree: Worktree,
+        stream: bool,
     ):
-        pass
+        super().__init__(metadata, worktree, stream)
+        self.command = command
+
+    def create(self) -> Generator[BuildCommandScript, None, None]:
+        yield BuildCommandScript(self.command.type, self.command.lines)
 
 
 class BuildCommand(DockerCommand):
@@ -34,23 +46,23 @@ class BuildCommand(DockerCommand):
         self.parser = create_common_project_parser()
         self.parser.usage = "d++ build --project=[project_name] --no=[number] [--coverage] [checkout directory]"
 
-    def run(self, argv: List[str]) -> DockerExecInfo:
+    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
         args = self.parser.parse_args(argv)
-        metadata, worktree = read_config(args.path)
 
-        commands = (
-            [BuildCommandScript(metadata.common.build_coverage_command)]
+        metadata, worktree = read_config(args.path)
+        command = (
+            metadata.common.build_coverage_command
             if args.coverage
-            else [BuildCommandScript(metadata.common.build_command)]
+            else metadata.common.build_command
         )
         stream = True if args.verbose else False
 
-        return DockerExecInfo(metadata, worktree, commands, stream)
+        return BuildCommandScriptGenerator(command, metadata, worktree, stream)
 
-    def setup(self, info: DockerExecInfo):
-        message.info(f"Building {info.metadata.name}")
+    def setup(self, generator: DockerCommandScriptGenerator):
+        message.info(f"Building {generator.metadata.name}")
 
-    def teardown(self, info: DockerExecInfo):
+    def teardown(self, generator: DockerCommandScriptGenerator):
         pass
 
     @property

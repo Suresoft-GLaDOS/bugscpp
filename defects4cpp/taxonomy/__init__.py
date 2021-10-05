@@ -5,33 +5,44 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass
 from os.path import dirname, exists, join
 from pkgutil import iter_modules
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import config
 import errors
 
 
+class CommandType(enum.IntEnum):
+    Docker = 1
+    Script = 2
+
+
+@dataclass
+class Command:
+    type: CommandType
+    lines: List[str]
+
+
 class TestType(enum.IntEnum):
     Automake = 1
-    CTest = 2
-    GoogleTest = 3
+    Ctest = 2
+    Googletest = 3
     Kyua = 4
 
 
 @dataclass
 class Common:
-    build_command: List[str]
-    build_coverage_command: List[str]
+    build_command: Command
+    build_coverage_command: Command
     test_type: TestType
-    test_command: List[str]
-    test_coverage_command: List[str]
+    test_command: Command
+    test_coverage_command: Command
     gcov: "Gcov"
 
 
 @dataclass
 class Gcov:
     exclude: List[str]
-    command: List[str]
+    command: Command
 
 
 @dataclass
@@ -42,6 +53,7 @@ class Defect:
     split_patch: str
     num_cases: int
     case: List[int]
+    description: str
 
 
 @dataclass
@@ -49,6 +61,32 @@ class MetaInfo:
     url: str
     description: str
     vcs: str
+
+
+def create_command(value: Dict[str, Any]) -> Command:
+    return Command(CommandType[value["type"].capitalize()], value["lines"])
+
+
+def create_gcov(value: Dict[str, Any]) -> Gcov:
+    return Gcov(
+        [d for d in value["exclude"]],
+        create_command(value["command"]),
+    )
+
+
+def create_common(value: Dict[str, Any]) -> Common:
+    return Common(
+        create_command(value["build"]["command"]),
+        create_command(value["build-coverage"]["command"]),
+        TestType[value["test-type"].capitalize()],
+        create_command(value["test"]["command"]),
+        create_command(value["test-coverage"]["command"]),
+        create_gcov(value["gcov"]),
+    )
+
+
+def create_info(value: Dict[str, Any]) -> MetaInfo:
+    return MetaInfo(value["url"], value["short-desc"], value["vcs"])
 
 
 class MetaData:
@@ -96,51 +134,35 @@ class MetaData:
 
     def _load_info(self, meta: Dict):
         try:
+            self._info = create_info(meta["info"])
+        except KeyError as e:
+            raise errors.DppTaxonomyInitError(e.args[0], Defect.__name__)
+
+    def _load_common(self, meta: Dict):
+        try:
+            self._common = create_common(meta["common"])
+        except KeyError as e:
+            raise errors.DppTaxonomyInitError(e.args[0], Common.__name__)
+
+    def _load_defects(self, meta: Dict):
+        def check_path(path: str) -> str:
+            return path if exists(path) else ""
+
+        try:
             self._defects = [
                 Defect(
                     defect["hash"],
-                    f"{self._path}/patch/{index:04}-buggy.patch",
-                    f"{self._path}/patch/{index:04}-fix.patch",
-                    f"{self._path}/patch/{index:04}-split.patch",
+                    check_path(f"{self._path}/patch/{index:04}-buggy.patch"),
+                    check_path(f"{self._path}/patch/{index:04}-fix.patch"),
+                    check_path(f"{self._path}/patch/{index:04}-split.patch"),
                     defect["num_cases"],
                     defect["case"],
+                    defect["description"],
                 )
                 for index, defect in enumerate(meta["defects"], start=1)
             ]
         except KeyError as e:
             raise errors.DppTaxonomyInitError(e.args[0], MetaInfo.__name__)
-
-    def _load_common(self, meta: Dict):
-        def to_enum(value: str) -> TestType:
-            if value == "automake":
-                return TestType.Automake
-            elif value == "ctest":
-                return TestType.CTest
-            elif value == "gtest":
-                return TestType.GoogleTest
-
-        try:
-            self._common = Common(
-                meta["common"]["build"]["command"],
-                meta["common"]["build-coverage"]["command"],
-                to_enum(meta["common"]["test-type"]),
-                meta["common"]["test"]["command"],
-                meta["common"]["test-coverage"]["command"],
-                Gcov(
-                    [d for d in meta["common"]["gcov"]["exclude"]],
-                    meta["common"]["gcov"]["command"],
-                ),
-            )
-        except KeyError as e:
-            raise errors.DppTaxonomyInitError(e.args[0], Common.__name__)
-
-    def _load_defects(self, meta: Dict):
-        try:
-            self._info = MetaInfo(
-                meta["info"]["url"], meta["info"]["short-desc"], meta["info"]["vcs"]
-            )
-        except KeyError as e:
-            raise errors.DppTaxonomyInitError(e.args[0], Defect.__name__)
 
 
 class Taxonomy(MutableMapping):
@@ -178,4 +200,14 @@ class Taxonomy(MutableMapping):
         return key
 
 
-__all__ = ["Taxonomy", "MetaData", "MetaInfo", "TestType", "Defect", "Common"]
+__all__ = [
+    "Taxonomy",
+    "MetaData",
+    "MetaInfo",
+    "Command",
+    "CommandType",
+    "Gcov",
+    "TestType",
+    "Defect",
+    "Common",
+]
