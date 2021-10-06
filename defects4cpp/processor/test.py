@@ -386,7 +386,7 @@ class TestCommand(DockerCommand):
         return p
 
     def script_callback(self, script: TestCommandScript, *args, **kwargs):
-        if type(script) is TestCommandScript:
+        if type(script) is TestCommandScript or type(script) is CoverageTestCommandScript:
             self._save_result(script)
         elif type(script) is GcovCommandScript:
             self._save_coverage(script)
