@@ -31,10 +31,11 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
         (21, 2),
         (22, 2),
         (23, 49),
-        (24, 45),
-        (25, 51),
-        (26, 43),
-        (27, 2),
+        (24, 2),
+        (25, 45),
+        (26, 51),
+        (27, 43),
+        (28, 2),
     ],
 )
 def test_proj(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
