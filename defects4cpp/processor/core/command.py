@@ -1,31 +1,40 @@
 import stat
-from abc import ABCMeta, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Dict
 
 import message
 import taxonomy
+from errors import DppCommandListInternalError
 from processor.core.docker import Docker, Worktree
 from processor.core.shell import Shell
 
 
-class RegisterCommand(type):
-    commands = {}
+class CommandRegistryMeta(type):
+    _commands: Dict[str, "Command"] = {}
 
     def __new__(mcs, name, bases, attrs):
         new_class = type.__new__(mcs, name, bases, attrs)
         m = attrs["__module__"]
         if m != __name__:
-            RegisterCommand.commands[m.split(".")[-1]] = new_class
+            CommandRegistryMeta._commands[m.split(".")[-1]] = new_class()
         return new_class
 
+    @staticmethod
+    def get_commands() -> Dict[str, "Command"]:
+        return CommandRegistryMeta._commands
 
-class CommandMeta(RegisterCommand, ABCMeta):
+
+class AbstractCommandRegistryMeta(CommandRegistryMeta, ABCMeta):
     pass
 
 
-class Command(metaclass=CommandMeta):
+class BaseCommandRegistry(ABC, metaclass=AbstractCommandRegistryMeta):
+    pass
+
+
+class Command(BaseCommandRegistry):
     @property
     def group(self) -> str:
         raise NotImplementedError
@@ -37,6 +46,14 @@ class Command(metaclass=CommandMeta):
     @abstractmethod
     def __call__(self, argv: List[str]):
         raise NotImplementedError
+
+
+class RegisteredCommands:
+    def __get__(self, instance, owner) -> Dict[str, Command]:
+        return CommandRegistryMeta.get_commands()
+
+    def __set__(self, instance, value):
+        raise DppCommandListInternalError()
 
 
 class SimpleCommand(Command):

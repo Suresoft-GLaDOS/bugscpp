@@ -37,6 +37,11 @@ class DppCaseExpressionInternalError(Exception):
         self.namespace: argparse.Namespace = namespace
 
 
+class DppCommandListInternalError(Exception):
+    def __init__(self):
+        super().__init__(f"{self.__class__} object does not support item assignment")
+
+
 class DppInvalidCaseExpressionError(Exception):
     def __init__(self, index: int, name: str, cases: int, expr: str):
         super().__init__(
