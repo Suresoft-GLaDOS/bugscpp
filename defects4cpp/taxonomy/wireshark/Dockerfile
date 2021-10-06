@@ -1,7 +1,7 @@
 # Copyright 2021 Suresoft Technologies Inc.
 # Licensed under the MIT
 FROM wireshark/wireshark-ubuntu-dev
-RUN apt update
+RUN apt -y update && apt -y upgrade
 RUN apt -y install python3-pip wget lsb-release software-properties-common
 
 # Install latest cmake
