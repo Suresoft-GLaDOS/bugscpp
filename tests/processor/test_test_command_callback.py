@@ -22,6 +22,8 @@ _TEST_PROJECT_NAME = "yara"
 
 
 class DummyDockerCommand(DockerCommand):
+    _ignore_registry = True
+
     def __init__(
         self,
         callback,

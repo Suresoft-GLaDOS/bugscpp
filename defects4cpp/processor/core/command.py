@@ -17,7 +17,7 @@ class CommandRegistryMeta(type):
     def __new__(mcs, name, bases, attrs):
         new_class = type.__new__(mcs, name, bases, attrs)
         m = attrs["__module__"]
-        if m != __name__:
+        if m != __name__ and not getattr(new_class, "_ignore_registry", False):
             CommandRegistryMeta._commands[m.split(".")[-1]] = new_class()
         return new_class
 
