@@ -96,7 +96,7 @@ def test_no_case_is_provided(dummy_config):
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     script_generator = cmd.create_script_generator(default_cmds)
-    assert len(list(script_generator.create())) == (selected_defect.num_cases * 3)
+    assert len(list(script_generator.create())) == (selected_defect.num_cases * 2)
 
 
 def test_exclude_only(dummy_config):
@@ -110,4 +110,4 @@ def test_exclude_only(dummy_config):
     selected_defect: taxonomy.Defect = metadata.defects[index - 1]
 
     script_generator = cmd.create_script_generator(default_cmds)
-    assert len(list(script_generator.create())) == (selected_defect.num_cases - 100) * 3
+    assert len(list(script_generator.create())) == (selected_defect.num_cases - 100) * 2
