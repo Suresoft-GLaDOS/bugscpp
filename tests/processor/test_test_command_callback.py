@@ -140,8 +140,8 @@ def iterate_once(script_it: Generator[DockerCommandScript, None, None]):
 
 def iterate_coverage_once(script_it: Generator[DockerCommandScript, None, None]):
     next(script_it)
-    obj = next(script_it)
     next(script_it)
+    obj = next(script_it)
     return obj
 
 
@@ -203,7 +203,7 @@ def test_check_coverage(setup):
     # Run again to see if it fails (there is no gcov directory).
     script_it = script_generator.create()
 
-    a = iterate_once(script_it)
+    a = iterate_coverage_once(script_it)
     a.lines = [""]
     a.output(1, 0, "hello world!")
 
