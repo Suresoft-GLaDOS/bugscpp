@@ -77,11 +77,19 @@ class ValidateTaxonomy(argparse.Action):
         values: str,
         option_string=None,
     ):
+        worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
+        if worktree is None:
+            worktree = Worktree(None, 0)
+        worktree.project_name = values
+
         t = Taxonomy()
         # Probably redundant to check 'values' exists in keys.
         if values not in t.keys():
             raise errors.DppTaxonomyNotFoundError(values)
+
+        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, worktree)
         setattr(namespace, _NAMESPACE_ATTR_METADATA, t[values])
+        setattr(namespace, self.dest, values)
 
 
 class ValidateIndex(argparse.Action):
@@ -92,11 +100,17 @@ class ValidateIndex(argparse.Action):
         values: int,
         option_string=None,
     ):
+
         metadata = namespace.metadata
         if values < 1 or len(metadata.defects) < values:
             raise errors.DppDefectIndexError(values)
 
-        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, Worktree(metadata.name, values))
+        worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
+        if worktree is None:
+            worktree = Worktree(None, 0)
+        worktree.index = values
+
+        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, worktree)
         setattr(namespace, self.dest, values)
 
 
@@ -109,8 +123,11 @@ class ValidateBuggy(argparse.Action):
         option_string=None,
     ):
         worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
-        if worktree:
-            worktree.buggy = True
+        if worktree is None:
+            worktree = Worktree(None, 0)
+        worktree.buggy = True
+
+        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, worktree)
         setattr(namespace, self.dest, True)
 
 
@@ -123,8 +140,11 @@ class ValidateWorkspace(argparse.Action):
         option_string=None,
     ):
         worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
-        if worktree:
-            worktree.workspace = values
+        if worktree is None:
+            worktree = Worktree(None, 0)
+        worktree.workspace = values
+
+        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, worktree)
         setattr(namespace, self.dest, values)
 
 
