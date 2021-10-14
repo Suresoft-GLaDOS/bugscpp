@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Callable, Generator, List, Optional, Set, Union, cast
 
 import errors
-import message
 import taxonomy
 from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
                             create_common_project_parser, read_config)
@@ -71,7 +70,7 @@ class ValidateOutputDirectory(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-class MetaObservableAttribute(type):
+class ObservableAttributeMeta(type):
     def __new__(mcs, name, bases, attr, methods=None):
         if methods is None:
             methods = []
@@ -90,7 +89,7 @@ class MetaObservableAttribute(type):
         return update
 
 
-class ObservableAttribute(metaclass=MetaObservableAttribute):
+class ObservableAttribute(metaclass=ObservableAttributeMeta):
     def __init__(self, callbacks: List[Callable]):
         self._callbacks = callbacks
 
