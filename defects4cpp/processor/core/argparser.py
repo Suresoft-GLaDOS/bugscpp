@@ -1,7 +1,12 @@
+"""
+Provide common argparsers
+
+Utility functions to parse command line arguments and argparsers used across modules are defined.
+"""
 import argparse
 import json
+import textwrap
 from dataclasses import asdict
-from os.path import isdir
 from pathlib import Path
 from typing import Tuple, Union
 
@@ -18,6 +23,16 @@ _NAMESPACE_ATTR_WORKTREE = "worktree"
 def read_config(project_dir: Union[str, Path]) -> Tuple[MetaData, Worktree]:
     """
     Read config file and return parsed options.
+
+    Parameters
+    ----------
+    project_dir : Union[str, Path]
+        Path to where defect taxonomy is located.
+
+    Returns
+    -------
+    Tuple[taxonomy.MetaData, docker.Worktree]
+        Return a tuple of metadata and worktree information.
     """
     try:
         with open(Path(project_dir) / _NAMESPACE_ATTR_PATH_CONFIG_NAME, "r") as fp:
@@ -39,6 +54,15 @@ def read_config(project_dir: Union[str, Path]) -> Tuple[MetaData, Worktree]:
 def write_config(worktree: Worktree) -> None:
     """
     Write config file to the directory.
+
+    Parameters
+    ----------
+    worktree : taxonomy.Worktree
+        Worktree
+
+    Returns
+    -------
+    None
     """
     config_file = Path(worktree.host) / _NAMESPACE_ATTR_PATH_CONFIG_NAME
     if config_file.exists():
@@ -52,6 +76,10 @@ def write_config(worktree: Worktree) -> None:
 
 
 class ValidateProjectPath(argparse.Action):
+    """
+    Validator for project path argument.
+    """
+
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -70,6 +98,10 @@ class ValidateProjectPath(argparse.Action):
 
 
 class ValidateTaxonomy(argparse.Action):
+    """
+    Validator for taxonomy argument.
+    """
+
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -85,6 +117,10 @@ class ValidateTaxonomy(argparse.Action):
 
 
 class ValidateIndex(argparse.Action):
+    """
+    Validator for index argument.
+    """
+
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -101,6 +137,10 @@ class ValidateIndex(argparse.Action):
 
 
 class ValidateBuggy(argparse.Action):
+    """
+    Validator for buggy argument.
+    """
+
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -115,6 +155,10 @@ class ValidateBuggy(argparse.Action):
 
 
 class ValidateWorkspace(argparse.Action):
+    """
+    Validator for workspace argument.
+    """
+
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -128,50 +172,49 @@ class ValidateWorkspace(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
-class ProjectType:
-    def __init__(self, value: str):
-        self.value: str = value
-
-    def __eq__(self, other: str):
-        if other == "PATH":
-            return isdir(self.value)
-        return self.value == other
-
-
 def create_common_parser() -> argparse.ArgumentParser:
     """
     Returns argparse.ArgumentParser that parses common options.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Return argparse.ArgumentParser that parses common options.
     """
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
     return parser
 
 
 def create_common_vcs_parser() -> argparse.ArgumentParser:
     """
-    project index [-b|--buggy] [-t|--target] [common options]
+    Create an argparse.ArgumentParser that parses common vcs options.
 
-    Returns argparse.ArgumentParser that parses common taxonomy options.
-    Its namespace also provides 'worktree' attribute for convenience.
+    Returns
+    -------
+    argparse.ArgumentParser
+        Return argparse.ArgumentParser that parses common taxonomy options.
+        Its namespace also provides 'worktree' attribute for convenience.
     """
     parser = create_common_parser()
     t = Taxonomy()
     parser.add_argument(
         "project",
         type=lambda s: s.lower(),
+        help="name of defect taxonomy.",
         choices=[name for name in t.keys()],
         action=ValidateTaxonomy,
     )
     parser.add_argument(
         "index",
         type=int,
-        help="index of defects (must be passed if project name is given instead of path)",
+        help="index of defects.",
         action=ValidateIndex,
     )
     parser.add_argument(
         "-b",
         "--buggy",
         dest="buggy",
-        help="whether buggy version or not",
+        help="checkout a buggy commit.",
         nargs=0,
         action=ValidateBuggy,
     )
@@ -181,7 +224,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
         "--target",
         dest="workspace",
         type=str,
-        help="checkout directory",
+        help="checkout to the specified directory instead of the current directory.",
         action=ValidateWorkspace,
     )
     return parser
@@ -189,29 +232,32 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
 
 def create_common_project_parser() -> argparse.ArgumentParser:
     """
-    path [--coverage] [common options]
-
-    Returns argparse.ArgumentParser that parses common project options.
-
+    Create an argparse.ArgumentParser that parses common project options.
     'path' is path to the existing directory with defects4cpp configuration which has been already checkout.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Return argparse.ArgumentParser that parses common project options.
     """
     parser = create_common_parser()
     parser.add_argument(
         "path",
         type=Path,
+        help="path to checkout directory.",
         action=ValidateProjectPath,
     )
     parser.add_argument(
         "-v",
         "--verbose",
         dest="verbose",
-        help="stream output to stdout (output will not be written to file)",
+        help="redirect output to stdout.",
         action="store_true",
     )
     parser.add_argument(
         "--coverage",
         dest="coverage",
-        help="build with gcov flags",
+        help="set coverage flags.",
         action="store_true",
     )
     return parser

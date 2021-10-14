@@ -1,3 +1,8 @@
+"""
+Manage commands associated with shell.
+
+Not fully implemented yet.
+"""
 import shlex
 from shutil import which
 from subprocess import PIPE, Popen, SubprocessError
@@ -5,6 +10,11 @@ from typing import Optional
 
 
 class Shell:
+    """
+    Run commands with subprocess.
+    It is highly recommend to use this via `with` statement.
+    """
+
     def __init__(self):
         self.subprocess: Optional[Popen] = None
         self.shell = "bash" if which("bash") else "cmd"

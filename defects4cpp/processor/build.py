@@ -1,10 +1,14 @@
+"""
+Build command.
+
+Compile projects inside a container.
+"""
 from typing import Generator, List, Optional
 
 import message
 import taxonomy
-from processor.core.argparser import create_common_project_parser, read_config
-from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
-from processor.core.docker import Worktree
+from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
+                            create_common_project_parser, read_config)
 
 
 class BuildCommandScript(DockerCommandScript):
@@ -37,14 +41,11 @@ class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
 
 
 class BuildCommand(DockerCommand):
-    """
-    Run build command either with or without coverage.
-    """
-
     def __init__(self):
         super().__init__()
+        # TODO: write argparse description in detail
         self.parser = create_common_project_parser()
-        self.parser.usage = "d++ build --project=[project_name] --no=[number] [--coverage] [checkout directory]"
+        self.parser.usage = "d++ build PATH [--coverage] [-v|--verbose]"
 
     def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
         args = self.parser.parse_args(argv)

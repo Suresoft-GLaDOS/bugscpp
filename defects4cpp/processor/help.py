@@ -1,8 +1,15 @@
+"""
+Help command.
+
+Display help messages.
+
+WIP
+"""
 from typing import List
 
 import message
 import processor
-from processor.core.command import SimpleCommand
+from processor.core import SimpleCommand
 
 
 class HelpCommandParser:
