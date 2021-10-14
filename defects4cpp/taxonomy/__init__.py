@@ -16,7 +16,7 @@ class CommandType(enum.IntEnum):
     Script = 2
 
 
-@dataclass
+@dataclass(frozen=True)
 class Command:
     type: CommandType
     lines: List[str]
@@ -29,7 +29,7 @@ class TestType(enum.IntEnum):
     Kyua = 4
 
 
-@dataclass
+@dataclass(frozen=True)
 class Common:
     build_command: Command
     build_coverage_command: Command
@@ -39,13 +39,13 @@ class Common:
     gcov: "Gcov"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Gcov:
     exclude: List[str]
     command: Command
 
 
-@dataclass
+@dataclass(frozen=True)
 class Defect:
     hash: str
     buggy_patch: str
@@ -56,7 +56,7 @@ class Defect:
     description: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class MetaInfo:
     url: str
     description: str

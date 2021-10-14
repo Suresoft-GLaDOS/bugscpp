@@ -1,16 +1,20 @@
+"""
+Test command.
+
+Run tests of the project inside a container.
+"""
 import argparse
 import shutil
 from dataclasses import dataclass
 from os import getcwd
 from pathlib import Path
-from typing import Callable, Generator, List, Optional, Set, Union
+from typing import Callable, Generator, List, Optional, Set, Union, cast
 
 import errors
 import message
 import taxonomy
-from processor.core.argparser import create_common_project_parser, read_config
-from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree
-from taxonomy import MetaData
+from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
+                            create_common_project_parser, read_config)
 
 
 class ValidateCase(argparse.Action):
@@ -299,27 +303,25 @@ class TestCommand(DockerCommand):
 
     def __init__(self):
         super().__init__()
+        # TODO: write argparse description in detail
         self.parser = create_common_project_parser()
         self.parser.add_argument(
             "-c",
             "--case",
-            help="Index of test cases to run",
+            help="expression to filter cases (see `example <case-example_>`_)",
             type=str,
             dest="case",
             action=ValidateCase,
         )
         self.parser.add_argument(
             "--output-dir",
-            help="Output directory to place json files",
+            help="output directory to generate coverage data instead of the current directory.",
             type=str,
             dest="output_dir",
             action=ValidateOutputDirectory,
         )
-        self.parser.usage = (
-            "d++ test --project=[project_name] --no=[number] [--coverage] "
-            "--case=[number] [checkout directory]"
-        )
-        self.metadata: Optional[MetaData] = None
+        self.parser.usage = "d++ test PATH [--coverage] [-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+        self.metadata: Optional[taxonomy.MetaData] = None
         self.worktree: Optional[Worktree] = None
         self.coverage: Optional[bool] = None
         self.output: str = getcwd()
@@ -380,26 +382,63 @@ class TestCommand(DockerCommand):
                 message.info2(f"Could not create files:\n{''.join(not_created)}")
 
     def summary_dir(self, case: int) -> Path:
+        """
+        Return path where coverage data should be created.
+
+        Parameters
+        ----------
+        case : int
+            Case number.
+
+        Returns
+        -------
+        pathlib.Path
+        """
         p = Path(self.output) / f"{self.metadata.name}-{self.worktree.suffix}-{case}"
         if not p.exists():
             p.mkdir(parents=True, exist_ok=True)
         return p
 
     def script_callback(self, script: TestCommandScript, *args, **kwargs):
-        if type(script) is TestCommandScript or type(script) is CoverageTestCommandScript:
+        """
+        Callback function to register used to collect data after each command is executed.
+
+        Parameters
+        ----------
+        script : TestCommandScript
+            Script instance which has been executed.
+
+        Returns
+        -------
+        None
+        """
+        if (
+            type(script) is TestCommandScript
+            or type(script) is CoverageTestCommandScript
+        ):
             self._save_result(script)
         elif type(script) is GcovCommandScript:
-            self._save_coverage(script)
+            self._save_coverage(cast(GcovCommandScript, script))
         else:
             pass
 
     def _save_result(self, script: TestCommandScript):
         """
-        Write exit_code and output to file.
+        Write exit code and captured stdout to file.
+
         - {case}.output: contains captured output
         - {case}.test: either 'passed' or 'failed' string.
 
-        Should be invoked only after test command is executed.
+        It should be invoked only after test command is executed.
+
+        Parameters
+        ----------
+        script : TestCommandScript
+            Script instance which has been executed.
+
+        Returns
+        -------
+        None
         """
         d = self.summary_dir(script.case)
         with open(d / f"{script.case}.output", "w+") as output_file:
@@ -411,11 +450,20 @@ class TestCommand(DockerCommand):
 
     def _save_coverage(self, script: GcovCommandScript):
         """
-        Move json files to somewhere specified by a user or the current working directory.
-        Output format:
+        Move json files to the target directory, and create summary.json file.
+        Output format should be the following:
             {project-name}-{type}#{index}-{case}/summary.json
 
-        Should be invoked only after each coverage command is executed.
+        It should be invoked only after each coverage command is executed.
+
+        Parameters
+        ----------
+        script : GcovCommandScript
+            Script instance which has been executed.
+
+        Returns
+        -------
+        None
         """
         coverage = self.worktree.host / "gcov"
         coverage_dest = self.summary_dir(script.case)

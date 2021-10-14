@@ -1,3 +1,8 @@
+"""
+Manage commands associated with docker SDK module.
+
+Do not use docker SDK directly, instead use Docker class.
+"""
 import sys
 from dataclasses import dataclass, field
 from os import getcwd
@@ -8,25 +13,26 @@ import docker
 import docker.errors
 import message
 from config.env import DPP_DOCKER_HOME, DPP_DOCKER_USER
+from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 
 
-def cast_image(image) -> Image:
+def _cast_image(image) -> Image:
     """
     Helper function to get a correct type
     """
     return cast(Image, image)
 
 
-def cast_container(container) -> Container:
+def _cast_container(container) -> Container:
     """
     Helper function to get a correct type
     """
     return cast(Container, container)
 
 
-def build_image(client, tag, path) -> Image:
+def _build_image(client, tag, path) -> Image:
     """
     Helper function to get a correct type
     """
@@ -36,13 +42,18 @@ def build_image(client, tag, path) -> Image:
 @dataclass
 class Worktree:
     """
-    Manages host and container git directory structure.
+    Dataclass to manage host and container directory structure.
+
     """
 
     project_name: str
+    """The name of the defect taxonomy."""
     index: int
+    """The index number of taxonomy."""
     buggy: bool = field(default=False)
+    """True if the project is configured as buggy, otherwise False."""
     workspace: str = field(default=getcwd())
+    """The workspace path string."""
 
     @property
     def base(self) -> Path:
@@ -65,49 +76,62 @@ class Worktree:
         return PurePosixPath(DPP_DOCKER_HOME)
 
 
-class Docker:
-    """
-    Docker RAII
-    Host machine must be running docker daemon in background.
-    """
-
-    def __init__(self, dockerfile: str, worktree: Worktree):
-        self.dockerfile = dockerfile
-        # Assumes that the name of its parent directory is the same with that of the target.
-        tag = Path(dockerfile).parent.name
-        self.name: str = f"{tag}-dpp-generated-container"
-        self.tag: str = f"{tag}/dppgen"
-        self.volume: Dict[str, Dict] = {
-            str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
-        }
-        self.working_dir: str = str(worktree.container)
-
-        self._image: Optional[Image] = None
-        self._container: Optional[Container] = None
-
-    @property
-    def client(self):
-        if getattr(Docker, "_client", None) is None:
+class _Client:
+    def __get__(self, instance, owner) -> DockerClient:
+        if getattr(owner, "_client", None) is None:
             try:
-                Docker._client = docker.from_env()
+                setattr(owner, "_client", docker.from_env())
             except docker.errors.DockerException:
                 message.warning(
                     "Could not get response from docker. Is your docker-daemon running?"
                 )
                 sys.exit(0)
-        return Docker._client
+        return getattr(owner, "_client")
+
+
+class Docker:
+    """
+    Provide docker SDK methods along with context manager.
+    It is highly recommend to use this via `with` statement.
+
+    Examples
+    --------
+    >>> with Docker("/path/to/Dockerfile", my_worktree) as docker:
+    ...     docker.send("echo 'Hello, world!'")
+
+    Notes
+    -----
+    Host machine must be running docker daemon in background.
+    """
+
+    client = _Client()
+    """Docker SDK client."""
+
+    def __init__(self, dockerfile: str, worktree: Worktree):
+        self._dockerfile = dockerfile
+        # Assumes that the name of its parent directory is the same with that of the target.
+        tag = Path(dockerfile).parent.name
+        self._name: str = f"{tag}-dpp-generated-container"
+        self._tag: str = f"{tag}/dppgen"
+        self._volume: Dict[str, Dict] = {
+            str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
+        }
+        self._working_dir: str = str(worktree.container)
+        self._image: Optional[Image] = None
+        self._container: Optional[Container] = None
 
     @property
-    def image(self):
+    def image(self) -> Image:
+        """Docker SDK Image."""
         if not self._image:
             try:
-                self._image = cast_image(self.client.images.get(self.tag))
+                self._image = _cast_image(self.client.images.get(self._tag))
             except docker.errors.ImageNotFound:
                 message.info2(
-                    f"Creating a new docker image for {Path(self.dockerfile).parent.name}"
+                    f"Creating a new docker image for {Path(self._dockerfile).parent.name}"
                 )
-                self._image = build_image(
-                    self.client, self.tag, str(Path(self.dockerfile).parent)
+                self._image = _build_image(
+                    self.client, self._tag, str(Path(self._dockerfile).parent)
                 )
             else:
                 pass
@@ -115,17 +139,17 @@ class Docker:
 
     def __enter__(self):
         message.info(f"Starting container")
-        self._container = cast_container(
+        self._container = _cast_container(
             self.client.containers.run(
                 self.image,
                 auto_remove=True,
                 detach=True,
                 stdin_open=True,
-                volumes=self.volume,
-                name=self.name,
+                volumes=self._volume,
+                name=self._name,
                 command="/bin/sh",
                 user=DPP_DOCKER_USER,
-                working_dir=self.working_dir,
+                working_dir=self._working_dir,
             )
         )
         return self

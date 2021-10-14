@@ -1,7 +1,7 @@
-from errors.exception import (DppCommandListInternalError, DppCaseExpressionInternalError, DppConfigCorruptedError, DppConfigNotInitialized,
-                              DppDefectIndexError, DppFileNotFoundError, DppInvalidCaseExpressionError,
-                              DppInvalidConfigError, DppPatchError, DppTaxonomyInitError, DppTaxonomyNotFoundError,
-                              DppTaxonomyNotProjectDirectory)
+from errors.exception import (DppCaseExpressionInternalError, DppCommandListInternalError, DppConfigCorruptedError,
+                              DppConfigNotInitialized, DppDefectIndexError, DppFileNotFoundError,
+                              DppInvalidCaseExpressionError, DppInvalidConfigError, DppPatchError,
+                              DppTaxonomyInitError, DppTaxonomyNotFoundError, DppTaxonomyNotProjectDirectory)
 
 __all__ = [
     "DppTaxonomyNotFoundError",

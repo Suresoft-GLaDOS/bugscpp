@@ -1,11 +1,14 @@
-from os.path import exists
+"""
+Checkout command.
+
+Clone a repository into the given directory on the host machine.
+"""
 from pathlib import Path
 from typing import List
 
 import git
 import message
-from processor.core.argparser import create_common_vcs_parser, write_config
-from processor.core.command import Command
+from processor.core import Command, create_common_vcs_parser, write_config
 
 
 class CheckoutCommand(Command):
@@ -15,10 +18,26 @@ class CheckoutCommand(Command):
 
     def __init__(self):
         super().__init__()
+        # TODO: write argparse description in detail
         self.parser = create_common_vcs_parser()
-        self.parser.usage = "d++ checkout project index"
+        self.parser.usage = "d++ checkout PROJECT INDEX [-b|--buggy] [-t|--target]"
 
     def __call__(self, argv: List[str]):
+        """
+        Clone a repository into the given directory or checkout to a specific commit on the host machine.
+        It does not perform action inside a container unlike the other commands.
+        It utilizes git-worktree rather than cleaning up the current directory and checking out.
+        It not only makes hoping around commits more quickly, but also reduces overhead of writing and deleting files.
+
+        Parameters
+        ----------
+        argv : List[str]
+            Command line argument vector.
+
+        Returns
+        -------
+        None
+        """
         args = self.parser.parse_args(argv)
         metadata = args.metadata
         worktree = args.worktree

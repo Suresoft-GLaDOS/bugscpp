@@ -1,5 +1,12 @@
+"""
+Show command.
+
+Display detailed information about defect taxonomy.
+
+WIP
+"""
 import message
-from processor.core.command import SimpleCommand
+from processor.core import SimpleCommand
 from taxonomy import Taxonomy
 
 
