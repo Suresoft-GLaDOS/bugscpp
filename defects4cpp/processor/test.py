@@ -8,10 +8,13 @@ import shutil
 from dataclasses import dataclass
 from os import getcwd
 from pathlib import Path
+from textwrap import dedent
 from typing import Callable, Generator, List, Optional, Set, Union, cast
 
-import errors
 import taxonomy
+from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
+from errors.argparser import DppArgparseInvalidCaseExpressionError
+from message import message
 from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
                             create_common_project_parser, read_config)
 
@@ -44,7 +47,7 @@ class ValidateCase(argparse.Action):
         def validate_each_case(max_num_cases: int, case_set: Set[int]) -> Set[int]:
             if all(0 < case <= max_num_cases for case in case_set):
                 return case_set
-            raise errors.DppInvalidCaseExpressionError(
+            raise DppArgparseInvalidCaseExpressionError(
                 index, metadata.name, max_num_cases, values
             )
 
@@ -52,7 +55,7 @@ class ValidateCase(argparse.Action):
             metadata: taxonomy.MetaData = namespace.metadata
             index: int = namespace.worktree.index
         except AttributeError:
-            raise errors.DppCaseExpressionInternalError(namespace)
+            raise DppCaseExpressionInternalError(namespace)
 
         num_cases = metadata.defects[index - 1].num_cases
         expr_tokens = values.split(":")
@@ -66,7 +69,7 @@ class ValidateCase(argparse.Action):
 class ValidateOutputDirectory(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         if not Path(values).exists():
-            raise errors.DppFileNotFoundError(values)
+            raise DppArgparseFileNotFoundError(values)
         setattr(namespace, self.dest, values)
 
 
@@ -146,7 +149,7 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
         return self._case
 
     def before(self):
-        message.info2(f"case #{self._case}")
+        message.stdout_progress_detail(f"case #{self._case}")
 
     def output(self, linenr: Optional[int], exit_code: int, output: str):
         if linenr == len(self.lines):
@@ -320,6 +323,11 @@ class TestCommand(DockerCommand):
             action=ValidateOutputDirectory,
         )
         self.parser.usage = "d++ test PATH [--coverage] [-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+        self.parser.description = dedent(
+            """\
+        Run testsuite inside docker. The project must have been built previously.
+        """
+        )
         self.metadata: Optional[taxonomy.MetaData] = None
         self.worktree: Optional[Worktree] = None
         self.coverage: Optional[bool] = None
@@ -365,20 +373,28 @@ class TestCommand(DockerCommand):
         )
 
     def setup(self, generator: DockerCommandScriptGenerator):
+        message.info(__name__, f"'{generator.metadata.name}'")
         if not self.coverage:
-            message.info(f"Start running {generator.metadata.name}")
+            message.stdout_progress(f"[{generator.metadata.name}] running test suites")
         else:
-            message.info(f"Generating coverage data for {generator.metadata.name}")
+            message.stdout_progress(
+                f"[{generator.metadata.name}] running test suites (coverage)"
+            )
 
     def teardown(self, generator: DockerCommandScriptGenerator):
-        message.info(f"Finished {generator.metadata.name}")
+        message.info(__name__, f"done")
+        message.stdout_progress(f"[{generator.metadata.name}] done")
         if self.coverage:
             if self.coverage_files:
                 created = [f"    - {c}\n" for c in self.coverage_files]
-                message.info2(f"Successfully created:\n{''.join(created)}")
+                message.stdout_progress_detail(
+                    f"Successfully created:\n{''.join(created)}"
+                )
             if self.failed_coverage_files:
                 not_created = [f"    - {c}\n" for c in self.failed_coverage_files]
-                message.info2(f"Could not create files:\n{''.join(not_created)}")
+                message.stdout_progress_detail(
+                    f"Could not create files:\n{''.join(not_created)}"
+                )
 
     def summary_dir(self, case: int) -> Path:
         """
@@ -473,6 +489,7 @@ class TestCommand(DockerCommand):
                 shutil.move(str(file), str(coverage_dest / file.name))
             else:
                 coverage.rmdir()
+                self.coverage_files.append(str(coverage_dest / coverage.name))
         else:
             self.failed_coverage_files.append(str(coverage_dest / coverage.name))
 

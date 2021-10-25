@@ -1,19 +1,35 @@
-from errors.exception import (DppCaseExpressionInternalError, DppCommandListInternalError, DppConfigCorruptedError,
-                              DppConfigNotInitialized, DppDefectIndexError, DppFileNotFoundError,
-                              DppInvalidCaseExpressionError, DppInvalidConfigError, DppPatchError,
-                              DppTaxonomyInitError, DppTaxonomyNotFoundError, DppTaxonomyNotProjectDirectory)
+from errors.argparser import (DppArgparseConfigCorruptedError, DppArgparseDefectIndexError, DppArgparseError,
+                              DppArgparseFileNotFoundError, DppArgparseInvalidCaseExpressionError,
+                              DppArgparseInvalidConfigError, DppArgparseNotProjectDirectory,
+                              DppArgparseTaxonomyNotFoundError)
+from errors.checkout import (DppGitApplyPatchError, DppGitCheckoutError, DppGitCheckoutInvalidRepositoryError,
+                             DppGitCloneError, DppGitError, DppGitPatchNotAppliedError, DppGitSubmoduleInitError,
+                             DppGitWorktreeError)
+from errors.common.exception import DppError
+from errors.docker import DppDockerError, DppDockerNoClientError
+from errors.internal import DppCaseExpressionInternalError, DppCommandListInternalError, DppInternalError
 
 __all__ = [
-    "DppTaxonomyNotFoundError",
-    "DppTaxonomyNotProjectDirectory",
-    "DppDefectIndexError",
-    "DppTaxonomyInitError",
-    "DppCommandListInternalError",
+    "DppError",
+    "DppArgparseError",
+    "DppArgparseNotProjectDirectory",
+    "DppArgparseDefectIndexError",
+    "DppArgparseTaxonomyNotFoundError",
+    "DppArgparseInvalidConfigError",
+    "DppArgparseConfigCorruptedError",
+    "DppArgparseFileNotFoundError",
+    "DppArgparseInvalidCaseExpressionError",
+    "DppGitError",
+    "DppGitCheckoutError",
+    "DppGitCheckoutInvalidRepositoryError",
+    "DppGitApplyPatchError",
+    "DppGitWorktreeError",
+    "DppGitCloneError",
+    "DppGitSubmoduleInitError",
+    "DppGitPatchNotAppliedError",
+    "DppInternalError",
     "DppCaseExpressionInternalError",
-    "DppInvalidCaseExpressionError",
-    "DppFileNotFoundError",
-    "DppInvalidConfigError",
-    "DppConfigCorruptedError",
-    "DppConfigNotInitialized",
-    "DppPatchError",
+    "DppCommandListInternalError",
+    "DppDockerError",
+    "DppDockerNoClientError",
 ]

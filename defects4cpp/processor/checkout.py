@@ -3,12 +3,99 @@ Checkout command.
 
 Clone a repository into the given directory on the host machine.
 """
+import os.path
 from pathlib import Path
-from typing import List
+from textwrap import dedent
+from typing import Dict, List, Type
 
 import git
-import message
+import taxonomy
+from errors import (DppGitApplyPatchError, DppGitCheckoutError, DppGitCheckoutInvalidRepositoryError, DppGitCloneError,
+                    DppGitError, DppGitPatchNotAppliedError, DppGitSubmoduleInitError, DppGitWorktreeError)
+from message import message
 from processor.core import Command, create_common_vcs_parser, write_config
+
+
+def _git_clone(path: Path, metadata: taxonomy.MetaData) -> git.Repo:
+    """
+    Initialize repository or clone a new one if it does not exist.
+    """
+    try:
+        repo = git.Repo(str(path))
+    except git.NoSuchPathError:
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        message.info(__name__, f"cloning {metadata.name} into {str(path)}")
+        try:
+            repo = git.Repo.clone_from(metadata.info.url, str(path))
+        except git.GitCommandError as e:
+            raise DppGitCloneError(metadata, str(path), e.command, e.status, e.stdout)
+
+    return repo
+
+
+def _git_checkout(
+    repo: git.Repo, checkout_dir: Path, defect: taxonomy.Defect
+) -> git.Repo:
+    """
+    Checkout branch to the given commit.
+    """
+    if not checkout_dir.exists():
+        try:
+            # Pass '-f' in case worktree directory could be registered but removed.
+            repo.git.worktree("add", "-f", str(checkout_dir), defect.hash)
+        except git.GitCommandError:
+            raise DppGitWorktreeError(repo, str(checkout_dir), defect)
+
+        # git worktree list --porcelain will output
+        # $ worktree path
+        # $ ...
+        porcelain_output = repo.git.worktree("list", "--porcelain").split("\n\n")
+        dir_start_index = len("worktree ") + 1
+        directory_names = [
+            Path(output.splitlines()[0][dir_start_index:]).name
+            for output in porcelain_output
+        ]
+        if checkout_dir.name not in directory_names:
+            # Not sure if this is reachable.
+            raise DppGitCheckoutError(repo, str(checkout_dir), defect)
+
+    try:
+        return git.Repo(checkout_dir)
+    except git.exc.InvalidGitRepositoryError:
+        raise DppGitCheckoutInvalidRepositoryError(repo, str(checkout_dir), defect)
+
+
+def _git_am(repo: git.Repo, patches: List[str]):
+    """
+    Apply patches to checkout branch.
+    """
+    # Invoke command manually, because it seems like GitPython has a bug with updating submodules.
+    if repo.submodules:
+        try:
+            repo.git.execute(["git", "submodule", "update", "--init"])
+        except git.exc.GitError as e:
+            raise DppGitSubmoduleInitError(repo, e.command, e.status, e.stderr)
+
+    prev_hash = repo.git.rev_parse("--verify", "HEAD")
+    patches = filter(None, patches)
+    if patches:
+        message.info(
+            __name__, f"{', '.join(os.path.basename(patch) for patch in patches)}"
+        )
+    else:
+        message.info(__name__, "no patches")
+
+    for patch in patches:
+        try:
+            repo.git.am(patch)
+        except git.GitCommandError as e:
+            raise DppGitApplyPatchError(repo, patch, e.command, e.status, e.stderr)
+
+        current_hash = repo.git.rev_parse("--verify", "HEAD")
+        if prev_hash == current_hash:
+            raise DppGitPatchNotAppliedError(repo, patch)
+        prev_hash = current_hash
 
 
 class CheckoutCommand(Command):
@@ -16,11 +103,26 @@ class CheckoutCommand(Command):
     Checkout command which handles VCS commands based on taxonomy information.
     """
 
+    _ERROR_MESSAGES: Dict[Type[DppGitError], str] = {
+        DppGitCloneError: "git-clone failed",
+        DppGitWorktreeError: "git-worktree failed",
+        DppGitCheckoutInvalidRepositoryError: "git-checkout failed (not a git repository)",
+        DppGitCheckoutError: "git-checkout failed",
+        DppGitSubmoduleInitError: "git-submodule failed",
+        DppGitApplyPatchError: "git-am failed",
+        DppGitPatchNotAppliedError: "git-am patch could not be applied",
+    }
+
     def __init__(self):
         super().__init__()
         # TODO: write argparse description in detail
         self.parser = create_common_vcs_parser()
         self.parser.usage = "d++ checkout PROJECT INDEX [-b|--buggy] [-t|--target]"
+        self.parser.description = dedent(
+            """\
+        Checkout defect taxonomy.
+        """
+        )
 
     def __call__(self, argv: List[str]):
         """
@@ -41,44 +143,45 @@ class CheckoutCommand(Command):
         args = self.parser.parse_args(argv)
         metadata = args.metadata
         worktree = args.worktree
-        repo_path: Path = worktree.base / ".repo"
         # args.index is 1 based.
         defect = metadata.defects[args.index - 1]
 
         try:
-            repo = git.Repo(str(repo_path))
-        except git.NoSuchPathError:
-            if not repo_path.parent.exists():
-                repo_path.parent.mkdir(parents=True, exist_ok=True)
-            message.info(f"cloning a new repository from {metadata.info.url}")
-            repo = git.Repo.clone_from(metadata.info.url, str(repo_path))
-        else:
-            pass
+            message.info(__name__, f"git-clone '{metadata.name}'")
+            message.stdout_progress(
+                f"[{metadata.name}] cloning a new repository from '{metadata.info.url}'"
+            )
+            repo = _git_clone(worktree.base / ".repo", metadata)
 
-        if not worktree.host.exists():
-            checkout_dir = str(worktree.host)
-            try:
-                # Pass '-f' in case worktree directory could be registered but removed.
-                repo.git.worktree("add", "-f", checkout_dir, defect.hash)
-            except git.GitCommandError:
-                # TODO: hmm..
-                pass
+            message.info(__name__, "git-checkout")
+            message.stdout_progress(f"[{metadata.name}] checking out '{defect.hash}'")
+            checkout_repo = _git_checkout(repo, worktree.host, defect)
 
-            checkout_repo = git.Repo(checkout_dir)
-            # Invoke command manually, because it seems like GitPython has a bug with updating submodules.
-            if checkout_repo.submodules:
-                checkout_repo.git.execute(["git", "submodule", "update", "--init"])
-            # Apply buggy patch
-            if args.buggy:
-                checkout_repo.git.am(defect.buggy_patch)
-            # Apply additional patch if it exists.
-            for patch in [defect.split_patch, defect.fix_patch]:
-                if patch:
-                    checkout_repo.git.am(patch)
+            current_hash = checkout_repo.git.rev_parse("--verify", "HEAD")
+            if current_hash == defect.hash:
+                message.info(__name__, "git-am")
+                _git_am(
+                    checkout_repo,
+                    [
+                        defect.buggy_patch if args.buggy else "",
+                        defect.fix_patch,
+                        defect.split_patch,
+                    ],
+                )
+            else:
+                message.info(__name__, "git-am skipped")
 
-        # Write .defects4cpp.json in the directory.
-        write_config(worktree)
-        message.info(f"{metadata.name}: {defect.hash}")
+            message.info(__name__, f"creating '.defects4cpp.json' at {worktree.host}")
+            # Write .defects4cpp.json in the directory.
+            write_config(worktree)
+
+        except DppGitError as e:
+            message.error(__name__, str(e))
+            message.stdout_progress_error(
+                f"[{metadata.name}] {CheckoutCommand._ERROR_MESSAGES[e.__class__]}"
+            )
+
+        message.stdout_progress(f"[{metadata.name}] done")
 
     @property
     def group(self) -> str:
