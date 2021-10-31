@@ -5,12 +5,12 @@ Utility functions to parse command line arguments and argparsers used across mod
 """
 import argparse
 import json
-import textwrap
 from dataclasses import asdict
 from pathlib import Path
 from typing import Tuple, Union
 
-import errors
+from errors import (DppArgparseConfigCorruptedError, DppArgparseDefectIndexError, DppArgparseFileNotFoundError,
+                    DppArgparseInvalidConfigError, DppArgparseNotProjectDirectory, DppArgparseTaxonomyNotFoundError)
 from processor.core.docker import Worktree
 from taxonomy import MetaData, Taxonomy
 
@@ -38,14 +38,14 @@ def read_config(project_dir: Union[str, Path]) -> Tuple[MetaData, Worktree]:
         with open(Path(project_dir) / _NAMESPACE_ATTR_PATH_CONFIG_NAME, "r") as fp:
             data = json.load(fp)
     except FileNotFoundError as e:
-        raise errors.DppFileNotFoundError(e.filename)
+        raise DppArgparseFileNotFoundError(e.filename)
     except json.JSONDecodeError:
-        raise errors.DppInvalidConfigError()
+        raise DppArgparseInvalidConfigError()
 
     try:
         worktree = Worktree(**data)
     except TypeError:
-        raise errors.DppConfigCorruptedError(data)
+        raise DppArgparseConfigCorruptedError(data)
 
     t = Taxonomy()
     return t[worktree.project_name], worktree
@@ -72,7 +72,7 @@ def write_config(worktree: Worktree) -> None:
         with open(config_file, "w+") as fp:
             json.dump(asdict(worktree), fp)
     except FileNotFoundError as e:
-        raise errors.DppFileNotFoundError(e.filename)
+        raise DppArgparseFileNotFoundError(e.filename)
 
 
 class ValidateProjectPath(argparse.Action):
@@ -89,7 +89,7 @@ class ValidateProjectPath(argparse.Action):
     ):
         p = values.absolute()
         if not p.exists() or not (p / _NAMESPACE_ATTR_PATH_CONFIG_NAME).exists():
-            raise errors.DppTaxonomyNotProjectDirectory(values)
+            raise DppArgparseNotProjectDirectory(values)
         metadata, worktree = read_config(p)
 
         setattr(namespace, _NAMESPACE_ATTR_METADATA, metadata)
@@ -112,7 +112,7 @@ class ValidateTaxonomy(argparse.Action):
         t = Taxonomy()
         # Probably redundant to check 'values' exists in keys.
         if values not in t.keys():
-            raise errors.DppTaxonomyNotFoundError(values)
+            raise DppArgparseTaxonomyNotFoundError(values)
         setattr(namespace, _NAMESPACE_ATTR_METADATA, t[values])
 
 
@@ -130,7 +130,7 @@ class ValidateIndex(argparse.Action):
     ):
         metadata = namespace.metadata
         if values < 1 or len(metadata.defects) < values:
-            raise errors.DppDefectIndexError(values)
+            raise DppArgparseDefectIndexError(values)
 
         setattr(namespace, _NAMESPACE_ATTR_WORKTREE, Worktree(metadata.name, values))
         setattr(namespace, self.dest, values)

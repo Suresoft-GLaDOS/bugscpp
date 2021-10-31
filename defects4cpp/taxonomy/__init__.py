@@ -8,7 +8,7 @@ from pkgutil import iter_modules
 from typing import Any, Dict, List, Optional
 
 import config
-import errors
+from errors.internal import DppTaxonomyInitInternalError
 
 
 class CommandType(enum.IntEnum):
@@ -136,13 +136,13 @@ class MetaData:
         try:
             self._info = create_info(meta["info"])
         except KeyError as e:
-            raise errors.DppTaxonomyInitError(e.args[0], Defect.__name__)
+            raise DppTaxonomyInitInternalError(e.args[0], Defect.__name__)
 
     def _load_common(self, meta: Dict):
         try:
             self._common = create_common(meta["common"])
         except KeyError as e:
-            raise errors.DppTaxonomyInitError(e.args[0], Common.__name__)
+            raise DppTaxonomyInitInternalError(e.args[0], Common.__name__)
 
     def _load_defects(self, meta: Dict):
         def check_path(path: str) -> str:
@@ -162,7 +162,7 @@ class MetaData:
                 for index, defect in enumerate(meta["defects"], start=1)
             ]
         except KeyError as e:
-            raise errors.DppTaxonomyInitError(e.args[0], MetaInfo.__name__)
+            raise DppTaxonomyInitInternalError(e.args[0], MetaInfo.__name__)
 
 
 class Taxonomy(MutableMapping):

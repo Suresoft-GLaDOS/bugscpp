@@ -5,41 +5,35 @@ Display help messages.
 
 WIP
 """
+from textwrap import dedent
 from typing import List
 
-import message
 import processor
-from processor.core import SimpleCommand
-
-
-class HelpCommandParser:
-    def __init__(self):
-        self.value = None
-
-    def __get__(self, instance, owner):
-        return self.value
-
-    def __set__(self, instance, value):
-        self.value = float(value)
+from message import message
+from processor.core import SimpleCommand, create_common_parser
 
 
 class HelpCommand(SimpleCommand):
-    parser = HelpCommandParser
+    def __init__(self):
+        self.parser = create_common_parser()
+        self.parser.usage = "d++ help"
+        self.parser.description = dedent(
+            """\
+        Display help messages.
+        """
+        )
 
     @property
     def help(self) -> str:
         return "Display help messages"
 
     def run(self, argv: List[str]) -> bool:
-        message.kind("Defects4C++: Defect Taxonomies for Automated Debugging Tools")
-        message.kind("MIT Licensed, Suresoft Technologies Inc.")
-        message.blank()
-        message.kind("Usage:")
-        message.command("    d++ COMMAND [OPTIONS]")
-        message.blank()
-        message.kind("COMMAND:")
+        message.stdout_title(
+            "Defects4C++: Defect Taxonomies for Automated Debugging Tools"
+        )
+        message.stdout_title("MIT Licensed, Suresoft Technologies Inc.\n")
         commands = processor.CommandList()
         for k, v in commands.items():
-            message.command(f"    {k:<10}\t{v.help}")
-        message.blank()
+            message.stdout_bullet(v.parser.usage)
+            message.stdout_paragraph(f"{v.parser.description}")
         return True

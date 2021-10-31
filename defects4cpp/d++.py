@@ -1,9 +1,16 @@
 import sys
 import time
 
-import lib.debug as debug
-import message
-import processor
+from errors import DppArgparseError, DppDockerError, DppError
+from message import message
+from processor import CommandList
+
+
+def _handle_cmdline_error(e: DppError):
+    if isinstance(e, DppArgparseError):
+        message.stdout_argparse_error(str(e))
+    elif isinstance(e, DppDockerError):
+        message.stdout_argparse_error(str(e))
 
 
 def main():
@@ -12,12 +19,12 @@ def main():
         func(args)
         elapsed = time.time() - start_time
         if elapsed < 100:
-            message.info(f"Elapsed: {elapsed:.2f}s")
+            message.stdout_progress(f"Elapsed: {elapsed:.2f}s")
         else:
             minutes, seconds = divmod(elapsed, 60)
-            message.info(f"Elapsed: {int(minutes)}m {seconds:.2f}s")
+            message.stdout_progress(f"Elapsed: {int(minutes)}m {seconds:.2f}s")
 
-    commands = processor.CommandList()
+    commands = CommandList()
 
     try:
         name = sys.argv[1]
@@ -26,7 +33,7 @@ def main():
 
     argv = sys.argv[2:]
     if name not in commands.keys():
-        message.error(f"'{name}' is not a valid command")
+        message.stdout_progress_error(f"'{name}' is not a valid command")
         return 1
 
     try:
@@ -34,14 +41,8 @@ def main():
             measure_time(commands[name], argv)
         else:
             commands[name](argv)
-    except SystemExit:
-        pass
-    except:
-        traceback_msg = debug.get_trace_back()
-        message.error(traceback_msg)
-        return 2
-    else:
-        return 0
+    except DppError as e:
+        _handle_cmdline_error(e)
 
 
 if __name__ == "__main__":

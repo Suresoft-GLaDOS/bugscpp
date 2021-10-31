@@ -7,15 +7,17 @@ import sys
 from dataclasses import dataclass, field
 from os import getcwd
 from pathlib import Path, PurePosixPath
+from textwrap import dedent
 from typing import Dict, Optional, cast
 
 import docker
 import docker.errors
-import message
 from config.env import DPP_DOCKER_HOME, DPP_DOCKER_USER
 from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
+from errors.docker import DppDockerNoClientError
+from message import message
 
 
 def _cast_image(image) -> Image:
@@ -82,10 +84,8 @@ class _Client:
             try:
                 setattr(owner, "_client", docker.from_env())
             except docker.errors.DockerException:
-                message.warning(
-                    "Could not get response from docker. Is your docker-daemon running?"
-                )
-                sys.exit(0)
+                message.error(__name__, "no response from docker-daemon")
+                raise DppDockerNoClientError()
         return getattr(owner, "_client")
 
 
@@ -126,10 +126,13 @@ class Docker:
         if not self._image:
             try:
                 self._image = _cast_image(self.client.images.get(self._tag))
+                message.info(__name__, f"image found {self._tag}")
             except docker.errors.ImageNotFound:
-                message.info2(
-                    f"Creating a new docker image for {Path(self._dockerfile).parent.name}"
+                tag_name = str(Path(self._dockerfile).parent.name)
+                message.info(
+                    __name__, f"no image found. creating new one using {tag_name}"
                 )
+                message.stdout_progress(f"Creating a new docker image for {tag_name}")
                 self._image = _build_image(
                     self.client, self._tag, str(Path(self._dockerfile).parent)
                 )
@@ -138,7 +141,16 @@ class Docker:
         return self._image
 
     def __enter__(self):
-        message.info(f"Starting container")
+        message.info(
+            __name__,
+            dedent(
+                """container.__enter__ ({})
+                - {}""".format(
+                    self._name, self._volume
+                )
+            ),
+        )
+        message.stdout_progress_detail(f"Starting container")
         self._container = _cast_container(
             self.client.containers.run(
                 self.image,
@@ -155,7 +167,8 @@ class Docker:
         return self
 
     def __exit__(self, type, value, traceback):
-        message.info(f"Closing container")
+        message.info(__name__, f"container.__exit__ ({self._name})")
+        message.stdout_progress_detail(f"Closing container")
         self._container.stop()
 
     def send(self, command: str, stream=True) -> ExecResult:

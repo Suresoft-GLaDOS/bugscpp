@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple
 
-import message
 import taxonomy
 from errors import DppCommandListInternalError
+from message import message
 from processor.core.docker import Docker, Worktree
 from processor.core.shell import Shell
 
@@ -283,7 +283,7 @@ class DockerCommand(Command):
             # https://docker-py.readthedocs.io/en/stable/containers.html
             if ec is None:
                 for stream_line in output:
-                    message.docker(stream_line.decode("utf-8", errors="ignore"))
+                    message.stdout_stream(stream_line.decode("utf-8", errors="ignore"))
             else:
                 script.output(line_number, ec, output.decode("utf-8", errors="ignore"))
 

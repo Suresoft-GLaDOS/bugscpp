@@ -3,10 +3,11 @@ Build command.
 
 Compile projects inside a container.
 """
+from textwrap import dedent
 from typing import Generator, List, Optional
 
-import message
 import taxonomy
+from message import message
 from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
                             create_common_project_parser, read_config)
 
@@ -18,8 +19,12 @@ class BuildCommandScript(DockerCommandScript):
     def before(self):
         pass
 
-    def output(self, linenr: Optional[int], exit_code: int, stream: str):
-        pass
+    def output(self, linenr: Optional[int], exit_code: Optional[int], stream: str):
+        if not exit_code:
+            return
+
+        if exit_code != 0:
+            message.warning(__name__, f"build command exit with {exit_code}")
 
     def after(self):
         pass
@@ -46,6 +51,11 @@ class BuildCommand(DockerCommand):
         # TODO: write argparse description in detail
         self.parser = create_common_project_parser()
         self.parser.usage = "d++ build PATH [--coverage] [-v|--verbose]"
+        self.parser.description = dedent(
+            """\
+        Build project inside docker.
+        """
+        )
 
     def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
         args = self.parser.parse_args(argv)
@@ -61,10 +71,12 @@ class BuildCommand(DockerCommand):
         return BuildCommandScriptGenerator(command, metadata, worktree, stream)
 
     def setup(self, generator: DockerCommandScriptGenerator):
-        message.info(f"Building {generator.metadata.name}")
+        message.info(__name__, f"'{generator.metadata.name}'")
+        message.stdout_progress(f"[{generator.metadata.name}] start building")
 
     def teardown(self, generator: DockerCommandScriptGenerator):
-        pass
+        message.info(__name__, f"done")
+        message.stdout_progress(f"[{generator.metadata.name}] done")
 
     @property
     def help(self) -> str:
