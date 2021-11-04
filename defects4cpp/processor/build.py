@@ -33,8 +33,8 @@ class BuildCommandScript(DockerCommandScript):
 class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
     def __init__(
         self,
-        command: taxonomy.Command,
-        metadata: taxonomy.MetaData,
+        command: "taxonomy.Command",
+        metadata: "taxonomy.MetaData",
         worktree: Worktree,
         stream: bool,
     ):

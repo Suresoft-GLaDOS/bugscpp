@@ -2,6 +2,7 @@ from textwrap import dedent
 from typing import List, Tuple, Union
 
 import git
+import taxonomy
 from errors.common.exception import DppError
 
 
