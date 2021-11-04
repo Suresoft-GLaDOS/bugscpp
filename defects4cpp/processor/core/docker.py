@@ -4,7 +4,7 @@ Manage commands associated with docker SDK module.
 Do not use docker SDK directly, instead use Docker class.
 """
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from os import getcwd
 from pathlib import Path, PurePosixPath
 from textwrap import dedent
@@ -76,6 +76,12 @@ class Worktree:
     def container(self) -> PurePosixPath:
         """Return path to which is mounted inside docker"""
         return PurePosixPath(DPP_DOCKER_HOME)
+
+    def __post_init__(self):
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if not value:
+                setattr(self, f.name, f.default)
 
 
 class _Client:
