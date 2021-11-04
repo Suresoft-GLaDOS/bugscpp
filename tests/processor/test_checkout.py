@@ -76,7 +76,6 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
     meta_json["defects"][0]["hash"] = "0935324da04784d625c5faef0705adf8705fab9c"
     checkout = create_checkout(meta_json, False)
 
-    # Create a directory ahead to raise exception.
     worktree: Worktree = checkout.parser.parse_args([]).worktree
     patch = resource_dir / "corrupted-test.patch"
     dest = Path(worktree.workspace) / "patch" / "0001-fix.patch"

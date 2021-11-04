@@ -11,12 +11,8 @@ CONFIG_NAME = ".defects4cpp.json"
 
 
 def test_read_config_not_exist(tmp_path):
-    try:
+    with pytest.raises(errors.DppArgparseFileNotFoundError):
         read_config(str(tmp_path / "foo.json"))
-    except errors.DppFileNotFoundError:
-        assert True
-    else:
-        assert False
 
 
 def test_read_config_invalid_json(tmp_path):
@@ -24,12 +20,8 @@ def test_read_config_invalid_json(tmp_path):
     with open(dummy, "w+") as fp:
         fp.write("hello, world!")
 
-    try:
+    with pytest.raises(errors.DppArgparseInvalidConfigError):
         read_config(tmp_path)
-    except errors.DppInvalidConfigError:
-        assert True
-    else:
-        assert False
 
 
 def test_read_config_corrupted_json(tmp_path):
@@ -38,12 +30,8 @@ def test_read_config_corrupted_json(tmp_path):
         obj = {"foo": 1}
         json.dump(obj, fp)
 
-    try:
+    with pytest.raises(errors.DppArgparseConfigCorruptedError):
         read_config(tmp_path)
-    except errors.DppConfigCorruptedError:
-        assert True
-    else:
-        assert False
 
 
 def test_read_config(tmp_path):
@@ -68,12 +56,9 @@ def test_read_config(tmp_path):
 
 def test_write_config(tmp_path):
     worktree = Worktree("yara", 1, True, str(tmp_path / "imaginary_path"))
-    try:
+
+    with pytest.raises(errors.DppArgparseFileNotFoundError):
         write_config(worktree)
-    except errors.DppFileNotFoundError:
-        assert True
-    else:
-        assert False
 
     p = tmp_path / "yara" / "buggy#1"
     p.mkdir(parents=True)
@@ -87,16 +72,16 @@ def test_write_config(tmp_path):
     assert asdict(worktree) == config
 
 
-def test_project_parser(tmp_path):
+def test_project_parser_invalid_project_should_throw(tmp_path):
+    parser = create_common_project_parser()
+
+    with pytest.raises(errors.DppArgparseNotProjectDirectory):
+        parser.parse_args(f"{tmp_path} --coverage".split())
+
+
+def test_project_parser_should_read_config_json(tmp_path):
     parser = create_common_project_parser()
     project_name = "yara"
-
-    try:
-        parser.parse_args(f"{tmp_path} --coverage".split())
-    except errors.DppTaxonomyNotProjectDirectory:
-        assert True
-    else:
-        assert False
 
     with open(tmp_path / CONFIG_NAME, "w+") as fp:
         obj = {
@@ -120,12 +105,8 @@ def test_project_parser(tmp_path):
 def test_vcs_parser_invalid_project_should_throw():
     parser = create_common_vcs_parser()
 
-    try:
+    with pytest.raises(SystemExit):
         parser.parse_args("foobar 1 --buggy".split())
-    except SystemExit:
-        assert True
-    else:
-        assert False
 
 
 @pytest.mark.parametrize("cmd_line", ["yara 1 --buggy", "yara --buggy 1"])

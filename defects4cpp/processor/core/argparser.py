@@ -14,6 +14,9 @@ from errors import (DppArgparseConfigCorruptedError, DppArgparseDefectIndexError
 from processor.core.docker import Worktree
 from taxonomy import MetaData, Taxonomy
 
+_NAMESPACE_ATTR_INDEX = "index"
+_NAMESPACE_ATTR_BUGGY = "buggy"
+_NAMESPACE_ATTR_WORKSPACE = "workspace"
 _NAMESPACE_ATTR_PATH = "path"
 _NAMESPACE_ATTR_PATH_CONFIG_NAME = ".defects4cpp.json"
 _NAMESPACE_ATTR_METADATA = "metadata"
@@ -104,6 +107,9 @@ class ValidateProjectPath(argparse.Action):
 
         _set_worktree(namespace)
         setattr(namespace, _NAMESPACE_ATTR_METADATA, metadata)
+        setattr(namespace, _NAMESPACE_ATTR_INDEX, worktree.index)
+        setattr(namespace, _NAMESPACE_ATTR_BUGGY, worktree.buggy)
+        setattr(namespace, _NAMESPACE_ATTR_WORKSPACE, worktree.workspace)
         setattr(namespace, _NAMESPACE_ATTR_PATH, str(p))
 
 
@@ -213,7 +219,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
         action=ValidateTaxonomy,
     )
     parser.add_argument(
-        "index",
+        _NAMESPACE_ATTR_INDEX,
         type=int,
         help="index of defects.",
         action=ValidateIndex,
@@ -221,7 +227,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-b",
         "--buggy",
-        dest="buggy",
+        dest=_NAMESPACE_ATTR_BUGGY,
         help="checkout a buggy commit.",
         nargs=0,
         action=ValidateBuggy,
@@ -230,7 +236,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-t",
         "--target",
-        dest="workspace",
+        dest=_NAMESPACE_ATTR_WORKSPACE,
         type=str,
         help="checkout to the specified directory instead of the current directory.",
         action=ValidateWorkspace,

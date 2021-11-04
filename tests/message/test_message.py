@@ -13,22 +13,25 @@ def disable_pytest_logger():
     return disable
 
 
-def test_change_logger_path(tmp_path, disable_pytest_logger):
+def test_change_logger_path(
+    tmp_path, disable_pytest_logger, meta_json, create_checkout
+):
     disable_pytest_logger()
 
     path = tmp_path / "test.log"
     message.path = path
-    message.warning(__name__, "Hello, world!")
+    checkout = create_checkout(meta_json, False)
+    checkout([])
 
     with open(path, "r") as fp:
-        assert "Hello, world!" in fp.readline()
+        assert len(fp.readlines()) > 0
 
     path = tmp_path
     message.path = path
-    message.warning(__name__, "Hello, world!")
+    checkout([])
 
     with open(path / "defects4cpp.log", "r") as fp:
-        assert "Hello, world!" in fp.readline()
+        assert len(fp.readlines()) > 0
 
 
 def test_output_log_to_stdout(capsys):

@@ -78,7 +78,7 @@ def _git_am(repo: git.Repo, patches: List[str]):
             raise DppGitSubmoduleInitError(repo, e.command, e.status, e.stderr)
 
     prev_hash = repo.git.rev_parse("--verify", "HEAD")
-    patches = filter(None, patches)
+    patches = list(filter(None, patches))
     if patches:
         message.info(
             __name__, f"{', '.join(os.path.basename(patch) for patch in patches)}"
