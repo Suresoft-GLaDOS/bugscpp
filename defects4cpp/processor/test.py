@@ -151,6 +151,9 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     def before(self):
         message.stdout_progress_detail(f"case #{self._case}")
 
+    def step(self, linenr: int, line: str):
+        pass
+
     def output(self, linenr: Optional[int], exit_code: int, output: str):
         if linenr == len(self.lines):
             self.captured_output = CapturedOutput(exit_code, output)
@@ -226,6 +229,9 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
         return self._case
 
     def before(self):
+        pass
+
+    def step(self, linenr: int, line: str):
         pass
 
     def output(self, linenr: Optional[int], exit_code: Optional[int], output: str):
