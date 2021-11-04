@@ -21,7 +21,7 @@ _NAMESPACE_ATTR_METADATA = "metadata"
 
 def _set_worktree(obj: argparse.Namespace):
     def worktree(self: argparse.Namespace) -> Worktree:
-        return Worktree(self.project, self.index, self.buggy, self.workspace)
+        return Worktree(self.metadata.name, self.index, self.buggy, self.workspace)
 
     cls = type(obj)
     if not hasattr(cls, worktree.__name__):
