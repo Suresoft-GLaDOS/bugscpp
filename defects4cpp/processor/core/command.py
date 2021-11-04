@@ -171,6 +171,20 @@ class DockerCommandScript(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
+    def step(self, linenr: int, line: str):
+        """
+        Invoked before each line is executed.
+
+        Parameters
+        ----------
+        linenr : int
+            The current line number.
+        line: str
+            The current line to execute.
+        """
+        pass
+
+    @abstractmethod
     def output(self, linenr: Optional[int], exit_code: Optional[int], output: str):
         """
         Invoked after each line is executed.
@@ -310,6 +324,7 @@ class DockerCommand(Command):
                     parse_exec_result(exit_code, output_stream)
                 else:
                     for linenr, line in enumerate(script, start=1):
+                        script.step(linenr, line)
                         exit_code, output_stream = docker.send(line, stream)
                         parse_exec_result(exit_code, output_stream, linenr)
                 script.after()

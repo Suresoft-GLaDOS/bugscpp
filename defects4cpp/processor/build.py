@@ -13,11 +13,16 @@ from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScr
 
 
 class BuildCommandScript(DockerCommandScript):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, verbose: bool, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._verbose = verbose
 
     def before(self):
         pass
+
+    def step(self, linenr: int, line: str):
+        if self._verbose:
+            message.stdout_progress_detail(f"defects4cpp.build[{linenr}]: {line}")
 
     def output(self, linenr: Optional[int], exit_code: Optional[int], stream: str):
         if not exit_code:
@@ -36,13 +41,13 @@ class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
         command: "taxonomy.Command",
         metadata: "taxonomy.MetaData",
         worktree: Worktree,
-        stream: bool,
+        verbose: bool,
     ):
-        super().__init__(metadata, worktree, stream)
+        super().__init__(metadata, worktree, verbose)
         self.command = command
 
     def create(self) -> Generator[BuildCommandScript, None, None]:
-        yield BuildCommandScript(self.command.type, self.command.lines)
+        yield BuildCommandScript(self.stream, self.command.type, self.command.lines)
 
 
 class BuildCommand(DockerCommand):
@@ -66,9 +71,7 @@ class BuildCommand(DockerCommand):
             if args.coverage
             else metadata.common.build_command
         )
-        stream = True if args.verbose else False
-
-        return BuildCommandScriptGenerator(command, metadata, worktree, stream)
+        return BuildCommandScriptGenerator(command, metadata, worktree, args.verbose)
 
     def setup(self, generator: DockerCommandScriptGenerator):
         message.info(__name__, f"'{generator.metadata.name}'")
