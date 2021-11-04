@@ -17,7 +17,17 @@ from taxonomy import MetaData, Taxonomy
 _NAMESPACE_ATTR_PATH = "path"
 _NAMESPACE_ATTR_PATH_CONFIG_NAME = ".defects4cpp.json"
 _NAMESPACE_ATTR_METADATA = "metadata"
-_NAMESPACE_ATTR_WORKTREE = "worktree"
+
+
+def _set_worktree(obj: argparse.Namespace):
+    def worktree(self: argparse.Namespace) -> Worktree:
+        return Worktree(self.project, self.index, self.buggy, self.workspace)
+
+    cls = type(obj)
+    if not hasattr(cls, worktree.__name__):
+        new_cls = type(cls.__name__, (cls,), {})
+        obj.__class__ = new_cls
+        setattr(new_cls, worktree.__name__, property(worktree))
 
 
 def read_config(project_dir: Union[str, Path]) -> Tuple[MetaData, Worktree]:
@@ -92,8 +102,8 @@ class ValidateProjectPath(argparse.Action):
             raise DppArgparseNotProjectDirectory(values)
         metadata, worktree = read_config(p)
 
+        _set_worktree(namespace)
         setattr(namespace, _NAMESPACE_ATTR_METADATA, metadata)
-        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, worktree)
         setattr(namespace, _NAMESPACE_ATTR_PATH, str(p))
 
 
@@ -113,6 +123,8 @@ class ValidateTaxonomy(argparse.Action):
         # Probably redundant to check 'values' exists in keys.
         if values not in t.keys():
             raise DppArgparseTaxonomyNotFoundError(values)
+
+        _set_worktree(namespace)
         setattr(namespace, _NAMESPACE_ATTR_METADATA, t[values])
 
 
@@ -132,7 +144,7 @@ class ValidateIndex(argparse.Action):
         if values < 1 or len(metadata.defects) < values:
             raise DppArgparseDefectIndexError(values)
 
-        setattr(namespace, _NAMESPACE_ATTR_WORKTREE, Worktree(metadata.name, values))
+        _set_worktree(namespace)
         setattr(namespace, self.dest, values)
 
 
@@ -148,9 +160,7 @@ class ValidateBuggy(argparse.Action):
         values,
         option_string=None,
     ):
-        worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
-        if worktree:
-            worktree.buggy = True
+        _set_worktree(namespace)
         setattr(namespace, self.dest, True)
 
 
@@ -166,9 +176,7 @@ class ValidateWorkspace(argparse.Action):
         values: str,
         option_string=None,
     ):
-        worktree = getattr(namespace, _NAMESPACE_ATTR_WORKTREE, None)
-        if worktree:
-            worktree.workspace = values
+        _set_worktree(namespace)
         setattr(namespace, self.dest, values)
 
 

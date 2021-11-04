@@ -1,7 +1,9 @@
+import itertools
 import json
 from dataclasses import asdict
 
 import errors
+import pytest
 from processor.core.argparser import create_common_project_parser, create_common_vcs_parser, read_config, write_config
 from processor.core.docker import Worktree
 
@@ -115,9 +117,8 @@ def test_project_parser(tmp_path):
     assert args.path == str(tmp_path)
 
 
-def test_vsc_parser(tmp_path):
+def test_vcs_parser_invalid_project_should_throw():
     parser = create_common_vcs_parser()
-    project_name = "yara"
 
     try:
         parser.parse_args("foobar 1 --buggy".split())
@@ -126,10 +127,30 @@ def test_vsc_parser(tmp_path):
     else:
         assert False
 
-    args = parser.parse_args(f"{project_name} 1 --buggy".split())
+
+@pytest.mark.parametrize("cmd_line", ["yara 1 --buggy", "yara --buggy 1"])
+def test_vcs_parser_unordered_arguments_should_be_handled(cmd_line):
+    parser = create_common_vcs_parser()
+
+    args = parser.parse_args(cmd_line.split())
     metadata = args.metadata
     worktree = args.worktree
 
-    assert metadata.name == project_name
-    assert worktree.project_name == project_name
+    assert metadata.name == "yara"
     assert worktree.index == 1
+    assert worktree.buggy
+
+
+def test_vcs_parser_unordered_arguments_should_be_handled_with_target_option():
+    parser = create_common_vcs_parser()
+    arguments = ["1", "--buggy", "--target=/home/test"]
+
+    for argument in itertools.permutations(arguments):
+        args = parser.parse_args(["yara", *argument])
+        metadata = args.metadata
+        worktree = args.worktree
+
+        assert metadata.name == "yara"
+        assert worktree.index == 1
+        assert worktree.buggy
+        assert worktree.workspace == "/home/test"
