@@ -16,7 +16,8 @@ from pathlib import Path
 
 _path = Path(os.path.abspath(__file__))
 _root_dir = _path.parents[2]
-sys.path.extend([str(_root_dir), str(_root_dir / "defects4cpp")])
+sys.path.insert(0, str(_root_dir / "defects4cpp"))
+sys.path.insert(0, str(_root_dir))
 
 
 # -- Project information -----------------------------------------------------
