@@ -7,10 +7,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
-from processor.core import Worktree
-
-import defects4cpp.processor
-import defects4cpp.taxonomy
 
 root_dir = dirname(dirname(abspath(__file__)))
 sys.path.extend([root_dir, join(root_dir, "defects4cpp")])
@@ -46,19 +42,21 @@ def dummy_config(tmp_path: Path):
 
 @pytest.fixture
 def create_checkout(tmp_path: Path, request):
+    from defects4cpp.processor import CheckoutCommand
+    from defects4cpp.processor.core import Worktree
+    from defects4cpp.taxonomy import MetaData
+
     workspace = tmp_path / request.node.name
     workspace.mkdir(parents=True)
 
-    def checkout(meta_json: Dict, buggy: bool) -> defects4cpp.processor.CheckoutCommand:
+    def checkout(meta_json: Dict, buggy: bool) -> CheckoutCommand:
         with open(workspace / "meta.json", "w+") as fp:
             json.dump(meta_json, fp)
 
-        cmd = defects4cpp.processor.CheckoutCommand()
+        cmd = CheckoutCommand()
         cmd.parser = argparse.ArgumentParser()
         cmd.parser.set_defaults(
-            metadata=defects4cpp.taxonomy.MetaData(
-                name=request.node.name, path=workspace
-            ),
+            metadata=MetaData(name=request.node.name, path=workspace),
             worktree=Worktree(request.node.name, 1, buggy, str(workspace)),
             buggy=buggy,
             index=1,

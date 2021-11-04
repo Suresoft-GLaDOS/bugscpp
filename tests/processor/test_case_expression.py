@@ -3,13 +3,13 @@ from typing import List
 import errors
 import processor
 import taxonomy
-from errors import DppInvalidCaseExpressionError
+from errors import DppArgparseInvalidCaseExpressionError
 
 
 def out_of_index_error(cmd: processor.TestCommand, default_cmds: List[str], expr: str):
     try:
         cmd.parser.parse_args([*default_cmds, expr])
-    except DppInvalidCaseExpressionError:
+    except DppArgparseInvalidCaseExpressionError:
         return True
     else:
         return False
@@ -79,7 +79,7 @@ def test_invalid_case_expression(dummy_config):
     expr = f"{cases+1}"
     try:
         cmd.parser.parse_args([*default_cmds, expr])
-    except errors.DppInvalidCaseExpressionError:
+    except errors.DppArgparseInvalidCaseExpressionError:
         assert True
     else:
         assert False
