@@ -89,6 +89,9 @@ class DummyDockerCommandScript(DockerCommandScript):
     def before(self):
         pass
 
+    def step(self, linenr: int, line: str):
+        pass
+
     def output(self, linenr: int, exit_code: Optional[int], output: str):
         self.callback(linenr, exit_code, output)
 
