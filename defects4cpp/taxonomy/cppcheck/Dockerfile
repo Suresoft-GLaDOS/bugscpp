@@ -5,7 +5,7 @@ RUN apt-get clean
 RUN apt-get autoclean
 RUN apt-get update
 RUN apt-get install -y git liblua5.3-dev python3 python3-pip \
-    wget lsb-release software-properties-common
+    bear wget lsb-release software-properties-common
 
 
 # Install latest cmake

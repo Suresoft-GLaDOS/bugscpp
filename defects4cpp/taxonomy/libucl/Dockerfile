@@ -4,7 +4,7 @@ FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && apt-get upgrade -y
 RUN apt-get install -y git autoconf automake libtool \
-                       pkg-config python3 python3-pip
+                       bear pkg-config python3 python3-pip
 
 RUN pip3 install gcovr
 RUN git config --global user.email "minhyuk@suresofttech.com"

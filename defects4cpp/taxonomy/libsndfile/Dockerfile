@@ -3,7 +3,7 @@
 FROM ubuntu:18.04
 
 RUN apt update
-RUN apt install -y git pkg-config autogen automake libtool liblua5.3-dev python3 python3-pip
+RUN apt install -y git pkg-config bear autogen automake libtool liblua5.3-dev python3 python3-pip
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100
 
 RUN pip3 install gcovr

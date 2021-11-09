@@ -1,11 +1,10 @@
 import enum
 import json
-import re
 from collections.abc import MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from os.path import dirname, exists, join
 from pkgutil import iter_modules
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import config
 from errors.internal import DppTaxonomyInitInternalError
@@ -90,15 +89,20 @@ def create_info(value: Dict[str, Any]) -> MetaInfo:
 
 
 class MetaData:
+    _variables: Dict[str, str] = {
+        "@DPP_PARALLEL_BUILD@": config.DPP_PARALLEL_BUILD,
+    }
+    _common_variables: Dict[str, str] = {
+        "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS",
+        "@DPP_GEN_COMPILATION_DB_TOOL@": config.DPP_COMPILATION_DB_TOOL,
+    }
+
     def __init__(self, name: str, path: str):
         self.name = name
         self._path: str = path
         self._info: Optional[MetaInfo] = None
         self._common: Optional[Common] = None
         self._defects: List[Defect] = []
-        self._variables: Dict[str, str] = {
-            "DPP_PARALLEL_BUILD": config.DPP_PARALLEL_BUILD
-        }
 
     @property
     def dockerfile(self) -> str:
@@ -114,7 +118,13 @@ class MetaData:
     def common(self):
         if not self._common:
             self._load()
-        return self._common
+        return self._preprocess_common(self._common, False)
+
+    @property
+    def common_capture(self):
+        if not self._common:
+            self._load()
+        return self._preprocess_common(self._common, True)
 
     @property
     def defects(self):
@@ -126,7 +136,7 @@ class MetaData:
         with open(f"{self._path}/meta.json", "r", encoding="utf-8") as fp:
             contents: str = fp.read()
             for key, value in self._variables.items():
-                contents = re.sub(f"@{key}@", value, contents)
+                contents = contents.replace(key, value)
             meta = json.loads(contents)
         self._load_info(meta)
         self._load_common(meta)
@@ -163,6 +173,37 @@ class MetaData:
             ]
         except KeyError as e:
             raise DppTaxonomyInitInternalError(e.args[0], MetaInfo.__name__)
+
+    @staticmethod
+    def _preprocess_common(common: Common, replace: bool) -> Common:
+        def do_replace(string: str) -> str:
+            return " ".join(
+                [MetaData._common_variables.get(w, w) for w in string.split()]
+            )
+
+        def do_strip(string: str) -> str:
+            return " ".join(
+                [
+                    w
+                    for w in string.split()
+                    if w not in MetaData._common_variables.keys()
+                ]
+            )
+
+        data: Dict = {
+            "test_type": common.test_type,
+            "gcov": common.gcov,
+        }
+
+        func: Callable[[str], str] = do_replace if replace else do_strip
+        command_fields = [f for f in fields(common) if f.type == Command]
+        for command_field in command_fields:
+            obj = getattr(common, command_field.name)
+            data[command_field.name] = Command(
+                obj.type, [func(line) for line in obj.lines]
+            )
+
+        return Common(**data)
 
 
 class Taxonomy(MutableMapping):

@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR workspace
 RUN apt update
 RUN apt install -y git pkg-config autoconf autogen automake libtool ninja-build \
-                   wget lsb-release software-properties-common \
+                   bear wget lsb-release software-properties-common \
                    liblua5.3-dev python3 python3-pip libsqlite3-dev texinfo
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 100

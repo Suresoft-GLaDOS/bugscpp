@@ -3,7 +3,7 @@
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt update
-RUN apt install -y git pkg-config autogen automake libtool python3 python3-pip \
+RUN apt install -y git pkg-config autogen automake bear libtool python3 python3-pip \
     zlib1g-dev liblzma-dev libbz2-dev libbrotli-dev libzstd-dev libidn2-dev flex libnghttp2-dev libpsl-dev \
     libmicrohttpd-dev autopoint gettext lzip texinfo gnulib coreutils wget
 
