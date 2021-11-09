@@ -7,10 +7,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
 
 @pytest.mark.parametrize(
     "defect",
-    [
-        (1, 83),
-        # (2, 173), (3, 172), (4, 166), (5, 90)
-    ],
+    [(1, 79), (2, 120), (3, 122), (4, 86), (5, 40)],
 )
 def test_xbps(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
     index, case = defect
