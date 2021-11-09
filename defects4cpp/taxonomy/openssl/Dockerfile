@@ -3,7 +3,7 @@
 FROM ubuntu:18.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt update
-RUN apt install -y git perl gcc make rename
+RUN apt install -y git bear perl gcc make rename
 RUN apt install -y python3 python3-pip
 
 # Install gcovr

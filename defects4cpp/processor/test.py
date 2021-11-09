@@ -15,8 +15,14 @@ import taxonomy
 from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
-from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
-                            create_common_project_parser, read_config)
+from processor.core import (
+    DockerCommand,
+    DockerCommandScript,
+    DockerCommandScriptGenerator,
+    Worktree,
+    create_common_project_parser,
+    read_config,
+)
 
 
 class ValidateCase(argparse.Action):
