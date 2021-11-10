@@ -2,7 +2,7 @@
 # Licensed under the MIT
 FROM ubuntu:18.04
 RUN apt-get update
-RUN apt-get install -y git python3 python3-pip
+RUN apt-get install -y git bear python3 python3-pip
 
 # Install gcovr
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100

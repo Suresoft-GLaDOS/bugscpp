@@ -7,6 +7,7 @@ DPP_DOCKER_HOME: str = "/home/workspace"
 
 # meta.json variables
 DPP_PARALLEL_BUILD: str = "1"
+DPP_COMPILATION_DB_TOOL: str = "bear"
 
 # Directory at which d++.py is placed
 DPP_HOME: str = os.path.realpath(

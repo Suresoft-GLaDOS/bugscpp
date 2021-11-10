@@ -15,8 +15,14 @@ import taxonomy
 from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
-from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
-                            create_common_project_parser, read_config)
+from processor.core import (
+    DockerCommand,
+    DockerCommandScript,
+    DockerCommandScriptGenerator,
+    Worktree,
+    create_common_project_parser,
+    read_config,
+)
 
 
 class ValidateCase(argparse.Action):
@@ -388,7 +394,7 @@ class TestCommand(DockerCommand):
             )
 
     def teardown(self, generator: DockerCommandScriptGenerator):
-        message.info(__name__, f"done")
+        message.info(__name__, "done")
         message.stdout_progress(f"[{generator.metadata.name}] done")
         if self.coverage:
             if self.coverage_files:
