@@ -1,4 +1,4 @@
-.PHONY: all install format lint test
+.PHONY: all install format lint test test-taxonomy
 
 default: test
 
@@ -14,6 +14,9 @@ lint:
 	flake8 . --config setup.cfg
 
 test:
-	pytest
+	@PYTHONPATH=defects4cpp/ python3 -m pytest --ignore tests/taxonomy
+
+test-taxonomy:
+	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/taxonomy
 
 all: install test
