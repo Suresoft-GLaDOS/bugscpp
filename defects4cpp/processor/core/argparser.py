@@ -9,8 +9,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Tuple, Union
 
-from errors import (DppArgparseConfigCorruptedError, DppArgparseDefectIndexError, DppArgparseFileNotFoundError,
-                    DppArgparseInvalidConfigError, DppArgparseNotProjectDirectory, DppArgparseTaxonomyNotFoundError)
+from errors import (
+    DppArgparseConfigCorruptedError,
+    DppArgparseDefectIndexError,
+    DppArgparseFileNotFoundError,
+    DppArgparseInvalidConfigError,
+    DppArgparseNotProjectDirectory,
+    DppArgparseTaxonomyNotFoundError,
+)
 from processor.core.docker import Worktree
 from taxonomy import MetaData, Taxonomy
 

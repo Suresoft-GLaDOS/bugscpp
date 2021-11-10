@@ -4,9 +4,11 @@ Build command.
 Compile projects inside a container.
 """
 from textwrap import dedent
-from typing import Generator, List, Optional
+from typing import TYPE_CHECKING, Generator, List, Optional
 
-import taxonomy
+if TYPE_CHECKING:
+    from taxonomy import Command, MetaData
+
 from message import message
 from processor.core import (
     DockerCommand,
@@ -44,8 +46,8 @@ class BuildCommandScript(DockerCommandScript):
 class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
     def __init__(
         self,
-        command: "taxonomy.Command",
-        metadata: "taxonomy.MetaData",
+        command: "Command",
+        metadata: "MetaData",
         worktree: Worktree,
         verbose: bool,
     ):
