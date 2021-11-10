@@ -8,8 +8,14 @@ from typing import Generator, List, Optional
 
 import taxonomy
 from message import message
-from processor.core import (DockerCommand, DockerCommandScript, DockerCommandScriptGenerator, Worktree,
-                            create_common_project_parser, read_config)
+from processor.core import (
+    DockerCommand,
+    DockerCommandScript,
+    DockerCommandScriptGenerator,
+    Worktree,
+    create_common_project_parser,
+    read_config,
+)
 
 
 class BuildCommandScript(DockerCommandScript):
@@ -78,7 +84,7 @@ class BuildCommand(DockerCommand):
         message.stdout_progress(f"[{generator.metadata.name}] start building")
 
     def teardown(self, generator: DockerCommandScriptGenerator):
-        message.info(__name__, f"done")
+        message.info(__name__, "done")
         message.stdout_progress(f"[{generator.metadata.name}] done")
 
     @property

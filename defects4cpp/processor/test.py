@@ -394,7 +394,7 @@ class TestCommand(DockerCommand):
             )
 
     def teardown(self, generator: DockerCommandScriptGenerator):
-        message.info(__name__, f"done")
+        message.info(__name__, "done")
         message.stdout_progress(f"[{generator.metadata.name}] done")
         if self.coverage:
             if self.coverage_files:

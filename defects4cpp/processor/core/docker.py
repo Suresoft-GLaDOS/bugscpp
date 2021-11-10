@@ -3,7 +3,6 @@ Manage commands associated with docker SDK module.
 
 Do not use docker SDK directly, instead use Docker class.
 """
-import sys
 from dataclasses import dataclass, field, fields
 from os import getcwd
 from pathlib import Path, PurePosixPath
@@ -156,7 +155,7 @@ class Docker:
                 )
             ),
         )
-        message.stdout_progress_detail(f"Starting container")
+        message.stdout_progress_detail("Starting container")
         self._container = _cast_container(
             self.client.containers.run(
                 self.image,
@@ -174,7 +173,7 @@ class Docker:
 
     def __exit__(self, type, value, traceback):
         message.info(__name__, f"container.__exit__ ({self._name})")
-        message.stdout_progress_detail(f"Closing container")
+        message.stdout_progress_detail("Closing container")
         self._container.stop()
 
     def send(self, command: str, stream=True) -> ExecResult:

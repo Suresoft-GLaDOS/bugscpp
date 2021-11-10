@@ -78,7 +78,7 @@ def should_create_gcov(d: Path):
 
 
 def should_create_summary_json(d: Path):
-    with open(d / f"summary.json") as fp:
+    with open(d / "summary.json") as fp:
         summary_json = json.load(fp)
     return len(summary_json["files"]) > 0
 
