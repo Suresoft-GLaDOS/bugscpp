@@ -1,15 +1,14 @@
 import argparse
 import json
-import sys
 from os import environ
-from os.path import abspath, dirname, join
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, cast
 
 import pytest
 
-root_dir = dirname(dirname(abspath(__file__)))
-sys.path.extend([root_dir, join(root_dir, "defects4cpp")])
+from defects4cpp.processor import BuildCommand, CheckoutCommand
+from defects4cpp.processor.core import Command, Worktree, write_config
+from defects4cpp.taxonomy import MetaData, Taxonomy
 
 
 @pytest.fixture(autouse=True)
@@ -40,30 +39,85 @@ def dummy_config(tmp_path: Path):
     return create_dummy_config
 
 
+def _create_processor(
+    name: str,
+    workspace: Path,
+    meta_json: Dict,
+    extra_args: Dict,
+    cmd: "Command",
+) -> "Command":
+    with open(workspace / "meta.json", "w+") as fp:
+        json.dump(meta_json, fp)
+    with open(workspace / "__init__.py", "w+") as fp:
+        pass
+
+    # Create a dummy taxonomy temporarily used for testing.
+    t = Taxonomy()
+    symlink = Path(t.base) / workspace.name
+    symlink.symlink_to(workspace, target_is_directory=True)
+
+    cmd.parser = argparse.ArgumentParser()
+    worktree = Worktree(name, 1, extra_args["buggy"], str(workspace))
+    if isinstance(cmd, BuildCommand):
+        worktree.host.mkdir(parents=True, exist_ok=True)
+        write_config(worktree)
+    cmd.parser.set_defaults(
+        path=str(worktree.host),
+        metadata=MetaData(name=name, path=str(workspace)),
+        worktree=worktree,
+        index=1,
+        **extra_args
+    )
+
+    return cmd
+
+
+def _cleanup_create_processor(workspace: Path):
+    t = Taxonomy()
+    symlink = Path(t.base) / workspace.name
+    if symlink.exists() and symlink.is_symlink():
+        symlink.unlink()
+
+
 @pytest.fixture
 def create_checkout(tmp_path: Path, request):
-    from defects4cpp.processor import CheckoutCommand
-    from defects4cpp.processor.core import Worktree
-    from defects4cpp.taxonomy import MetaData
-
     workspace = tmp_path / request.node.name
     workspace.mkdir(parents=True)
 
-    def checkout(meta_json: Dict, buggy: bool) -> CheckoutCommand:
-        with open(workspace / "meta.json", "w+") as fp:
-            json.dump(meta_json, fp)
-
+    def checkout(
+        meta_json: Dict, extra_args: Optional[Dict] = None
+    ) -> "CheckoutCommand":
         cmd = CheckoutCommand()
-        cmd.parser = argparse.ArgumentParser()
-        cmd.parser.set_defaults(
-            metadata=MetaData(name=request.node.name, path=workspace),
-            worktree=Worktree(request.node.name, 1, buggy, str(workspace)),
-            buggy=buggy,
-            index=1,
+        extra_args = {} if extra_args is None else extra_args
+        extra_args.setdefault("buggy", False)
+        return cast(
+            CheckoutCommand,
+            _create_processor(request.node.name, workspace, meta_json, extra_args, cmd),
         )
-        return cmd
 
-    return checkout
+    yield checkout
+
+    _cleanup_create_processor(workspace)
+
+
+@pytest.fixture
+def create_build(tmp_path: Path, request):
+    workspace = tmp_path / request.node.name
+    workspace.mkdir(parents=True)
+
+    def build(meta_json: Dict, extra_args: Optional[Dict] = None) -> "BuildCommand":
+        cmd = BuildCommand()
+        extra_args = {} if extra_args is None else extra_args
+        extra_args.setdefault("buggy", False)
+        extra_args.setdefault("verbose", False)
+        return cast(
+            BuildCommand,
+            _create_processor(request.node.name, workspace, meta_json, extra_args, cmd),
+        )
+
+    yield build
+
+    _cleanup_create_processor(workspace)
 
 
 @pytest.fixture

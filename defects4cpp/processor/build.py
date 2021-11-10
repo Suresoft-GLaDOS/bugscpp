@@ -63,7 +63,14 @@ class BuildCommand(DockerCommand):
         super().__init__()
         # TODO: write argparse description in detail
         self.parser = create_common_project_parser()
-        self.parser.usage = "d++ build PATH [--coverage] [-v|--verbose]"
+        self.parser.add_argument(
+            "-e",
+            "--export",
+            dest="export",
+            help="export build commands.",
+            action="store_true",
+        )
+        self.parser.usage = "d++ build PATH [--coverage] [-v|--verbose] [-e|--export]"
         self.parser.description = dedent(
             """\
         Build project inside docker.
@@ -74,10 +81,9 @@ class BuildCommand(DockerCommand):
         args = self.parser.parse_args(argv)
 
         metadata, worktree = read_config(args.path)
+        common = metadata.common_capture if args.export else metadata.common
         command = (
-            metadata.common.build_coverage_command
-            if args.coverage
-            else metadata.common.build_command
+            common.build_coverage_command if args.coverage else common.build_command
         )
         return BuildCommandScriptGenerator(command, metadata, worktree, args.verbose)
 
