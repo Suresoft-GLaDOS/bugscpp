@@ -20,7 +20,7 @@ def test_change_logger_path(
 
     path = tmp_path / "test.log"
     message.path = path
-    checkout = create_checkout(meta_json, False)
+    checkout = create_checkout(meta_json)
     checkout([])
 
     with open(path, "r") as fp:
