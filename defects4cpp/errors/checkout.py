@@ -1,9 +1,11 @@
 from textwrap import dedent
-from typing import List, Tuple, Union
+from typing import TYPE_CHECKING, List, Tuple, Union
 
 import git
-import taxonomy
 from errors.common.exception import DppError
+
+if TYPE_CHECKING:
+    from taxonomy.taxonomy import Defect, MetaData
 
 
 class DppGitError(DppError):
@@ -13,7 +15,7 @@ class DppGitError(DppError):
 class DppGitCloneError(DppGitError):
     def __init__(
         self,
-        metadata: "taxonomy.MetaData",
+        metadata: "MetaData",
         path: str,
         command: Union[List[str], Tuple[str, ...], str],
         status: Union[str, int, None, Exception],
@@ -42,7 +44,7 @@ class DppGitCloneError(DppGitError):
 
 
 class DppGitWorktreeError(DppGitError):
-    def __init__(self, repo: git.Repo, path: str, defect: "taxonomy.Defect"):
+    def __init__(self, repo: git.Repo, path: str, defect: "Defect"):
         self.repo = repo
         self.path = path
         self.defect = defect
@@ -59,7 +61,7 @@ class DppGitWorktreeError(DppGitError):
 
 
 class DppGitCheckoutInvalidRepositoryError(DppGitError):
-    def __init__(self, repo: git.Repo, path: str, defect: "taxonomy.Defect"):
+    def __init__(self, repo: git.Repo, path: str, defect: "Defect"):
         self.repo = repo
         self.path = path
         self.defect = defect
@@ -76,7 +78,7 @@ class DppGitCheckoutInvalidRepositoryError(DppGitError):
 
 
 class DppGitCheckoutError(DppGitError):
-    def __init__(self, repo: git.Repo, path: str, defect: "taxonomy.Defect"):
+    def __init__(self, repo: git.Repo, path: str, defect: "Defect"):
         self.repo = repo
         self.path = path
         self.defect = defect
