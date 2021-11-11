@@ -93,7 +93,7 @@ class MetaData:
         "@DPP_PARALLEL_BUILD@": config.DPP_PARALLEL_BUILD,
     }
     _common_variables: Dict[str, str] = {
-        "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS",
+        "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
         "@DPP_GEN_COMPILATION_DB_TOOL@": config.DPP_COMPILATION_DB_TOOL,
     }
 
