@@ -3,8 +3,14 @@ Build command.
 
 Compile projects inside a container.
 """
+import argparse
+import os
+import shutil
+from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Generator, List, Optional
+
+from errors import DppArgparseFileNotFoundError
 
 if TYPE_CHECKING:
     from taxonomy import Command, MetaData
@@ -18,6 +24,24 @@ from processor.core import (
     create_common_project_parser,
     read_config,
 )
+
+
+class ValidateExportPath(argparse.Action):
+    """
+    Validator for export path argument.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Optional[Path],
+        option_string=None,
+    ):
+        values = values or Path(os.getcwd())
+        if not values.absolute().exists():
+            raise DppArgparseFileNotFoundError(str(values))
+        setattr(namespace, self.dest, values)
 
 
 class BuildCommandScript(DockerCommandScript):
@@ -61,16 +85,21 @@ class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
 class BuildCommand(DockerCommand):
     def __init__(self):
         super().__init__()
+        self._export_path: Optional[Path] = None
         # TODO: write argparse description in detail
         self.parser = create_common_project_parser()
         self.parser.add_argument(
             "-e",
             "--export",
+            type=Path,
             dest="export",
             help="export build commands.",
-            action="store_true",
+            nargs="?",
+            action=ValidateExportPath,
         )
-        self.parser.usage = "d++ build PATH [--coverage] [-v|--verbose] [-e|--export]"
+        self.parser.usage = (
+            "d++ build PATH [--coverage] [-v|--verbose] [-e|--export[=EXPORT_PATH]]"
+        )
         self.parser.description = dedent(
             """\
         Build project inside docker.
@@ -81,7 +110,8 @@ class BuildCommand(DockerCommand):
         args = self.parser.parse_args(argv)
 
         metadata, worktree = read_config(args.path)
-        common = metadata.common_capture if args.export else metadata.common
+        self._export_path = args.export
+        common = metadata.common_capture if self._export_path else metadata.common
         command = (
             common.build_coverage_command if args.coverage else common.build_command
         )
@@ -92,9 +122,26 @@ class BuildCommand(DockerCommand):
         message.stdout_progress(f"[{generator.metadata.name}] start building")
 
     def teardown(self, generator: DockerCommandScriptGenerator):
+        if self._export_path:
+            message.info(__name__, f"export to '{str(self._export_path)}'")
+            self._find_compile_commands_json(generator.worktree.host, self._export_path)
+
         message.info(__name__, "done")
         message.stdout_progress(f"[{generator.metadata.name}] done")
 
     @property
     def help(self) -> str:
         return "Build local with a build tool from docker"
+
+    @staticmethod
+    def _find_compile_commands_json(host: Path, dest: Path):
+        build_dir = host / "build"
+        if build_dir.exists():
+            compile_commands = build_dir / "compile_commands.json"
+        else:
+            compile_commands = host / "compile_commands.json"
+
+        if compile_commands.exists():
+            shutil.move(str(compile_commands), str(dest))
+        else:
+            message.warning(__name__, f"compile_commands.json could not be found")
