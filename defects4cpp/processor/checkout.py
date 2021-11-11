@@ -10,8 +10,16 @@ from typing import Dict, List, Type
 
 import git
 import taxonomy
-from errors import (DppGitApplyPatchError, DppGitCheckoutError, DppGitCheckoutInvalidRepositoryError, DppGitCloneError,
-                    DppGitError, DppGitPatchNotAppliedError, DppGitSubmoduleInitError, DppGitWorktreeError)
+from errors import (
+    DppGitApplyPatchError,
+    DppGitCheckoutError,
+    DppGitCheckoutInvalidRepositoryError,
+    DppGitCloneError,
+    DppGitError,
+    DppGitPatchNotAppliedError,
+    DppGitSubmoduleInitError,
+    DppGitWorktreeError,
+)
 from message import message
 from processor.core import Command, create_common_vcs_parser, write_config
 
