@@ -316,9 +316,8 @@ class TestCommand(DockerCommand):
     """
 
     def __init__(self):
-        super().__init__()
+        super().__init__(parser=create_common_project_parser())
         # TODO: write argparse description in detail
-        self.parser = create_common_project_parser()
         self.parser.add_argument(
             "-c",
             "--case",
@@ -347,8 +346,9 @@ class TestCommand(DockerCommand):
         self.coverage_files: List[str] = []
         self.failed_coverage_files: List[str] = []
 
-    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
-        args = self.parser.parse_args(argv)
+    def create_script_generator(
+        self, args: argparse.Namespace
+    ) -> DockerCommandScriptGenerator:
         metadata, worktree = read_config(args.path)
         self.metadata = metadata
         self.worktree = worktree

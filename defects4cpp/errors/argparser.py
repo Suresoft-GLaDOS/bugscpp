@@ -32,6 +32,14 @@ class DppArgparseFileNotFoundError(DppArgparseError, FileNotFoundError):
         self.path: str = path
 
 
+class DppArgparseInvalidEnvironment(DppArgparseError):
+    def __init__(self, value: str):
+        super().__init__(
+            f"invalid environment variable format '{value}' (should be KEY=VALUE)"
+        )
+        self.value: str = value
+
+
 class DppArgparseInvalidConfigError(DppArgparseError):
     def __init__(self):
         super().__init__()

@@ -23,7 +23,7 @@ def test_build_command_should_generate_command_based_on_options(
         "coverage_command @DPP_GEN_COMPILATION_DB_TOOL@"
     ]
     build = create_build(meta_json, {"coverage": coverage, "export": export})
-    generator = build.create_script_generator([])
+    generator = build.create_script_generator(build.parser.parse_args([]))
 
     for script in generator.create():
         assert len(script.lines) == 1

@@ -10,6 +10,7 @@ Note that the module name of a newly defined command will be the command name.
 For instance, if MyNewCommand is defined at my_command.py,
 MyNewCommand can be invoked from "d++ my_command" at command-line.
 """
+import argparse
 import stat
 from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
@@ -270,8 +271,9 @@ class DockerCommand(Command):
 
     SCRIPT_NAME = "DPP_COMMAND_SCRIPT"
 
-    def __init__(self):
-        pass
+    def __init__(self, parser: argparse.ArgumentParser):
+        self.parser = parser
+        self.environ: Dict[str, str] = {}
 
     @property
     def group(self) -> str:
@@ -301,13 +303,18 @@ class DockerCommand(Command):
             else:
                 script.output(line_number, ec, output.decode("utf-8", errors="ignore"))
 
-        script_generator = self.create_script_generator(argv)
+        args = self.parser.parse_args(argv)
+        self.environ = args.env
+
+        script_generator = self.create_script_generator(args)
         worktree = script_generator.worktree
         stream = script_generator.stream
 
         self.setup(script_generator)
         with Docker(
-            script_generator.metadata.dockerfile, script_generator.worktree
+            script_generator.metadata.dockerfile,
+            script_generator.worktree,
+            self.environ,
         ) as docker:
             for script in script_generator.create():
                 script.before()
@@ -331,14 +338,16 @@ class DockerCommand(Command):
         self.teardown(script_generator)
 
     @abstractmethod
-    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
+    def create_script_generator(
+        self, args: argparse.Namespace
+    ) -> DockerCommandScriptGenerator:
         """
         Return DockerExecInfo which has information of a command list to run inside docker container.
 
         Parameters
         ----------
-        argv : List[str]
-            Command line argument vector.
+        args : argparse.Namespace
+            argparse.Namespace instance.
 
         Returns
         -------

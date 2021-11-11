@@ -1,3 +1,4 @@
+import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,7 +7,11 @@ from typing import Callable, Generator, List, Optional
 import processor
 import pytest
 import taxonomy
-from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
+from processor.core.command import (
+    DockerCommand,
+    DockerCommandScript,
+    DockerCommandScriptGenerator,
+)
 from processor.core.docker import Worktree
 
 _DUMMY_DOCKERFILE = """
@@ -31,7 +36,9 @@ class DummyDockerCommand(DockerCommand):
         commands: List[str],
         tmp: Path,
     ):
-        super().__init__()
+        parser = argparse.ArgumentParser()
+        parser.set_defaults(env=None)
+        super().__init__(parser)
         self.callback = callback
         self.command_type = command_type
         self.commands = commands
@@ -41,7 +48,9 @@ class DummyDockerCommand(DockerCommand):
         with open(f"{self.metadata.dockerfile}", "w+") as fp:
             fp.write(_DUMMY_DOCKERFILE)
 
-    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
+    def create_script_generator(
+        self, args: argparse.Namespace
+    ) -> DockerCommandScriptGenerator:
         return DummyDockerCommandScriptGenerator(
             self.callback,
             self.command_type,
@@ -153,7 +162,7 @@ def test_check_result(setup):
     config = setup([1, 2])
     cmd = f"{str(config.src_dir)} --output-dir={str(config.output_dir)} --case 1,2".split()
 
-    script_generator = test.create_script_generator(cmd)
+    script_generator = test.create_script_generator(test.parser.parse_args(cmd))
     script_it = script_generator.create()
 
     # Command with zero exit code.
@@ -184,7 +193,7 @@ def test_check_coverage(setup):
     config = setup([1])
     cmd = f"{str(config.src_dir)} --coverage --output-dir={str(config.output_dir)} --case 1".split()
 
-    script_generator = test.create_script_generator(cmd)
+    script_generator = test.create_script_generator(test.parser.parse_args(cmd))
     script_it = script_generator.create()
 
     # Create a dummy gcov directory.
