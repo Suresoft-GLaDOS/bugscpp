@@ -84,10 +84,9 @@ class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
 
 class BuildCommand(DockerCommand):
     def __init__(self):
-        super().__init__()
+        super().__init__(parser=create_common_project_parser())
         self._export_path: Optional[Path] = None
         # TODO: write argparse description in detail
-        self.parser = create_common_project_parser()
         self.parser.add_argument(
             "-e",
             "--export",
@@ -106,9 +105,9 @@ class BuildCommand(DockerCommand):
         """
         )
 
-    def create_script_generator(self, argv: List[str]) -> DockerCommandScriptGenerator:
-        args = self.parser.parse_args(argv)
-
+    def create_script_generator(
+        self, args: argparse.Namespace
+    ) -> DockerCommandScriptGenerator:
         metadata, worktree = read_config(args.path)
         self._export_path = args.export
         common = metadata.common_capture if self._export_path else metadata.common

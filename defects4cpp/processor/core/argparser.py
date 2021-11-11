@@ -7,13 +7,14 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 from errors import (
     DppArgparseConfigCorruptedError,
     DppArgparseDefectIndexError,
     DppArgparseFileNotFoundError,
     DppArgparseInvalidConfigError,
+    DppArgparseInvalidEnvironment,
     DppArgparseNotProjectDirectory,
     DppArgparseTaxonomyNotFoundError,
 )
@@ -192,6 +193,32 @@ class ValidateWorkspace(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+class ValidateEnviron(argparse.Action):
+    """
+    Validator for env argument.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: List[str],
+        option_string=None,
+    ):
+        if not getattr(namespace, self.dest, None):
+            setattr(namespace, self.dest, {})
+        dest = getattr(namespace, self.dest)
+        string = values[0]
+        try:
+            string = string.strip('"').strip("'")
+            key, value = string.split("=")
+            if not key:
+                raise ValueError
+        except ValueError:
+            raise DppArgparseInvalidEnvironment(values[0])
+        dest[key] = value
+
+
 def create_common_parser() -> argparse.ArgumentParser:
     """
     Returns argparse.ArgumentParser that parses common options.
@@ -279,5 +306,13 @@ def create_common_project_parser() -> argparse.ArgumentParser:
         dest="coverage",
         help="set coverage flags.",
         action="store_true",
+    )
+    parser.add_argument(
+        "--env",
+        type=str,
+        dest="env",
+        nargs=1,
+        help="set 'key=value' environment variables within container. (can be used multiple times)",
+        action=ValidateEnviron,
     )
     return parser

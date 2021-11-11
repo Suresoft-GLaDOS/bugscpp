@@ -112,7 +112,12 @@ class Docker:
     client = _Client()
     """Docker SDK client."""
 
-    def __init__(self, dockerfile: str, worktree: Worktree):
+    def __init__(
+        self,
+        dockerfile: str,
+        worktree: Worktree,
+        environ: Optional[Dict[str, str]] = None,
+    ):
         self._dockerfile = dockerfile
         # Assumes that the name of its parent directory is the same with that of the target.
         tag = Path(dockerfile).parent.name
@@ -122,6 +127,7 @@ class Docker:
             str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
         }
         self._working_dir: str = str(worktree.container)
+        self._environ = environ
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
 
@@ -160,12 +166,13 @@ class Docker:
             self.client.containers.run(
                 self.image,
                 auto_remove=True,
-                detach=True,
-                stdin_open=True,
-                volumes=self._volume,
-                name=self._name,
                 command="/bin/sh",
+                detach=True,
+                environment=self._environ,
+                name=self._name,
+                stdin_open=True,
                 user=DPP_DOCKER_USER,
+                volumes=self._volume,
                 working_dir=self._working_dir,
             )
         )

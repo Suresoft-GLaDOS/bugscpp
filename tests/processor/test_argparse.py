@@ -4,7 +4,13 @@ from dataclasses import asdict
 
 import errors
 import pytest
-from processor.core.argparser import create_common_project_parser, create_common_vcs_parser, read_config, write_config
+from errors import DppArgparseInvalidEnvironment
+from processor.core.argparser import (
+    create_common_project_parser,
+    create_common_vcs_parser,
+    read_config,
+    write_config,
+)
 from processor.core.docker import Worktree
 
 CONFIG_NAME = ".defects4cpp.json"
@@ -135,3 +141,38 @@ def test_vcs_parser_unordered_arguments_should_be_handled_with_target_option():
         assert worktree.index == 1
         assert worktree.buggy
         assert worktree.workspace == "/home/test"
+
+
+def test_common_project_parser(dummy_config, request):
+    p = dummy_config(request.node.name)
+    parser = create_common_project_parser()
+    arguments = [
+        str(p),
+        "--env=MY_ENV1=1",
+        "--env='MY_ENV2=2'",
+        '--env="MY_ENV3=3"',
+        "--env=MY_ENV4=",
+    ]
+    args = parser.parse_args(arguments)
+    assert len(args.env) == 4
+
+    arguments = [
+        str(p),
+        "--env=MY_ENV4=",
+    ]
+    args = parser.parse_args(arguments)
+    assert len(args.env) == 1
+
+    arguments = [
+        str(p),
+        "--env=MY_ENV4",
+    ]
+    with pytest.raises(DppArgparseInvalidEnvironment):
+        args = parser.parse_args(arguments)
+
+    arguments = [
+        str(p),
+        "--env==foo",
+    ]
+    with pytest.raises(DppArgparseInvalidEnvironment):
+        args = parser.parse_args(arguments)
