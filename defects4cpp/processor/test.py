@@ -15,14 +15,13 @@ import taxonomy
 from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
-from processor.core import (
+from processor.core.argparser import create_common_project_parser
+from processor.core.command import (
     DockerCommand,
     DockerCommandScript,
     DockerCommandScriptGenerator,
-    Worktree,
-    create_common_project_parser,
-    read_config,
 )
+from processor.core.data import Worktree
 
 
 class ValidateCase(argparse.Action):
@@ -349,9 +348,8 @@ class TestCommand(DockerCommand):
     def create_script_generator(
         self, args: argparse.Namespace
     ) -> DockerCommandScriptGenerator:
-        metadata, worktree = read_config(args.path)
-        self.metadata = metadata
-        self.worktree = worktree
+        metadata = self.metadata = args.metadata
+        worktree = self.worktree = args.worktree
         self.coverage = True if args.coverage else False
         if args.output_dir:
             self.output = args.output_dir

@@ -1,12 +1,13 @@
 from typing import List
 
 import errors
-import processor
-import taxonomy
 from errors import DppArgparseInvalidCaseExpressionError
+from taxonomy.taxonomy import Defect, Taxonomy
+
+from defects4cpp.command import TestCommand
 
 
-def out_of_index_error(cmd: processor.TestCommand, default_cmds: List[str], expr: str):
+def out_of_index_error(cmd: TestCommand, default_cmds: List[str], expr: str):
     try:
         cmd.parser.parse_args([*default_cmds, expr])
     except DppArgparseInvalidCaseExpressionError:
@@ -17,7 +18,7 @@ def out_of_index_error(cmd: processor.TestCommand, default_cmds: List[str], expr
 
 def test_validate_case(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = processor.TestCommand()
+    cmd = TestCommand()
     default_cmds = f"{str(d)} --case".split()
 
     args = cmd.parser.parse_args([*default_cmds, "1,2,5,9"])
@@ -67,12 +68,12 @@ def test_validate_case(dummy_config):
 
 def test_invalid_case_expression(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = processor.TestCommand()
+    cmd = TestCommand()
     project_name = "yara"
     index = 1
     default_cmds = f"{str(d)} --case".split()
 
-    t = taxonomy.Taxonomy()
+    t = Taxonomy()
     project = t[project_name]
     cases = project.defects[index].num_cases
 
@@ -87,13 +88,13 @@ def test_invalid_case_expression(dummy_config):
 
 def test_no_case_is_provided(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = processor.TestCommand()
+    cmd = TestCommand()
     default_cmds = f"{str(d)}".split()
 
     args = cmd.parser.parse_args(default_cmds)
     metadata = args.metadata
     index = args.worktree.index
-    selected_defect: taxonomy.Defect = metadata.defects[index - 1]
+    selected_defect: Defect = metadata.defects[index - 1]
 
     script_generator = cmd.create_script_generator(cmd.parser.parse_args(default_cmds))
     assert len(list(script_generator.create())) == (selected_defect.num_cases * 2)
@@ -101,13 +102,13 @@ def test_no_case_is_provided(dummy_config):
 
 def test_exclude_only(dummy_config):
     d = dummy_config("test_validate_case")
-    cmd = processor.TestCommand()
+    cmd = TestCommand()
     default_cmds = f"{str(d)} --case :1-100".split()
 
     args = cmd.parser.parse_args(default_cmds)
     metadata = args.metadata
     index = args.worktree.index
-    selected_defect: taxonomy.Defect = metadata.defects[index - 1]
+    selected_defect: Defect = metadata.defects[index - 1]
 
     script_generator = cmd.create_script_generator(cmd.parser.parse_args(default_cmds))
     assert len(list(script_generator.create())) == (selected_defect.num_cases - 100) * 2

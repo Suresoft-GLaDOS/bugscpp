@@ -1,9 +1,9 @@
 import sys
 import time
 
+from command import CommandList
 from errors import DppArgparseError, DppDockerError, DppError
 from message import message
-from processor import CommandList
 
 
 def _handle_cmdline_error(e: DppError):

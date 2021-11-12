@@ -4,15 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Generator, List, Optional
 
-import processor
 import pytest
-import taxonomy
 from processor.core.command import (
     DockerCommand,
     DockerCommandScript,
     DockerCommandScriptGenerator,
 )
 from processor.core.docker import Worktree
+from taxonomy.taxonomy import CommandType, MetaData
+
+from defects4cpp.command import TestCommand
 
 _DUMMY_DOCKERFILE = """
 FROM ubuntu:20.04
@@ -32,7 +33,7 @@ class DummyDockerCommand(DockerCommand):
     def __init__(
         self,
         callback,
-        command_type: taxonomy.CommandType,
+        command_type: CommandType,
         commands: List[str],
         tmp: Path,
     ):
@@ -42,7 +43,7 @@ class DummyDockerCommand(DockerCommand):
         self.callback = callback
         self.command_type = command_type
         self.commands = commands
-        self.metadata = taxonomy.MetaData(_TEST_PROJECT_NAME, str(tmp))
+        self.metadata = MetaData(_TEST_PROJECT_NAME, str(tmp))
         self.worktree = Worktree(_TEST_PROJECT_NAME, 1, False, str(tmp))
 
         with open(f"{self.metadata.dockerfile}", "w+") as fp:
@@ -74,9 +75,9 @@ class DummyDockerCommandScriptGenerator(DockerCommandScriptGenerator):
     def __init__(
         self,
         callback: Callable,
-        command_type: taxonomy.CommandType,
+        command_type: CommandType,
         commands: List[str],
-        metadata: taxonomy.MetaData,
+        metadata: MetaData,
         worktree: Worktree,
     ):
         super().__init__(metadata, worktree, False)
@@ -90,7 +91,7 @@ class DummyDockerCommandScriptGenerator(DockerCommandScriptGenerator):
 
 class DummyDockerCommandScript(DockerCommandScript):
     def __init__(
-        self, callback: Callable, command_type: taxonomy.CommandType, command: List[str]
+        self, callback: Callable, command_type: CommandType, command: List[str]
     ):
         super().__init__(command_type, command)
         self.callback = callback
@@ -158,7 +159,7 @@ def iterate_coverage_once(script_it: Generator[DockerCommandScript, None, None])
 
 
 def test_check_result(setup):
-    test = processor.TestCommand()
+    test = TestCommand()
     config = setup([1, 2])
     cmd = f"{str(config.src_dir)} --output-dir={str(config.output_dir)} --case 1,2".split()
 
@@ -189,7 +190,7 @@ def test_check_result(setup):
 
 
 def test_check_coverage(setup):
-    test = processor.TestCommand()
+    test = TestCommand()
     config = setup([1])
     cmd = f"{str(config.src_dir)} --coverage --output-dir={str(config.output_dir)} --case 1".split()
 
@@ -243,7 +244,7 @@ def test_run_command(setup):
     config = setup([1])
     test = DummyDockerCommand(
         callback=docker_command_type_should_pass,
-        command_type=taxonomy.CommandType.Docker,
+        command_type=CommandType.Docker,
         commands=["echo 'Hello, world!'"],
         tmp=config.tmp,
     )
@@ -251,7 +252,7 @@ def test_run_command(setup):
 
     test = DummyDockerCommand(
         callback=docker_command_type_should_fail_to_keep_context,
-        command_type=taxonomy.CommandType.Docker,
+        command_type=CommandType.Docker,
         commands=["export TEST_VAR=1", "echo $TEST_VAR"],
         tmp=config.tmp,
     )
@@ -273,7 +274,7 @@ def test_run_command_as_script(setup):
     config = setup([1])
     test = DummyDockerCommand(
         callback=script_command_type_should_pass,
-        command_type=taxonomy.CommandType.Script,
+        command_type=CommandType.Script,
         commands=["#!/usr/bin/env bash", "echo 'Hello, world!'"],
         tmp=config.tmp,
     )
@@ -281,7 +282,7 @@ def test_run_command_as_script(setup):
 
     test = DummyDockerCommand(
         callback=script_command_type_should_keep_context,
-        command_type=taxonomy.CommandType.Script,
+        command_type=CommandType.Script,
         commands=["#!/usr/bin/env bash", "export TEST_VAR=1", "echo $TEST_VAR"],
         tmp=config.tmp,
     )
