@@ -1,12 +1,12 @@
 import enum
 import json
-from collections.abc import MutableMapping
+from collections import Mapping
 from dataclasses import dataclass, fields
 from os.path import dirname, exists, join
 from pkgutil import iter_modules
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
-import config
+from config import config
 from errors.internal import DppTaxonomyInitInternalError
 
 
@@ -88,14 +88,36 @@ def create_info(value: Dict[str, Any]) -> MetaInfo:
     return MetaInfo(value["url"], value["short-desc"], value["vcs"])
 
 
+class _MetaDataVariables(Mapping):
+    def __init__(self, *args, **kwargs):
+        self._store = dict(*args, **kwargs)
+
+    def __getitem__(self, k: str) -> str:
+        v: Optional[str] = self._store[k]
+        if v is None:
+            v = getattr(config, k.strip("@"))
+        return v
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+    def __iter__(self) -> Iterator:
+        return iter(self._store)
+
+
 class MetaData:
-    _variables: Dict[str, str] = {
-        "@DPP_PARALLEL_BUILD@": config.DPP_PARALLEL_BUILD,
-    }
-    _common_variables: Dict[str, str] = {
-        "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
-        "@DPP_GEN_COMPILATION_DB_TOOL@": config.DPP_COMPILATION_DB_TOOL,
-    }
+    _variables = _MetaDataVariables(
+        {
+            "@DPP_PARALLEL_BUILD@": None,
+        }
+    )
+    _common_variables = _MetaDataVariables(
+        {
+            "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
+            "@DPP_COMPILATION_DB_TOOL@": None,
+            "@DPP_CMAKE_COMPILATION_DB_TOOL@": None,
+        }
+    )
 
     def __init__(self, name: str, path: str):
         self.name = name
@@ -206,33 +228,24 @@ class MetaData:
         return Common(**data)
 
 
-class Taxonomy(MutableMapping):
-    def __init__(self, *args, **kwargs):
+class Taxonomy(Mapping):
+    def __init__(self):
         self.base: str = dirname(__file__)
-        self.store: Dict[str, MetaData] = dict(
+        self._store: Dict[str, MetaData] = dict(
             [
                 (name, MetaData(name, f"{join(self.base, name)}"))
                 for _, name, _ in iter_modules([dirname(__file__)])
             ]
         )
-        # self.update(dict(*args, **kwargs))
 
     def __getitem__(self, key: str) -> MetaData:
-        return self.store[self._keytransform(key)]
+        return self._store[self._keytransform(key)]
 
-    def __setitem__(self, key: str, value: MetaData) -> None:
-        # self.store[self._keytransform(key)] = value
-        raise RuntimeError("set operator is not allowed")
+    def __iter__(self) -> Iterator:
+        return iter(self._store)
 
-    def __delitem__(self, key: str) -> None:
-        # del self.store[self._keytransform(key)]
-        raise RuntimeError("del operator is not allowed")
-
-    def __iter__(self):
-        return iter(self.store)
-
-    def __len__(self):
-        return len(self.store)
+    def __len__(self) -> int:
+        return len(self._store)
 
     def _keytransform(self, key: str):
         assert exists(

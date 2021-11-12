@@ -30,6 +30,12 @@ def create_common_parser() -> argparse.ArgumentParser:
         Return argparse.ArgumentParser that parses common options.
     """
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument(
+        "--compilation_db_tool",
+        type=str,
+        help="command to capture build. (default: bear)",
+        action=ValidateCompilationDBTool,
+    )
     return parser
 
 

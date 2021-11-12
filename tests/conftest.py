@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, cast
 import pytest
 
 from defects4cpp.command import BuildCommand, CheckoutCommand
+from defects4cpp.config import config
 from defects4cpp.processor.core.command import Command
 from defects4cpp.processor.core.data import Project, Worktree
 from defects4cpp.taxonomy import MetaData, Taxonomy
@@ -142,6 +143,14 @@ def meta_json() -> Dict[str, Any]:
             },
         ],
     }
+
+
+@pytest.fixture
+def keep_config():
+    orig = {k: getattr(config, k) for k in dir(config) if not k.startswith("__")}
+    yield
+    for k, v in orig.items():
+        setattr(config, k, v)
 
 
 @pytest.fixture

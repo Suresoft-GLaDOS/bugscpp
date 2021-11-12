@@ -183,3 +183,25 @@ def test_common_project_parser_env_option(dummy_config, request):
     ]
     with pytest.raises(DppArgparseInvalidEnvironment):
         parser.parse_args(arguments)
+
+
+def test_common_command_parser_settings_option(keep_config):
+    parser = create_common_parser()
+    arguments = [
+        "--compilation_db_tool=foo",
+    ]
+    parser.parse_args(arguments)
+
+    assert config.DPP_COMPILATION_DB_TOOL == "foo"
+    assert config.DPP_CMAKE_COMPILATION_DB_TOOL == "foo"
+
+    t = Taxonomy()
+    make_project = t["yara"]
+    assert any(
+        "foo" in line for line in make_project.common_capture.build_command.lines
+    )
+
+    cmake_project = t["cppcheck"]
+    assert any(
+        "foo" in line for line in cmake_project.common_capture.build_command.lines
+    )

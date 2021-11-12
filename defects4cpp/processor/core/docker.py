@@ -9,7 +9,7 @@ from typing import Dict, Optional, cast
 
 import docker
 import docker.errors
-from config.env import DPP_DOCKER_USER
+from config import config
 from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
@@ -127,7 +127,7 @@ class Docker:
                 environment=self._environ,
                 name=self._name,
                 stdin_open=True,
-                user=DPP_DOCKER_USER,
+                user=config.DPP_DOCKER_USER,
                 volumes=self._volume,
                 working_dir=self._working_dir,
             )
