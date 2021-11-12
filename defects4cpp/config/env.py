@@ -1,3 +1,7 @@
+"""
+Configuration file for controlling defects4cpp.
+
+"""
 import os
 
 # Docker username (should be the same with Dockerfile)
@@ -8,6 +12,7 @@ DPP_DOCKER_HOME: str = "/home/workspace"
 # meta.json variables
 DPP_PARALLEL_BUILD: str = "1"
 DPP_COMPILATION_DB_TOOL: str = "bear"
+DPP_CMAKE_COMPILATION_DB_TOOL: str = ""
 
 # Directory at which d++.py is placed
 DPP_HOME: str = os.path.realpath(

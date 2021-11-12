@@ -2,23 +2,30 @@ import itertools
 import json
 from dataclasses import asdict
 
-import errors
 import pytest
-from errors import DppArgparseInvalidEnvironment
-from processor.core.argparser import (
+from errors import (
+    DppArgparseConfigCorruptedError,
+    DppArgparseFileNotFoundError,
+    DppArgparseInvalidConfigError,
+    DppArgparseNotProjectDirectory,
+)
+
+from defects4cpp.config import config
+from defects4cpp.errors import DppArgparseInvalidEnvironment
+from defects4cpp.processor.core.argparser import (
+    create_common_parser,
     create_common_project_parser,
     create_common_vcs_parser,
-    read_config,
-    write_config,
 )
-from processor.core.docker import Worktree
+from defects4cpp.processor.core.data import Project, Worktree
+from defects4cpp.taxonomy import Taxonomy
 
 CONFIG_NAME = ".defects4cpp.json"
 
 
 def test_read_config_not_exist(tmp_path):
-    with pytest.raises(errors.DppArgparseFileNotFoundError):
-        read_config(str(tmp_path / "foo.json"))
+    with pytest.raises(DppArgparseFileNotFoundError):
+        Project.read_config(str(tmp_path / "foo.json"))
 
 
 def test_read_config_invalid_json(tmp_path):
@@ -26,8 +33,8 @@ def test_read_config_invalid_json(tmp_path):
     with open(dummy, "w+") as fp:
         fp.write("hello, world!")
 
-    with pytest.raises(errors.DppArgparseInvalidConfigError):
-        read_config(tmp_path)
+    with pytest.raises(DppArgparseInvalidConfigError):
+        Project.read_config(tmp_path)
 
 
 def test_read_config_corrupted_json(tmp_path):
@@ -36,8 +43,8 @@ def test_read_config_corrupted_json(tmp_path):
         obj = {"foo": 1}
         json.dump(obj, fp)
 
-    with pytest.raises(errors.DppArgparseConfigCorruptedError):
-        read_config(tmp_path)
+    with pytest.raises(DppArgparseConfigCorruptedError):
+        Project.read_config(tmp_path)
 
 
 def test_read_config(tmp_path):
@@ -51,7 +58,7 @@ def test_read_config(tmp_path):
         }
         json.dump(obj, fp)
 
-    metadata, worktree = read_config(tmp_path)
+    metadata, worktree = Project.read_config(tmp_path)
 
     assert metadata.name == obj["project_name"]
     assert worktree.project_name == obj["project_name"]
@@ -63,14 +70,14 @@ def test_read_config(tmp_path):
 def test_write_config(tmp_path):
     worktree = Worktree("yara", 1, True, str(tmp_path / "imaginary_path"))
 
-    with pytest.raises(errors.DppArgparseFileNotFoundError):
-        write_config(worktree)
+    with pytest.raises(DppArgparseFileNotFoundError):
+        Project.write_config(worktree)
 
     p = tmp_path / "yara" / "buggy#1"
     p.mkdir(parents=True)
 
     worktree = Worktree("yara", 1, True, str(tmp_path))
-    write_config(worktree)
+    Project.write_config(worktree)
 
     with open(p / CONFIG_NAME, "r") as fp:
         config = json.load(fp)
@@ -81,7 +88,7 @@ def test_write_config(tmp_path):
 def test_project_parser_invalid_project_should_throw(tmp_path):
     parser = create_common_project_parser()
 
-    with pytest.raises(errors.DppArgparseNotProjectDirectory):
+    with pytest.raises(DppArgparseNotProjectDirectory):
         parser.parse_args(f"{tmp_path} --coverage".split())
 
 
@@ -143,7 +150,7 @@ def test_vcs_parser_unordered_arguments_should_be_handled_with_target_option():
         assert worktree.workspace == "/home/test"
 
 
-def test_common_project_parser(dummy_config, request):
+def test_common_project_parser_env_option(dummy_config, request):
     p = dummy_config(request.node.name)
     parser = create_common_project_parser()
     arguments = [
@@ -168,11 +175,11 @@ def test_common_project_parser(dummy_config, request):
         "--env=MY_ENV4",
     ]
     with pytest.raises(DppArgparseInvalidEnvironment):
-        args = parser.parse_args(arguments)
+        parser.parse_args(arguments)
 
     arguments = [
         str(p),
         "--env==foo",
     ]
     with pytest.raises(DppArgparseInvalidEnvironment):
-        args = parser.parse_args(arguments)
+        parser.parse_args(arguments)

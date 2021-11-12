@@ -2,7 +2,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from processor.core import Worktree
+from processor.core.data import Worktree
 
 
 def test_git_clone_error(create_checkout, meta_json, caplog):

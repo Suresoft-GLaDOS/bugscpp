@@ -21,7 +21,9 @@ from errors import (
     DppGitWorktreeError,
 )
 from message import message
-from processor.core import Command, create_common_vcs_parser, write_config
+from processor.core.argparser import create_common_vcs_parser
+from processor.core.command import Command
+from processor.core.data import Project
 
 
 def _git_clone(path: Path, metadata: taxonomy.MetaData) -> git.Repo:
@@ -181,7 +183,7 @@ class CheckoutCommand(Command):
 
             message.info(__name__, f"creating '.defects4cpp.json' at {worktree.host}")
             # Write .defects4cpp.json in the directory.
-            write_config(worktree)
+            Project.write_config(worktree)
 
         except DppGitError as e:
             message.error(__name__, str(e))

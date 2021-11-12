@@ -31,6 +31,7 @@ __all__ = [
     "DppError",
     "DppArgparseError",
     "DppArgparseNotProjectDirectory",
+    "DppArgparseInvalidEnvironment",
     "DppArgparseDefectIndexError",
     "DppArgparseTaxonomyNotFoundError",
     "DppArgparseInvalidConfigError",

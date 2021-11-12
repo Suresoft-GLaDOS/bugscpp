@@ -5,7 +5,7 @@ There should be no deep logic
 """
 from collections.abc import MutableMapping
 
-from processor.core import RegisteredCommands
+from processor.core.command import RegisteredCommands
 
 
 class CommandList(MutableMapping):

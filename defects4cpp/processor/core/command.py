@@ -20,7 +20,8 @@ from typing import Dict, Generator, List, Optional, Tuple
 import taxonomy
 from errors import DppCommandListInternalError
 from message import message
-from processor.core.docker import Docker, Worktree
+from processor.core.data import Worktree
+from processor.core.docker import Docker
 from processor.core.shell import Shell
 
 

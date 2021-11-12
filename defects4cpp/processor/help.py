@@ -10,7 +10,8 @@ from typing import List
 
 import processor
 from message import message
-from processor.core import SimpleCommand, create_common_parser
+from processor.core.argparser import create_common_parser
+from processor.core.command import SimpleCommand
 
 
 class HelpCommand(SimpleCommand):

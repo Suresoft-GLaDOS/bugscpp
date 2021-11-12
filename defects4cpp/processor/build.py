@@ -8,7 +8,7 @@ import os
 import shutil
 from pathlib import Path
 from textwrap import dedent
-from typing import TYPE_CHECKING, Generator, List, Optional
+from typing import TYPE_CHECKING, Generator, Optional
 
 from errors import DppArgparseFileNotFoundError
 
@@ -16,14 +16,13 @@ if TYPE_CHECKING:
     from taxonomy import Command, MetaData
 
 from message import message
-from processor.core import (
+from processor.core.argparser import create_common_project_parser
+from processor.core.command import (
     DockerCommand,
     DockerCommandScript,
     DockerCommandScriptGenerator,
-    Worktree,
-    create_common_project_parser,
-    read_config,
 )
+from processor.core.data import Worktree
 
 
 class ValidateExportPath(argparse.Action):
@@ -108,7 +107,9 @@ class BuildCommand(DockerCommand):
     def create_script_generator(
         self, args: argparse.Namespace
     ) -> DockerCommandScriptGenerator:
-        metadata, worktree = read_config(args.path)
+        metadata = args.metadata
+        worktree = args.worktree
+
         self._export_path = args.export
         common = metadata.common_capture if self._export_path else metadata.common
         command = (
@@ -143,4 +144,4 @@ class BuildCommand(DockerCommand):
         if compile_commands.exists():
             shutil.move(str(compile_commands), str(dest))
         else:
-            message.warning(__name__, f"compile_commands.json could not be found")
+            message.warning(__name__, "compile_commands.json could not be found")

@@ -1,7 +1,7 @@
 import pytest
 
 from defects4cpp.config import DPP_COMPILATION_DB_TOOL
-from defects4cpp.processor import BuildCommand, CheckoutCommand
+from defects4cpp.command import BuildCommand, CheckoutCommand
 
 
 @pytest.mark.parametrize(

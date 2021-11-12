@@ -5,8 +5,9 @@ from pathlib import Path
 from shutil import rmtree
 from typing import Callable
 
-import processor
 import pytest
+
+from defects4cpp.command import BuildCommand, CheckoutCommand, TestCommand
 
 CONFIG_NAME = ".defects4cpp.json"
 
@@ -84,9 +85,9 @@ def should_create_summary_json(d: Path):
 
 
 def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
-    checkout = processor.CheckoutCommand()
-    build = processor.BuildCommand()
-    test = processor.TestCommand()
+    checkout = CheckoutCommand()
+    build = BuildCommand()
+    test = TestCommand()
 
     # Test fix
     fixed_target_dir = test_dir.fixed_target_dir

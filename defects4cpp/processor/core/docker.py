@@ -3,20 +3,19 @@ Manage commands associated with docker SDK module.
 
 Do not use docker SDK directly, instead use Docker class.
 """
-from dataclasses import dataclass, field, fields
-from os import getcwd
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from textwrap import dedent
 from typing import Dict, Optional, cast
 
 import docker
 import docker.errors
-from config.env import DPP_DOCKER_HOME, DPP_DOCKER_USER
+from config.env import DPP_DOCKER_USER
 from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 from errors.docker import DppDockerNoClientError
 from message import message
+from processor.core.data import Worktree
 
 
 def _cast_image(image) -> Image:
@@ -38,49 +37,6 @@ def _build_image(client, tag, path) -> Image:
     Helper function to get a correct type
     """
     return client.images.build(rm=True, tag=tag, path=path)[0]
-
-
-@dataclass
-class Worktree:
-    """
-    Dataclass to manage host and container directory structure.
-
-    """
-
-    project_name: str
-    """The name of the defect taxonomy."""
-    index: int
-    """The index number of taxonomy."""
-    buggy: bool = field(default=False)
-    """True if the project is configured as buggy, otherwise False."""
-    workspace: str = field(default=getcwd())
-    """The workspace path string."""
-
-    @property
-    def base(self) -> Path:
-        """Return base path which will be used to test and build defect taxonomies"""
-        return Path(f"{self.workspace}/{self.project_name}")
-
-    @property
-    def suffix(self) -> Path:
-        """Return suffix path which is appended to base path"""
-        return Path(f"{'buggy' if self.buggy else 'fixed'}#{self.index}")
-
-    @property
-    def host(self) -> Path:
-        """Return path from which is mounted"""
-        return self.base / self.suffix
-
-    @property
-    def container(self) -> PurePosixPath:
-        """Return path to which is mounted inside docker"""
-        return PurePosixPath(DPP_DOCKER_HOME)
-
-    def __post_init__(self):
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if not value:
-                setattr(self, f.name, f.default)
 
 
 class _Client:

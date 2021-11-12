@@ -4,219 +4,20 @@ Provide common argparsers
 Utility functions to parse command line arguments and argparsers used across modules are defined.
 """
 import argparse
-import json
-from dataclasses import asdict
 from pathlib import Path
-from typing import List, Tuple, Union
 
-from errors import (
-    DppArgparseConfigCorruptedError,
-    DppArgparseDefectIndexError,
-    DppArgparseFileNotFoundError,
-    DppArgparseInvalidConfigError,
-    DppArgparseInvalidEnvironment,
-    DppArgparseNotProjectDirectory,
-    DppArgparseTaxonomyNotFoundError,
+from taxonomy import Taxonomy
+
+from .data import NAMESPACE_ATTR_BUGGY, NAMESPACE_ATTR_INDEX, NAMESPACE_ATTR_WORKSPACE
+from .validator.common_command import ValidateCompilationDBTool
+from .validator.project_command import (
+    ValidateBuggy,
+    ValidateEnviron,
+    ValidateIndex,
+    ValidateProjectPath,
+    ValidateTaxonomy,
+    ValidateWorkspace,
 )
-from processor.core.docker import Worktree
-from taxonomy import MetaData, Taxonomy
-
-_NAMESPACE_ATTR_INDEX = "index"
-_NAMESPACE_ATTR_BUGGY = "buggy"
-_NAMESPACE_ATTR_WORKSPACE = "workspace"
-_NAMESPACE_ATTR_PATH = "path"
-_NAMESPACE_ATTR_PATH_CONFIG_NAME = ".defects4cpp.json"
-_NAMESPACE_ATTR_METADATA = "metadata"
-
-
-def _set_worktree(obj: argparse.Namespace):
-    def worktree(self: argparse.Namespace) -> Worktree:
-        return Worktree(self.metadata.name, self.index, self.buggy, self.workspace)
-
-    cls = type(obj)
-    if not hasattr(cls, worktree.__name__):
-        new_cls = type(cls.__name__, (cls,), {})
-        obj.__class__ = new_cls
-        setattr(new_cls, worktree.__name__, property(worktree))
-
-
-def read_config(project_dir: Union[str, Path]) -> Tuple[MetaData, Worktree]:
-    """
-    Read config file and return parsed options.
-
-    Parameters
-    ----------
-    project_dir : Union[str, Path]
-        Path to where defect taxonomy is located.
-
-    Returns
-    -------
-    Tuple[taxonomy.MetaData, docker.Worktree]
-        Return a tuple of metadata and worktree information.
-    """
-    try:
-        with open(Path(project_dir) / _NAMESPACE_ATTR_PATH_CONFIG_NAME, "r") as fp:
-            data = json.load(fp)
-    except FileNotFoundError as e:
-        raise DppArgparseFileNotFoundError(e.filename)
-    except json.JSONDecodeError:
-        raise DppArgparseInvalidConfigError()
-
-    try:
-        worktree = Worktree(**data)
-    except TypeError:
-        raise DppArgparseConfigCorruptedError(data)
-
-    t = Taxonomy()
-    return t[worktree.project_name], worktree
-
-
-def write_config(worktree: Worktree) -> None:
-    """
-    Write config file to the directory.
-
-    Parameters
-    ----------
-    worktree : taxonomy.Worktree
-        Worktree
-
-    Returns
-    -------
-    None
-    """
-    config_file = Path(worktree.host) / _NAMESPACE_ATTR_PATH_CONFIG_NAME
-    if config_file.exists():
-        return
-
-    try:
-        with open(config_file, "w+") as fp:
-            json.dump(asdict(worktree), fp)
-    except FileNotFoundError as e:
-        raise DppArgparseFileNotFoundError(e.filename)
-
-
-class ValidateProjectPath(argparse.Action):
-    """
-    Validator for project path argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Path,
-        option_string=None,
-    ):
-        p = values.absolute()
-        if not p.exists() or not (p / _NAMESPACE_ATTR_PATH_CONFIG_NAME).exists():
-            raise DppArgparseNotProjectDirectory(values)
-        metadata, worktree = read_config(p)
-
-        _set_worktree(namespace)
-        setattr(namespace, _NAMESPACE_ATTR_METADATA, metadata)
-        setattr(namespace, _NAMESPACE_ATTR_INDEX, worktree.index)
-        setattr(namespace, _NAMESPACE_ATTR_BUGGY, worktree.buggy)
-        setattr(namespace, _NAMESPACE_ATTR_WORKSPACE, worktree.workspace)
-        setattr(namespace, _NAMESPACE_ATTR_PATH, str(p))
-
-
-class ValidateTaxonomy(argparse.Action):
-    """
-    Validator for taxonomy argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: str,
-        option_string=None,
-    ):
-        t = Taxonomy()
-        # Probably redundant to check 'values' exists in keys.
-        if values not in t.keys():
-            raise DppArgparseTaxonomyNotFoundError(values)
-
-        _set_worktree(namespace)
-        setattr(namespace, _NAMESPACE_ATTR_METADATA, t[values])
-
-
-class ValidateIndex(argparse.Action):
-    """
-    Validator for index argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: int,
-        option_string=None,
-    ):
-        metadata = namespace.metadata
-        if values < 1 or len(metadata.defects) < values:
-            raise DppArgparseDefectIndexError(values)
-
-        _set_worktree(namespace)
-        setattr(namespace, self.dest, values)
-
-
-class ValidateBuggy(argparse.Action):
-    """
-    Validator for buggy argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values,
-        option_string=None,
-    ):
-        _set_worktree(namespace)
-        setattr(namespace, self.dest, True)
-
-
-class ValidateWorkspace(argparse.Action):
-    """
-    Validator for workspace argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: str,
-        option_string=None,
-    ):
-        _set_worktree(namespace)
-        setattr(namespace, self.dest, values)
-
-
-class ValidateEnviron(argparse.Action):
-    """
-    Validator for env argument.
-    """
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: List[str],
-        option_string=None,
-    ):
-        if not getattr(namespace, self.dest, None):
-            setattr(namespace, self.dest, {})
-        dest = getattr(namespace, self.dest)
-        string = values[0]
-        try:
-            string = string.strip('"').strip("'")
-            key, value = string.split("=")
-            if not key:
-                raise ValueError
-        except ValueError:
-            raise DppArgparseInvalidEnvironment(values[0])
-        dest[key] = value
 
 
 def create_common_parser() -> argparse.ArgumentParser:
@@ -252,7 +53,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
         action=ValidateTaxonomy,
     )
     parser.add_argument(
-        _NAMESPACE_ATTR_INDEX,
+        NAMESPACE_ATTR_INDEX,
         type=int,
         help="index of defects.",
         action=ValidateIndex,
@@ -260,7 +61,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-b",
         "--buggy",
-        dest=_NAMESPACE_ATTR_BUGGY,
+        dest=NAMESPACE_ATTR_BUGGY,
         help="checkout a buggy commit.",
         nargs=0,
         action=ValidateBuggy,
@@ -269,7 +70,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-t",
         "--target",
-        dest=_NAMESPACE_ATTR_WORKSPACE,
+        dest=NAMESPACE_ATTR_WORKSPACE,
         type=str,
         help="checkout to the specified directory instead of the current directory.",
         action=ValidateWorkspace,
