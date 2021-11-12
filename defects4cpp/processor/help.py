@@ -8,7 +8,7 @@ WIP
 from textwrap import dedent
 from typing import List
 
-import processor
+from command import CommandList
 from message import message
 from processor.core.argparser import create_common_parser
 from processor.core.command import SimpleCommand
@@ -33,7 +33,7 @@ class HelpCommand(SimpleCommand):
             "Defects4C++: Defect Taxonomies for Automated Debugging Tools"
         )
         message.stdout_title("MIT Licensed, Suresoft Technologies Inc.\n")
-        commands = processor.CommandList()
+        commands = CommandList()
         for k, v in commands.items():
             message.stdout_bullet(v.parser.usage)
             message.stdout_paragraph(f"{v.parser.description}")
