@@ -2,14 +2,20 @@ Defects4Cpp
 ===========
 .. begin abstract
 
-|gitHub-actions-badge| |tests-badge| |coverage-badge|
+|gitHub-actions-badge| |taxonomy-badge| |docs| |tests-badge| |coverage-badge|
 
 `Defects4Cpp` is another collection of reproducible bugs for C/C++ and a supporting infrastructure with the goal of automatic program debugging research
 inspired by `Defects4J`_.
 
 .. _`Defects4J`: https://github.com/rjust/defects4j
-.. |gitHub-actions-badge| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/python-ci.yml/badge.svg
+.. |github-actions-badge| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/build.yml/badge.svg
    :alt: Build
+
+.. |taxonomy-badge| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/taxonomy.yml/badge.svg
+   :alt: Taxonomy
+
+.. |docs| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/deploy-gh-pages.yml/badge.svg
+   :alt: Docs
 
 .. |tests-badge| image:: https://suresoft-glados.github.io/defects4cpp/reports/junit/tests-badge.svg?dummy=8484744
    :target: https://suresoft-glados.github.io/defects4cpp/reports/junit/report.html

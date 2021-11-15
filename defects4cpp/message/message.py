@@ -39,6 +39,8 @@ class _MessageConfig(MutableMapping):
 
     def __setitem__(self, key: str, value):
         self._store[self._keytransform(key)] = value
+        # (python 3.8) 'force' option should be preferred.
+        logging.root.handlers = []
         logging.basicConfig(**self._store)
 
     def __delitem__(self, key: str):
@@ -62,9 +64,10 @@ class _Message:
                 "format": "%(levelname)s[%(name)s]: %(message)s",
                 "level": logging.INFO,
                 "handlers": [self._create_file_handler(temp)],
-                "force": True,  # Some third party libraries might have touched it.
+                # "force": True,  # (python 3.8) Some third party libraries might have touched it.
             }
         )
+        logging.root.handlers = []
         logging.basicConfig(**self._config)
         self._wrapper = TextWrapper()
 

@@ -3,8 +3,13 @@
 default: test
 
 install:
-	pip install --upgrade pip &&\
-		pip install -r requirements.txt
+	@pip install --upgrade pip
+	@pip install -r requirements.txt
+
+dev:
+	@pip install --upgrade pip
+	@pip install -r requirements.txt
+	@pip install -r requirements_dev.txt
 
 format:
 	black .
@@ -14,11 +19,11 @@ lint:
 	flake8 . --config setup.cfg
 
 test:
-	@PYTHONPATH=defects4cpp/ python3 -m pytest \
+	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/ \
 		--ignore tests/taxonomy
 
 coverage:
-	@PYTHONPATH=defects4cpp/ python3 -m pytest \
+	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/ \
 		--cov-report=xml:reports/coverage/coverage.xml \
 		--cov-report=html:reports/coverage \
 		--cov=defects4cpp \

@@ -13,6 +13,7 @@ from config import config
 from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
+from errors import DppError
 from errors.docker import DppDockerNoClientError
 from message import message
 from processor.core.data import Worktree
@@ -108,12 +109,18 @@ class Docker:
         return self._image
 
     def __enter__(self):
+        k = list(self._volume)[0]
         message.info(
             __name__,
             dedent(
                 """container.__enter__ ({})
-                - {}""".format(
-                    self._name, self._volume
+                - from {}
+                - to {}
+                - mode {}""".format(
+                    self._name,
+                    DppError.print_path(k),
+                    self._volume[k]["bind"],
+                    self._volume[k]["mode"],
                 )
             ),
         )
