@@ -39,8 +39,7 @@ class _ConfigMeta(type):
 
 
 class _Config(metaclass=_ConfigMeta):
-    def __init__(self):
-        print(self)
+    pass
 
 
 config = _Config()
