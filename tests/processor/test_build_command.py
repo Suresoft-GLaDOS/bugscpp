@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from defects4cpp.command import BuildCommand, CheckoutCommand
@@ -40,6 +42,9 @@ def test_build_command_should_generate_command_based_on_options(
 def test_build_command_export_commands(project_name, tmp_path):
     checkout = CheckoutCommand()
     checkout(f"{project_name} 1 --target {str(tmp_path)}".split())
+    # FIXME: Due to Github Action bug, it creates a directory owned by root even if user option is specified.
+    for directory in filter(Path.is_dir, tmp_path.rglob("*")):
+        directory.chmod(0o777)
 
     build = BuildCommand()
     build(

@@ -35,6 +35,8 @@ def test_docker_mount_directory(tmpdir):
     metadata = t["yara"]
     worktree = create_dummy_worktree(tmpdir)
     worktree.host.mkdir(parents=True)
+    # FIXME: Due to Github Action bug, it creates a directory owned by root even if user option is specified.
+    worktree.host.chmod(0o777)
 
     dummy = "foo.txt"
     dummy_path = os.path.join(worktree.host, dummy)

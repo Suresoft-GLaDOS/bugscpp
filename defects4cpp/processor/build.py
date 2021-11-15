@@ -142,6 +142,6 @@ class BuildCommand(DockerCommand):
             compile_commands = host / "compile_commands.json"
 
         if compile_commands.exists():
-            shutil.move(str(compile_commands), str(dest))
+            shutil.copyfile(str(compile_commands), str(dest / "compile_commands.json"))
         else:
             message.warning(__name__, "compile_commands.json could not be found")
