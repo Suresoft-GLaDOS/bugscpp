@@ -55,7 +55,7 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
         "project",
         type=lambda s: s.lower(),
         help="name of defect taxonomy.",
-        choices=[name for name in t.keys()],
+        choices=[name for name in t],
         action=ValidateTaxonomy,
     )
     parser.add_argument(

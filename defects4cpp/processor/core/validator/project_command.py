@@ -97,7 +97,7 @@ class ValidateTaxonomy(argparse.Action):
     ):
         t = Taxonomy()
         # Probably redundant to check 'values' exists in keys.
-        if values not in t.keys():
+        if values not in t:
             raise DppArgparseTaxonomyNotFoundError(values)
 
         _set_worktree(namespace)

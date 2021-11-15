@@ -21,29 +21,27 @@ def check_message(commit_msg: str):
 
 
 def check_files(commit_files: Dict[str, Dict[str, int]]):
-    files = commit_files.keys()
-
     # If the number of files are too big, get rid of it from candidates.
-    if len(files) > NUM_FILE:
+    if len(commit_files) > NUM_FILE:
         return False
 
     # Consider modified files inside DIRECTORY only.
     for d in DIRECTORY:
-        if not any(file.startswith(d) for file in files):
+        if not any(file.startswith(d) for file in commit_files):
             return False
 
     # Extensions should be any of EXTENSIONS.
-    if not any(Path(file).suffix in EXTENSION for file in files):
+    if not any(Path(file).suffix in EXTENSION for file in commit_files):
         return False
 
     # Check the number of inserted lines and deleted lines.
     inserted_lines = sum(
         commit_files[src]["insertions"]
-        for src in (file for file in files if Path(file).suffix in EXTENSION)
+        for src in (file for file in commit_files if Path(file).suffix in EXTENSION)
     )
     deleted_lines = sum(
         commit_files[src]["deletions"]
-        for src in (file for file in files if Path(file).suffix in EXTENSION)
+        for src in (file for file in commit_files if Path(file).suffix in EXTENSION)
     )
     return (inserted_lines + deleted_lines) < DIFF_CONTENTS
 

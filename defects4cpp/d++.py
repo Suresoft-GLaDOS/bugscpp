@@ -32,7 +32,7 @@ def main():
         name = "help"
 
     argv = sys.argv[2:]
-    if name not in commands.keys():
+    if name not in commands:
         message.stdout_progress_error(f"'{name}' is not a valid command")
         return 1
 

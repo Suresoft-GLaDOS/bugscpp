@@ -32,7 +32,7 @@ class _ConfigMeta(type):
                 for key in dir(env_module)
                 if key.startswith("DPP")
             }
-            for k in settings.keys():
+            for k in settings:
                 prop = property(create_getter(k), create_setter(k))
                 setattr(new_class, k, prop)
         return new_class

@@ -208,7 +208,7 @@ class MetaData:
                 [
                     w
                     for w in string.split()
-                    if w not in MetaData._common_variables.keys()
+                    if w not in MetaData._common_variables
                 ]
             )
 
