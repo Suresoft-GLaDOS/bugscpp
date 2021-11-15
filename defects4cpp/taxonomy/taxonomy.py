@@ -205,11 +205,7 @@ class MetaData:
 
         def do_strip(string: str) -> str:
             return " ".join(
-                [
-                    w
-                    for w in string.split()
-                    if w not in MetaData._common_variables
-                ]
+                [w for w in string.split() if w not in MetaData._common_variables]
             )
 
         data: Dict = {
@@ -236,17 +232,19 @@ class _LazyTaxonomy:
         try:
             return getattr(owner, self.name)
         except AttributeError:
-            setattr(
-                owner,
-                self.name,
-                dict(
-                    [
-                        (name, MetaData(name, f"{join(instance.base, name)}"))
-                        for _, name, _ in iter_modules([dirname(__file__)])
-                    ]
-                ),
-            )
+            setattr(owner, self.name, self._load_taxonomy(instance.base))
         return getattr(owner, self.name)
+
+    @staticmethod
+    def _load_taxonomy(base: str) -> Dict[str, MetaData]:
+        d = dict(
+            [
+                (name, MetaData(name, f"{join(base, name)}"))
+                for _, name, is_pkg in iter_modules([dirname(__file__)])
+                if is_pkg
+            ]
+        )
+        return d
 
 
 class Taxonomy(Mapping):
