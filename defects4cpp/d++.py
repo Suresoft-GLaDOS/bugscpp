@@ -1,5 +1,5 @@
 import sys
-import time
+from time import perf_counter
 
 from command import CommandList
 from errors import DppArgparseError, DppDockerError, DppError
@@ -15,9 +15,9 @@ def _handle_cmdline_error(e: DppError):
 
 def main():
     def measure_time(func, args):
-        start_time = time.time()
+        start_time = perf_counter()
         func(args)
-        elapsed = time.time() - start_time
+        elapsed = perf_counter() - start_time
         if elapsed < 100:
             message.stdout_progress(f"Elapsed: {elapsed:.2f}s")
         else:
