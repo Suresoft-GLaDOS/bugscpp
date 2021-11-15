@@ -8,8 +8,8 @@ WIP
 from textwrap import dedent
 from typing import List
 
-from command import CommandList
 from message import message
+from processor.command_list import CommandList
 from processor.core.argparser import create_common_parser
 from processor.core.command import SimpleCommand
 
