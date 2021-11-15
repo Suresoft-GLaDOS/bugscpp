@@ -1,6 +1,6 @@
 import enum
 import json
-from collections import Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from os.path import dirname, exists, join
 from pkgutil import iter_modules

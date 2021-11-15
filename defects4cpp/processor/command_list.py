@@ -3,7 +3,7 @@ Controller
 
 There should be no deep logic
 """
-from collections import Mapping
+from collections.abc import Mapping
 from typing import Iterator
 
 from processor.core.command import RegisteredCommands
