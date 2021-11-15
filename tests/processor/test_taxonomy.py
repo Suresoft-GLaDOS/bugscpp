@@ -1,5 +1,5 @@
-from taxonomy import Taxonomy
 from config import env
+from taxonomy import Taxonomy
 
 
 def test_taxonomy():

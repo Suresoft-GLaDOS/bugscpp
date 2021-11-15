@@ -228,15 +228,36 @@ class MetaData:
         return Common(**data)
 
 
+class _LazyTaxonomy:
+    def __set_name__(self, owner, name):
+        self.name = f"_{name}"
+
+    def __get__(self, instance, owner):
+        try:
+            return getattr(owner, self.name)
+        except AttributeError:
+            setattr(
+                owner,
+                self.name,
+                dict(
+                    [
+                        (name, MetaData(name, f"{join(instance.base, name)}"))
+                        for _, name, _ in iter_modules([dirname(__file__)])
+                    ]
+                ),
+            )
+        return getattr(owner, self.name)
+
+
 class Taxonomy(Mapping):
+    _lazy_taxonomy = _LazyTaxonomy()
+
     def __init__(self):
         self.base: str = dirname(__file__)
-        self._store: Dict[str, MetaData] = dict(
-            [
-                (name, MetaData(name, f"{join(self.base, name)}"))
-                for _, name, _ in iter_modules([dirname(__file__)])
-            ]
-        )
+
+    @property
+    def _store(self) -> Dict[str, MetaData]:
+        return self._lazy_taxonomy
 
     def __getitem__(self, key: str) -> MetaData:
         return self._store[self._keytransform(key)]
