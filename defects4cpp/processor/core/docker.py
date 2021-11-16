@@ -14,7 +14,12 @@ from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 from errors import DppError
-from errors.docker import DppDockerNoClientError
+from errors.docker import (
+    DppDockerBuildClientError,
+    DppDockerBuildError,
+    DppDockerBuildServerError,
+    DppDockerNoClientError,
+)
 from message import message
 from processor.core.data import Worktree
 
@@ -33,11 +38,27 @@ def _cast_container(container) -> Container:
     return cast(Container, container)
 
 
+def _try_build_image(client, tag, path) -> Image:
+    try:
+        return client.images.build(rm=True, tag=tag, path=path)[0]
+    except docker.errors.BuildError as e:
+        raise DppDockerBuildError(e.msg)
+    except docker.errors.APIError as e:
+        if e.is_client_error():
+            raise DppDockerBuildClientError(e.explanation)
+        else:
+            raise DppDockerBuildServerError(e.explanation)
+
+
 def _build_image(client, tag, path) -> Image:
     """
     Helper function to get a correct type
     """
-    return client.images.build(rm=True, tag=tag, path=path)[0]
+    try:
+        return _try_build_image(client, tag, path)
+    except DppError as e:
+        message.stdout_progress_error(e)
+        sys.exit(1)
 
 
 class _Client:

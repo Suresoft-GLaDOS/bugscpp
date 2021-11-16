@@ -5,6 +5,36 @@ class DppDockerError(DppError):
     pass
 
 
+class DppDockerBuildError(DppError):
+    def __init__(self, msg):
+        self.msg = msg
+        super().__init__(
+            f"{self.msg}\n"
+            "Could not build image. Please open an issue at "
+            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+        )
+
+
+class DppDockerBuildClientError(DppError):
+    def __init__(self, msg):
+        self.msg = msg
+        super().__init__(
+            f"{self.msg}\n"
+            "Could not build image (client error). Please open an issue at "
+            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+        )
+
+
+class DppDockerBuildServerError(DppError):
+    def __init__(self, msg):
+        self.msg = msg
+        super().__init__(
+            f"{self.msg}\n"
+            "Could not build image (server error). Please open an issue at "
+            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+        )
+
+
 class DppDockerNoClientError(DppDockerError):
     def __init__(self):
         super().__init__(
