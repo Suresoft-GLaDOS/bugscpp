@@ -3,6 +3,7 @@ Manage commands associated with docker SDK module.
 
 Do not use docker SDK directly, instead use Docker class.
 """
+import sys
 from pathlib import Path
 from textwrap import dedent
 from typing import Dict, Optional, cast
@@ -95,6 +96,7 @@ class Docker:
         dockerfile: str,
         worktree: Worktree,
         environ: Optional[Dict[str, str]] = None,
+        rebuild_image=False,
     ):
         self._dockerfile = dockerfile
         # Assumes that the name of its parent directory is the same with that of the target.
@@ -106,6 +108,7 @@ class Docker:
         }
         self._working_dir: str = str(worktree.container)
         self._environ = environ
+        self._rebuild_image = rebuild_image
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
 
@@ -114,6 +117,11 @@ class Docker:
         """Docker SDK Image."""
         if not self._image:
             try:
+                if self._rebuild_image:
+                    # It should raise ImageNotFound later and make image rebuilt.
+                    self.client.images.remove(self._tag)
+                    message.info(__name__, f"removing the previous image {self._tag}")
+
                 self._image = _cast_image(self.client.images.get(self._tag))
                 message.info(__name__, f"image found {self._tag}")
             except docker.errors.ImageNotFound:
@@ -125,8 +133,6 @@ class Docker:
                 self._image = _build_image(
                     self.client, self._tag, str(Path(self._dockerfile).parent)
                 )
-            else:
-                pass
         return self._image
 
     def __enter__(self):

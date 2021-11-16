@@ -115,6 +115,12 @@ def create_common_project_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     parser.add_argument(
+        "--rebuild-image",
+        dest="rebuild_image",
+        help="rebuild docker image.",
+        action="store_true",
+    )
+    parser.add_argument(
         "--env",
         type=str,
         dest="env",

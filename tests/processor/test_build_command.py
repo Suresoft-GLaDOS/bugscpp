@@ -52,3 +52,16 @@ def test_build_command_export_commands(project_name, tmp_path):
     )
 
     assert (tmp_path / "compile_commands.json").exists()
+
+
+def test_build_command_rebuild_image(create_build, meta_json, capsys):
+    build = create_build(meta_json, {"rebuild_image": True})
+
+    # build yara image
+    build([])
+    _, _ = capsys.readouterr()
+
+    # build yara image again
+    build([])
+    stdout, _ = capsys.readouterr()
+    assert "Creating a new docker image for" in stdout

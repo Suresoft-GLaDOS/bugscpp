@@ -2,6 +2,7 @@ import argparse
 import json
 from os import environ
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, Dict, Optional, cast
 
 import pytest
@@ -50,7 +51,7 @@ def _create_processor(
 ) -> "Command":
     with open(workspace / "meta.json", "w+") as fp:
         json.dump(meta_json, fp)
-    with open(workspace / "__init__.py", "w+") as fp:
+    with open(workspace / "__init__.py", "w+"):
         pass
 
     # Create a dummy taxonomy temporarily used for testing.
@@ -60,12 +61,25 @@ def _create_processor(
 
     cmd.parser = argparse.ArgumentParser()
     worktree = Worktree(name, 1, extra_args["buggy"], str(workspace))
+    metadata = MetaData(name=name, path=str(workspace))
+
     if isinstance(cmd, BuildCommand):
         worktree.host.mkdir(parents=True, exist_ok=True)
         Project.write_config(worktree)
+        with open(metadata.dockerfile, "w+") as fp:
+            fp.write(
+                dedent(
+                    """FROM ubuntu:20.04
+                RUN useradd --create-home --home-dir /home/workspace --shell /bin/bash defects4cpp
+                USER defects4cpp
+                ENV USER defects4cpp
+                WORKDIR /home/workspace"""
+                )
+            )
+
     cmd.parser.set_defaults(
         path=str(worktree.host),
-        metadata=MetaData(name=name, path=str(workspace)),
+        metadata=metadata,
         worktree=worktree,
         index=1,
         **extra_args
@@ -92,6 +106,8 @@ def create_checkout(tmp_path: Path, request):
         cmd = CheckoutCommand()
         extra_args = {} if extra_args is None else extra_args
         extra_args.setdefault("buggy", False)
+        extra_args.setdefault("env", None)
+
         return cast(
             CheckoutCommand,
             _create_processor(request.node.name, workspace, meta_json, extra_args, cmd),
@@ -111,7 +127,12 @@ def create_build(tmp_path: Path, request):
         cmd = BuildCommand()
         extra_args = {} if extra_args is None else extra_args
         extra_args.setdefault("buggy", False)
+        extra_args.setdefault("coverage", False)
         extra_args.setdefault("verbose", False)
+        extra_args.setdefault("env", None)
+        extra_args.setdefault("export", None)
+        extra_args.setdefault("rebuild", False)
+
         return cast(
             BuildCommand,
             _create_processor(request.node.name, workspace, meta_json, extra_args, cmd),

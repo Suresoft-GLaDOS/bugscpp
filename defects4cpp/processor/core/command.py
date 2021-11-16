@@ -306,6 +306,7 @@ class DockerCommand(Command):
 
         args = self.parser.parse_args(argv)
         self.environ = args.env
+        rebuild_image = True if args.rebuild_image else False
 
         script_generator = self.create_script_generator(args)
         worktree = script_generator.worktree
@@ -316,6 +317,7 @@ class DockerCommand(Command):
             script_generator.metadata.dockerfile,
             script_generator.worktree,
             self.environ,
+            rebuild_image,
         ) as docker:
             for script in script_generator.create():
                 script.before()
