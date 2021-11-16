@@ -2,7 +2,7 @@
 # Licensed under the MIT
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update
+RUN apt-get update -y
 RUN apt-get install -y git autoconf automake libtool libjansson-dev \
     libmagic-dev libssl-dev \
     protobuf-compiler protobuf-c-compiler libprotobuf-c-dev \
