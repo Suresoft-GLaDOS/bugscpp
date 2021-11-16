@@ -54,7 +54,7 @@ For instance, if you want to checkout `wireshark` project:
 
     $ d++ checkout wireshark 1
 
-Finally, to build and test `wireshark`, or any project you've just cloned, run the following a sequence of commands:
+Finally, to build and test `wireshark`, or any project you've just cloned, run the following sequence of commands:
 
 ::
 
