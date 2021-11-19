@@ -37,7 +37,9 @@ def _git_clone(path: Path, metadata: taxonomy.MetaData) -> git.Repo:
             path.parent.mkdir(parents=True, exist_ok=True)
         message.info(__name__, f"cloning {metadata.name} into {str(path)}")
         try:
-            repo = git.Repo.clone_from(metadata.info.url, str(path))
+            repo = git.Repo.clone_from(
+                metadata.info.url, str(path), multi_options=["-c core.autocrlf=false"]
+            )
         except git.GitCommandError as e:
             raise DppGitCloneError(metadata, str(path), e.command, e.status, e.stdout)
 
