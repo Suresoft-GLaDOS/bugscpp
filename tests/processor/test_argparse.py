@@ -198,10 +198,10 @@ def test_common_command_parser_settings_option(keep_config):
     t = Taxonomy()
     make_project = t["yara"]
     assert any(
-        "foo" in line for line in make_project.common_capture.build_command.lines
+        "foo" in line for line in make_project.common_capture.build_command[0].lines
     )
 
     cmake_project = t["cppcheck"]
     assert any(
-        "foo" in line for line in cmake_project.common_capture.build_command.lines
+        "foo" in line for line in cmake_project.common_capture.build_command[0].lines
     )

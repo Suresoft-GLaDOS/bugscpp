@@ -7,7 +7,11 @@ from pkgutil import iter_modules
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from config import config
-from errors.internal import DppTaxonomyInitInternalError
+from errors.internal import (
+    DppMetaDataInitKeyError,
+    DppMetaDataInitTypeError,
+    DppTaxonomyInitInternalError,
+)
 
 
 class CommandType(enum.IntEnum):
@@ -30,18 +34,18 @@ class TestType(enum.IntEnum):
 
 @dataclass(frozen=True)
 class Common:
-    build_command: Command
-    build_coverage_command: Command
+    build_command: List[Command]
+    build_coverage_command: List[Command]
     test_type: TestType
-    test_command: Command
-    test_coverage_command: Command
+    test_command: List[Command]
+    test_coverage_command: List[Command]
     gcov: "Gcov"
 
 
 @dataclass(frozen=True)
 class Gcov:
     exclude: List[str]
-    command: Command
+    command: List[Command]
 
 
 @dataclass(frozen=True)
@@ -62,24 +66,24 @@ class MetaInfo:
     vcs: str
 
 
-def create_command(value: Dict[str, Any]) -> Command:
-    return Command(CommandType[value["type"].capitalize()], value["lines"])
+def create_command(value: List[Dict[str, Any]]) -> List[Command]:
+    return [Command(CommandType[v["type"].capitalize()], v["lines"]) for v in value]
 
 
 def create_gcov(value: Dict[str, Any]) -> Gcov:
     return Gcov(
         [d for d in value["exclude"]],
-        create_command(value["command"]),
+        create_command(value["commands"]),
     )
 
 
 def create_common(value: Dict[str, Any]) -> Common:
     return Common(
-        create_command(value["build"]["command"]),
-        create_command(value["build-coverage"]["command"]),
+        create_command(value["build"]["commands"]),
+        create_command(value["build-coverage"]["commands"]),
         TestType[value["test-type"].capitalize()],
-        create_command(value["test"]["command"]),
-        create_command(value["test-coverage"]["command"]),
+        create_command(value["test"]["commands"]),
+        create_command(value["test-coverage"]["commands"]),
         create_gcov(value["gcov"]),
     )
 
@@ -103,6 +107,14 @@ class _MetaDataVariables(Mapping):
 
     def __iter__(self) -> Iterator:
         return iter(self._store)
+
+
+def _do_replace(variables: Dict, string: str) -> str:
+    return " ".join([variables.get(w, w) for w in string.split()])
+
+
+def _do_strip(variables: Dict, string: str) -> str:
+    return " ".join([w for w in string.split() if w not in variables])
 
 
 class MetaData:
@@ -198,30 +210,66 @@ class MetaData:
 
     @staticmethod
     def _preprocess_common(common: Common, replace: bool) -> Common:
-        def do_replace(string: str) -> str:
-            return " ".join(
-                [MetaData._common_variables.get(w, w) for w in string.split()]
-            )
-
-        def do_strip(string: str) -> str:
-            return " ".join(
-                [w for w in string.split() if w not in MetaData._common_variables]
-            )
-
         data: Dict = {
             "test_type": common.test_type,
             "gcov": common.gcov,
         }
 
-        func: Callable[[str], str] = do_replace if replace else do_strip
-        command_fields = [f for f in fields(common) if f.type == Command]
+        func: Callable[[Dict, str], str] = _do_replace if replace else _do_strip
+        command_fields = [f for f in fields(common) if f.type == List[Command]]
         for command_field in command_fields:
-            obj = getattr(common, command_field.name)
-            data[command_field.name] = Command(
-                obj.type, [func(line) for line in obj.lines]
-            )
+            objs: List[Command] = getattr(common, command_field.name)
+            data[command_field.name] = [
+                Command(
+                    obj.type,
+                    [func(MetaData._common_variables, line) for line in obj.lines],
+                )
+                for obj in objs
+            ]
+
+        if config.DPP_BUILD_PRE_STEPS:
+            MetaData._preprocess_build_command(func, data)
 
         return Common(**data)
+
+    @staticmethod
+    def _preprocess_build_command(
+        func: Callable[[Dict, str], str], data: Dict[str, Any]
+    ):
+        valid_keys = [e.name for e in CommandType]
+        for build_field in ["build_command", "build_coverage_command"]:
+            pre_build_steps: List[Command] = []
+            for pre_step in config.DPP_BUILD_PRE_STEPS:
+                try:
+                    assert pre_step["type"].capitalize() in valid_keys
+                    pre_build_steps.append(
+                        Command(
+                            pre_step["type"].capitalize(),
+                            [
+                                func(MetaData._common_variables, line)
+                                for line in pre_step["lines"]
+                            ],
+                        )
+                    )
+                except KeyError:
+                    raise DppMetaDataInitKeyError(pre_step)
+                except AssertionError:
+                    raise DppMetaDataInitTypeError(pre_step)
+
+            data[build_field] = pre_build_steps + data[build_field]
+
+    # TODO: extend below functions for test and gcov command.
+    @staticmethod
+    def _preprocess_test_command(
+        func: Callable[[Dict, str], str], data: Dict[str, Any]
+    ):
+        pass
+
+    @staticmethod
+    def _preprocess_gcov_command(
+        func: Callable[[Dict, str], str], data: Dict[str, Any]
+    ):
+        pass
 
 
 class _LazyTaxonomy:

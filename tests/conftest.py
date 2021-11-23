@@ -148,12 +148,12 @@ def meta_json() -> Dict[str, Any]:
     return {
         "info": {"url": "test-url", "short-desc": "", "vcs": "git"},
         "common": {
-            "build": {"command": {"type": "docker", "lines": []}},
-            "build-coverage": {"command": {"type": "docker", "lines": []}},
+            "build": {"commands": [{"type": "docker", "lines": []}]},
+            "build-coverage": {"commands": [{"type": "docker", "lines": []}]},
             "test-type": "automake",
-            "test": {"command": {"type": "docker", "lines": []}},
-            "test-coverage": {"command": {"type": "docker", "lines": []}},
-            "gcov": {"exclude": [], "command": {"type": "docker", "lines": []}},
+            "test": {"commands": [{"type": "docker", "lines": []}]},
+            "test-coverage": {"commands": [{"type": "docker", "lines": []}]},
+            "gcov": {"exclude": [], "commands": [{"type": "docker", "lines": []}]},
         },
         "defects": [
             {

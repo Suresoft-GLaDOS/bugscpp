@@ -18,10 +18,10 @@ from defects4cpp.config import config
 def test_build_command_should_generate_command_based_on_options(
     create_build, meta_json, coverage, export, expected
 ):
-    meta_json["common"]["build"]["command"]["lines"] = [
+    meta_json["common"]["build"]["commands"][0]["lines"] = [
         "@DPP_COMPILATION_DB_TOOL@ command"
     ]
-    meta_json["common"]["build-coverage"]["command"]["lines"] = [
+    meta_json["common"]["build-coverage"]["commands"][0]["lines"] = [
         "coverage_command @DPP_COMPILATION_DB_TOOL@"
     ]
     build = create_build(meta_json, {"coverage": coverage, "export": export})

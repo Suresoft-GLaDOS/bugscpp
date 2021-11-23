@@ -8,7 +8,7 @@ import os
 import shutil
 from pathlib import Path
 from textwrap import dedent
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import TYPE_CHECKING, Generator, List, Optional
 
 from errors import DppArgparseFileNotFoundError
 
@@ -69,7 +69,7 @@ class BuildCommandScript(DockerCommandScript):
 class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
     def __init__(
         self,
-        command: "Command",
+        command: List["Command"],
         metadata: "MetaData",
         worktree: Worktree,
         verbose: bool,
@@ -78,7 +78,9 @@ class BuildCommandScriptGenerator(DockerCommandScriptGenerator):
         self.command = command
 
     def create(self) -> Generator[BuildCommandScript, None, None]:
-        yield BuildCommandScript(self.stream, self.command.type, self.command.lines)
+        return (
+            BuildCommandScript(self.stream, cmd.type, cmd.lines) for cmd in self.command
+        )
 
 
 class BuildCommand(DockerCommand):
