@@ -11,7 +11,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, List, Optional, Set, Union, cast
 
-import taxonomy
 from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
@@ -22,6 +21,7 @@ from processor.core.command import (
     DockerCommandScriptGenerator,
 )
 from processor.core.data import Worktree
+from taxonomy import Command, CommandType, Defect, MetaData
 
 
 class ValidateCase(argparse.Action):
@@ -57,7 +57,7 @@ class ValidateCase(argparse.Action):
             )
 
         try:
-            metadata: taxonomy.MetaData = namespace.metadata
+            metadata: MetaData = namespace.metadata
             index: int = namespace.worktree.index
         except AttributeError:
             raise DppCaseExpressionInternalError(namespace)
@@ -143,7 +143,7 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     def __init__(
         self,
         case: int,
-        command_type: taxonomy.CommandType,
+        command_type: CommandType,
         command: List[str],
     ):
         super().__init__(command_type, command)
@@ -185,7 +185,7 @@ class SetupTestCommandScript(TestCommandScript):
     ):
         super().__init__(
             case,
-            taxonomy.CommandType.Docker,
+            CommandType.Docker,
             [f"sh -c 'echo {case} > {SetupTestCommandScript.OUTPUT_NAME}'"],
         )
 
@@ -202,7 +202,7 @@ class CoverageTestCommandScript(TestCommandScript):
     def __init__(
         self,
         case: int,
-        command_type: taxonomy.CommandType,
+        command_type: CommandType,
         command: List[str],
     ):
         super().__init__(case, command_type, command)
@@ -217,7 +217,7 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
         self,
         case: int,
         exclude: List[str],
-        command_type: taxonomy.CommandType,
+        command_type: CommandType,
         command: List[str],
     ):
         exclude_flags = " ".join(
@@ -254,12 +254,12 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
 
     def __init__(
         self,
-        defect: taxonomy.Defect,
+        defect: Defect,
         coverage: bool,
-        test_command: taxonomy.Command,
+        test_command: List[Command],
         test_cases: Set[int],
         callbacks: List[Callable],
-        metadata: taxonomy.MetaData,
+        metadata: MetaData,
         worktree: Worktree,
         stream: bool,
     ):
@@ -287,26 +287,29 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_impl(self) -> Generator[CoverageTestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            yield TestCommandScript(
-                case,
-                self._test_command.type,
-                self._test_command.lines,
-            )
+            for test_cmd in self._test_command:
+                yield CoverageTestCommandScript(
+                    case,
+                    test_cmd.type,
+                    test_cmd.lines,
+                )
 
     def _create_coverage_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            yield CoverageTestCommandScript(
-                case,
-                self._test_command.type,
-                self._test_command.lines,
-            )
-            yield GcovCommandScript(
-                case,
-                self._gcov.exclude,
-                self._gcov.command.type,
-                self._gcov.command.lines,
-            )
+            for test_cmd in self._test_command:
+                yield CoverageTestCommandScript(
+                    case,
+                    test_cmd.type,
+                    test_cmd.lines,
+                )
+            for gcov_cmd in self._gcov.command:
+                yield GcovCommandScript(
+                    case,
+                    self._gcov.exclude,
+                    gcov_cmd.type,
+                    gcov_cmd.lines,
+                )
 
 
 class TestCommand(DockerCommand):
@@ -338,7 +341,7 @@ class TestCommand(DockerCommand):
         Run testsuite inside docker. The project must have been built previously.
         """
         )
-        self.metadata: Optional[taxonomy.MetaData] = None
+        self.metadata: Optional[MetaData] = None
         self.worktree: Optional[Worktree] = None
         self.coverage: Optional[bool] = None
         self.output: str = getcwd()

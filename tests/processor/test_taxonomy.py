@@ -13,9 +13,9 @@ def test_metadata():
     metadata = t["yara"]
 
     common = metadata.common
-    line = common.build_command.lines[-1]
+    line = common.build_command[0].lines[-1]
     assert line == f"make -j{env.DPP_PARALLEL_BUILD}"
 
     common_capture = metadata.common_capture
-    line = common_capture.build_command.lines[-1]
+    line = common_capture.build_command[0].lines[-1]
     assert line == f"{env.DPP_COMPILATION_DB_TOOL} make -j{env.DPP_PARALLEL_BUILD}"

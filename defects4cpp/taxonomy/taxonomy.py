@@ -63,7 +63,7 @@ class MetaInfo:
 
 
 def create_command(value: List[Dict[str, Any]]) -> List[Command]:
-    return [Command(CommandType[v[]["type"].capitalize()], v["lines"]) for v in value]
+    return [Command(CommandType[v["type"].capitalize()], v["lines"]) for v in value]
 
 
 def create_gcov(value: Dict[str, Any]) -> Gcov:
@@ -214,12 +214,12 @@ class MetaData:
         }
 
         func: Callable[[str], str] = do_replace if replace else do_strip
-        command_fields = [f for f in fields(common) if f.type == Command]
+        command_fields = [f for f in fields(common) if f.type == List[Command]]
         for command_field in command_fields:
-            obj = getattr(common, command_field.name)
-            data[command_field.name] = Command(
-                obj.type, [func(line) for line in obj.lines]
-            )
+            objs = getattr(common, command_field.name)
+            data[command_field.name] = [
+                Command(obj.type, [func(line) for line in obj.lines]) for obj in objs
+            ]
 
         return Common(**data)
 
