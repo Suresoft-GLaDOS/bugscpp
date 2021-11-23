@@ -30,18 +30,18 @@ class TestType(enum.IntEnum):
 
 @dataclass(frozen=True)
 class Common:
-    build_command: Command
-    build_coverage_command: Command
+    build_command: List[Command]
+    build_coverage_command: List[Command]
     test_type: TestType
-    test_command: Command
-    test_coverage_command: Command
+    test_command: List[Command]
+    test_coverage_command: List[Command]
     gcov: "Gcov"
 
 
 @dataclass(frozen=True)
 class Gcov:
     exclude: List[str]
-    command: Command
+    command: List[Command]
 
 
 @dataclass(frozen=True)
@@ -62,24 +62,24 @@ class MetaInfo:
     vcs: str
 
 
-def create_command(value: Dict[str, Any]) -> Command:
-    return Command(CommandType[value["type"].capitalize()], value["lines"])
+def create_command(value: List[Dict[str, Any]]) -> List[Command]:
+    return [Command(CommandType[v[]["type"].capitalize()], v["lines"]) for v in value]
 
 
 def create_gcov(value: Dict[str, Any]) -> Gcov:
     return Gcov(
         [d for d in value["exclude"]],
-        create_command(value["command"]),
+        create_command(value["commands"]),
     )
 
 
 def create_common(value: Dict[str, Any]) -> Common:
     return Common(
-        create_command(value["build"]["command"]),
-        create_command(value["build-coverage"]["command"]),
+        create_command(value["build"]["commands"]),
+        create_command(value["build-coverage"]["commands"]),
         TestType[value["test-type"].capitalize()],
-        create_command(value["test"]["command"]),
-        create_command(value["test-coverage"]["command"]),
+        create_command(value["test"]["commands"]),
+        create_command(value["test-coverage"]["commands"]),
         create_gcov(value["gcov"]),
     )
 
