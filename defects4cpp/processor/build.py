@@ -137,12 +137,7 @@ class BuildCommand(DockerCommand):
 
     @staticmethod
     def _find_compile_commands_json(host: Path, dest: Path):
-        build_dir = host / "build"
-        if build_dir.exists():
-            compile_commands = build_dir / "compile_commands.json"
-        else:
-            compile_commands = host / "compile_commands.json"
-
+        compile_commands = host / ".xdb" / "compile_commands.json"
         if compile_commands.exists():
             shutil.copyfile(str(compile_commands), str(dest / "compile_commands.json"))
         else:
