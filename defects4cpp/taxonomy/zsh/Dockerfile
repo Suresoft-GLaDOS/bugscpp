@@ -4,7 +4,7 @@ FROM ubuntu:18.04
 
 RUN apt-get update -y && apt-get upgrade -y
 RUN apt-get install -y git automake bear autoconf build-essential libncurses5-dev \
-    bsdmainutils groff-base man-db python3 python3-pip
+    bsdmainutils groff-base man-db python3 python3-pip wget
 
 # Install gcovr
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100
