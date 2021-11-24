@@ -24,8 +24,25 @@ def test_metadata_variables_should_be_replaced():
     assert line == f"{env.DPP_COMPILATION_DB_TOOL} make -j{env.DPP_PARALLEL_BUILD}"
 
 
+def test_metadata_setting_compilation_db_tool_should_remove_cmake_export_macro(
+    keep_config,
+):
+    t = Taxonomy()
+    metadata = t["cppcheck"]  # cmake project
+    assert any(
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=1" in line
+        for line in metadata.common_capture.build_command[0].lines
+    )
+
+    config.DPP_CMAKE_COMPILATION_DB_TOOL = "foo"
+    assert not any(
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=1" in line
+        for line in metadata.common_capture.build_command[0].lines
+    )
+
+
 @pytest.mark.parametrize("attr_name", ["DPP_BUILD_PRE_STEPS", "DPP_BUILD_POST_STEPS"])
-def test_metadata_build_steps_with_missing_key_should_throw(keep_config, attr_name):
+def test_metadata_build_pre_steps_with_missing_key_should_throw(keep_config, attr_name):
     setattr(config, attr_name, [{"typo": "docker", "lines": ["echo hello, world!"]}])
     t = Taxonomy()
     metadata = t["yara"]

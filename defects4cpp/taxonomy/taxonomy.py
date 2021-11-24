@@ -97,6 +97,12 @@ class _MetaDataVariables(Mapping):
         self._store = dict(*args, **kwargs)
 
     def __getitem__(self, k: str) -> str:
+        # Remove cmake export macro when DPP_CMAKE_COMPILATION_DB_TOOL is set.
+        if k == "@DPP_CMAKE_GEN_COMPILATION_DB@" and getattr(
+            config, "DPP_CMAKE_COMPILATION_DB_TOOL"
+        ):
+            return ""
+
         v: Optional[str] = self._store[k]
         if v is None:
             v = getattr(config, k.strip("@"))
