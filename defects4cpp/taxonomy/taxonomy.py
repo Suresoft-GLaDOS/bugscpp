@@ -227,8 +227,7 @@ class MetaData:
                 for obj in objs
             ]
 
-        if config.DPP_BUILD_PRE_STEPS:
-            MetaData._preprocess_build_command(func, data)
+        MetaData._preprocess_build_command(func, data)
 
         return Common(**data)
 
@@ -236,27 +235,33 @@ class MetaData:
     def _preprocess_build_command(
         func: Callable[[Dict, str], str], data: Dict[str, Any]
     ):
-        valid_keys = [e.name for e in CommandType]
-        for build_field in ["build_command", "build_coverage_command"]:
-            pre_build_steps: List[Command] = []
-            for pre_step in config.DPP_BUILD_PRE_STEPS:
+        def create_commands(steps: List[Dict[str, Any]]) -> List[Command]:
+            commands: List[Command] = []
+            for step in steps:
                 try:
-                    assert pre_step["type"].capitalize() in valid_keys
-                    pre_build_steps.append(
+                    assert step["type"].capitalize() in valid_keys
+                    commands.append(
                         Command(
-                            pre_step["type"].capitalize(),
+                            step["type"].capitalize(),
                             [
                                 func(MetaData._common_variables, line)
-                                for line in pre_step["lines"]
+                                for line in step["lines"]
                             ],
                         )
                     )
                 except KeyError:
-                    raise DppMetaDataInitKeyError(pre_step)
+                    raise DppMetaDataInitKeyError(step)
                 except AssertionError:
-                    raise DppMetaDataInitTypeError(pre_step)
+                    raise DppMetaDataInitTypeError(step)
+            return commands
 
-            data[build_field] = pre_build_steps + data[build_field]
+        valid_keys = tuple(e.name for e in CommandType)
+        build_fields = ("build_command", "build_coverage_command")
+
+        for build_field in build_fields:
+            pre_steps = create_commands(config.DPP_BUILD_PRE_STEPS)
+            post_steps = create_commands(config.DPP_BUILD_POST_STEPS)
+            data[build_field] = pre_steps + data[build_field] + post_steps
 
     # TODO: extend below functions for test and gcov command.
     @staticmethod
