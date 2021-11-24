@@ -125,7 +125,6 @@ class MetaData:
     )
     _common_variables = _MetaDataVariables(
         {
-            "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
             "@DPP_COMPILATION_DB_TOOL@": None,
             "@DPP_CMAKE_COMPILATION_DB_TOOL@": None,
         }
