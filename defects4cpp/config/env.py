@@ -15,6 +15,7 @@ DPP_PARALLEL_BUILD: str = "1"
 DPP_COMPILATION_DB_TOOL: str = "bear"
 DPP_CMAKE_COMPILATION_DB_TOOL: str = ""
 DPP_BUILD_PRE_STEPS: List[Dict[str, any]] = []
+DPP_BUILD_POST_STEPS: List[Dict[str, any]] = []
 
 # Directory at which d++.py is placed
 DPP_HOME: str = os.path.realpath(
