@@ -158,7 +158,7 @@ class ShellCommand(Command):
 
 class DockerCommandScript(metaclass=ABCMeta):
     """
-    A bulk of commands which is executed one by one by DockerCommand.
+    A list of "DockerCommand"s to be serially executed
     """
 
     def __init__(self, command_type: taxonomy.CommandType, command: List[str]):

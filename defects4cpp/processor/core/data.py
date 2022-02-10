@@ -22,6 +22,7 @@ NAMESPACE_ATTR_WORKSPACE = "workspace"
 NAMESPACE_ATTR_PATH = "path"
 NAMESPACE_ATTR_PATH_CONFIG_NAME = ".defects4cpp.json"
 NAMESPACE_ATTR_METADATA = "metadata"
+NAMESPACE_ATTR_METADATA_BASE = "metadata_base"
 
 
 @dataclass

@@ -25,6 +25,11 @@ class Command:
     lines: List[str]
 
 
+@dataclass(frozen=True)
+class ExtraTest(Command):
+    is_pass: bool
+
+
 class TestType(enum.IntEnum):
     Automake = 1
     Ctest = 2
@@ -57,6 +62,7 @@ class Defect:
     num_cases: int
     case: List[int]
     description: str
+    extra_tests: List[ExtraTest]
 
 
 @dataclass(frozen=True)
@@ -208,6 +214,8 @@ class MetaData:
                     defect["num_cases"],
                     defect["case"],
                     defect["description"],
+                    [ExtraTest(e["type"], e["lines"], e["is_pass"]) for e in defect["extra_tests"]]
+                    if defect["extra_tests"] else []
                 )
                 for index, defect in enumerate(meta["defects"], start=1)
             ]

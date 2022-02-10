@@ -12,6 +12,7 @@ from processor.core.data import (
     NAMESPACE_ATTR_BUGGY,
     NAMESPACE_ATTR_INDEX,
     NAMESPACE_ATTR_METADATA,
+    NAMESPACE_ATTR_METADATA_BASE,
     NAMESPACE_ATTR_PATH,
     NAMESPACE_ATTR_PATH_CONFIG_NAME,
     NAMESPACE_ATTR_WORKSPACE,
@@ -102,6 +103,7 @@ class ValidateTaxonomy(argparse.Action):
 
         _set_worktree(namespace)
         setattr(namespace, NAMESPACE_ATTR_METADATA, t[values])
+        setattr(namespace, NAMESPACE_ATTR_METADATA_BASE, t.base)
 
 
 class ValidateIndex(argparse.Action):

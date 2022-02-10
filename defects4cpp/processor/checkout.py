@@ -5,6 +5,7 @@ Clone a repository into the given directory on the host machine.
 """
 import os.path
 from pathlib import Path
+import shutil
 from textwrap import dedent
 from typing import Dict, List, Type
 
@@ -154,6 +155,7 @@ class CheckoutCommand(Command):
         """
         args = self.parser.parse_args(argv)
         metadata = args.metadata
+        metadata_base = args.metadata_base
         worktree = args.worktree
         # args.index is 1 based.
         defect = metadata.defects[args.index - 1]
@@ -182,6 +184,13 @@ class CheckoutCommand(Command):
                 )
             else:
                 message.info(__name__, "git-am skipped")
+
+            # check if there are extra data
+            path_to_extra = Path(metadata_base).joinpath(metadata.name, "extra", f"{args.index:04}")
+            if path_to_extra.exists():
+                message.info(__name__, f"copying extra directory(f{path_to_extra}) to project root")
+                for extra in Path.iterdir(path_to_extra):
+                    shutil.copytree(extra, Path(worktree.host, extra.stem), dirs_exist_ok=True)
 
             message.info(__name__, f"creating '.defects4cpp.json' at {worktree.host}")
             # Write .defects4cpp.json in the directory.
