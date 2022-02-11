@@ -215,7 +215,7 @@ class MetaData:
                     defect["case"],
                     defect["description"],
                     [ExtraTest(e["type"], e["lines"], e["is_pass"]) for e in defect["extra_tests"]]
-                    if defect["extra_tests"] else []
+                    if "extra_tests" in defect else []
                 )
                 for index, defect in enumerate(meta["defects"], start=1)
             ]
