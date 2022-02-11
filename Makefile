@@ -19,17 +19,36 @@ lint:
 	flake8 . --config setup.cfg
 
 test:
-	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/ \
-		--ignore tests/taxonomy
+ifeq ($(OS), Windows_NT)
+	@set PYTHONPATH=defects4cpp/
+	python -m pytest tests/ --ignore tests/taxonomy
+else
+	PYTHONPATH=defects4cpp/ python -m pytest tests/ --ignore tests/taxonomy
+endif
+
 
 coverage:
-	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/ \
+ifeq ($(OS), Windows_NT)
+	@set PYTHONPATH=defects4cpp/
+	python -m pytest tests/ \
 		--cov-report=xml:reports/coverage/coverage.xml \
 		--cov-report=html:reports/coverage \
 		--cov=defects4cpp \
 		--ignore tests/taxonomy
+else
+	PYTHONPATH=defects4cpp/ python -m pytest tests/ \
+		--cov-report=xml:reports/coverage/coverage.xml \
+		--cov-report=html:reports/coverage \
+		--cov=defects4cpp \
+		--ignore tests/taxonomy
+endif
 
 test-taxonomy:
-	@PYTHONPATH=defects4cpp/ python3 -m pytest tests/taxonomy
+ifeq ($(OS), Windows_NT)
+	@set PYTHONPATH=defects4cpp/
+	python -m pytest tests/taxonomy
+else
+	@PYTHONPATH=defects4cpp/ python -m pytest tests/taxonomy
+endif
 
 all: install test

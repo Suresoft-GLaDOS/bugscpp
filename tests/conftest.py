@@ -80,6 +80,7 @@ def _create_processor(
     cmd.parser.set_defaults(
         path=str(worktree.host),
         metadata=metadata,
+        metadata_base=t.base,
         worktree=worktree,
         index=1,
         **extra_args
