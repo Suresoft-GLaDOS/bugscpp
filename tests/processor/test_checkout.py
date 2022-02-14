@@ -78,7 +78,7 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
 
     worktree: Worktree = checkout.parser.parse_args([]).worktree
     patch = resource_dir / "corrupted-test.patch"
-    dest = Path(worktree.workspace) / "patch" / "0001-fix.patch"
+    dest = Path(worktree.workspace) / "patch" / "0001-common.patch"
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(patch, str(dest))
 

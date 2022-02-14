@@ -57,7 +57,8 @@ class Gcov:
 class Defect:
     hash: str
     buggy_patch: str
-    fix_patch: str
+    fixed_patch: str
+    common_patch: str
     split_patch: str
     num_cases: int
     case: List[int]
@@ -209,7 +210,8 @@ class MetaData:
                 Defect(
                     defect["hash"],
                     check_path(f"{self._path}/patch/{index:04}-buggy.patch"),
-                    check_path(f"{self._path}/patch/{index:04}-fix.patch"),
+                    check_path(f"{self._path}/patch/{index:04}-fixed.patch"),
+                    check_path(f"{self._path}/patch/{index:04}-common.patch"),
                     check_path(f"{self._path}/patch/{index:04}-split.patch"),
                     defect["num_cases"],
                     defect["case"],
