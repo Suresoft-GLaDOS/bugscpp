@@ -2,12 +2,12 @@
 # Licensed under the MIT
 FROM ubuntu:18.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt update
-RUN apt install -y autoconf automake bison gettext git gperf gzip help2man m4 make perl tar texinfo wget xz-utils gcc autopoint rsync python3 python3-pip
+RUN apt update \
+  apt install -y autoconf automake bison gettext git gperf gzip help2man m4 make perl tar texinfo wget xz-utils gcc autopoint rsync python3 python3-pip
 
 # Install gcovr
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100
-RUN pip3 install gcovr
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100 \
+  pip3 install gcovr
 RUN git config --global user.email "yckim@suresofttech.com"
 RUN git config --global user.name "Yeongcheol Kim"
 

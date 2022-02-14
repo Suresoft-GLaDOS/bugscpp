@@ -7,7 +7,7 @@ from defects4cpp.taxonomy import Taxonomy
 
 def test_taxonomy():
     t = Taxonomy()
-    taxonomy_size = 13
+    taxonomy_size = 14
     assert len(t) == taxonomy_size
 
 
