@@ -7,9 +7,8 @@ from defects4cpp.taxonomy import Taxonomy
 
 def test_taxonomy():
     t = Taxonomy()
-    taxonomy_size = 15
+    taxonomy_size = 16
     assert len(t) == taxonomy_size
-
 
 def test_metadata_variables_should_be_replaced():
     t = Taxonomy()
@@ -86,3 +85,25 @@ def test_metadata_docker_build_steps_should_be_inserted(keep_config, command_typ
         assert c.test_coverage_command[0].lines[0] != "echo pre hello, world!"
         assert c.test_command[-1].lines[0] != "echo post hello, world!"
         assert c.test_coverage_command[-1].lines[0] != "echo post hello, world!"
+
+
+def test_metadata_variables_should_be_replaced():
+    t = Taxonomy()
+    metadata = t["yara"]
+
+    common = metadata.common
+    line = common.build_command[0].lines[-1]
+    assert line == f"make -j{env.DPP_PARALLEL_BUILD}"
+
+    common_capture = metadata.common_capture
+    line = common_capture.build_command[0].lines[-1]
+    assert line == f"{env.DPP_COMPILATION_DB_TOOL} make -j{env.DPP_PARALLEL_BUILD}"
+
+
+def test_extra_tests():
+    t = Taxonomy()
+    assert t["yara"].defects[0].extra_tests is not None
+    assert t["yara"].defects[0].extra_tests == []
+    assert t["libtiff"].defects[0].extra_tests is not None
+    assert len(t["libtiff"].defects[0].extra_tests) == 1
+

@@ -49,7 +49,6 @@ class ValidateCase(argparse.Action):
                     val.update(range(int(tokens[0]), int(tokens[1]) + 1))
             return val
 
-        # Fixme: deal with extra test cases (#54)
         def validate_each_case(max_num_cases: int, case_set: Set[int]) -> Set[int]:
             if all(0 < case <= max_num_cases for case in case_set):
                 return case_set
@@ -63,7 +62,7 @@ class ValidateCase(argparse.Action):
         except AttributeError:
             raise DppCaseExpressionInternalError(namespace)
 
-        num_cases = metadata.defects[index - 1].num_cases
+        num_cases = metadata.defects[index - 1].num_cases + len(metadata.defects[index - 1].extra_tests)
         expr_tokens = values.split(":")
         included_cases = validate_each_case(num_cases, expr2set(expr_tokens[0]))
         excluded_cases = validate_each_case(
