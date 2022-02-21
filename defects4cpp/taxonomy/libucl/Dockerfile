@@ -2,8 +2,8 @@
 # Licensed under the MIT
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update -y && apt-get upgrade -y
-RUN apt-get install -y git autoconf automake libtool \
+RUN apt-get update && \
+    apt-get install -y git autoconf automake libtool \
                        bear pkg-config python3 python3-pip wget
 
 RUN pip3 install gcovr

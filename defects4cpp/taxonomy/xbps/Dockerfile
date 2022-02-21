@@ -2,9 +2,9 @@
 # Licensed under the MIT
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update -y
-RUN apt-get install -y git autoconf automake libtool libssl-dev libarchive-dev \
-    liblutok-dev libsqlite3-dev bear pkg-config python3 python3-pip wget
+RUN apt-get update && \
+    apt-get install -y git autoconf automake libtool libssl-dev libarchive-dev \
+      liblutok-dev libsqlite3-dev bear pkg-config python3 python3-pip wget
 
 RUN pip3 install gcovr
 RUN git config --global user.email "minhyuk@suresofttech.com"

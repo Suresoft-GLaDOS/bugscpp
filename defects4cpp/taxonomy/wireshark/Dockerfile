@@ -1,8 +1,8 @@
 # Copyright 2021 Suresoft Technologies Inc.
 # Licensed under the MIT
 FROM wireshark/wireshark-ubuntu-dev
-RUN apt -y update && apt -y upgrade
-RUN apt -y install python3-pip wget bear lsb-release software-properties-common
+RUN apt-get update && \
+    apt-get install -y python3-pip wget bear lsb-release software-properties-common
 
 # Install latest cmake
 RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null

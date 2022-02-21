@@ -1,12 +1,12 @@
 # Copyright 2021 Suresoft Technologies Inc.
 # Licensed under the MIT
 FROM ubuntu:20.04
-ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR workspace
-RUN apt update
-RUN apt install -y git pkg-config autoconf autogen automake libtool ninja-build \
-                   bear wget lsb-release software-properties-common \
-                   liblua5.3-dev python3 python3-pip libsqlite3-dev texinfo
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y git pkg-config autoconf autogen automake libtool ninja-build \
+      bear wget lsb-release software-properties-common \
+      liblua5.3-dev python3 python3-pip libsqlite3-dev texinfo
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 100
 

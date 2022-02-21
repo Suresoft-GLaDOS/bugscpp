@@ -2,11 +2,11 @@
 # Licensed under the MIT
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update -y
-RUN apt-get install -y git autoconf automake libtool libjansson-dev \
-    libmagic-dev libssl-dev \
-    protobuf-compiler protobuf-c-compiler libprotobuf-c-dev \
-    make flex bear bison pkg-config python3 python3-pip liblua5.3-dev wget
+RUN apt-get update && \
+    apt-get install -y git autoconf automake libtool libjansson-dev \
+      libmagic-dev libssl-dev \
+      protobuf-compiler protobuf-c-compiler libprotobuf-c-dev \
+      make flex bear bison pkg-config python3 python3-pip liblua5.3-dev wget
 
 RUN pip3 install gcovr
 RUN git config --global user.email "minhyuk@suresofttech.com"

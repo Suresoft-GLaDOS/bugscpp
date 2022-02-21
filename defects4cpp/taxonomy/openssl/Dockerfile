@@ -2,9 +2,9 @@
 # Licensed under the MIT
 FROM ubuntu:18.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt update
-RUN apt install -y git bear perl gcc make rename wget
-RUN apt install -y python3 python3-pip
+RUN apt-get update && \
+    apt-get install -y git bear perl gcc make rename wget \
+      python3 python3-pip
 
 # Install gcovr
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100

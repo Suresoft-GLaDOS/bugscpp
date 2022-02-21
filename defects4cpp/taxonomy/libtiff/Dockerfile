@@ -1,8 +1,9 @@
 # Copyright 2021 Suresoft Technologies Inc.
 # Licensed under the MIT
 FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends \
       software-properties-common git build-essential libjpeg-dev python3 python3-pip bear wget automake libtool
 
 RUN pip3 install gcovr
