@@ -220,11 +220,10 @@ class TeardownTestCommandScript(TestCommandScript):
         self,
         case: int,
     ):
-        print(f"teardown init (case{case})")
         super().__init__(
             case,
             CommandType.Docker,
-            [f"sh -c 'rm -rf gcov'"],
+            ["sh -c 'rm -rf gcov'"],
         )
 
     def before(self):
@@ -240,16 +239,9 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     def __init__(
         self,
         case: int,
-        exclude: List[str],
         command_type: CommandType,
         command: List[str],
     ):
-        exclude_flags = " ".join(
-            [f"--gcov-exclude {excluded_gcov}" for excluded_gcov in exclude]
-        )
-        command.append(
-            f"gcovr {exclude_flags} --keep --use-gcov-files --json --output gcov/summary.json gcov"
-        )
         super().__init__(command_type, command)
         self._case = case
 
@@ -269,6 +261,32 @@ class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
 
     def after(self):
         pass
+
+
+class RunGcovrTestCommandScript(TestCommandScript):
+    """
+    Script to execute gcovr to make summary.json.
+
+    Clear the coverage data by remove gcov directory and its contents.
+    related to: https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66
+    """
+
+    def before(self):
+        pass
+
+    def __init__(
+        self,
+        case: int,
+        exclude: List[str],
+    ):
+        exclude_flags = " ".join(
+            [f"--gcov-exclude {excluded_gcov}" for excluded_gcov in exclude]
+        )
+        super().__init__(
+            case,
+            CommandType.Docker,
+            [f"gcovr {exclude_flags} --keep --use-gcov-files --json --output gcov/summary.json gcov"]
+        )
 
 
 class TestCommandScriptGenerator(DockerCommandScriptGenerator):
@@ -334,18 +352,19 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
                 yield CoverageTestCommandScript(
                     case,
                     test_cmd.type,
-                    test_cmd.lines,
+                    test_cmd.lines
                 )
             for gcov_cmd in self._gcov.command:
                 yield GcovCommandScript(
                     case,
-                    self._gcov.exclude,
                     gcov_cmd.type,
-                    gcov_cmd.lines,
+                    gcov_cmd.lines
+                )
+                yield RunGcovrTestCommandScript(
+                    case,
+                    self._gcov.exclude
                 )
             yield TeardownTestCommandScript(case)
-
-
 
 
 class TestCommand(DockerCommand):
