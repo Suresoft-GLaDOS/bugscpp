@@ -157,6 +157,8 @@ def iterate_coverage_once(script_it: Generator[DockerCommandScript, None, None])
     next(script_it)
     next(script_it)
     obj = next(script_it)
+    next(script_it)
+    next(script_it)
     return obj
 
 
@@ -209,8 +211,10 @@ def test_check_coverage(setup):
     a.lines = [""]
     a.output(1, 0, "hello world!")
 
-    # gcov directory should be removed.
-    assert not gcov.exists()
+    # Now callback does not remove gcov file by callback
+    # assert not gcov.exists()
+    gcov.rmdir()
+
     with open(config.dest[0] / "foo.gcov", "r") as fp:
         assert fp.readline() == "Hello, world!"
     assert len(test.failed_coverage_files) == 0
