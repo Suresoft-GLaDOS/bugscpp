@@ -23,10 +23,21 @@ class TestDirectory:
     __test__ = False
 
 
+def _rmtree_onerror(func, path, exc_info):
+    """
+    Error handler for rmtree of cleanup.
+    Sometimes rmtree fails with PermissionError.
+    In this case, only print warning, and do nothing.
+    Failing due to removing fixture is not proper.
+    FIXME: Properly remove fixture...
+    """
+    print(f"Error removing {path}.")
+
+
 @pytest.fixture(scope="function", autouse=True)
 def cleanup(tmp_path: Path):
     yield
-    rmtree(tmp_path)
+    rmtree(tmp_path, onerror=_rmtree_onerror)
 
 
 @pytest.fixture

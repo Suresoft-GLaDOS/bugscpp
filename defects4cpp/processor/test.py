@@ -208,6 +208,30 @@ class CoverageTestCommandScript(TestCommandScript):
         super().__init__(case, command_type, command)
 
 
+class TeardownTestCommandScript(TestCommandScript):
+    """
+    Script to execute after running CoverageTestCommandScript.
+
+    Clear the coverage data by remove gcov directory and its contents.
+    related to: https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66
+    """
+
+    def __init__(
+        self,
+        case: int,
+    ):
+        print(f"teardown init (case{case})")
+        super().__init__(
+            case,
+            CommandType.Docker,
+            [f"sh -c 'rm -rf gcov'"],
+        )
+
+    def before(self):
+        # Override TestCommandScript.before method to prevent echoing.
+        pass
+
+
 class GcovCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     """
     Script to execute gcov.
@@ -319,6 +343,9 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
                     gcov_cmd.type,
                     gcov_cmd.lines,
                 )
+            yield TeardownTestCommandScript(case)
+
+
 
 
 class TestCommand(DockerCommand):
@@ -514,7 +541,8 @@ class TestCommand(DockerCommand):
                 # Full path should be passed to overwrite if already exists.
                 shutil.move(str(file), str(coverage_dest / file.name))
             else:
-                coverage.rmdir()
+                # Do not rmdir (TeardownTestCommandScript will do)
+                # related to https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66
                 self.coverage_files.append(str(coverage_dest / coverage.name))
         else:
             self.failed_coverage_files.append(str(coverage_dest / coverage.name))
