@@ -139,6 +139,7 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     """
     Script to execute test.
     """
+    __test__ = False
 
     def __init__(
         self,
@@ -215,6 +216,7 @@ class TeardownTestCommandScript(TestCommandScript):
     Clear the coverage data by remove gcov directory and its contents.
     related to: https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66
     """
+    __test__ = False
 
     def __init__(
         self,
@@ -293,6 +295,7 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     """
     Factory class of CommandScript
     """
+    __test__ = False
 
     def __init__(
         self,
@@ -371,6 +374,7 @@ class TestCommand(DockerCommand):
     """
     Run test command either with or without coverage.
     """
+    __test__ = False
 
     def __init__(self):
         super().__init__(parser=create_common_project_parser())

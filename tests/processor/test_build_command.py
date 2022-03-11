@@ -6,8 +6,6 @@ from pathlib import Path
 
 from defects4cpp.command import BuildCommand, CheckoutCommand
 from defects4cpp.config import config
-from defects4cpp.processor.core.docker import Docker
-
 
 
 @pytest.mark.parametrize(
@@ -63,13 +61,16 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
     # build yara image
     build([])
     _, _ = capsys.readouterr()
+    with capsys.disabled():
+        print('\nTesting test_build_command_rebuid_image')
 
     # Build yara image again
     # Try to rebuild the same image 5 times
     # This heappens because continer is not removed after first build
     rebuild_attempts = 5
     for attempt in range(1, rebuild_attempts + 1):
-        print(f'Rebuild attempt {attempt}/{rebuild_attempts}')
+        with capsys.disabled():
+            print(f'  Rebuild attempt {attempt}/{rebuild_attempts}')
         try:
             build([])
             stdout, _ = capsys.readouterr()
