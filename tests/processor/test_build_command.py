@@ -1,9 +1,13 @@
-from pathlib import Path
-
 import pytest
+import time
+import docker.errors
+
+from pathlib import Path
 
 from defects4cpp.command import BuildCommand, CheckoutCommand
 from defects4cpp.config import config
+from defects4cpp.processor.core.docker import Docker
+
 
 
 @pytest.mark.parametrize(
@@ -56,12 +60,26 @@ def test_build_command_export_commands(project_name, tmp_path):
 
 def test_build_command_rebuild_image(create_build, meta_json, capsys):
     build = create_build(meta_json, {"rebuild_image": True})
-
     # build yara image
     build([])
     _, _ = capsys.readouterr()
 
-    # build yara image again
-    build([])
-    stdout, _ = capsys.readouterr()
-    assert "Creating a new docker image for" in stdout
+    # Build yara image again
+    # Try to rebuild the same image 5 times
+    # This heappens because continer is not removed after first build
+    rebuild_attempts = 5
+    for attempt in range(1, rebuild_attempts + 1):
+        print(f'Rebuild attempt {attempt}/{rebuild_attempts}')
+        try:
+            build([])
+            stdout, _ = capsys.readouterr()
+        except docker.errors.APIError:
+            # Sleep longer and longer...
+            time.sleep(attempt)
+            continue
+        else:
+            assert "Creating a new docker image for" in stdout
+            break
+    else:
+        assert False, "Failed to rebuild image"
+
