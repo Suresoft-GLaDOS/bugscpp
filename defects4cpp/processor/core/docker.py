@@ -76,7 +76,7 @@ class _Client:
 class Docker:
     """
     Provide docker SDK methods along with context manager.
-    It is highly recommend to use this via `with` statement.
+    It is recommended to use this via `with` statement.
 
     Examples
     --------
@@ -99,7 +99,7 @@ class Docker:
         rebuild_image=False,
     ):
         self._dockerfile = dockerfile
-        # Assumes that the name of its parent directory is the same with that of the target.
+        # Assume that the parent directory has the same name as the target.
         tag = Path(dockerfile).parent.name
         self._name: str = f"{tag}-dpp-generated-container"
         self._tag: str = f"{tag}/dppgen"

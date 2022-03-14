@@ -1,5 +1,7 @@
 import json
 import re
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
@@ -26,12 +28,17 @@ class TestDirectory:
 def _rmtree_onerror(func, path, exc_info):
     """
     Error handler for rmtree of cleanup.
-    Sometimes rmtree fails with PermissionError.
-    In this case, only print warning, and do nothing.
-    Failing due to removing fixture is not proper.
+    Some files are read-only on Windows.
+    So change the read-only attribute and retry.
+    Ignore the error on failure.
     FIXME: Properly remove fixture...
     """
-    print(f"Error removing {path}.")
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        os.remove(path)
+    except OSError as error:
+        print(error)
+        print(f"Failed to remove {path}.")
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -44,7 +51,7 @@ def cleanup(tmp_path: Path):
 def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
     def create_defect_path(index: int, case: int) -> TestDirectory:
         # test_PROJECT_NAME
-        regex = re.compile(r"test_(.*)\[.*\]")
+        regex = re.compile(r"test_(.*)\[.*]")
         project = regex.match(request.node.name).groups()[0]
 
         d = tmp_path / request.node.name
@@ -57,7 +64,6 @@ def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
             buggy_target_dir=(d / project / f"buggy#{index}"),
             buggy_output_dir=(d / f"{project}-buggy#{index}-{case}"),
         )
-
     return create_defect_path
 
 

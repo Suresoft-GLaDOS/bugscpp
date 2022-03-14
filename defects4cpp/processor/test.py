@@ -508,7 +508,7 @@ class TestCommand(DockerCommand):
             or type(script) is CoverageTestCommandScript
         ):
             self._save_result(script)
-        elif type(script) is GcovCommandScript:
+        elif type(script) is RunGcovrTestCommandScript:
             self._save_coverage(cast(GcovCommandScript, script))
         else:
             pass
