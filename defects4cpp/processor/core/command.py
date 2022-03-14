@@ -317,7 +317,7 @@ class DockerCommand(Command):
             script_generator.metadata.dockerfile,
             script_generator.worktree,
             self.environ,
-            rebuild_image,
+            rebuild_image
         ) as docker:
             for script in script_generator.create():
                 script.before()

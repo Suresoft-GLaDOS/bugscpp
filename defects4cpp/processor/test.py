@@ -6,7 +6,7 @@ Run tests of the project inside a container.
 import argparse
 import shutil
 from dataclasses import dataclass
-from os import getcwd
+from os import getcwd, system
 from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, List, Optional, Set, Union, cast
@@ -333,30 +333,18 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            if case <= self._defect.num_cases:
-                for test_cmd in self._test_command:
-                    yield TestCommandScript(
-                        case,
-                        test_cmd.type,
-                        test_cmd.lines,
-                    )
-            else:
-                for test_cmd in self._extra_tests:
-                    yield TestCommandScript(
-                        case,
-                        test_cmd.type,
-                        test_cmd.lines
-                    )
+            test_cmd = self._test_command if case < self._defect.num_cases else \
+                self._extra_tests[case - self._defect.num_cases - 1]
+            for t in test_cmd:
+                yield TestCommandScript(case, t.type, t.lines)
 
     def _create_coverage_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            for test_cmd in self._test_command:
-                yield CoverageTestCommandScript(
-                    case,
-                    test_cmd.type,
-                    test_cmd.lines
-                )
+            test_cmd = self._test_command if case < self._defect.num_cases else \
+                self._extra_tests[case - self._defect.num_cases - 1]
+            for t in test_cmd:
+                yield CoverageTestCommandScript(case, t.type, t.lines)
             for gcov_cmd in self._gcov.command:
                 yield GcovCommandScript(
                     case,
@@ -562,7 +550,12 @@ class TestCommand(DockerCommand):
         if coverage.exists():
             for file in coverage.glob("*"):
                 # Full path should be passed to overwrite if already exists.
-                shutil.move(str(file), str(coverage_dest / file.name))
+                try:
+                    shutil.move(str(file), str(coverage_dest / file.name))
+                except PermissionError:
+                    print(f"PermissionError: {file}")
+                    system(f"sudo mv {str(file)} {str(coverage_dest / file.name)}")
+                    continue
             else:
                 # Do not rmdir (TeardownTestCommandScript will do)
                 # related to https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66

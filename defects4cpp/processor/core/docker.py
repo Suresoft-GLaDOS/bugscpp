@@ -39,9 +39,15 @@ def _cast_container(container) -> Container:
     return cast(Container, container)
 
 
-def _try_build_image(client, tag, path) -> Image:
+def _try_build_image(client, tag, path, verbose) -> Image:
     try:
-        return client.images.build(rm=True, tag=tag, path=path)[0]
+        image, stream = client.images.build(rm=True, tag=tag, path=path)
+        if verbose:
+            for chunk in stream:
+                if 'stream' in chunk:
+                    for line in chunk['stream'].splitlines():
+                        print(line)
+        return image
     except docker.errors.BuildError as e:
         raise DppDockerBuildError(e.msg)
     except docker.errors.APIError as e:
@@ -51,12 +57,12 @@ def _try_build_image(client, tag, path) -> Image:
             raise DppDockerBuildServerError(e.explanation)
 
 
-def _build_image(client, tag, path) -> Image:
+def _build_image(client, tag, path, verbose) -> Image:
     """
     Helper function to get a correct type
     """
     try:
-        return _try_build_image(client, tag, path)
+        return _try_build_image(client, tag, path, verbose)
     except DppError as e:
         message.stdout_progress_error(e)
         sys.exit(1)
@@ -97,6 +103,8 @@ class Docker:
         worktree: Worktree,
         environ: Optional[Dict[str, str]] = None,
         rebuild_image=False,
+        user=None,
+        verbose=True,
     ):
         self._dockerfile = dockerfile
         # Assume that the parent directory has the same name as the target.
@@ -108,9 +116,11 @@ class Docker:
         }
         self._working_dir: str = str(worktree.container)
         self._environ = environ
+        self._user = user
         self._rebuild_image = rebuild_image
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
+        self._verbose = verbose
 
     @property
     def image(self) -> Image:
@@ -131,7 +141,7 @@ class Docker:
                 )
                 message.stdout_progress(f"Creating a new docker image for {tag_name}")
                 self._image = _build_image(
-                    self.client, self._tag, str(Path(self._dockerfile).parent)
+                    self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose
                 )
         return self._image
 
@@ -161,7 +171,7 @@ class Docker:
                 environment=self._environ,
                 name=self._name,
                 stdin_open=True,
-                user=config.DPP_DOCKER_USER,
+                user=config.DPP_DOCKER_USER if not self._user else self._user,
                 volumes=self._volume,
                 working_dir=self._working_dir,
             )
@@ -173,8 +183,8 @@ class Docker:
         message.stdout_progress_detail("Closing container")
         self._container.stop()
 
-    def send(self, command: str, stream=True) -> ExecResult:
+    def send(self, command: str, stream=True, **kwargs) -> ExecResult:
         """
         Send a single line command to the running container.
         """
-        return self._container.exec_run(command, stream=stream)
+        return self._container.exec_run(command, stream=stream, **kwargs)

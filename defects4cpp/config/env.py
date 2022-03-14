@@ -11,7 +11,7 @@ DPP_DOCKER_USER: str = "defects4cpp"
 DPP_DOCKER_HOME: str = "/home/workspace"
 
 # meta.json variables
-DPP_PARALLEL_BUILD: str = "1"
+DPP_PARALLEL_BUILD: str = "10"
 DPP_COMPILATION_DB_TOOL: str = "bear"
 DPP_CMAKE_COMPILATION_DB_TOOL: str = ""
 DPP_BUILD_PRE_STEPS: List[Dict[str, any]] = []

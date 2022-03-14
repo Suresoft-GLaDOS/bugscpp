@@ -70,7 +70,7 @@ def _create_processor(
             fp.write(
                 dedent(
                     """FROM ubuntu:20.04
-                RUN useradd --create-home --home-dir /home/workspace --shell /bin/bash defects4cpp
+                RUN useradd --uid 1001 --home-dir /home/workspace --shell /bin/bash defects4cpp
                 USER defects4cpp
                 ENV USER defects4cpp
                 WORKDIR /home/workspace"""

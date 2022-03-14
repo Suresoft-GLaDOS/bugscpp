@@ -62,7 +62,7 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
     build([])
     _, _ = capsys.readouterr()
     with capsys.disabled():
-        print('\nTesting test_build_command_rebuid_image')
+        print('\nTesting test_build_command_rebuild_image')
 
     # Build yara image again
     # Try to rebuild the same image 5 times

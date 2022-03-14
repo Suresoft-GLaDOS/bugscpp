@@ -1,7 +1,5 @@
 import json
 import re
-import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
@@ -24,27 +22,15 @@ class TestDirectory:
     buggy_output_dir: Path
     __test__ = False
 
-
-def _rmtree_onerror(func, path, exc_info):
-    """
-    Error handler for rmtree of cleanup.
-    Some files are read-only on Windows.
-    So change the read-only attribute and retry.
-    Ignore the error on failure.
-    FIXME: Properly remove fixture...
-    """
-    try:
-        os.chmod(path, stat.S_IWRITE)
-        os.remove(path)
-    except OSError as error:
-        print(error)
-        print(f"Failed to remove {path}.")
-
-
-@pytest.fixture(scope="function", autouse=True)
-def cleanup(tmp_path: Path):
-    yield
-    rmtree(tmp_path, onerror=_rmtree_onerror)
+# @pytest.fixture(scope="function", autouse=True)
+# def cleanup(tmp_path: Path):
+#     yield
+#     try:
+#         rmtree(tmp_path)
+#     except FileNotFoundError:
+#         pass
+#     except PermissionError:
+#         pass
 
 
 @pytest.fixture
@@ -64,6 +50,7 @@ def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
             buggy_target_dir=(d / project / f"buggy#{index}"),
             buggy_output_dir=(d / f"{project}-buggy#{index}-{case}"),
         )
+
     return create_defect_path
 
 
@@ -113,7 +100,7 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
     )
     assert checkout_dir_valid(fixed_target_dir)
 
-    build(f"{str(fixed_target_dir)} --coverage".split())
+    build(f"{str(fixed_target_dir)} --coverage -v".split())
     test(
         f"{str(fixed_target_dir)} --coverage --case {case} --output-dir {str(test_dir.checkout_dir)}".split()
     )
