@@ -7,7 +7,7 @@ RUN apt-get update && \
       perl tar texinfo wget xz-utils gcc autopoint rsync python3 python3-pip
 
 # Install gcovr
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100 \
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 100 && \
   pip3 install gcovr
 RUN git config --global user.email "yckim@suresofttech.com"
 RUN git config --global user.name "Yeongcheol Kim"
