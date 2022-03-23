@@ -40,7 +40,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
         (30, 53),
     ],
 )
-def test_cppcheck(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+def test_cppcheck(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, auto_cleanup):
     index, case = defect
     test_dir = defect_path(index, case)
-    validate_taxonomy(test_dir, index, case)
+    validate_taxonomy(test_dir, index, case, auto_cleanup)

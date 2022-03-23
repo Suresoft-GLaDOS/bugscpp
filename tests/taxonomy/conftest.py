@@ -1,5 +1,8 @@
 import json
 import re
+import os
+import errno
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
@@ -12,6 +15,20 @@ from defects4cpp.command import BuildCommand, CheckoutCommand, TestCommand
 CONFIG_NAME = ".defects4cpp.json"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--auto-cleanup",
+        action="store_true",
+        default=False,
+        help="Automatically cleanup test directories after running tests"
+    )
+
+
+@pytest.fixture
+def auto_cleanup(request):
+    return request.config.getoption("--auto-cleanup")
+
+
 @dataclass
 class TestDirectory:
     project: str
@@ -22,15 +39,31 @@ class TestDirectory:
     buggy_output_dir: Path
     __test__ = False
 
-# @pytest.fixture(scope="function", autouse=True)
-# def cleanup(tmp_path: Path):
-#     yield
-#     try:
-#         rmtree(tmp_path)
-#     except FileNotFoundError:
-#         pass
-#     except PermissionError:
-#         pass
+
+def rmtree_onerror(func, path, exc) -> None:
+    excvalue = exc[1]
+    if func in (os.rmdir, os.unlink) and excvalue.errno == errno.EACCES:
+        os.chmod(path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)  # chmod 0777
+        func(path)  # Try the error causing delete operation again
+    else:
+        raise
+
+
+@pytest.fixture(scope="function", autouse=True)
+def cleanup(tmp_path: Path, auto_cleanup, capsys):
+    if auto_cleanup:
+        with capsys.disabled():
+            print(f"cleanup {tmp_path} before yield")
+    yield
+    if auto_cleanup:
+        with capsys.disabled():
+            print(f"cleanup {tmp_path} after yield")
+        try:
+            rmtree(tmp_path, ignore_errors=False, onerror=rmtree_onerror)
+        except PermissionError:
+            pass
+        except FileNotFoundError:
+            pass
 
 
 @pytest.fixture
@@ -88,7 +121,7 @@ def should_create_summary_json(d: Path):
     return len(summary_json["files"]) > 0
 
 
-def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
+def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, auto_cleanup):
     checkout = CheckoutCommand()
     build = BuildCommand()
     test = TestCommand()
@@ -99,7 +132,6 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
         f"{test_dir.project} {index} --target {str(test_dir.checkout_dir)}".split()
     )
     assert checkout_dir_valid(fixed_target_dir)
-
     build(f"{str(fixed_target_dir)} --coverage -v".split())
     test(
         f"{str(fixed_target_dir)} --coverage --case {case} --output-dir {str(test_dir.checkout_dir)}".split()
@@ -130,3 +162,12 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int):
     )
     assert should_create_gcov(buggy_output_dir)
     assert should_create_summary_json(buggy_output_dir)
+    if auto_cleanup:
+        for path in (test_dir.buggy_output_dir, test_dir.buggy_target_dir,
+                     test_dir.fixed_output_dir, test_dir.fixed_target_dir):
+            try:
+                rmtree(path, ignore_errors=False, onerror=rmtree_onerror)
+            except PermissionError:
+                pass
+            except FileNotFoundError:
+                pass
