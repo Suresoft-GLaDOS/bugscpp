@@ -8,7 +8,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
 @pytest.mark.parametrize(
     "defect", [
         (1, 209),
-        # (2, 97)
+        (2, 97)
     ]
 )
 def test_coreutils(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, auto_cleanup):
