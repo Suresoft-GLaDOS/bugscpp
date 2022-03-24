@@ -333,7 +333,7 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case < self._defect.num_cases else \
+            test_cmd = self._test_command if case <= self._defect.num_cases else \
                 self._extra_tests[case - self._defect.num_cases - 1]
             for t in test_cmd:
                 yield TestCommandScript(case, t.type, t.lines)
@@ -341,7 +341,7 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_coverage_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case < self._defect.num_cases else \
+            test_cmd = self._test_command if case <= self._defect.num_cases else \
                 self._extra_tests[case - self._defect.num_cases - 1]
             for t in test_cmd:
                 yield CoverageTestCommandScript(case, t.type, t.lines)
