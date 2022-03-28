@@ -554,6 +554,7 @@ class TestCommand(DockerCommand):
                     shutil.move(str(file), str(coverage_dest / file.name))
                 except PermissionError:
                     print(f"PermissionError: {file}")
+                    # FIXME: Is this the right way to handle this?
                     system(f"sudo mv {str(file)} {str(coverage_dest / file.name)}")
                     continue
             else:
