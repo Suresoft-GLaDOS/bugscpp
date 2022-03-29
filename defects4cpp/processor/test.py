@@ -287,7 +287,10 @@ class RunGcovrTestCommandScript(TestCommandScript):
         super().__init__(
             case,
             CommandType.Docker,
-            [f"gcovr {exclude_flags} --keep --use-gcov-files --json --output gcov/summary.json gcov"]
+            [
+                f"gcovr {exclude_flags} --keep --use-gcov-files --json-pretty --json gcov/summary.json gcov",
+                f"gcovr {exclude_flags} --keep --use-gcov-files --html gcov/summary.html gcov",
+            ]
         )
 
 
@@ -554,6 +557,7 @@ class TestCommand(DockerCommand):
                     shutil.move(str(file), str(coverage_dest / file.name))
                 except PermissionError:
                     print(f"PermissionError: {file}")
+                    # FIXME: Is this the right way to handle this?
                     system(f"sudo mv {str(file)} {str(coverage_dest / file.name)}")
                     continue
             else:

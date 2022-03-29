@@ -13,7 +13,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
         (3, 82)
     ],
 )
-def test_libtiff_sanitizer(defect, defect_path: Callable[[int, int], TestDirectory], gitenv):
+def test_libtiff_sanitizer(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup):
     index, case = defect
     test_dir = defect_path(index, case)
-    validate_taxonomy(test_dir, index, case)
+    validate_taxonomy(test_dir, index, case, capsys, auto_cleanup)
