@@ -196,7 +196,7 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
                     continue
                 else:
                     print(
-                        f"!!!!! {patched_file} is not summary.json")
+                        f"!!!!! {patched_file} is in summary.json")
             buggy_lines = patch_dict[patched_file]['buggy']
             if buggy_lines:
                 any_buggy_line_covered = False

@@ -13,6 +13,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
         (3, 82),
         (4, 82),
         (5, 82),
+        (6, 82),
     ],
 )
 def test_libtiff(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup):

@@ -287,7 +287,10 @@ class RunGcovrTestCommandScript(TestCommandScript):
         super().__init__(
             case,
             CommandType.Docker,
-            [f"gcovr {exclude_flags} --keep --use-gcov-files --json --output gcov/summary.json gcov"]
+            [
+                f"gcovr {exclude_flags} --keep --use-gcov-files --json-pretty --json gcov/summary.json gcov",
+                f"gcovr {exclude_flags} --keep --use-gcov-files --html gcov/summary.html gcov",
+            ]
         )
 
 
