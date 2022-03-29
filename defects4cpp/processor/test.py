@@ -523,9 +523,9 @@ class TestCommand(DockerCommand):
         None
         """
         d = self.summary_dir(script.case)
-        with open(d / f"{script.case}.output", "w+") as output_file:
+        with open(d / f"{script.case}.output", "w+", encoding="utf-8") as output_file:
             output_file.write(script.captured_output.stream)
-        with open(d / f"{script.case}.test", "w+") as result_file:
+        with open(d / f"{script.case}.test", "w+", encoding="utf-8") as result_file:
             result_file.write(
                 "passed" if script.captured_output.exit_code == 0 else "failed"
             )
