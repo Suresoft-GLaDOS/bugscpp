@@ -129,16 +129,20 @@ class Docker:
         """Docker SDK Image."""
         if not self._image:
             message.stdout_progress_detail(f"  Image: {self._tag}")
-            self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
-            # set uid of user(defecsts4cpp) after checking uid of it
+            try:
+                self._image = _cast_image(self.client.images.get(self._tag))
+            except docker.errors.ImageNotFound:
+                self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
+
             if self._uid_of_dpp_docker_user is not None:
+                # set uid of user(defects4cpp) to self._uid_of_dpp_docker_user after checking if uid need to be changed
                 _container = _cast_container(
                     self.client.containers.run(
                         self._image,
                         detach=True,
+                        stdin_open=True,
                         environment=self._environ,
                         name=self._container_name,
-                        stdin_open=True,
                     )
                 )
                 _, output = _container.exec_run(f"id -u {config.DPP_DOCKER_USER}")

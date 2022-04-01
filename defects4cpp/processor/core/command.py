@@ -312,7 +312,7 @@ class DockerCommand(Command):
         stream = script_generator.stream
         rebuild_image = True if args.rebuild_image else False
         user = ""  # root
-        uid = args.uid if args.uid is not None else None
+        uid = args.uid if hasattr(args, 'uid') and args.uid is not None else None
 
         self.setup(script_generator)
         with Docker(
