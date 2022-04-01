@@ -97,8 +97,16 @@ class BuildCommand(DockerCommand):
             nargs="?",
             action=ValidateExportPath,
         )
+        self.parser.add_argument(
+            "-u",
+            "--uid",
+            type=Path,
+            dest="uid",
+            help="set uid of user defects4cpp",
+            nargs="?",
+        )
         self.parser.usage = (
-            "d++ build PATH [--coverage] [-v|--verbose] [-e|--export[=EXPORT_PATH]]"
+            "d++ build PATH [--coverage] [-v|--verbose] [-u|--uid[=UID_DPP_DOCKER_USER] [-e|--export[=EXPORT_PATH]]"
         )
         self.parser.description = dedent(
             """\

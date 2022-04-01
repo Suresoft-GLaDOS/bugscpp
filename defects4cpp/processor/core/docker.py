@@ -41,7 +41,7 @@ def _cast_container(container) -> Container:
 
 def _try_build_image(client, tag, path, verbose) -> Image:
     try:
-        image, stream = client.images.build(rm=True, tag=tag, path=path)
+        image, stream = client.images.build(rm=True, tag=tag, path=path, pull=True)
         if verbose:
             for chunk in stream:
                 if 'stream' in chunk:
@@ -104,45 +104,54 @@ class Docker:
         environ: Optional[Dict[str, str]] = None,
         rebuild_image=False,
         user=None,
+        uid_of_user: Optional[str] = None,
         verbose=True,
     ):
         self._dockerfile = dockerfile
         # Assume that the parent directory has the same name as the target.
         tag = Path(dockerfile).parent.name
-        self._name: str = f"{tag}-dpp-generated-container"
-        self._tag: str = f"{tag}/dppgen"
+        self._container_name: str = f"{tag}-dpp"
+        self._tag = f"hschoe/defects4cpp-ubuntu:{tag}"
         self._volume: Dict[str, Dict] = {
             str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
         }
         self._working_dir: str = str(worktree.container)
         self._environ = environ
-        self._user = user
         self._rebuild_image = rebuild_image
         self._image: Optional[Image] = None
         self._container: Optional[Container] = None
+        self._user = user
+        self._uid_of_dpp_docker_user = uid_of_user
         self._verbose = verbose
 
     @property
     def image(self) -> Image:
         """Docker SDK Image."""
         if not self._image:
-            try:
-                if self._rebuild_image:
-                    # It should raise ImageNotFound later and make image rebuilt.
-                    self.client.images.remove(self._tag)
-                    message.info(__name__, f"removing the previous image {self._tag}")
-
-                self._image = _cast_image(self.client.images.get(self._tag))
-                message.info(__name__, f"image found {self._tag}")
-            except docker.errors.ImageNotFound:
-                tag_name = str(Path(self._dockerfile).parent.name)
-                message.info(
-                    __name__, f"no image found. creating new one using {tag_name}"
+            message.stdout_progress_detail(f"  Image: {self._tag}")
+            self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
+            # set uid of user(defecsts4cpp) after checking uid of it
+            if self._uid_of_dpp_docker_user is not None:
+                _container = _cast_container(
+                    self.client.containers.run(
+                        self._image,
+                        detach=True,
+                        environment=self._environ,
+                        name=self._container_name,
+                        stdin_open=True,
+                    )
                 )
-                message.stdout_progress(f"Creating a new docker image for {tag_name}")
-                self._image = _build_image(
-                    self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose
-                )
+                _, output = _container.exec_run(f"id -u {config.DPP_DOCKER_USER}")
+                uid = str(output, 'utf-8').strip('\n')
+                if self._uid_of_dpp_docker_user != uid:
+                    message.stdout_progress_detail(f"  Setting uid of {config.DPP_DOCKER_USER} "
+                                                   f"from {uid} "
+                                                   f"to {self._uid_of_dpp_docker_user}.")
+                    _, output = _container.exec_run(f"usermod -u {self._uid_of_dpp_docker_user} {config.DPP_DOCKER_USER}")
+                repository, tag = tuple(self._tag.split(':'))
+                self._image = _cast_image(_container.commit(repository=repository, tag=tag))
+                _container.stop()
+                _container.remove()
         return self._image
 
     def __enter__(self):
@@ -154,7 +163,7 @@ class Docker:
                 - from {}
                 - to {}
                 - mode {}""".format(
-                    self._name,
+                    self._container_name,
                     DppError.print_path(k),
                     self._volume[k]["bind"],
                     self._volume[k]["mode"],
@@ -169,7 +178,7 @@ class Docker:
                 command="/bin/sh",
                 detach=True,
                 environment=self._environ,
-                name=self._name,
+                name=self._container_name,
                 stdin_open=True,
                 user=config.DPP_DOCKER_USER if not self._user else self._user,
                 volumes=self._volume,
@@ -179,7 +188,7 @@ class Docker:
         return self
 
     def __exit__(self, type, value, traceback):
-        message.info(__name__, f"container.__exit__ ({self._name})")
+        message.info(__name__, f"container.__exit__ ({self._container_name})")
         message.stdout_progress_detail("Closing container")
         self._container.stop()
 

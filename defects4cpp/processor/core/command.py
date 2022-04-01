@@ -306,18 +306,22 @@ class DockerCommand(Command):
 
         args = self.parser.parse_args(argv)
         self.environ = args.env
-        rebuild_image = True if args.rebuild_image else False
 
         script_generator = self.create_script_generator(args)
         worktree = script_generator.worktree
         stream = script_generator.stream
+        rebuild_image = True if args.rebuild_image else False
+        user = ""  # root
+        uid = args.uid if args.uid is not None else None
 
         self.setup(script_generator)
         with Docker(
             script_generator.metadata.dockerfile,
             script_generator.worktree,
             self.environ,
-            rebuild_image
+            rebuild_image,
+            "",
+            uid
         ) as docker:
             for script in script_generator.create():
                 script.before()

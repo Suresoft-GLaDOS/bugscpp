@@ -21,13 +21,24 @@ def pytest_addoption(parser):
         "--auto-cleanup",
         action="store_true",
         default=False,
-        help="Automatically cleanup test directories after running tests"
+        help="Automatically cleanup test directories after running tests."
+    )
+    parser.addoption(
+        "--uid",
+        action="store",
+        default="",
+        help="Set uid of user defects4cpp."
     )
 
 
 @pytest.fixture
 def auto_cleanup(request):
     return request.config.getoption("--auto-cleanup")
+
+
+@pytest.fixture
+def uid(request):
+    return request.config.getoption("--uid")
 
 
 @dataclass
@@ -122,7 +133,7 @@ def should_create_summary_json(d: Path):
     return len(summary_json["files"]) > 0
 
 
-def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup):
+def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup, uid):
     checkout = CheckoutCommand()
     build = BuildCommand()
     test = TestCommand()
@@ -133,7 +144,7 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
         f"{test_dir.project} {index} --target {str(test_dir.checkout_dir)}".split()
     )
     assert checkout_dir_valid(fixed_target_dir)
-    build(f"{str(fixed_target_dir)} --coverage -v".split())
+    build(f"{str(fixed_target_dir)} -u {str(uid)} --coverage -v".split())
     test(
         f"{str(fixed_target_dir)} --coverage --case {case} --output-dir {str(test_dir.checkout_dir)}".split()
     )
@@ -154,23 +165,11 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
     buggy_checkout_args = checkout.parser.parse_args(checkout_buggy_cmd)
     buggy_defect = buggy_checkout_args.metadata.defects[buggy_checkout_args.index - 1]
     # read patch information
+
+    patch_dict = get_patch_dict(buggy_defect)
     number_of_all_patched_lines = 0
-    patch_dict = {}
-    with open(buggy_defect.buggy_patch, encoding='utf-8', newline=os.linesep) as f:
-        buggy_patches = f.read()
-        for diff in whatthepatch.parse_patch(buggy_patches):
-            assert diff.header.new_path == diff.header.old_path
-            path = diff.header.new_path
-            buggy_lines, fixed_lines = [], []
-            for change in diff.changes:
-                if change.new is not None and change.old is None:
-                    buggy_lines.append(change.new)
-                elif change.new is None and change.old is not None:
-                    fixed_lines.append(change.old)
-            patch_dict[path] = dict()
-            patch_dict[path]['buggy'] = buggy_lines
-            patch_dict[path]['fixed'] = fixed_lines
-            number_of_all_patched_lines += len(buggy_lines) + len(fixed_lines)
+    for patch_path in patch_dict:
+        number_of_all_patched_lines = len(patch_dict[patch_path]['buggy']) + len(patch_dict[patch_path]['fixed'])
     assert(number_of_all_patched_lines > 0)
 
     build(f"{str(buggy_target_dir)} --coverage".split())
@@ -192,7 +191,8 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
             all_file_paths_in_summary_json = [file["file"] for file in summary_json['files']]
             with capsys.disabled():
                 if len([file for file in all_file_paths_in_summary_json if file == patched_file]) != 1:
-                    print(f"!!!!! {patched_file} is not in summary.json (len={len([file for file in all_file_paths_in_summary_json])})")
+                    print(f"!!!!! {patched_file} is not in summary.json (len="
+                          f"{len([file for file in all_file_paths_in_summary_json])})")
                     continue
                 else:
                     print(
@@ -225,3 +225,37 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
                 pass
             except FileNotFoundError:
                 pass
+
+
+def get_patch_dict(buggy_defect):
+    _patch_dict = {}
+    assert not (buggy_defect.buggy_patch and buggy_defect.fixed_patch)
+    if buggy_defect.buggy_patch and Path(buggy_defect.buggy_patch).exists():
+        patch = buggy_defect.buggy_patch
+        is_buggy = True
+    elif buggy_defect.fixed_patch and Path(buggy_defect.fixed_patch).exists():
+        patch = buggy_defect.fixed_patch
+        is_buggy = False
+    else:
+        raise ValueError(f"Patch does not exists: {buggy_defect}")
+    with open(patch, encoding='utf-8', newline=os.linesep) as f:
+        buggy_patches = f.read()
+        for diff in whatthepatch.parse_patch(buggy_patches):
+            assert diff.header.new_path == diff.header.old_path
+            path = diff.header.new_path
+            buggy_lines, fixed_lines = [], []
+            for change in diff.changes:
+                if change.new is not None and change.old is None:
+                    if is_buggy:
+                        buggy_lines.append(change.new)
+                    else:
+                        fixed_lines.append(change.new)
+                elif change.new is None and change.old is not None:
+                    if is_buggy:
+                        fixed_lines.append(change.old)
+                    else:
+                        buggy_lines.append(change.old)
+            _patch_dict[path] = dict()
+            _patch_dict[path]['buggy'] = buggy_lines
+            _patch_dict[path]['fixed'] = fixed_lines
+    return _patch_dict
