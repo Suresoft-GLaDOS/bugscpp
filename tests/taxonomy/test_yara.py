@@ -6,7 +6,7 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
 
 
 @pytest.mark.parametrize(
-    "defect", [(1, 55), (2, 232), (3, 102), (4, 233), (5, 255), (6, 238)]
+    "defect", [(1, 55), (2, 232), (3, 102), (4, 233), (6, 238)]
 )
 def test_yara(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid):
     index, case = defect

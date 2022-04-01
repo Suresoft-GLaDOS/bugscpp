@@ -31,6 +31,9 @@ class ShowCommand(SimpleCommand):
         message.stdout_title("Taxonomy Project Lists\n")
         t = Taxonomy()
         for key, value in t.items():
+            # hide example
+            if key == "example":
+                continue
             message.stdout_bullet(f"[{key}], # of taxonomies: {len(value.defects)}")
             message.stdout_paragraph(f"URL: {value.info.url}\n")
             message.stdout_paragraph(f"Description: {value.info.description}")
