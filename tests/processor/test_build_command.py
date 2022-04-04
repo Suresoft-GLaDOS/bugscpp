@@ -79,7 +79,9 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
             time.sleep(attempt)
             continue
         else:
-            assert "Creating a new docker image for" in stdout
+            assert all(x in stdout for x in ['start building',
+                                             'hschoe/defects4cpp-ubuntu:test_build_command_rebuild_image',
+                                             'done'])
             break
     else:
         assert False, "Failed to rebuild image"
