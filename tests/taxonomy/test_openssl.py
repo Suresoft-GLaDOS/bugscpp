@@ -38,7 +38,12 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
         (28, 126),
     ],
 )
-def test_openssl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid):
+def test_openssl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request,
+                 start_from, end_to):
     index, case = defect
     test_dir = defect_path(index, case)
-    validate_taxonomy(test_dir, index, case, capsys, auto_cleanup, uid)
+    if (start_from is not None) and (index >= int(start_from)) or \
+       (end_to is not None) and (index <= int(end_to)):
+        validate_taxonomy(test_dir, index, case, capsys, auto_cleanup, uid, request)
+    else:
+        pytest.skip(f"Skipping test (index:{index})")
