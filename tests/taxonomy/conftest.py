@@ -29,6 +29,18 @@ def pytest_addoption(parser):
         default="",
         help="Set uid of user defects4cpp."
     )
+    parser.addoption(
+        "--start-from",
+        action="store",
+        default="",
+        help="Set test number start from"
+    )
+    parser.addoption(
+        "--end-to",
+        action="store",
+        default="",
+        help="Set test number end to"
+    )
 
 
 @pytest.fixture
@@ -39,6 +51,16 @@ def auto_cleanup(request):
 @pytest.fixture
 def uid(request):
     return request.config.getoption("--uid")
+
+
+@pytest.fixture
+def start_from(request):
+    return request.config.getoption("--start-from")
+
+
+@pytest.fixture
+def end_to(request):
+    return request.config.getoption("--end-to")
 
 
 @dataclass
@@ -78,12 +100,15 @@ def cleanup(tmp_path: Path, auto_cleanup, capsys):
             pass
 
 
+def get_project_from_request(request):
+    return re.compile(r"test_(.*)\[.*]").match(request.node.name).groups()[0]
+
+
 @pytest.fixture
 def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
     def create_defect_path(index: int, case: int) -> TestDirectory:
         # test_PROJECT_NAME
-        regex = re.compile(r"test_(.*)\[.*]")
-        project = regex.match(request.node.name).groups()[0]
+        project = get_project_from_request(request)
 
         d = tmp_path / request.node.name
         d.mkdir()
@@ -133,11 +158,21 @@ def should_create_summary_json(d: Path):
     return len(summary_json["files"]) > 0
 
 
-def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup, uid):
+coverage_check_skip_list = [
+    ("proj", 8),
+    ("wireshark", 3),
+    ("openssl", 13),
+    ("openssl", 23),
+    ("openssl", 28),
+]
+
+
+def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup, uid, request):
     checkout = CheckoutCommand()
     build = BuildCommand()
     test = TestCommand()
-
+    project = get_project_from_request(request)
+    is_coverage_check_skip = (project, index) in coverage_check_skip_list
     # Test fix
     fixed_target_dir = test_dir.fixed_target_dir
     checkout(
@@ -184,37 +219,41 @@ def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, au
     assert should_create_gcov(buggy_output_dir)
     assert should_create_summary_json(buggy_output_dir)
 
-    with open(buggy_output_dir / "summary.json") as fp:
-        summary_json = json.load(fp)
-        for patched_file, patched_lines in patch_dict.items():
-            # Each 'file' value is relatrive to '/home/workspace'
-            all_file_paths_in_summary_json = [file["file"] for file in summary_json['files']]
-            with capsys.disabled():
-                if len([file for file in all_file_paths_in_summary_json if file == patched_file]) != 1:
-                    print(f"!!!!! {patched_file} is not in summary.json (len="
-                          f"{len([file for file in all_file_paths_in_summary_json])})")
-                    continue
-                else:
-                    print(
-                        f"!!!!! {patched_file} is in summary.json")
-            buggy_lines = patch_dict[patched_file]['buggy']
-            if buggy_lines:
-                any_buggy_line_covered = False
-                for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
-                    if line['line_number'] in buggy_lines:
-                        any_buggy_line_covered = True
-                        with capsys.disabled():
-                            print(f"##### buggy,{patched_file},{line}")
-                assert any_buggy_line_covered
-            fixed_lines = patch_dict[patched_file]['fixed']
-            if fixed_lines:
-                any_fixed_line_covered = False
-                for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
-                    if line['line_number'] in fixed_lines:
-                        any_fixed_line_covered = True
-                        with capsys.disabled():
-                            print(f"##### fixed,{patched_file},{line}")
-                assert any_fixed_line_covered
+    if is_coverage_check_skip:
+        with capsys.disabled():
+            print(f"Skipping coverage check for {project} {index}")
+    else:
+        with open(buggy_output_dir / "summary.json") as fp:
+            summary_json = json.load(fp)
+            for patched_file, patched_lines in patch_dict.items():
+                # Each 'file' value is relatrive to '/home/workspace'
+                all_file_paths_in_summary_json = [file["file"] for file in summary_json['files']]
+                with capsys.disabled():
+                    if len([file for file in all_file_paths_in_summary_json if file == patched_file]) != 1:
+                        print(f"!!!!! {patched_file} is not in summary.json (len="
+                              f"{len([file for file in all_file_paths_in_summary_json])})")
+                        continue
+                    else:
+                        print(
+                            f"!!!!! {patched_file} is in summary.json")
+                buggy_lines = patch_dict[patched_file]['buggy']
+                if buggy_lines:
+                    any_buggy_line_covered = False
+                    for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
+                        if line['line_number'] in buggy_lines:
+                            any_buggy_line_covered = True
+                            with capsys.disabled():
+                                print(f"##### buggy,{patched_file},{line}")
+                    assert any_buggy_line_covered
+                fixed_lines = patch_dict[patched_file]['fixed']
+                if fixed_lines:
+                    any_fixed_line_covered = False
+                    for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
+                        if line['line_number'] in fixed_lines:
+                            any_fixed_line_covered = True
+                            with capsys.disabled():
+                                print(f"##### fixed,{patched_file},{line}")
+                    assert any_fixed_line_covered
 
     if auto_cleanup:
         for path in (test_dir.buggy_output_dir, test_dir.buggy_target_dir,
