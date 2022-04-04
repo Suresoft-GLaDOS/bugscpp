@@ -61,8 +61,14 @@ Finally, to build and test `wireshark`, or any project you've just cloned, run t
     $ d++ build /path/to/wireshark/fixed#1
     $ d++ test /path/to/wireshark/fixed#1
 
+You can run some test cases separately like this:
+
+::
+
+    $ d++ test /path/to/wireshark/fixed#1 --case 1-4,7
+
 However, you are probably interested in a snapshot where a buggy commit is just made.
-The command is exactly the same except that ``--buggy`` flag is set:
+The command is exactly the same except that ``--buggy`` flag is set.
 
 ::
 
@@ -75,7 +81,7 @@ Set ``--coverage`` to generate `.gcov` data.
     $ d++ build /path/to/wireshark/buggy#1 --coverage
     $ d++ test /path/to/wireshark/buggy#1 --coverage
 
-You'll see the artifact is generated in the current directory:
+You'll see the artifact is generated in the current directory.
 
 ::
 
