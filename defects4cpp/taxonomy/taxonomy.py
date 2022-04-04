@@ -121,6 +121,9 @@ class _MetaDataVariables(Mapping):
     def __iter__(self) -> Iterator:
         return iter(self._store)
 
+    def __eq__(self, other):
+        return self._store == other
+
 
 def _do_replace(variables: Dict, string: str) -> str:
     return " ".join([variables.get(w, w) for w in string.split()])

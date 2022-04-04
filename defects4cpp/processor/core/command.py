@@ -320,7 +320,7 @@ class DockerCommand(Command):
             script_generator.worktree,
             self.environ,
             rebuild_image,
-            "",
+            user,
             uid
         ) as docker:
             for script in script_generator.create():

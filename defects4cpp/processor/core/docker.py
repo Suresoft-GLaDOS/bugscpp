@@ -8,7 +8,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Dict, Optional, cast
 
-import docker
 import docker.errors
 from config import config
 from docker import DockerClient
