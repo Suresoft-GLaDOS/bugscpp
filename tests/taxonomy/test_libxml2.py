@@ -10,7 +10,6 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
     [
         (1, 366),
         (2, 1212),
-        (3, 1623),
     ],
 )
 def test_libxml2(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid):
