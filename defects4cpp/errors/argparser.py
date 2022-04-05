@@ -8,6 +8,11 @@ class DppArgparseError(DppError):
     pass
 
 
+class DppAdditionalGcovOptionsWithoutCoverage(DppArgparseError):
+    def __init__(self):
+        super().__init__(f"'--additional-gcov-options' should be used with '--coverage' option")
+
+
 class DppArgparseTaxonomyNotFoundError(DppArgparseError):
     def __init__(self, taxonomy_name: str):
         super().__init__(f"taxonomy '{taxonomy_name}' does not exist")
