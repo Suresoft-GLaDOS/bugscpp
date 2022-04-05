@@ -23,7 +23,7 @@ from message import message
 from processor.core.data import Worktree
 from processor.core.docker import Docker
 from processor.core.shell import Shell
-
+from config import config
 
 class CommandRegistryMeta(type):
     """
@@ -305,6 +305,12 @@ class DockerCommand(Command):
                 script.output(line_number, ec, output.decode("utf-8", errors="ignore"))
 
         args = self.parser.parse_args(argv)
+
+        if args.jobs <= 0:
+            raise ValueError("jobs must be greater than 0")
+        else:
+            config.DPP_PARALLEL_BUILD = str(args.jobs)
+
         self.environ = args.env
 
         script_generator = self.create_script_generator(args)

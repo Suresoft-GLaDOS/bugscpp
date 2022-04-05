@@ -10,8 +10,10 @@ from os import getcwd, system
 from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, List, Optional, Set, Union, cast
+from config import config
 
-from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError
+from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError, \
+    DppAdditionalGcovOptionsWithoutCoverage
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
 from processor.core.argparser import create_common_project_parser
@@ -22,6 +24,15 @@ from processor.core.command import (
 )
 from processor.core.data import Worktree
 from taxonomy import Command, CommandType, Defect, MetaData
+
+
+class AdditionalGcovOptions(argparse.Action):
+    """
+    Additional options for gcov command.
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        config.DPP_ADDITIONAL_GCOV_OPTIONS = values
+        setattr(namespace, self.dest, values)
 
 
 class ValidateCase(argparse.Action):
@@ -318,7 +329,7 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
         self._test_cases = test_cases
         self._callbacks = callbacks
         self._extra_tests = defect.extra_tests
-        self._gcov = metadata.common.gcov
+        self._gcov = metadata.common_gcov_replaced.gcov
 
     def create(self) -> Generator[TestCommandScript, None, None]:
         self._attach(CapturedOutputAttributeMixin, "_captured_output")
@@ -385,7 +396,16 @@ class TestCommand(DockerCommand):
             dest="output_dir",
             action=ValidateOutputDirectory,
         )
-        self.parser.usage = "d++ test PATH [--coverage] [-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+        self.parser.add_argument(
+            "--additional-gcov-options",
+            type=str,
+            dest="additional_gcov_options",
+            action=AdditionalGcovOptions,
+            help="set additional options to gcov command",
+        )
+        self.parser.usage = "d++ test PATH [-j|--jobs=JOBS] " \
+                            "[--coverage [--additional-gcov-options=ADDITIONAL_GCOV_OPTIONS]] " \
+                            "[-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
         self.parser.description = dedent(
             """\
         Run testsuite inside docker. The project must have been built previously.
@@ -401,14 +421,19 @@ class TestCommand(DockerCommand):
     def create_script_generator(
         self, args: argparse.Namespace
     ) -> DockerCommandScriptGenerator:
+        if not args.coverage and args.additional_gcov_options:
+            raise DppAdditionalGcovOptionsWithoutCoverage()
         metadata = self.metadata = args.metadata
         worktree = self.worktree = args.worktree
         self.coverage = True if args.coverage else False
         if args.output_dir:
             self.output = args.output_dir
 
+        # FIXME: metadata's values are fixed when metadata.commonXXXX is called
+        #        When we call metadata.common after calling metadata.common_gcov_replace,
+        #        metadata.common.gcov_replace.gcov will not not replaced
         test_command = (
-            metadata.common.test_coverage_command
+            metadata.common_gcov_replaced.test_coverage_command
             if self.coverage
             else metadata.common.test_command
         )

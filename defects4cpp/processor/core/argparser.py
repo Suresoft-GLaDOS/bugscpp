@@ -128,4 +128,11 @@ def create_common_project_parser() -> argparse.ArgumentParser:
         help="set 'key=value' environment variables within container. (can be used multiple times)",
         action=ValidateEnviron,
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        help="number of jobs to run in parallel.",
+        default=1
+    )
     return parser

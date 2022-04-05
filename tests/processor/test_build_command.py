@@ -85,4 +85,3 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
             break
     else:
         assert False, "Failed to rebuild image"
-

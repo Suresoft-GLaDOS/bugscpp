@@ -144,6 +144,7 @@ class MetaData:
             "@DPP_CMAKE_GEN_COMPILATION_DB@": "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
             "@DPP_COMPILATION_DB_TOOL@": None,
             "@DPP_CMAKE_COMPILATION_DB_TOOL@": None,
+            "@DPP_ADDITIONAL_GCOV_OPTIONS@": None,
         }
     )
 
@@ -172,6 +173,12 @@ class MetaData:
 
     @property
     def common_capture(self):
+        if not self._common:
+            self._load()
+        return self._preprocess_common(self._common, True)
+
+    @property
+    def common_gcov_replaced(self):
         if not self._common:
             self._load()
         return self._preprocess_common(self._common, True)
@@ -247,7 +254,7 @@ class MetaData:
             ]
 
         MetaData._preprocess_build_command(func, data)
-
+        MetaData._preprocess_gcov_command(func, data)
         return Common(**data)
 
     @staticmethod
@@ -293,7 +300,10 @@ class MetaData:
     def _preprocess_gcov_command(
         func: Callable[[Dict, str], str], data: Dict[str, Any]
     ):
-        pass
+        for command_index, command in enumerate(data["gcov"].command):
+            for line_index, line in enumerate(command.lines):
+                command.lines[line_index] = func(MetaData._common_variables, line)
+            data["gcov"].command[command_index] = command
 
 
 class _LazyTaxonomy:

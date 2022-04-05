@@ -8,6 +8,7 @@ from errors.argparser import (
     DppArgparseInvalidEnvironment,
     DppArgparseNotProjectDirectory,
     DppArgparseTaxonomyNotFoundError,
+    DppAdditionalGcovOptionsWithoutCoverage,
 )
 from errors.checkout import (
     DppGitApplyPatchError,
@@ -52,4 +53,5 @@ __all__ = [
     "DppCommandListInternalError",
     "DppDockerError",
     "DppDockerNoClientError",
+    "DppAdditionalGcovOptionsWithoutCoverage"
 ]
