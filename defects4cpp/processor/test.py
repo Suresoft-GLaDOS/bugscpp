@@ -73,7 +73,7 @@ class ValidateCase(argparse.Action):
         except AttributeError:
             raise DppCaseExpressionInternalError(namespace)
 
-        num_cases = metadata.defects[index - 1].num_cases + len(metadata.defects[index - 1].extra_tests)
+        num_cases = metadata.defects[index - 1].num_cases
         expr_tokens = values.split(":")
         included_cases = validate_each_case(num_cases, expr2set(expr_tokens[0]))
         excluded_cases = validate_each_case(
@@ -347,16 +347,16 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case <= self._defect.num_cases else \
-                self._extra_tests[case - self._defect.num_cases - 1]
+            test_cmd = self._test_command if case <= self._defect.num_cases - len(self._extra_tests) else \
+                self._extra_tests[case - self._defect.num_cases + len(self._extra_tests) - 1]
             for t in test_cmd:
                 yield TestCommandScript(case, t.type, t.lines)
 
     def _create_coverage_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case <= self._defect.num_cases else \
-                self._extra_tests[case - self._defect.num_cases - 1]
+            test_cmd = self._test_command if case <= self._defect.num_cases - len(self._extra_tests) else \
+                self._extra_tests[case - self._defect.num_cases + len(self._extra_tests) - 1]
             for t in test_cmd:
                 yield CoverageTestCommandScript(case, t.type, t.lines)
             for gcov_cmd in self._gcov.command:
@@ -446,11 +446,11 @@ class TestCommand(DockerCommand):
         number_of_extra_testcases = len(selected_defect.extra_tests) if selected_defect.extra_tests else 0
 
         if not args.case:
-            cases = set(range(1, selected_defect.num_cases + number_of_extra_testcases + 1))
+            cases = set(range(1, selected_defect.num_cases + 1))
         else:
             included_cases, excluded_cases = args.case
             if not included_cases:
-                included_cases = set(range(1, selected_defect.num_cases + number_of_extra_testcases + 1))
+                included_cases = set(range(1, selected_defect.num_cases + 1))
             cases = included_cases.difference(excluded_cases)
 
         return TestCommandScriptGenerator(
