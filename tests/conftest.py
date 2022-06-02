@@ -133,6 +133,7 @@ def create_build(tmp_path: Path, request):
         extra_args.setdefault("env", None)
         extra_args.setdefault("export", None)
         extra_args.setdefault("rebuild", False)
+        extra_args.setdefault("jobs", 1)
 
         return cast(
             BuildCommand,

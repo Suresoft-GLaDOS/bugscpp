@@ -39,7 +39,10 @@ class DummyDockerCommand(DockerCommand):
     ):
         parser = argparse.ArgumentParser()
         # Put default arguments here if something's been changed.
-        parser.set_defaults(**{"env": None, "rebuild_image": False})
+        parser.set_defaults(**{"env": None,
+                               "rebuild_image": False,
+                               "jobs": 1
+                               })
 
         super().__init__(parser)
         self.callback = callback
