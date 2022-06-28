@@ -16,7 +16,7 @@ from taxonomy import Taxonomy
 class ShowCommand(SimpleCommand):
     def __init__(self):
         self.parser = create_common_parser()
-        self.parser.usage = "d++ show [PROJECT]"
+        self.parser.usage = "d++.py show [PROJECT]"
         self.parser.description = dedent(
             """\
         Display defect taxonomy in detail.

@@ -403,7 +403,7 @@ class TestCommand(DockerCommand):
             action=AdditionalGcovOptions,
             help="set additional options to gcov command",
         )
-        self.parser.usage = "d++ test PATH [-j|--jobs=JOBS] " \
+        self.parser.usage = "d++.py test PATH [-j|--jobs=JOBS] " \
                             "[--coverage [--additional-gcov-options=ADDITIONAL_GCOV_OPTIONS]] " \
                             "[-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
         self.parser.description = dedent(

@@ -31,8 +31,6 @@ Installation
 ============
 .. begin installation
 
-You don't have to install `Defects4Cpp`; you can simply run :code:`d++.py`.
-
 Docker daemon must be running in background in order to run.
 
 .. end installation
@@ -45,50 +43,50 @@ A list of defect taxonomy can be displayed via the following:
 
 ::
 
-    d++ show
+    python3 defects4cpp/d++.py show
 
 For the rest commands to work, you need to checkout one of projects in the list displayed in the previous step.
-For instance, if you want to checkout `wireshark` project:
+For instance, if you want to checkout `wget2` project:
 
 ::
 
-    $ d++ checkout wireshark 1
+    $ python3 defects4cpp/d++.py checkout wget2 1
 
-Finally, to build and test `wireshark`, or any project you've just cloned, run the following sequence of commands:
+Finally, to build and test `wget2`, or any project you've just cloned, run the following sequence of commands:
 
 ::
 
-    $ d++ build /path/to/wireshark/fixed#1
-    $ d++ test /path/to/wireshark/fixed#1
+    $ python3 defects4cpp/d++.py build /path/to/wget2/fixed#1
+    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1
 
 You can run some test cases separately like this:
 
 ::
 
-    $ d++ test /path/to/wireshark/fixed#1 --case 1-4,7
+    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1 --case 1-4,7
 
 However, you are probably interested in a snapshot where a buggy commit is just made.
 The command is exactly the same except that ``--buggy`` flag is set.
 
 ::
 
-    $ d++ checkout wireshark 1 --buggy
+    $ python3 defects4cpp/d++.py checkout wget2 1 --buggy
 
 Set ``--coverage`` to generate `.gcov` data.
 
 ::
 
-    $ d++ build /path/to/wireshark/buggy#1 --coverage
-    $ d++ test /path/to/wireshark/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py build /path/to/wget2/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py test /path/to/wget2/buggy#1 --coverage
 
 You'll see the artifact is generated in the current directory.
 
 ::
 
     $ ls
-    /path/to/wireshark-fixed#1-1
-    /path/to/wireshark-fixed#1-2
-    /path/to/wireshark-fixed#1-3
+    /path/to/wget2-fixed#1-1
+    /path/to/wget2-fixed#1-2
+    /path/to/wget2-fixed#1-3
     ...
 
 
