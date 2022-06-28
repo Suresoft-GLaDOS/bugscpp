@@ -17,7 +17,7 @@ from processor.core.command import SimpleCommand
 class HelpCommand(SimpleCommand):
     def __init__(self):
         self.parser = create_common_parser()
-        self.parser.usage = "d++ help"
+        self.parser.usage = "d++.py help"
         self.parser.description = dedent(
             """\
         Display help messages.
