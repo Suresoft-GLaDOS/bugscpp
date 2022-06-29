@@ -172,15 +172,6 @@ def should_create_summary_json(d: Path):
     return len(summary_json["files"]) > 0
 
 
-coverage_check_skip_list = [
-    ("proj", 8),
-    ("wireshark", 3),
-    ("openssl", 13),
-    ("openssl", 23),
-    ("openssl", 28),
-]
-
-
 def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup, uid, request):
     checkout = CheckoutCommand()
     build = BuildCommand()
