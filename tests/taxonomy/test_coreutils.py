@@ -2,14 +2,13 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
+
+PROJECT_NAME = 'coreutils'
 
 
 @pytest.mark.parametrize(
-    "defect", [
-        (1, 209),
-        (2, 97)
-    ]
+    "defect", get_defects(PROJECT_NAME)
 )
 def test_coreutils(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect

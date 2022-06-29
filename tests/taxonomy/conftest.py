@@ -10,10 +10,18 @@ from shutil import rmtree
 from typing import Callable
 
 import pytest
-
+from defects4cpp.taxonomy import Taxonomy
 from defects4cpp.command import BuildCommand, CheckoutCommand, TestCommand
 
 CONFIG_NAME = ".defects4cpp.json"
+
+
+def get_defects(project_name):
+    t = Taxonomy()
+    assert(project_name in t.__lazy_taxonomy.keys())
+
+    # return a tuple of the number of test cases and the list of buggy test cases
+    # return ( a , b )
 
 
 def pytest_addoption(parser):
