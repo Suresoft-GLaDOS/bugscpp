@@ -2,16 +2,13 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'zsh'
 
-@pytest.mark.parametrize("defect", [
-    (1, 1),
-    (2, 56),
-    (3, 22),
-    (4, 29),
-    (5, 42)
-])
+@pytest.mark.parametrize(
+    "defect", get_defects(PROJECT_NAME)
+)
 def test_zsh(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect
     test_dir = defect_path(index, case)

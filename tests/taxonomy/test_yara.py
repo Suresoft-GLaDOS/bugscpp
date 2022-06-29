@@ -2,11 +2,12 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'yara'
 
 @pytest.mark.parametrize(
-    "defect", [(1, 55), (2, 232), (3, 102), (4, 233), (5, 238)]
+    "defect", get_defects(PROJECT_NAME)
 )
 def test_yara(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect

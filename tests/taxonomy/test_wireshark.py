@@ -2,10 +2,13 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'wireshark'
 
-@pytest.mark.parametrize("defect", [(1, 3), (2, 34), (3, 29), (4, 3), (5, 28), (6, 34)])
+@pytest.mark.parametrize(
+    "defect", get_defects(PROJECT_NAME)
+)
 def test_wireshark(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect
     test_dir = defect_path(index, case)

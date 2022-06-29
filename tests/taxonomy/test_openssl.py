@@ -2,41 +2,12 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'openssl'
 
 @pytest.mark.parametrize(
-    "defect",
-    [
-        (1, 46),
-        (2, 40),
-        (3, 119),
-        (4, 71),
-        (5, 97),
-        (6, 70),
-        (7, 28),
-        (8, 110),
-        (9, 69),
-        (10, 68),
-        (11, 97),
-        (12, 57),
-        (13, 91),
-        (14, 66),
-        (15, 160),
-        (16, 204),
-        (17, 46),
-        (18, 47),
-        (19, 128),
-        (20, 119),
-        (21, 124),
-        (22, 182),
-        (23, 110),
-        (24, 113),
-        (25, 186),
-        (26, 207),
-        (27, 214),
-        (28, 126),
-    ],
+    "defect", get_defects(PROJECT_NAME)
 )
 def test_openssl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request,
                  start_from, end_to):

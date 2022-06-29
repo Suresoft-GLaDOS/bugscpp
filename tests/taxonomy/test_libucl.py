@@ -2,11 +2,12 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'libucl'
 
 @pytest.mark.parametrize(
-    "defect", [(1, 4), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)]
+    "defect", get_defects(PROJECT_NAME)
 )
 def test_libucl(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect

@@ -20,9 +20,15 @@ def get_defects(project_name):
     t = Taxonomy()
     assert(project_name in t.__lazy_taxonomy.keys())
 
-    # return a tuple of the number of test cases and the list of buggy test cases
-    # return ( a , b )
+    test_list = []
+    defects_num = len(t[project_name].defects)
 
+    for i in range(0, defects_num):
+        buggy_case = t[project_name].defects[i].case[0]
+        case_tuple = (i + 1, buggy_case)
+        test_list.append(case_tuple)
+
+    return test_list
 
 def pytest_addoption(parser):
     parser.addoption(

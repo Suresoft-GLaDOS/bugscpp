@@ -6,7 +6,6 @@ from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defect
 
 PROJECT_NAME = 'coreutils'
 
-
 @pytest.mark.parametrize(
     "defect", get_defects(PROJECT_NAME)
 )

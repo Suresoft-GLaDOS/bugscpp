@@ -2,12 +2,12 @@ from typing import Callable
 
 import pytest
 
-from tests.taxonomy.conftest import TestDirectory, validate_taxonomy
+from tests.taxonomy.conftest import TestDirectory, validate_taxonomy, get_defects
 
+PROJECT_NAME = 'xbps'
 
 @pytest.mark.parametrize(
-    "defect",
-    [(1, 79), (2, 120), (3, 122), (4, 86), (5, 40)],
+    "defect", get_defects(PROJECT_NAME)
 )
 def test_xbps(defect, defect_path: Callable[[int, int], TestDirectory], gitenv, capsys, auto_cleanup, uid, request):
     index, case = defect
