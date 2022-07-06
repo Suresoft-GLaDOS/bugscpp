@@ -103,6 +103,8 @@ Table of Defects
      - 2
    * - cppcheck
      - 30
+   * - dlt_daemon
+     - 1
    * - example
      - 1
    * - libchewing
