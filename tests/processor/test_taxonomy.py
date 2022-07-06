@@ -106,4 +106,3 @@ def test_extra_tests():
     assert t["yara"].defects[0].extra_tests == []
     assert t["libtiff"].defects[0].extra_tests is not None
     assert len(t["libtiff"].defects[0].extra_tests) == 1
-
