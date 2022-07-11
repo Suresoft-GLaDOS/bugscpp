@@ -7,7 +7,6 @@ TARGET_TEXT = "@TABLE_OF_DEFECTS@"
 def generate_readme(taxonomy: Taxonomy, input_file_path="README.rst.template", output_file_path="README.rst"):
     table = generate_table(taxonomy)
     assert(Path(input_file_path).is_file())
-    assert(Path(output_file_path).is_file())
     with open(input_file_path, 'r') as input_file:
         content = input_file.read()
         content = content.replace(TARGET_TEXT, table)
