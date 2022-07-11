@@ -2,6 +2,9 @@
 
 default: test
 
+readme:
+	@PYTHONPATH=defects4cpp/ python readme_generator.py README.rst.template
+
 install:
 	@pip install --upgrade pip
 	@pip install -r requirements.txt
