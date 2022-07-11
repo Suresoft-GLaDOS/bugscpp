@@ -3,7 +3,7 @@
 default: test
 
 readme:
-	python readme_generator.py README.rst.template
+	@PYTHONPATH=defects4cpp/ python readme_generator.py README.rst.template
 
 install:
 	@pip install --upgrade pip
