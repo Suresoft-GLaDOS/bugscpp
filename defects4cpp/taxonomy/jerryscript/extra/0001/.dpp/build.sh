@@ -120,11 +120,10 @@ python /home/workspace/tools/build.py \
  python /home/workspace/tools/build.py \
          --profile=es2015-subset \
          --lto=off \
-         --compile-flag=-g --error-messages=on \
+         --error-messages=on \
          --debug \
-         --compile-flag=-g --strip=off \
+         --strip=off \
          --logging=on \
          --compile-flag=-fsanitize=address \
          --stack-limit=15 \
          --compile-flag="$1"
-
