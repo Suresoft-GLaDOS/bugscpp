@@ -94,7 +94,7 @@ You'll see the artifact is generated in the current directory.
 
 Table of Defects
 ===============
-.. list-table:: 
+.. list-table::
    :header-rows: 1
 
    * - Project
@@ -108,7 +108,7 @@ Table of Defects
    * - example
      - 1
    * - jerryscript
-     - 7
+     - 9
    * - libchewing
      - 8
    * - libssh
