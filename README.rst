@@ -108,7 +108,7 @@ Table of Defects
    * - example
      - 1
    * - jerryscript
-     - 7
+     - 8
    * - libchewing
      - 8
    * - libssh
