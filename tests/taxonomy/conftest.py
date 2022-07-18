@@ -10,10 +10,31 @@ from shutil import rmtree
 from typing import Callable
 
 import pytest
+from defects4cpp.taxonomy import Taxonomy
 
-from defects4cpp.command import BuildCommand, CheckoutCommand, TestCommand
 
-CONFIG_NAME = ".defects4cpp.json"
+# def get_defects(project):
+#     t = Taxonomy()[project]
+#
+#     t = Taxonomy()
+#     assert(project_name in t.__lazy_taxonomy.keys())
+#
+#     test_list = []
+#     defects_num = len(t[project_name].defects)
+#
+#     for i in range(0, defects_num):
+#         buggy_case = t[project_name].defects[i].case[0]
+#         case_tuple = (i + 1, buggy_case)
+#         test_list.append(case_tuple)
+# return test_list
+
+def pytest_generate_tests(metafunc):
+    assert "project" in metafunc.fixturenames
+    meta_project = Taxonomy()[metafunc.config.option.project]
+    start_from = int(metafunc.config.getoption('--start-from')) if metafunc.config.getoption('--start-from') else 1
+    end_to = int(metafunc.config.getoption('--end-to')) if metafunc.config.getoption('--end-to') else len(meta_project.defects)
+    assert start_from <= end_to, f"\"start_from\"({start_from}) must be less than or equal to \"end_to\"({end_to})"
+    metafunc.parametrize("index", [index for index in range(start_from, end_to + 1)])
 
 
 def pytest_addoption(parser):
@@ -30,6 +51,13 @@ def pytest_addoption(parser):
         help="Set uid of user defects4cpp."
     )
     parser.addoption(
+        "--project",
+        action="store",
+        default="",
+        required=True,
+        help="Set project name."
+    )
+    parser.addoption(
         "--start-from",
         action="store",
         default="",
@@ -44,6 +72,11 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture
+def project(request):
+    return request.config.getoption("--project")
+
+
+@pytest.fixture
 def auto_cleanup(request):
     return request.config.getoption("--auto-cleanup")
 
@@ -53,25 +86,36 @@ def uid(request):
     return request.config.getoption("--uid")
 
 
-@pytest.fixture
-def start_from(request):
-    return request.config.getoption("--start-from")
-
-
-@pytest.fixture
-def end_to(request):
-    return request.config.getoption("--end-to")
-
-
 @dataclass
 class TestDirectory:
     project: str
     checkout_dir: Path
     fixed_target_dir: Path
-    fixed_output_dir: Path
     buggy_target_dir: Path
-    buggy_output_dir: Path
     __test__ = False
+
+    def fixed_output_dir(self, index: int, case: int):
+        return self.checkout_dir / f"{self.project}-fixed#{str(index)}-{str(case)}"
+
+    def buggy_output_dir(self, index: int, case: int):
+        return self.checkout_dir / f"{self.project}-buggy#{str(index)}-{str(case)}"
+
+
+@pytest.fixture
+def defect_path(tmp_path: Path, request) -> Callable[[int], TestDirectory]:
+    def create_defect_path(index: int) -> TestDirectory:
+        # test_PROJECT_NAME
+        project = request.config.getoption("--project")
+        d = tmp_path / request.node.name
+        d.mkdir()
+        return TestDirectory(
+            project,
+            d,
+            fixed_target_dir=(d / project / f"fixed#{index}"),
+            buggy_target_dir=(d / project / f"buggy#{index}"),
+        )
+
+    return create_defect_path
 
 
 def rmtree_onerror(func, path, exc) -> None:
@@ -98,34 +142,6 @@ def cleanup(tmp_path: Path, auto_cleanup, capsys):
             pass
         except FileNotFoundError:
             pass
-
-
-def get_project_from_request(request):
-    return re.compile(r"test_(.*)\[.*]").match(request.node.name).groups()[0]
-
-
-@pytest.fixture
-def defect_path(tmp_path: Path, request) -> Callable[[int, int], TestDirectory]:
-    def create_defect_path(index: int, case: int) -> TestDirectory:
-        # test_PROJECT_NAME
-        project = get_project_from_request(request)
-
-        d = tmp_path / request.node.name
-        d.mkdir()
-        return TestDirectory(
-            project,
-            d,
-            fixed_target_dir=(d / project / f"fixed#{index}"),
-            fixed_output_dir=(d / f"{project}-fixed#{index}-{case}"),
-            buggy_target_dir=(d / project / f"buggy#{index}"),
-            buggy_output_dir=(d / f"{project}-buggy#{index}-{case}"),
-        )
-
-    return create_defect_path
-
-
-def checkout_dir_valid(d: Path) -> bool:
-    return (d / CONFIG_NAME).exists()
 
 
 def read_captured_output(d: Path, case: int) -> str:
@@ -156,114 +172,6 @@ def should_create_summary_json(d: Path):
     with open(d / "summary.json") as fp:
         summary_json = json.load(fp)
     return len(summary_json["files"]) > 0
-
-
-coverage_check_skip_list = [
-    ("proj", 8),
-    ("wireshark", 3),
-    ("openssl", 13),
-    ("openssl", 23),
-    ("openssl", 28),
-]
-
-
-def validate_taxonomy(test_dir: TestDirectory, index: int, case: int, capsys, auto_cleanup, uid, request):
-    checkout = CheckoutCommand()
-    build = BuildCommand()
-    test = TestCommand()
-    project = get_project_from_request(request)
-    is_coverage_check_skip = (project, index) in coverage_check_skip_list
-    # Test fix
-    fixed_target_dir = test_dir.fixed_target_dir
-    checkout(
-        f"{test_dir.project} {index} --target {str(test_dir.checkout_dir)}".split()
-    )
-    assert checkout_dir_valid(fixed_target_dir)
-    build(f"{str(fixed_target_dir)} -u {str(uid)} --coverage -v".split())
-    test(
-        f"{str(fixed_target_dir)} --coverage --case {case} --output-dir {str(test_dir.checkout_dir)}".split()
-    )
-
-    fixed_output_dir = test_dir.fixed_output_dir
-    assert should_pass(fixed_output_dir, case), read_captured_output(
-        fixed_output_dir, case
-    )
-    assert should_create_gcov(fixed_output_dir)
-    assert should_create_summary_json(fixed_output_dir)
-
-    # Test buggy
-    buggy_target_dir = test_dir.buggy_target_dir
-    checkout_buggy_cmd = f"{test_dir.project} {index} --buggy --target {str(test_dir.checkout_dir)}".split()
-    checkout(checkout_buggy_cmd)
-    assert checkout_dir_valid(buggy_target_dir)
-
-    buggy_checkout_args = checkout.parser.parse_args(checkout_buggy_cmd)
-    buggy_defect = buggy_checkout_args.metadata.defects[buggy_checkout_args.index - 1]
-    # read patch information
-
-    patch_dict = get_patch_dict(buggy_defect)
-    number_of_all_patched_lines = 0
-    for patch_path in patch_dict:
-        number_of_all_patched_lines = len(patch_dict[patch_path]['buggy']) + len(patch_dict[patch_path]['fixed'])
-    assert(number_of_all_patched_lines > 0)
-
-    build(f"{str(buggy_target_dir)} --coverage".split())
-    test(
-        f"{str(buggy_target_dir)} --coverage --case {case} --output-dir {str(test_dir.checkout_dir)}".split()
-    )
-
-    buggy_output_dir = test_dir.buggy_output_dir
-    assert should_fail(buggy_output_dir, case), read_captured_output(
-        buggy_output_dir, case
-    )
-    assert should_create_gcov(buggy_output_dir)
-    assert should_create_summary_json(buggy_output_dir)
-
-    if is_coverage_check_skip:
-        with capsys.disabled():
-            print(f"Skipping coverage check for {project} {index}")
-    else:
-        with open(buggy_output_dir / "summary.json") as fp:
-            summary_json = json.load(fp)
-            for patched_file, patched_lines in patch_dict.items():
-                # Each 'file' value is relatrive to '/home/workspace'
-                all_file_paths_in_summary_json = [file["file"] for file in summary_json['files']]
-                with capsys.disabled():
-                    if len([file for file in all_file_paths_in_summary_json if file == patched_file]) != 1:
-                        print(f"!!!!! {patched_file} is not in summary.json (len="
-                              f"{len([file for file in all_file_paths_in_summary_json])})")
-                        continue
-                    else:
-                        print(
-                            f"!!!!! {patched_file} is in summary.json")
-                buggy_lines = patch_dict[patched_file]['buggy']
-                if buggy_lines:
-                    any_buggy_line_covered = False
-                    for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
-                        if line['line_number'] in buggy_lines:
-                            any_buggy_line_covered = True
-                            with capsys.disabled():
-                                print(f"##### buggy,{patched_file},{line}")
-                    assert any_buggy_line_covered
-                fixed_lines = patch_dict[patched_file]['fixed']
-                if fixed_lines:
-                    any_fixed_line_covered = False
-                    for line in [file for file in summary_json['files'] if file['file'] == patched_file][0]['lines']:
-                        if line['line_number'] in fixed_lines:
-                            any_fixed_line_covered = True
-                            with capsys.disabled():
-                                print(f"##### fixed,{patched_file},{line}")
-                    assert any_fixed_line_covered
-
-    if auto_cleanup:
-        for path in (test_dir.buggy_output_dir, test_dir.buggy_target_dir,
-                     test_dir.fixed_output_dir, test_dir.fixed_target_dir):
-            try:
-                rmtree(path, ignore_errors=False, onerror=rmtree_onerror)
-            except PermissionError:
-                pass
-            except FileNotFoundError:
-                pass
 
 
 def get_patch_dict(buggy_defect):
