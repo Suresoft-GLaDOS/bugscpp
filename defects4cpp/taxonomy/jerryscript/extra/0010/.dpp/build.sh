@@ -94,18 +94,9 @@ python  /home/workspace/tools/build.py \
         --install=/home/workspace/build/tests/unittests-es5.1-math/local \
         --compile-flag="$1"
 
-python /home/workspace/tools/build.py \
-        --lto=off \
-        --error-messages=on \
-        --debug \
-        --strip=off \
-        --logging=on \
-        --linker-flag=-fuse-ld=gold \
-        --compile-flag=-fsanitize=address \
-        --compile-flag=-m32 \
-        --compile-flag=-fno-omit-frame-pointer \
-        --compile-flag=-fno-common\
-        --system-allocator=on \
-        --stack-limit=10 \
+python  /home/workspace/tools/build.py \
+        --clean --debug --compile-flag=-fsanitize=address \
+        --compile-flag=-m32 --lto=off --logging=on --line-info=on \
+        --error-message=on --system-allocator=on \
+        --profile=es2015-subset --stack-limit=20 \
         --compile-flag="$1"
-
