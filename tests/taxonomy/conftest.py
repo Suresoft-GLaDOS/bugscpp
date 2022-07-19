@@ -111,8 +111,8 @@ def defect_path(tmp_path: Path, request) -> Callable[[int], TestDirectory]:
         return TestDirectory(
             project,
             d,
-            fixed_target_dir=(d / project / f"fixed#{index}"),
             buggy_target_dir=(d / project / f"buggy#{index}"),
+            fixed_target_dir=(d / project / f"fixed#{index}"),
         )
 
     return create_defect_path
