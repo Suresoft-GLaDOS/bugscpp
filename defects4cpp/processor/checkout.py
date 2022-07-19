@@ -177,9 +177,9 @@ class CheckoutCommand(Command):
                 _git_am(
                     checkout_repo,
                     [
-                        defect.buggy_patch if args.buggy else defect.fixed_patch,
                         defect.common_patch,
                         defect.split_patch,
+                        defect.buggy_patch if args.buggy else defect.fixed_patch,
                     ],
                 )
             else:
