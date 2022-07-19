@@ -76,7 +76,7 @@ python  /home/workspace/tools/build.py \
         --cmake-param=-DFEATURE_INIT_FINI=ON \
         --builddir=/home/workspace/build/tests/unittests-es5.1-init-fini \
         --install=/home/workspace/build/tests/unittests-es5.1-init-fini/local \
-        --compile-flags="$1"
+        --compile-flag="$1"
 
 python   /home/workspace/tools/build.py \
          --lto=off \
@@ -93,7 +93,7 @@ python   /home/workspace/tools/build.py \
          --jerry-math=on \
          --builddir=/home/workspace/build/tests/unittests-es5.1-math \
          --install=/home/workspace/build/tests/unittests-es5.1-math/local \
-         --compile-flags="$1"
+         --compile-flag="$1"
 
 python  /home/workspace/tools/build.py \
          --profile=es2015-subset \

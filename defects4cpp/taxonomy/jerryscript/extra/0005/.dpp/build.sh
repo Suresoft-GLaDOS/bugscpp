@@ -95,7 +95,6 @@ python  /home/workspace/tools/build.py \
         --compile-flag="$1"
 
 python  /home/workspace/tools/build.py \
-        --clean \
         --compile-flag=-fsanitize=address \
         --lto=off --error-message=on \
         --profile=es2015-subset \
