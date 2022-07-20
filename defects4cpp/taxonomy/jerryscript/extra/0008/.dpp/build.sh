@@ -95,7 +95,7 @@ python  /home/workspace/tools/build.py \
         --compile-flag="$1"
 
 python  /home/workspace/tools/build.py \
-        --clean --debug --compile-flag=-fsanitize=address \
+        --debug --compile-flag=-fsanitize=address \
         --compile-flag=-m32 --compile-flag=-g --strip=off \
         --lto=off --logging=on --line-info=on \
         --error-message=on --system-allocator=on \
