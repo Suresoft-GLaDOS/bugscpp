@@ -108,7 +108,7 @@ Table of Defects
    * - example
      - 1
    * - exiv2
-     - 5
+     - 6
    * - jerryscript
      - 11
    * - libchewing
