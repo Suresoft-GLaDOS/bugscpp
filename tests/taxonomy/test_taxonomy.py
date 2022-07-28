@@ -11,6 +11,7 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
+    ("dlt_daemon", 1),
     ("libchewing", 3),
     ("libxml2", 1),
     ("libxml2", 2),
