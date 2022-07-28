@@ -18,26 +18,33 @@ TAXONOMY_TEST_SKIP_LIST = [
     ("openssl", 9),
     ("openssl", 10),
     ("openssl", 12),
+    ("openssl", 13),
+    ("openssl", 14),
     ("openssl", 16),
     ("openssl", 19),
     ("openssl", 21),
     ("openssl", 22),
+    ("openssl", 23),
     ("openssl", 26),
     ("openssl", 27),
+    ("openssl", 28),
     ("proj", 23),
     ("proj", 24),
+    ("wireshark", 3),
+    ("yara", 4),
     ("yara", 5),
 ]
 
-GCOV_CHECK_SKIP_LIST = [
-    ("yara", 4)
-]
+# GCOV_CHECK_SKIP_LIST = [
+#     ("yara", 4)
+# ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
     ("openssl", 8),
     ("openssl", 13),
     ("openssl", 23),
     ("openssl", 28),
+    ("yara", 4)
 ]
 
 CONFIG_NAME = '.defects4cpp.json'
@@ -87,8 +94,8 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                     # find the file paths in summary json for the patched file
                     patched_file_paths = [fp for fp in all_file_paths_in_summary_json
                                           if Path(fp).name == Path(patched_file).name]
-                    if (project, index) in GCOV_CHECK_SKIP_LIST:
-                        continue
+                    # if (project, index) in GCOV_CHECK_SKIP_LIST:
+                    #     continue
                     assert len(patched_file_paths) == 1, \
                         f"Expected one file path for {patched_file}, but found {patched_file_paths}"
                     patched_file_path = patched_file_paths[0]
