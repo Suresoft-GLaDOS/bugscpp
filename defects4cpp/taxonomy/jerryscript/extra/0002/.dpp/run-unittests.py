@@ -20,6 +20,7 @@ import glob
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import util
 
@@ -40,8 +41,7 @@ def get_arguments():
 
 def get_unittests(path):
     unittests = []
-    #files = glob.glob(os.path.join(path, 'unit-*'))
-    files = glob.glob(path)
+    files = [dir for dir in Path(path).iterdir()]
     for testfile in files:
         if os.path.isfile(testfile) and os.access(testfile, os.X_OK):
             if sys.platform != 'win32' or testfile.endswith(".exe"):
