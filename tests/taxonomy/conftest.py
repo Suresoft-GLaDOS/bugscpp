@@ -69,6 +69,12 @@ def pytest_addoption(parser):
         default="",
         help="Set test number end to"
     )
+    parser.addoption(
+        "--no-skip",
+        action="store_true",
+        default=False,
+        help="Force to run tests"
+    )
 
 
 @pytest.fixture
@@ -85,6 +91,9 @@ def auto_cleanup(request):
 def uid(request):
     return request.config.getoption("--uid")
 
+@pytest.fixture
+def no_skip(request):
+    return request.config.getopotion("--no-skip")
 
 @dataclass
 class TestDirectory:
@@ -107,7 +116,7 @@ def defect_path(tmp_path: Path, request) -> Callable[[int], TestDirectory]:
         # test_PROJECT_NAME
         project = request.config.getoption("--project")
         d = tmp_path / request.node.name
-        d.mkdir()
+        d.mkdir(exist_ok=True)
         return TestDirectory(
             project,
             d,
