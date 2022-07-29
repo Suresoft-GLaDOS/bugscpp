@@ -11,7 +11,6 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
-    ("dlt_daemon", 1),
     ("libchewing", 3),
     ("libxml2", 1),
     ("libxml2", 2),
@@ -50,8 +49,9 @@ BUGGY_LINE_CHECK_SKIP_LIST = [
 CONFIG_NAME = '.defects4cpp.json'
 
 
-def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], gitenv, capsys, auto_cleanup, uid):
-    if (project, index) in TAXONOMY_TEST_SKIP_LIST:
+def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], gitenv, capsys, auto_cleanup, uid,
+                  no_skip):
+    if not no_skip and (project, index) in TAXONOMY_TEST_SKIP_LIST:
         pytest.skip(f"Skipping test for {(project, index)}. Will be fixed soon!")
     checkout = CheckoutCommand()
     build = BuildCommand()
