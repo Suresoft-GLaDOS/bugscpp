@@ -94,49 +94,72 @@ You'll see the artifact is generated in the current directory.
 
 Table of Defects
 ===============
-.. list-table:: 
+.. list-table::
    :header-rows: 1
 
    * - Project
      - # of bugs
-   * - coreutils
+     - URL
+   * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
-   * - cppcheck
+     - These are the GNU core utilities.  This package is the union of the GNU fileutils, sh-utils, and textutils packages.
+   * - `cppcheck <https://github.com/danmar/cppcheck.git/>`_
      - 30
-   * - dlt_daemon
+     - Cppcheck is a static analysis tool for C/C++ code.
+   * - `dlt_daemon <https://github.com/COVESA/dlt-daemon.git/>`_
      - 1
-   * - example
+     - GENIVI DLT provides a log and trace interface, based on the standardised protocol specified in the AUTOSAR
+   * - `example <https://github.com/HansolChoe/Defects4cpp-test-repo.git/>`_
      - 1
-   * - exiv2
+     - Example test repo
+   * - `exiv2 <https://github.com/Exiv2/exiv2.git/>`_
      - 10
-   * - jerryscript
+     - Exiv2 is a C++ library and a command-line utility to read, write, delete and modify Exif, IPTC, XMP and ICC image metadata
+   * - `jerryscript <https://github.com/jerryscript-project/jerryscript.git/>`_
      - 11
-   * - libchewing
+     - JerryScript is a lightweight JavaScript engine for resource-constrained devices such as microcontrollers.
+   * - `libchewing <https://github.com/chewing/libchewing/>`_
      - 8
-   * - libssh
+     - The Chewing (酷音) is an intelligent phonetic (Zhuyin/Bopomofo) input method, one of the most popular choices for Traditional Chinese users.
+   * - `libssh <https://git.libssh.org/projects/libssh.git/>`_
      - 1
-   * - libtiff
+     - libssh is a multiplatform C library implementing the SSHv2 protocol on client and server side.
+   * - `libtiff <https://github.com/vadz/libtiff.git/>`_
      - 5
-   * - libtiff_sanitizer
+     - This software provides support for the Tag Image File Format (TIFF), a widely used format for storing image data.
+   * - `libtiff_sanitizer <https://github.com/vadz/libtiff.git/>`_
      - 4
-   * - libucl
+     - This software provides support for the Tag Image File Format (TIFF), a widely used format for storing image data. Sanitizer enabled.
+   * - `libucl <https://github.com/vstakhov/libucl/>`_
      - 6
-   * - libxml2
+     - Universal configuration library parser
+   * - `libxml2 <https://gitlab.gnome.org/GNOME/libxml2.git/>`_
      - 2
-   * - openssl
+     - libxml2 is an XML toolkit implemented in C, originally developed for the GNOME Project.
+   * - `openssl <https://github.com/openssl/openssl/>`_
      - 28
-   * - proj
+     - OpenSSL is a robust, commercial-grade, full-featured Open Source Toolkit for the Transport Layer Security (TLS) protocol formerly known as the Secure Sockets Layer (SSL) protocol.
+   * - `proj <https://github.com/OSGeo/PROJ.git/>`_
      - 28
-   * - wget2
+     - PROJ is a generic coordinate transformation software, that transforms coordinates from one coordinate reference system (CRS) to another.
+   * - `wget2 <https://gitlab.com/gnuwget/wget2.git/>`_
      - 3
-   * - wireshark
+     - GNU Wget2 is the successor of GNU Wget, a file and recursive website downloader.
+   * - `wireshark <https://gitlab.com/wireshark/wireshark.git/>`_
      - 6
-   * - xbps
+     - Wireshark is a network traffic analyzer, or "sniffer", for Linux, macOS, BSD and other Unix and Unix-like operating systems and for Windows.
+   * - `xbps <https://github.com/void-linux/xbps/>`_
      - 5
-   * - yara
+     - The X Binary Package System (in short XBPS) is a binary package system designed and implemented from scratch.
+   * - `yara <https://github.com/VirusTotal/yara/>`_
      - 5
-   * - zsh
+     - YARA is a tool aimed at (but not limited to) helping malware researchers to identify and classify malware samples.
+   * - `zsh <https://github.com/zsh-users/zsh/>`_
      - 5
+     - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
+   * - Sum
+     - 161
+     - 
 
 
 Documentation

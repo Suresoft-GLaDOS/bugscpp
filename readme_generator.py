@@ -15,10 +15,17 @@ def generate_readme(taxonomy: Taxonomy, input_file_path="README.rst.template", o
 
 
 def generate_table(taxonomy):
-    table = ".. list-table:: \n   :header-rows: 1\n\n   * - Project\n     - # of bugs\n"
+    table = ".. list-table::\n   :header-rows: 1\n\n   * - Project\n     - # of bugs\n     - URL\n"
+    sum_of_defects = 0
     for project_name in taxonomy._lazy_taxonomy.keys():
         defects_num = len(taxonomy[project_name].defects)
-        table = table + "   * - " + project_name + "\n     - " + str(defects_num) + "\n"
+        project_url = str(taxonomy[project_name].info).split('\'')[1]
+        project_name_with_url = '`' + str(project_name) + ' <' + project_url + '/>`_'
+        project_short_desc = str(taxonomy[project_name].info).split('\'')[3]
+        print(project_url)
+        sum_of_defects = sum_of_defects + defects_num
+        table = table + "   * - " + project_name_with_url + "\n     - " + str(defects_num) + "\n     - " + project_short_desc + "\n"
+    table = table + "   * - Sum\n     - " + str(sum_of_defects) + "\n     - \n"
     return table
 
 
