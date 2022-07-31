@@ -7,10 +7,9 @@ def test_check_show_attr():
 
 def test_check_show_help():
     showCommand = ShowCommand()
-    showCommand.help
+    assert(showCommand.help == "Display defect taxonomies status")
 
 def test_check_show_run():
     showCommand = ShowCommand()
-    showCommand.run()
-
+    assert("example" not in showCommand.run())
 
