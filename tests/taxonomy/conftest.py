@@ -94,7 +94,7 @@ def uid(request):
 
 @pytest.fixture
 def no_skip(request):
-    return request.config.getopotion("--no-skip")
+    return request.config.getoption("--no-skip")
 
 
 @dataclass
