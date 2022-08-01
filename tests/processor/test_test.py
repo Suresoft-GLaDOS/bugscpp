@@ -29,7 +29,7 @@ def test_tear_down_script_command():
 
 def test_gcov_script_command():
     gcov_command = GcovCommandScript(test_case, test_type, test_lines)
-    gcov_command.case
+    assert(gcov_command.case == test_case)
     gcov_command.before()
     gcov_command.step(0, "")
     gcov_command.output(1, 0, "")
@@ -49,5 +49,5 @@ def test_create_script_gernerator_command():
 
 def test_help_command():
     test_command = TestCommand()
-    test_command.help
+    assert(test_command.help == "Run test")
 
