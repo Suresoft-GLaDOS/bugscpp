@@ -9,7 +9,7 @@ def test_check_show_help():
     showCommand = ShowCommand()
     assert(showCommand.help == "Display defect taxonomies status")
 
-def test_check_show_run():
+def test_check_show_run(capsys):
     showCommand = ShowCommand()
-    assert("example" not in showCommand.run())
+    assert("example" not in capsys.readouterr())
 
