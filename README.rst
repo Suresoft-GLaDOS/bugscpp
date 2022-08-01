@@ -102,7 +102,7 @@ Table of Defects
      - Short Description
    * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
-     - These are the GNU core utilities.  This package is the union of the GNU fileutils, sh-utils, and textutils packages.
+     - GNU core utilities(the union of the GNU fileutils, sh-utils, and textutils packages).
    * - `cppcheck <https://github.com/danmar/cppcheck.git/>`_
      - 30
      - Cppcheck is a static analysis tool for C/C++ code.
