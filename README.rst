@@ -99,7 +99,7 @@ Table of Defects
 
    * - Project
      - # of bugs
-     - URL
+     - Short Description
    * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
      - These are the GNU core utilities.  This package is the union of the GNU fileutils, sh-utils, and textutils packages.
