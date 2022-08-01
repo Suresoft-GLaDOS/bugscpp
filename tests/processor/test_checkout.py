@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 
 from processor.core.data import Worktree
+from processor.checkout import CheckoutCommand
 
 
 def test_git_clone_error(create_checkout, meta_json, caplog):
@@ -89,3 +90,8 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
         if record.name == "processor.checkout"
     ]
     assert "git-am failed" in output[-1]
+
+def test_checkout_command():
+    checkoutCommand = CheckoutCommand()
+    assert(checkoutCommand.group == "v1")
+    assert(checkoutCommand.help == "Get a specific defect snapshot")
