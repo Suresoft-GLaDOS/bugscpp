@@ -7,8 +7,8 @@ def test_check_help_attr():
 
 def test_check_help_help():
     helpCommand = HelpCommand()
-    helpCommand.help
+    assert(helpCommand.help == "Display help messages")
 
 def test_check_help_run():
     helpCommand = HelpCommand()
-    helpCommand.run([])
+    assert(helpCommand.run([]))
