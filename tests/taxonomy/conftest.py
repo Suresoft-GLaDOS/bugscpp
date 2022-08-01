@@ -91,9 +91,11 @@ def auto_cleanup(request):
 def uid(request):
     return request.config.getoption("--uid")
 
+
 @pytest.fixture
 def no_skip(request):
     return request.config.getopotion("--no-skip")
+
 
 @dataclass
 class TestDirectory:
