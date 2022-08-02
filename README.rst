@@ -134,7 +134,7 @@ Table of Defects
      - 6
      - Universal configuration library parser
    * - `libxml2 <https://gitlab.gnome.org/GNOME/libxml2.git/>`_
-     - 4
+     - 5
      - libxml2 is an XML toolkit implemented in C, originally developed for the GNOME Project.
    * - `openssl <https://github.com/openssl/openssl/>`_
      - 28
@@ -158,7 +158,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - Sum
-     - 163
+     - 164
      - 
 
 
