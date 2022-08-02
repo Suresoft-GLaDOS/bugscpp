@@ -12,8 +12,6 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
 
 TAXONOMY_TEST_SKIP_LIST = [
     ("libchewing", 3),
-    ("libxml2", 1),
-    ("libxml2", 2),
     ("openssl", 9),
     ("openssl", 10),
     ("openssl", 12),
@@ -33,10 +31,6 @@ TAXONOMY_TEST_SKIP_LIST = [
     ("yara", 4),
     ("yara", 5),
 ]
-
-# GCOV_CHECK_SKIP_LIST = [
-#     ("yara", 4)
-# ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
     ("openssl", 8),
