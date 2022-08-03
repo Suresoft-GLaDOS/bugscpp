@@ -11,6 +11,7 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
+    ("libchewing", 3),
     ("openssl", 9),
     ("openssl", 10),
     ("openssl", 12),
