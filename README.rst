@@ -136,6 +136,9 @@ Table of Defects
    * - `libxml2 <https://gitlab.gnome.org/GNOME/libxml2.git/>`_
      - 7
      - libxml2 is an XML toolkit implemented in C, originally developed for the GNOME Project.
+   * - `ndpi <https://github.com/ntop/nDPI.git/>`_
+     - 1
+     - nDPI® is an open source LGPLv3 library for deep-packet inspection.
    * - `openssl <https://github.com/openssl/openssl/>`_
      - 28
      - OpenSSL is a robust, commercial-grade, full-featured Open Source Toolkit for the Transport Layer Security (TLS) protocol formerly known as the Secure Sockets Layer (SSL) protocol.
@@ -158,7 +161,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - Sum
-     - 166
+     - 167
      - 
 
 
