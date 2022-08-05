@@ -120,7 +120,7 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
         f"--coverage "
         f"--output-dir {str(test_dir.checkout_dir)}".split()
     )
-    for case in range(1, len(meta_project.defects[index - 1].case) + 1):
+    for case in range(1, int(meta_project.defects[index - 1].num_cases) + 1):
         if case not in failing_testcases:
             buggy_output_dir = test_dir.buggy_output_dir(index, case)
             assert should_pass(buggy_output_dir, case), f"case:{case}" + read_captured_output(buggy_output_dir, case)
@@ -143,7 +143,7 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
         f"{str(test_dir.fixed_target_dir)} "
         f"--output-dir {str(test_dir.checkout_dir)}".split()
     )
-    for case in range(1, len(meta_project.defects[index - 1].case) + 1):
+    for case in range(1, int(meta_project.defects[index - 1].num_cases) + 1):
         fixed_output_dir = test_dir.fixed_output_dir(index, case)
         assert should_pass(fixed_output_dir, case), f"case:{case}" + read_captured_output(fixed_output_dir, case)
 
