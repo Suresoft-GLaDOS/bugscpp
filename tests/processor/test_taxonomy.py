@@ -5,11 +5,6 @@ from defects4cpp.config import config, env
 from defects4cpp.taxonomy import Taxonomy
 
 
-def test_taxonomy():
-    t = Taxonomy()
-    taxonomy_size = 20
-    assert len(t) == taxonomy_size
-
 def test_metadata_variables_should_be_replaced():
     t = Taxonomy()
     metadata = t["yara"]
