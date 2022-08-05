@@ -124,7 +124,7 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
     for case in range(1, int(meta_project.defects[index - 1].num_cases) + 1):
         if case not in failing_testcases:
             buggy_output_dir = test_dir.buggy_output_dir(index, case)
-            is_pass_list.append((case, should_pass(buggy_output_dir, case)))
+            buggy_is_pass_list.append((case, should_pass(buggy_output_dir, case)))
     assert all(result[1] for result in buggy_is_pass_list), \
         [read_captured_output(buggy_output_dir, result[0]) for result in buggy_is_pass_list if not result[1]]
     if auto_cleanup:
