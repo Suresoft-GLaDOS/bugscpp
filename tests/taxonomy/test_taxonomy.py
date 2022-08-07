@@ -126,7 +126,9 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
             buggy_output_dir = test_dir.buggy_output_dir(index, case)
             buggy_is_pass_list.append((case, should_pass(buggy_output_dir, case)))
     assert all(result[1] for result in buggy_is_pass_list), \
-        [read_captured_output(buggy_output_dir, result[0]) for result in buggy_is_pass_list if not result[1]]
+        f"buggy_is_pass_list = {buggy_is_pass_list}\n" + \
+        str([read_captured_output(test_dir.buggy_output_dir(index, result[0]), result[0]) for result
+             in buggy_is_pass_list if not result[1]])
     if auto_cleanup:
         try:
             rmtree(test_dir.checkout_dir, ignore_errors=False, onerror=rmtree_onerror)
@@ -150,7 +152,9 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
         fixed_output_dir = test_dir.fixed_output_dir(index, case)
         fixed_is_pass_list.append((case, should_pass(fixed_output_dir, case)))
     assert all(result[1] for result in fixed_is_pass_list), \
-        [read_captured_output(fixed_output_dir, result[0]) for result in fixed_is_pass_list if not result[1]]
+        f"fixed_is_pass_list = {fixed_is_pass_list}\n" + \
+        str([read_captured_output(test_dir.fixed_output_dir(index, result[0]), result[0]) for result
+             in fixed_is_pass_list if not result[1]])
 
     if auto_cleanup:
         try:
