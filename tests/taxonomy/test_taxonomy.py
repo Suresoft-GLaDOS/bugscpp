@@ -29,6 +29,9 @@ TAXONOMY_TEST_SKIP_LIST = [
     ("proj", 23),
     ("proj", 24),
     ("wireshark", 3),
+    ("wget2",1),
+    ("wget2",2),
+    ("wget2",3),
     ("yara", 4),
     ("yara", 5),
 ]
