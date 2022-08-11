@@ -103,6 +103,9 @@ Table of Defects
    * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
      - GNU core utilities(the union of the GNU fileutils, sh-utils, and textutils packages).
+   * - `cpp_peglib <https://github.com/yhirose/cpp-peglib.git/>`_
+     - 1
+     - A single file C++ header-only PEG (Parsing Expression Grammars) library.
    * - `cppcheck <https://github.com/danmar/cppcheck.git/>`_
      - 30
      - Cppcheck is a static analysis tool for C/C++ code.
@@ -161,7 +164,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - Sum
-     - 170
+     - 171
      - 
 
 
