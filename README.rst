@@ -113,7 +113,7 @@ Table of Defects
      - 2
      - GNU core utilities(the union of the GNU fileutils, sh-utils, and textutils packages).
    * - `cpp_peglib <https://github.com/yhirose/cpp-peglib.git/>`_
-     - 7
+     - 8
      - A single file C++ header-only PEG (Parsing Expression Grammars) library.
    * - `cppcheck <https://github.com/danmar/cppcheck.git/>`_
      - 30
@@ -173,7 +173,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - Sum
-     - 177
+     - 178
      - 
 
 
