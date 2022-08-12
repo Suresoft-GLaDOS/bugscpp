@@ -46,49 +46,58 @@ A list of defect taxonomy can be displayed via the following:
     python3 defects4cpp/d++.py show
 
 For the rest commands to work, you need to checkout one of projects in the list displayed in the previous step.
-For instance, if you want to checkout `wget2` project:
+For instance, if you want to checkout `cpp_peglib` project:
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout wget2 1
+    $ python3 defects4cpp/d++.py checkout cpp_peglib 1
 
-Finally, to build and test `wget2`, or any project you've just cloned, run the following sequence of commands:
+Finally, to build and test `cpp_peglib`, or any project you've just cloned, run the following sequence of commands:
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/wget2/fixed#1
-    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1
+    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/fixed#1
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1
 
 You can run some test cases separately like this:
 
 ::
 
-    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1 --case 1-4,7
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1 --case 1-4,7
 
 However, you are probably interested in a snapshot where a buggy commit is just made.
 The command is exactly the same except that ``--buggy`` flag is set.
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout wget2 1 --buggy
+    $ python3 defects4cpp/d++.py checkout cpp_peglib 1 --buggy
 
 Set ``--coverage`` to generate `.gcov` data.
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/wget2/buggy#1 --coverage
-    $ python3 defects4cpp/d++.py test /path/to/wget2/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/buggy#1 --coverage
 
 You'll see the artifact is generated in the current directory.
 
 ::
 
     $ ls
-    /path/to/wget2-fixed#1-1
-    /path/to/wget2-fixed#1-2
-    /path/to/wget2-fixed#1-3
+    /path/to/cpp_peglib-fixed#1-1
+    /path/to/cpp_peglib-fixed#1-2
+    /path/to/cpp_peglib-fixed#1-3
     ...
 
+You can also see the buggy artifact is generated in the current directory
+
+::
+
+    $ ls
+    /path/to/cpp_peglib-buggy#1-1
+    /path/to/cpp_peglib-buggy#1-2
+    /path/to/cpp_peglib-buggy#1-3
+    ...
 
 .. end example
 
