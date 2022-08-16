@@ -89,7 +89,7 @@ You'll see the artifact is generated in the current directory.
     /path/to/cpp_peglib-fixed#1-3
     ...
 
-You can also see the buggy artifact is generated in the current directory.
+You can also see the buggy artifact is generated in the current directory
 
 ::
 
@@ -175,9 +175,9 @@ Table of Defects
    * - `zsh <https://github.com/zsh-users/zsh/>`_
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
-   * - Sum
+   * - SUM
      - 181
-     -
+     - Sum of all defects
 
 
 Documentation
