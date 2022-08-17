@@ -46,49 +46,58 @@ A list of defect taxonomy can be displayed via the following:
     python3 defects4cpp/d++.py show
 
 For the rest commands to work, you need to checkout one of projects in the list displayed in the previous step.
-For instance, if you want to checkout `wget2` project:
+For instance, if you want to checkout `cpp_peglib` project:
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout wget2 1
+    $ python3 defects4cpp/d++.py checkout cpp_peglib 1
 
-Finally, to build and test `wget2`, or any project you've just cloned, run the following sequence of commands:
+Finally, to build and test `cpp_peglib`, or any project you've just cloned, run the following sequence of commands:
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/wget2/fixed#1
-    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1
+    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/fixed#1
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1
 
 You can run some test cases separately like this:
 
 ::
 
-    $ python3 defects4cpp/d++.py test /path/to/wget2/fixed#1 --case 1-4,7
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1 --case 1-4,7
 
 However, you are probably interested in a snapshot where a buggy commit is just made.
 The command is exactly the same except that ``--buggy`` flag is set.
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout wget2 1 --buggy
+    $ python3 defects4cpp/d++.py checkout cpp_peglib 1 --buggy
 
 Set ``--coverage`` to generate `.gcov` data.
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/wget2/buggy#1 --coverage
-    $ python3 defects4cpp/d++.py test /path/to/wget2/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/buggy#1 --coverage
+    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/buggy#1 --coverage
 
 You'll see the artifact is generated in the current directory.
 
 ::
 
     $ ls
-    /path/to/wget2-fixed#1-1
-    /path/to/wget2-fixed#1-2
-    /path/to/wget2-fixed#1-3
+    /path/to/cpp_peglib-fixed#1-1
+    /path/to/cpp_peglib-fixed#1-2
+    /path/to/cpp_peglib-fixed#1-3
     ...
 
+You can also see the buggy artifact is generated in the current directory.
+
+::
+
+    $ ls
+    /path/to/cpp_peglib-buggy#1-1
+    /path/to/cpp_peglib-buggy#1-2
+    /path/to/cpp_peglib-buggy#1-3
+    ...
 
 .. end example
 
@@ -103,6 +112,9 @@ Table of Defects
    * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
      - GNU core utilities(the union of the GNU fileutils, sh-utils, and textutils packages).
+   * - `cpp_peglib <https://github.com/yhirose/cpp-peglib.git/>`_
+     - 10
+     - A single file C++ header-only PEG (Parsing Expression Grammars) library.
    * - `cppcheck <https://github.com/danmar/cppcheck.git/>`_
      - 30
      - Cppcheck is a static analysis tool for C/C++ code.
@@ -136,8 +148,11 @@ Table of Defects
    * - `libxml2 <https://gitlab.gnome.org/GNOME/libxml2.git/>`_
      - 7
      - libxml2 is an XML toolkit implemented in C, originally developed for the GNOME Project.
+   * - `md4c <https://github.com/mity/md4c.git/>`_
+     - 10
+     - MD4C stands for "Markdown for C", markdown parser implementation in C
    * - `ndpi <https://github.com/ntop/nDPI.git/>`_
-     - 1
+     - 4
      - nDPI® is an open source LGPLv3 library for deep-packet inspection.
    * - `openssl <https://github.com/openssl/openssl/>`_
      - 28
@@ -154,15 +169,18 @@ Table of Defects
    * - `xbps <https://github.com/void-linux/xbps/>`_
      - 5
      - The X Binary Package System (in short XBPS) is a binary package system designed and implemented from scratch.
+   * - `yaml_cpp <https://github.com/jbeder/yaml-cpp.git/>`_
+     - 10
+     - A YAML parser and emitter in C++
    * - `yara <https://github.com/VirusTotal/yara/>`_
      - 5
      - YARA is a tool aimed at (but not limited to) helping malware researchers to identify and classify malware samples.
    * - `zsh <https://github.com/zsh-users/zsh/>`_
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
-   * - Sum
-     - 167
-     - 
+   * - SUM
+     - 200
+     - Sum of all defects
 
 
 Documentation

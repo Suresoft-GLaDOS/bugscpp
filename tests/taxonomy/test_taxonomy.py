@@ -86,6 +86,11 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                     # find the file paths in summary json for the patched file
                     patched_file_paths = [fp for fp in all_file_paths_in_summary_json
                                           if Path(fp).name == Path(patched_file).name]
+                    if len(patched_file_paths) > 1:
+                        for fp in patched_file_paths:
+                            if Path(fp) == Path(patched_file):
+                                patched_file_paths = [patched_file]
+                                break
                     # if (project, index) in GCOV_CHECK_SKIP_LIST:
                     #     continue
                     assert len(patched_file_paths) == 1, \
