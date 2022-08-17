@@ -149,7 +149,7 @@ Table of Defects
      - 7
      - libxml2 is an XML toolkit implemented in C, originally developed for the GNOME Project.
    * - `md4c <https://github.com/mity/md4c.git/>`_
-     - 8
+     - 10
      - MD4C stands for "Markdown for C", markdown parser implementation in C
    * - `ndpi <https://github.com/ntop/nDPI.git/>`_
      - 4
@@ -176,8 +176,8 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - Sum
-     - 188
-     - 
+     - 200
+     -
 
 
 Documentation
