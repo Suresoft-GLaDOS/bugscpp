@@ -11,33 +11,31 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
-    # ("libchewing", 3),
-    # ("openssl", 9),
-    # ("openssl", 10),
-    # ("openssl", 12),
-    # ("openssl", 13),
-    # ("openssl", 14),
-    # ("openssl", 16),
-    # ("openssl", 19),
-    # ("openssl", 21),
-    # ("openssl", 22),
-    # ("openssl", 23),
-    # ("openssl", 26),
-    # ("openssl", 27),
-    # ("openssl", 28),
-    # ("proj", 23),
-    # ("proj", 24),
-    # ("wireshark", 3),
-    # ("yara", 4),
-    # ("yara", 5),
+     ("libchewing", 3),
+     ("openssl", 9),
+     ("openssl", 10),
+     ("openssl", 12),
+     ("openssl", 13),
+     ("openssl", 14),
+     ("openssl", 16),
+     ("openssl", 19),
+     ("openssl", 21),
+     ("openssl", 22),
+     ("openssl", 23),
+     ("openssl", 26),
+     ("openssl", 27),
+     ("openssl", 28),
+     ("wireshark", 3),
+     ("yara", 4),
+     ("yara", 5),
 ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
-    # ("openssl", 8),
-    # ("openssl", 13),
-    # ("openssl", 23),
-    # ("openssl", 28),
-    # ("yara", 4)
+     ("openssl", 8),
+     ("openssl", 13),
+     ("openssl", 23),
+     ("openssl", 28),
+     ("yara", 4)
 ]
 
 CONFIG_NAME = '.defects4cpp.json'
