@@ -24,7 +24,7 @@ def generate_table(taxonomy):
         project_short_desc = str(taxonomy[project_name].info).split('\'')[3]
         sum_of_defects = sum_of_defects + defects_num
         table = table + "   * - " + project_name_with_url + "\n     - " + str(defects_num) + "\n     - " + project_short_desc + "\n"
-    table = table + "   * - Sum\n     - " + str(sum_of_defects) + "\n     - \n"
+    table = table + "   * - SUM\n     - " + str(sum_of_defects) + "\n     - Sum of all defects\n"
     return table
 
 
