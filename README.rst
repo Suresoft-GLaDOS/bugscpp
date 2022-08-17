@@ -167,7 +167,7 @@ Table of Defects
      - 5
      - The X Binary Package System (in short XBPS) is a binary package system designed and implemented from scratch.
    * - `yaml_cpp <https://github.com/jbeder/yaml-cpp.git/>`_
-     - 5
+     - 6
      - A YAML parser and emitter in C++
    * - `yara <https://github.com/VirusTotal/yara/>`_
      - 5
@@ -176,7 +176,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - SUM
-     - 185
+     - 186
      - Sum of all defects
 
 
