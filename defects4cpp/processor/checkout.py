@@ -3,6 +3,7 @@ Checkout command.
 
 Clone a repository into the given directory on the host machine.
 """
+import sys
 import os.path
 from pathlib import Path
 import shutil
@@ -199,8 +200,10 @@ class CheckoutCommand(Command):
         except DppGitError as e:
             message.error(__name__, str(e))
             message.stdout_progress_error(
-                f"[{metadata.name}] {CheckoutCommand._ERROR_MESSAGES[e.__class__]}"
+                f"[{metadata.name}] {str(e)}"
             )
+            sys.exit(1)
+
 
         message.stdout_progress(f"[{metadata.name}] done")
 
