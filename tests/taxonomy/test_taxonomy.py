@@ -11,9 +11,9 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
-    ("openssl", 22),
     ("openssl", 27),
     ("wireshark", 3),
+    ("yara", 4),
 ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
