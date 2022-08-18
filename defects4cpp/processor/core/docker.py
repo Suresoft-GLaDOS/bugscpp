@@ -129,6 +129,7 @@ class Docker:
         if not self._image:
             message.stdout_progress_detail(f"  Image: {self._tag}")
             try:
+                self.client.images.pull("hschoe/defects4cpp-ubuntu", str(Path(self._dockerfile).parent.name))
                 self._image = _cast_image(self.client.images.get(self._tag))
             except docker.errors.ImageNotFound:
                 self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
