@@ -1,5 +1,7 @@
 import logging
 import shutil
+import pytest
+
 from pathlib import Path
 
 from processor.core.data import Worktree
@@ -10,7 +12,10 @@ def test_git_clone_error(create_checkout, meta_json, caplog):
     caplog.set_level(logging.DEBUG)
     checkout = create_checkout(meta_json)
 
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
     output = [
         record.message
         for record in caplog.records
@@ -26,7 +31,10 @@ def test_git_worktree_error(create_checkout, meta_json, caplog):
     meta_json["defects"][0]["hash"] = "1"
     checkout = create_checkout(meta_json)
 
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
     output = [
         record.message
         for record in caplog.records
@@ -45,7 +53,10 @@ def test_git_checkout_error(create_checkout, meta_json, caplog):
     worktree: Worktree = checkout.parser.parse_args([]).worktree
     worktree.host.mkdir(parents=True, exist_ok=True)
 
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
     output = [
         record.message
         for record in caplog.records
@@ -60,7 +71,10 @@ def test_git_submodule_init_error(create_checkout, meta_json, caplog):
     meta_json["defects"][0]["hash"] = "0a158cb95d7ed8e64552ef80df6e6204205d4fa5"
     checkout = create_checkout(meta_json)
 
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
     output = [
         record.message
         for record in caplog.records
@@ -83,7 +97,10 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(patch, str(dest))
 
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
     output = [
         record.message
         for record in caplog.records
@@ -91,7 +108,8 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
     ]
     assert "git-am failed" in output[-1]
 
+
 def test_checkout_command():
-    checkoutCommand = CheckoutCommand()
-    assert(checkoutCommand.group == "v1")
-    assert(checkoutCommand.help == "Get a specific defect snapshot")
+    checkout_command = CheckoutCommand()
+    assert(checkout_command.group == "v1")
+    assert(checkout_command.help == "Get a specific defect snapshot")

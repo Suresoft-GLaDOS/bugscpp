@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from defects4cpp.errors import DppGitCloneError
 from message import message
 
 
@@ -21,14 +22,20 @@ def test_change_logger_path(
     path = tmp_path / "test.log"
     message.path = path
     checkout = create_checkout(meta_json)
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
 
     with open(path, "r") as fp:
         assert len(fp.readlines()) > 0
 
     path = tmp_path
     message.path = path
-    checkout([])
+    with pytest.raises(SystemExit) as wrapped_system_exit:
+        checkout([])
+    assert wrapped_system_exit.type == SystemExit
+    assert wrapped_system_exit.value.code == 1
 
     with open(path / "defects4cpp.log", "r") as fp:
         assert len(fp.readlines()) > 0
