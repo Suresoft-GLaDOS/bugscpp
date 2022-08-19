@@ -11,12 +11,9 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
-    ("wireshark", 3),
-    ("yara", 4),
 ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
-    ("yara", 4),
 ]
 
 CONFIG_NAME = '.defects4cpp.json'
@@ -85,6 +82,12 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                         for line in summary_dict[patched_file_path]:
                             if line['line_number'] in patch_dict[patched_file]['buggy'] and line['count'] > 0:
                                 covered_buggy_lines.add((patched_file_path, line['line_number']))
+                        if len(covered_buggy_lines) == 0:
+                            # only if buggy lines are not covered but test is failed,
+                            # check if any covered line exists
+                            for line in summary_dict[patched_file_path]:
+                                if line['count'] > 0:
+                                    covered_lines_in_buggy_files.add((patched_file_path, line['line_number']))
                     else:
                         # if patched_file does not have any buggy lines in the patched file,
                         # check if any fixed lines exists
