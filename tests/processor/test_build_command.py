@@ -39,6 +39,7 @@ def test_build_command_should_generate_command_based_on_options(
     [
         "yara",  # make
         "cppcheck",  # cmake
+        "example",
     ],
 )
 def test_build_command_export_commands(project_name, tmp_path):
