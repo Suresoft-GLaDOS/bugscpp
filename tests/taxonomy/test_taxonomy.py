@@ -11,34 +11,9 @@ from tests.taxonomy.conftest import TestDirectory, should_fail, read_captured_ou
     should_create_summary_json, should_pass, get_patch_dict, rmtree_onerror
 
 TAXONOMY_TEST_SKIP_LIST = [
-    ("dlt_daemon", 1),
-    ("libchewing", 3),
-    ("openssl", 9),
-    ("openssl", 10),
-    ("openssl", 12),
-    ("openssl", 13),
-    ("openssl", 14),
-    ("openssl", 16),
-    ("openssl", 19),
-    ("openssl", 21),
-    ("openssl", 22),
-    ("openssl", 23),
-    ("openssl", 26),
-    ("openssl", 27),
-    ("openssl", 28),
-    ("proj", 23),
-    ("proj", 24),
-    ("wireshark", 3),
-    ("yara", 4),
-    ("yara", 5),
 ]
 
 BUGGY_LINE_CHECK_SKIP_LIST = [
-    ("openssl", 8),
-    ("openssl", 13),
-    ("openssl", 23),
-    ("openssl", 28),
-    ("yara", 4)
 ]
 
 CONFIG_NAME = '.defects4cpp.json'
@@ -85,10 +60,13 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
             covered_buggy_lines = set()
             covered_lines_in_buggy_files = set()
             with capsys.disabled():
+                covered_file_count = 0
                 for patched_file, patched_lines in patch_dict.items():
                     # find the file paths in summary json for the patched file
                     patched_file_paths = [fp for fp in all_file_paths_in_summary_json
                                           if Path(fp).name == Path(patched_file).name]
+                    if len(patched_file_paths) == 0:
+                        continue
                     if len(patched_file_paths) > 1:
                         for fp in patched_file_paths:
                             if Path(fp) == Path(patched_file):
@@ -96,8 +74,6 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                                 break
                     # if (project, index) in GCOV_CHECK_SKIP_LIST:
                     #     continue
-                    assert len(patched_file_paths) == 1, \
-                        f"Expected one file path for {patched_file}, but found {patched_file_paths}"
                     patched_file_path = patched_file_paths[0]
 
                     if len(patch_dict[patched_file]['buggy']) > 0:
@@ -106,6 +82,12 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                         for line in summary_dict[patched_file_path]:
                             if line['line_number'] in patch_dict[patched_file]['buggy'] and line['count'] > 0:
                                 covered_buggy_lines.add((patched_file_path, line['line_number']))
+                        if len(covered_buggy_lines) == 0:
+                            # only if buggy lines are not covered but test is failed,
+                            # check if any covered line exists
+                            for line in summary_dict[patched_file_path]:
+                                if line['count'] > 0:
+                                    covered_lines_in_buggy_files.add((patched_file_path, line['line_number']))
                     else:
                         # if patched_file does not have any buggy lines in the patched file,
                         # check if any fixed lines exists
@@ -114,6 +96,9 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
                         for line in summary_dict[patched_file_path]:
                             if line['count'] > 0:
                                 covered_lines_in_buggy_files.add((patched_file_path, line['line_number']))
+                    covered_file_count += 1
+                assert covered_file_count > 0, \
+                    f"Covered file should be larger than 0"
                 print(f"covered buggy lines: {covered_buggy_lines}")
                 print(f"covered fixed lines: {covered_lines_in_buggy_files}")
                 if (project, index) not in BUGGY_LINE_CHECK_SKIP_LIST:
@@ -126,11 +111,15 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
         f"--coverage "
         f"--output-dir {str(test_dir.checkout_dir)}".split()
     )
+    buggy_is_pass_list = []
     for case in range(1, int(meta_project.defects[index - 1].num_cases) + 1):
         if case not in failing_testcases:
             buggy_output_dir = test_dir.buggy_output_dir(index, case)
-            assert should_pass(buggy_output_dir, case), f"case:{case}" + read_captured_output(buggy_output_dir, case)
-
+            buggy_is_pass_list.append((case, should_pass(buggy_output_dir, case)))
+    assert all(result[1] for result in buggy_is_pass_list), \
+        f"buggy_is_pass_list = {buggy_is_pass_list}\n" + \
+        str([read_captured_output(test_dir.buggy_output_dir(index, result[0]), result[0]) for result
+             in buggy_is_pass_list if not result[1]])
     if auto_cleanup:
         try:
             rmtree(test_dir.checkout_dir, ignore_errors=False, onerror=rmtree_onerror)
@@ -149,9 +138,14 @@ def test_taxonomy(project, index, defect_path: Callable[[int], TestDirectory], g
         f"{str(test_dir.fixed_target_dir)} "
         f"--output-dir {str(test_dir.checkout_dir)}".split()
     )
+    fixed_is_pass_list = []
     for case in range(1, int(meta_project.defects[index - 1].num_cases) + 1):
         fixed_output_dir = test_dir.fixed_output_dir(index, case)
-        assert should_pass(fixed_output_dir, case), f"case:{case}" + read_captured_output(fixed_output_dir, case)
+        fixed_is_pass_list.append((case, should_pass(fixed_output_dir, case)))
+    assert all(result[1] for result in fixed_is_pass_list), \
+        f"fixed_is_pass_list = {fixed_is_pass_list}\n" + \
+        str([read_captured_output(test_dir.fixed_output_dir(index, result[0]), result[0]) for result
+             in fixed_is_pass_list if not result[1]])
 
     if auto_cleanup:
         try:
