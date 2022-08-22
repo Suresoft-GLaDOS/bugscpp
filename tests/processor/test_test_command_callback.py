@@ -11,7 +11,7 @@ from processor.core.command import (
     DockerCommandScriptGenerator,
 )
 from processor.core.docker import Worktree
-from taxonomy.taxonomy import CommandType, MetaData
+from taxonomy.taxonomy import CommandType, MetaData, Taxonomy
 
 from defects4cpp.command import TestCommand
 
@@ -297,3 +297,16 @@ def test_run_command_as_script(setup):
         tmp=config.tmp,
     )
     test([])
+
+
+
+def test_additional_gcov_options(setup):
+    test = TestCommand()
+    t = Taxonomy()
+    for defect in t:
+        with open(Path(t.base) / defect / 'meta.json') as meta_json:
+            meta = json.load(meta_json)
+            gcov_data = str(meta['common']['gcov']['commands']).split(' ')
+            for index in range(len(gcov_data)):
+                if gcov_data[index] == 'gcov':
+                    assert gcov_data[index+1] == '@DPP_ADDITIONAL_GCOV_OPTIONS@'
