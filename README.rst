@@ -125,7 +125,7 @@ Table of Defects
      - 1
      - Example test repo
    * - `exiv2 <https://github.com/Exiv2/exiv2.git/>`_
-     - 11
+     - 12
      - Exiv2 is a C++ library and a command-line utility to read, write, delete and modify Exif, IPTC, XMP and ICC image metadata
    * - `jerryscript <https://github.com/jerryscript-project/jerryscript.git/>`_
      - 11
@@ -179,7 +179,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - SUM
-     - 201
+     - 202
      - Sum of all defects
 
 
