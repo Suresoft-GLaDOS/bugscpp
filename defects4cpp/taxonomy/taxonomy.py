@@ -55,6 +55,7 @@ class Gcov:
 
 @dataclass(frozen=True)
 class Defect:
+    id : int
     hash: str
     buggy_patch: str
     fixed_patch: str
@@ -218,6 +219,7 @@ class MetaData:
         try:
             self._defects = [
                 Defect(
+                    defect["id"],
                     defect["hash"],
                     check_path(f"{self._path}/patch/{index:04}-buggy.patch"),
                     check_path(f"{self._path}/patch/{index:04}-fixed.patch"),
