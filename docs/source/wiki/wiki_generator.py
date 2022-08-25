@@ -16,7 +16,7 @@ def generate_table():
         for info in t[name].defects:
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
                 buggy_lines = buggy.readlines()
-                bug_id = int(Path(info.buggy_patch).name[:4])
+                bug_id = info.id
                 file_changed = 0
                 lines_add = 0
                 lines_del = 0
@@ -52,7 +52,7 @@ def generate_patchlog():
         for info in t[name].defects:
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
                 buggy_lines = buggy.readlines()
-                bug_id = int(Path(info.buggy_patch).name[:4])
+                bug_id = info.id
                 url = t[name].info.url
                 if t[name].info.url[-3:] == 'git':
                     url = url[:-4]
