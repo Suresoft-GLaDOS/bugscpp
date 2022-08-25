@@ -131,7 +131,10 @@ class Docker:
             try:
                 self.client.images.pull(self._tag)
                 self._image = _cast_image(self.client.images.get(self._tag))
-            except (docker.errors.ImageNotFound, docker.errors.DockerException):
+            except docker.errors.ImageNotFound:
+                self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
+            # FIXME: Temporary exception handling
+            except docker.errors.APIError:
                 self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
 
             if self._uid_of_dpp_docker_user is not None:

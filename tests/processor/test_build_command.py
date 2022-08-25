@@ -57,6 +57,7 @@ def test_build_command_export_commands(project_name, tmp_path):
     assert (tmp_path / "compile_commands.json").exists()
 
 
+@pytest.mark.skip("Rebuild image is currently not used(deprecated.)")
 def test_build_command_rebuild_image(create_build, meta_json, capsys):
     build = create_build(meta_json, {"rebuild_image": True})
     # build yara image
