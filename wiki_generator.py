@@ -1,10 +1,13 @@
-from defects4cpp.taxonomy import Taxonomy
+import os
+from taxonomy import Taxonomy
 from pathlib import Path
 
 
-def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki_defects4cpp_bugs.md"):
+def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki/home.md"):
     table = generate_table()
 
+    if not os.path.isdir('wiki'):
+        os.mkdir('wiki')
     with open(output_file_path, 'w') as output_file:
         output_file.write(table)
 
@@ -47,7 +50,7 @@ def generate_table():
 def generate_patchlog():
     t = Taxonomy()
     for name in t:
-        output_file_path = "defects/wiki_" + name + ".md"
+        output_file_path = "wiki/" + name + ".md"
         full_patch = ""
         for info in t[name].defects:
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
