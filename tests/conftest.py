@@ -159,9 +159,11 @@ def meta_json() -> Dict[str, Any]:
         },
         "defects": [
             {
+                "id": 1,
                 "hash": "1",
                 "num_cases": 1,
                 "case": [1],
+                "tags": [],
                 "description": "test",
             },
         ],
