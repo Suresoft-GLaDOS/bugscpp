@@ -55,14 +55,15 @@ class Gcov:
 
 @dataclass(frozen=True)
 class Defect:
-    id : int
     hash: str
     buggy_patch: str
     fixed_patch: str
     common_patch: str
     split_patch: str
+    id: int
     num_cases: int
     case: List[int]
+    tags: List[str]
     description: str
     extra_tests: List[ExtraTest]
 
@@ -219,14 +220,15 @@ class MetaData:
         try:
             self._defects = [
                 Defect(
-                    defect["id"],
                     defect["hash"],
                     check_path(f"{self._path}/patch/{index:04}-buggy.patch"),
                     check_path(f"{self._path}/patch/{index:04}-fixed.patch"),
                     check_path(f"{self._path}/patch/{index:04}-common.patch"),
                     check_path(f"{self._path}/patch/{index:04}-split.patch"),
+                    defect["id"],
                     defect["num_cases"],
                     defect["case"],
+                    defect["tags"],
                     defect["description"],
                     [[ExtraTest(e["type"], e["lines"], e["is_pass"]) for e in et] for et in defect["extra_tests"]]
                     if "extra_tests" in defect else []
