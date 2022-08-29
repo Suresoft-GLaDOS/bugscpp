@@ -57,7 +57,7 @@ def generate_patchlog():
                 buggy_lines = buggy.readlines()
                 bug_id = info.id
                 url = t[name].info.url
-                if t[name].info.url[-3:] == 'git':
+                if t[name].info.url[-3:] == 'git' and name != 'libssh':
                     url = url[:-4]
                 bug_info = "# #" + str(bug_id) + "\nLink : " + url + "/commit/" + info.hash + "\n"
                 patch_info = ""
