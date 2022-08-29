@@ -13,7 +13,7 @@ def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki/home.md"):
 
 def generate_table():
     table = "# Defects4cpp Bugs\n"
-    table = table + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|LinesMod|\n|--|--|--|--|--|--|--|\n"
+    table = table + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|More Description|\n|--|--|--|--|--|--|--|\n"
     t = Taxonomy()
     for name in t:
         for info in t[name].defects:
@@ -43,8 +43,8 @@ def generate_table():
                             lines_add = int(lines[3])
                     if lines[0] == '@@':
                         methods += 1
-                table = table + "|" + name + "|[" + str(bug_id) + "]" + "(https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/" + name + "#" + str(bug_id) + ")|" + \
-                        str(file_changed) + "|" + str(lines_add) + "|" + str(lines_del) + "|" + str(methods) + "|" + str(lines_add + lines_del) + "|\n"
+                table = table + "|" + name + "|" + str(bug_id) + "|" + str(file_changed) + "|" + str(lines_add) + "|" + str(lines_del) + "|" + str(methods) + \
+                        "|[" + "More " + name + "-" + str(bug_id) + "]" + "(https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/" + name + "#" + str(bug_id) + ")|\n"
     return table
 
 def generate_patchlog():
@@ -56,10 +56,18 @@ def generate_patchlog():
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
                 buggy_lines = buggy.readlines()
                 bug_id = info.id
+                # buggy_patch url
                 url = t[name].info.url
                 if t[name].info.url[-3:] == 'git' and name != 'libssh':
                     url = url[:-4]
-                bug_info = "# #" + str(bug_id) + "\nLink : " + url + "/commit/" + info.hash + "\n"
+                bug_link = "# #" + str(bug_id) + "\nLink : " + url + "/commit/" + info.hash + "<br>"
+                # description of defect
+                desc = info.description
+                if desc[:3] == 'CVE':
+                    cve_id = desc.split(' ', 1)[0]
+                    desc = desc.split(' ', 1)[1]
+                    desc = desc + '<br>' + 'More Information of CVE: [' + cve_id + ']' + '(https://nvd.nist.gov/vuln/detail/' + cve_id + ')'
+                bug_desc = "Description: " + desc + '<br>'
                 patch_info = ""
                 diff_log = ""
                 diff_flag = False
@@ -91,7 +99,7 @@ def generate_patchlog():
                         diff_log = ""
 
 
-                full_patch = full_patch + bug_info + patch_info
+                full_patch = full_patch + bug_link + bug_desc + patch_info
         with open(output_file_path, 'w') as output_file:
             output_file.write(full_patch)
 
