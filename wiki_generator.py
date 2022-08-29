@@ -13,7 +13,7 @@ def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki/home.md"):
 
 def generate_table():
     table = "# Defects4cpp Bugs\n"
-    table = table + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|More Description|\n|--|--|--|--|--|--|--|\n"
+    table = table + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|Information|\n|--|--|--|--|--|--|--|\n"
     t = Taxonomy()
     for name in t:
         for info in t[name].defects:
@@ -44,7 +44,7 @@ def generate_table():
                     if lines[0] == '@@':
                         methods += 1
                 table = table + "|" + name + "|" + str(bug_id) + "|" + str(file_changed) + "|" + str(lines_add) + "|" + str(lines_del) + "|" + str(methods) + \
-                        "|[" + "More " + name + "-" + str(bug_id) + "]" + "(https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/" + name + "#" + str(bug_id) + ")|\n"
+                        "|[" + name + "-" + str(bug_id) + "]" + "(https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/" + name + "#" + str(bug_id) + ")|\n"
     return table
 
 def generate_patchlog():
@@ -54,19 +54,28 @@ def generate_patchlog():
         full_patch = ""
         for info in t[name].defects:
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
+                # defect_tags
+                tag_list = info.tags
+                bug_tags = "### Tags\n"
+                for tag in tag_list:
+                    tag = tag.capitalize()
+                    if tag == 'Cve':
+                        tag = 'CVE'
+                    bug_tags = bug_tags + "[`" + tag + "`](https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/" + tag + ")\n"
+                bug_tags = bug_tags + '<br>\n'
                 buggy_lines = buggy.readlines()
                 bug_id = info.id
                 # buggy_patch url
                 url = t[name].info.url
                 if t[name].info.url[-3:] == 'git' and name != 'libssh':
                     url = url[:-4]
-                bug_link = "# #" + str(bug_id) + "\nLink : " + url + "/commit/" + info.hash + "<br>"
+                bug_link = "Link : " + url + "/commit/" + info.hash + "<br>"
                 # description of defect
                 desc = info.description
                 if desc[:3] == 'CVE':
                     cve_id = desc.split(' ', 1)[0]
                     desc = desc.split(' ', 1)[1]
-                    desc = desc + '<br>' + 'More Information of CVE: [' + cve_id + ']' + '(https://nvd.nist.gov/vuln/detail/' + cve_id + ')'
+                    desc = desc + '<br>' + 'CVE Info: <strong>[' + cve_id + ']' + '(https://nvd.nist.gov/vuln/detail/' + cve_id + ')</strong>'
                 bug_desc = "Description: " + desc + '<br>'
                 patch_info = ""
                 diff_log = ""
@@ -97,12 +106,29 @@ def generate_patchlog():
                         diff_flag = True
                         patch_info = patch_info + "<p><strong>At " + lines[1][2:] + "</strong></p>\n\n"
                         diff_log = ""
-
-
-                full_patch = full_patch + bug_link + bug_desc + patch_info
+                full_patch = full_patch + "# #" + str(bug_id) + "\n" + bug_link + bug_desc + patch_info + bug_tags
         with open(output_file_path, 'w') as output_file:
             output_file.write(full_patch)
+
+def generate_tag_page():
+    t = Taxonomy()
+    tag_dict = {}
+    for name in t:
+        for info in t[name].defects:
+            tag_list = info.tags
+            for tag in tag_list:
+                if not tag_dict.get(tag):
+                    tag_dict[tag] = []
+                tag_dict[tag].append(name + "#" + str(info.id))
+    for tag_name in tag_dict.keys():
+        output_file_path = "wiki/" + tag_name + ".md"
+        defects_list_with_tag = "## Total Defects with `#" + tag_name + "`: " + str(len(tag_dict[tag_name])) + '\n'
+        for defect in tag_dict[tag_name]:
+            defects_list_with_tag = defects_list_with_tag + '[' + defect + '](https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/' + defect + ')<br>\n'
+        with open(output_file_path, 'w') as output_file:
+            output_file.write(defects_list_with_tag)
 
 if __name__ == "__main__":
     generate_wiki_defects4cpp_bugs_table()
     generate_patchlog()
+    generate_tag_page()
