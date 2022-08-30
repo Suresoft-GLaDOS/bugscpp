@@ -16,6 +16,8 @@ def generate_table():
     table = table + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|Information|\n|--|--|--|--|--|--|--|\n"
     t = Taxonomy()
     for name in t:
+        if name == 'example':
+            continue
         for info in t[name].defects:
             with open(Path(t.base) / name / 'patch' / Path(info.buggy_patch).name) as buggy:
                 buggy_lines = buggy.readlines()
@@ -50,6 +52,8 @@ def generate_table():
 def generate_patchlog():
     t = Taxonomy()
     for name in t:
+        if name == 'example':
+            continue
         output_file_path = "wiki/" + name + ".md"
         full_patch = ""
         for info in t[name].defects:
