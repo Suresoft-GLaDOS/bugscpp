@@ -327,7 +327,7 @@ class DockerCommand(Command):
             self.environ,
             rebuild_image,
             user,
-            uid
+            uid,
         ) as docker:
             for script in script_generator.create():
                 script.before()
