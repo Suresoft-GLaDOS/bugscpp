@@ -3,6 +3,7 @@ Manage commands associated with docker SDK module.
 
 Do not use docker SDK directly, instead use Docker class.
 """
+import os
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -129,12 +130,16 @@ class Docker:
         if not self._image:
             message.stdout_progress_detail(f"  Image: {self._tag}")
             try:
-                self.client.images.pull(self._tag)
+                # SET DEFECTS4CPP_TEST_TAXONOMY to 1 for taxonomy testing
+                if os.environ.get("DEFECTS4CPP_TEST_TAXONOMY", "0") not in ["YES", "1"]:
+                    self.client.images.pull(self._tag)
                 self._image = _cast_image(self.client.images.get(self._tag))
             except docker.errors.ImageNotFound:
+                print(f"ImageNotFound {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}")
                 self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
             # FIXME: Temporary exception handling
             except docker.errors.APIError:
+                print(f"APIError {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}")
                 self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
 
             if self._uid_of_dpp_docker_user is not None:
