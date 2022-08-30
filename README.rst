@@ -137,11 +137,8 @@ Table of Defects
      - 1
      - libssh is a multiplatform C library implementing the SSHv2 protocol on client and server side.
    * - `libtiff <https://github.com/vadz/libtiff.git/>`_
-     - 5
+     - 9
      - This software provides support for the Tag Image File Format (TIFF), a widely used format for storing image data.
-   * - `libtiff_sanitizer <https://github.com/vadz/libtiff.git/>`_
-     - 4
-     - This software provides support for the Tag Image File Format (TIFF), a widely used format for storing image data. Sanitizer enabled.
    * - `libucl <https://github.com/vstakhov/libucl/>`_
      - 6
      - Universal configuration library parser
