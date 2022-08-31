@@ -122,6 +122,8 @@ def generate_tag_page(output_file_path = "wiki/tags_defects4cpp.md"):
         for info in t[name].defects:
             tag_list = info.tags
             for tag in tag_list:
+                if tag == 'cve':
+                    tag = 'CVE'
                 if not tag_dict.get(tag):
                     tag_dict[tag] = []
                 tag_dict[tag].append(name + "#" + str(info.id))
