@@ -9,6 +9,7 @@ from errors.checkout import (DppGitApplyPatchError, DppGitCheckoutError, DppGitC
 from errors.common.exception import DppError
 from errors.docker import DppDockerError, DppDockerNoClientError
 from errors.internal import DppCaseExpressionInternalError, DppCommandListInternalError, DppInternalError
+from errors.search import DppNoSuchTagError, DppSearchError
 
 __all__ = [
     "DppError",
@@ -36,4 +37,6 @@ __all__ = [
     "DppDockerError",
     "DppDockerNoClientError",
     "DppAdditionalGcovOptionsWithoutCoverage",
+    "DppSearchError",
+    "DppNoSuchTagError",
 ]
