@@ -25,3 +25,10 @@ def test_search_by_tags_should_be_empty():
 def test_search_command_should_raise_no_such_tag_error():
     with pytest.raises(DppNoSuchTagError):
         SearchCommand()(["no-such-tag"])
+
+
+def test_search_command_withouth_any_args(capsys):
+    with pytest.raises(SystemExit):
+        SearchCommand()([])
+    captured = capsys.readouterr()
+    assert "usage: \nd++.py search TAGS" in captured.err

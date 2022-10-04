@@ -3,6 +3,7 @@ Search command.
 
 Clone a repository into the given directory on the host machine.
 """
+from textwrap import dedent
 from typing import List
 
 from errors import DppNoSuchTagError
@@ -15,6 +16,20 @@ try:
     from functools import cached_property
 except ImportError:
     cached_property = property
+
+
+def _get_all_tags():
+    taxonomy = Taxonomy()
+    tags = set()
+    for name in taxonomy:
+        if name == "example":
+            continue
+        for defect in taxonomy[name].defects:
+            tags.update(defect.tags)
+    return sorted(tags)
+
+
+all_tags = _get_all_tags()
 
 
 def search_by_tags(tag_list=None):
@@ -42,7 +57,17 @@ class SearchCommand(SimpleCommand):
     def __init__(self):
         self.parser = create_common_parser()
         self.parser.add_argument("tags", nargs="+", help="Tags to search")
-        self.parser.usage = "d++.py search TAGS"
+        self.parser.usage = dedent(
+            """
+            d++.py search TAGS
+            Possible tags are: {}
+            """
+        ).format(", ".join(all_tags))
+        self.parser.description = dedent(
+            """
+            Search defects by tags.
+            """
+        ).format(", ".join(all_tags))
 
     def __call__(self, argv: List[str]):
         """
@@ -59,7 +84,7 @@ class SearchCommand(SimpleCommand):
         args = self.parser.parse_args(argv)
         args = [arg.lower() for arg in args.tags]
         args = [arg.replace("_", "-") for arg in args]
-        no_such_tags = [tag for tag in args if tag not in self.all_tags]
+        no_such_tags = [tag for tag in args if tag not in all_tags]
         if no_such_tags:
             raise DppNoSuchTagError(no_such_tags)
         message.stdout_stream(str(" \n".join(search_by_tags(args))) + "\n")
@@ -67,14 +92,3 @@ class SearchCommand(SimpleCommand):
     @property
     def help(self) -> str:
         return "search defects by tags"
-
-    @cached_property
-    def all_tags(self):
-        taxonomy = Taxonomy()
-        tags = set()
-        for name in taxonomy:
-            if name == "example":
-                continue
-            for defect in taxonomy[name].defects:
-                tags.update(defect.tags)
-        return sorted(tags)
