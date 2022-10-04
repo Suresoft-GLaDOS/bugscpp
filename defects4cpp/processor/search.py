@@ -3,14 +3,18 @@ Search command.
 
 Clone a repository into the given directory on the host machine.
 """
-from functools import cached_property
 from typing import List
 
 from errors import DppNoSuchTagError
 from message import message
-from processor.core.argparser import create_common_parser, create_common_vcs_parser
+from processor.core.argparser import create_common_parser
 from processor.core.command import SimpleCommand
 from taxonomy import Taxonomy
+
+try:
+    from functools import cached_property
+except ImportError:
+    cached_property = property
 
 
 def search_by_tags(tag_list=None):
