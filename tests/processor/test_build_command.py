@@ -1,8 +1,8 @@
-import pytest
 import time
-import docker.errors
-
 from pathlib import Path
+
+import docker.errors
+import pytest
 
 from defects4cpp.command import BuildCommand, CheckoutCommand
 from defects4cpp.config import config
@@ -34,6 +34,7 @@ def test_build_command_should_generate_command_based_on_options(
         assert script.lines[0] == expected
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "project_name",
     [
@@ -64,7 +65,7 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
     build([])
     _, _ = capsys.readouterr()
     with capsys.disabled():
-        print('\nTesting test_build_command_rebuild_image')
+        print("\nTesting test_build_command_rebuild_image")
 
     # Build yara image again
     # Try to rebuild the same image 5 times
@@ -72,7 +73,7 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
     rebuild_attempts = 5
     for attempt in range(1, rebuild_attempts + 1):
         with capsys.disabled():
-            print(f'  Rebuild attempt {attempt}/{rebuild_attempts}')
+            print(f"  Rebuild attempt {attempt}/{rebuild_attempts}")
         try:
             build([])
             stdout, _ = capsys.readouterr()
@@ -81,9 +82,14 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
             time.sleep(attempt)
             continue
         else:
-            assert all(x in stdout for x in ['start building',
-                                             'hschoe/defects4cpp-ubuntu:test_build_command_rebuild_image',
-                                             'done'])
+            assert all(
+                x in stdout
+                for x in [
+                    "start building",
+                    "hschoe/defects4cpp-ubuntu:test_build_command_rebuild_image",
+                    "done",
+                ]
+            )
             break
     else:
         assert False, "Failed to rebuild image"

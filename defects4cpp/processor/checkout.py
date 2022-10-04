@@ -3,25 +3,17 @@ Checkout command.
 
 Clone a repository into the given directory on the host machine.
 """
-import sys
 import os.path
-from pathlib import Path
 import shutil
+import sys
+from pathlib import Path
 from textwrap import dedent
 from typing import Dict, List, Type
 
 import git
 import taxonomy
-from errors import (
-    DppGitApplyPatchError,
-    DppGitCheckoutError,
-    DppGitCheckoutInvalidRepositoryError,
-    DppGitCloneError,
-    DppGitError,
-    DppGitPatchNotAppliedError,
-    DppGitSubmoduleInitError,
-    DppGitWorktreeError,
-)
+from errors import (DppGitApplyPatchError, DppGitCheckoutError, DppGitCheckoutInvalidRepositoryError, DppGitCloneError,
+                    DppGitError, DppGitPatchNotAppliedError, DppGitSubmoduleInitError, DppGitWorktreeError)
 from message import message
 from processor.core.argparser import create_common_vcs_parser
 from processor.core.command import Command
@@ -187,11 +179,18 @@ class CheckoutCommand(Command):
                 message.info(__name__, "git-am skipped")
 
             # check if there are extra data
-            path_to_extra = Path(metadata_base).joinpath(metadata.name, "extra", f"{args.index:04}")
+            path_to_extra = Path(metadata_base).joinpath(
+                metadata.name, "extra", f"{args.index:04}"
+            )
             if path_to_extra.exists():
-                message.info(__name__, f"copying extra directory(f{path_to_extra}) to project root")
+                message.info(
+                    __name__,
+                    f"copying extra directory(f{path_to_extra}) to project root",
+                )
                 for extra in Path.iterdir(path_to_extra):
-                    shutil.copytree(extra, Path(worktree.host, extra.stem), dirs_exist_ok=True)
+                    shutil.copytree(
+                        extra, Path(worktree.host, extra.stem), dirs_exist_ok=True
+                    )
 
             message.info(__name__, f"creating '.defects4cpp.json' at {worktree.host}")
             # Write .defects4cpp.json in the directory.
@@ -199,11 +198,8 @@ class CheckoutCommand(Command):
 
         except DppGitError as e:
             message.error(__name__, str(e))
-            message.stdout_progress_error(
-                f"[{metadata.name}] {str(e)}"
-            )
+            message.stdout_progress_error(f"[{metadata.name}] {str(e)}")
             sys.exit(1)
-
 
         message.stdout_progress(f"[{metadata.name}] done")
 

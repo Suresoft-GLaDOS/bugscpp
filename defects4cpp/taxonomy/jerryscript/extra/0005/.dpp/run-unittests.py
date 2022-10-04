@@ -15,6 +15,7 @@
 # limitations under the License.
 
 from __future__ import print_function
+
 import argparse
 import glob
 import os
@@ -26,14 +27,18 @@ import util
 
 
 def get_arguments():
-    runtime = os.environ.get('RUNTIME')
+    runtime = os.environ.get("RUNTIME")
     parser = argparse.ArgumentParser()
-    parser.add_argument('-q', '--quiet', action='store_true',
-                        help='Only print out failing tests')
-    parser.add_argument('--runtime', metavar='FILE', default=runtime,
-                        help='Execution runtime (e.g. qemu)')
-    parser.add_argument('path',
-                        help='Path of test binaries')
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="Only print out failing tests"
+    )
+    parser.add_argument(
+        "--runtime",
+        metavar="FILE",
+        default=runtime,
+        help="Execution runtime (e.g. qemu)",
+    )
+    parser.add_argument("path", help="Path of test binaries")
 
     script_args = parser.parse_args()
     return script_args
@@ -44,7 +49,7 @@ def get_unittests(path):
     files = [dir for dir in Path(path).iterdir()]
     for testfile in files:
         if os.path.isfile(testfile) and os.access(testfile, os.X_OK):
-            if sys.platform != 'win32' or testfile.endswith(".exe"):
+            if sys.platform != "win32" or testfile.endswith(".exe"):
                 unittests.append(testfile)
     unittests.sort()
     return unittests
@@ -66,18 +71,24 @@ def main(args):
         tested += 1
         test_path = os.path.relpath(test)
         try:
-            subprocess.check_output(test_cmd + [test], stderr=subprocess.STDOUT, universal_newlines=True)
+            subprocess.check_output(
+                test_cmd + [test], stderr=subprocess.STDOUT, universal_newlines=True
+            )
             passed += 1
             if not args.quiet:
-                util.print_test_result(tested, total, True, 'PASS', test_path)
+                util.print_test_result(tested, total, True, "PASS", test_path)
         except subprocess.CalledProcessError as err:
             failed += 1
-            util.print_test_result(tested, total, False, 'FAIL (%d)' % err.returncode, test_path)
+            util.print_test_result(
+                tested, total, False, "FAIL (%d)" % err.returncode, test_path
+            )
             print("================================================")
             print(err.output)
             print("================================================")
 
-    util.print_test_summary(os.path.join(os.path.relpath(args.path), "unit-*"), total, passed, failed)
+    util.print_test_summary(
+        os.path.join(os.path.relpath(args.path), "unit-*"), total, passed, failed
+    )
 
     if failed > 0:
         return 1

@@ -10,18 +10,14 @@ from os import getcwd, system
 from pathlib import Path
 from textwrap import dedent
 from typing import Callable, Generator, List, Optional, Set, Union, cast
-from config import config
 
-from errors import DppArgparseFileNotFoundError, DppCaseExpressionInternalError, \
-    DppAdditionalGcovOptionsWithoutCoverage
+from config import config
+from errors import (DppAdditionalGcovOptionsWithoutCoverage, DppArgparseFileNotFoundError,
+                    DppCaseExpressionInternalError)
 from errors.argparser import DppArgparseInvalidCaseExpressionError
 from message import message
 from processor.core.argparser import create_common_project_parser
-from processor.core.command import (
-    DockerCommand,
-    DockerCommandScript,
-    DockerCommandScriptGenerator,
-)
+from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
 from processor.core.data import Worktree
 from taxonomy import Command, CommandType, Defect, MetaData
 
@@ -30,6 +26,7 @@ class AdditionalGcovOptions(argparse.Action):
     """
     Additional options for gcov command.
     """
+
     def __call__(self, parser, namespace, values, option_string=None):
         config.DPP_ADDITIONAL_GCOV_OPTIONS = values
         setattr(namespace, self.dest, values)
@@ -150,6 +147,7 @@ class TestCommandScript(DockerCommandScript, CapturedOutputAttributeMixin):
     """
     Script to execute test.
     """
+
     __test__ = False
 
     def __init__(
@@ -227,6 +225,7 @@ class TeardownTestCommandScript(TestCommandScript):
     Clear the coverage data by remove gcov directory and its contents.
     related to: https://github.com/Suresoft-GLaDOS/defects4cpp/issues/66
     """
+
     __test__ = False
 
     def __init__(
@@ -301,7 +300,7 @@ class RunGcovrTestCommandScript(TestCommandScript):
             [
                 f"gcovr {exclude_flags} --keep --use-gcov-files --json-pretty --json gcov/summary.json gcov",
                 f"gcovr {exclude_flags} --keep --use-gcov-files --html gcov/summary.html gcov",
-            ]
+            ],
         )
 
 
@@ -309,6 +308,7 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     """
     Factory class of CommandScript
     """
+
     __test__ = False
 
     def __init__(
@@ -347,28 +347,31 @@ class TestCommandScriptGenerator(DockerCommandScriptGenerator):
     def _create_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case <= self._defect.num_cases - len(self._extra_tests) else \
-                self._extra_tests[case - self._defect.num_cases + len(self._extra_tests) - 1]
+            test_cmd = (
+                self._test_command
+                if case <= self._defect.num_cases - len(self._extra_tests)
+                else self._extra_tests[
+                    case - self._defect.num_cases + len(self._extra_tests) - 1
+                ]
+            )
             for t in test_cmd:
                 yield TestCommandScript(case, t.type, t.lines)
 
     def _create_coverage_impl(self) -> Generator[TestCommandScript, None, None]:
         for case in sorted(self._test_cases):
             yield SetupTestCommandScript(case)
-            test_cmd = self._test_command if case <= self._defect.num_cases - len(self._extra_tests) else \
-                self._extra_tests[case - self._defect.num_cases + len(self._extra_tests) - 1]
+            test_cmd = (
+                self._test_command
+                if case <= self._defect.num_cases - len(self._extra_tests)
+                else self._extra_tests[
+                    case - self._defect.num_cases + len(self._extra_tests) - 1
+                ]
+            )
             for t in test_cmd:
                 yield CoverageTestCommandScript(case, t.type, t.lines)
             for gcov_cmd in self._gcov.command:
-                yield GcovCommandScript(
-                    case,
-                    gcov_cmd.type,
-                    gcov_cmd.lines
-                )
-                yield RunGcovrTestCommandScript(
-                    case,
-                    self._gcov.exclude
-                )
+                yield GcovCommandScript(case, gcov_cmd.type, gcov_cmd.lines)
+                yield RunGcovrTestCommandScript(case, self._gcov.exclude)
             yield TeardownTestCommandScript(case)
 
 
@@ -376,6 +379,7 @@ class TestCommand(DockerCommand):
     """
     Run test command either with or without coverage.
     """
+
     __test__ = False
 
     def __init__(self):
@@ -403,9 +407,11 @@ class TestCommand(DockerCommand):
             action=AdditionalGcovOptions,
             help="set additional options to gcov command",
         )
-        self.parser.usage = "d++.py test PATH [-j|--jobs=JOBS] " \
-                            "[--coverage [--additional-gcov-options=ADDITIONAL_GCOV_OPTIONS]] " \
-                            "[-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+        self.parser.usage = (
+            "d++.py test PATH [-j|--jobs=JOBS] "
+            "[--coverage [--additional-gcov-options=ADDITIONAL_GCOV_OPTIONS]] "
+            "[-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+        )
         self.parser.description = dedent(
             """\
         Run testsuite inside docker. The project must have been built previously.
@@ -443,7 +449,9 @@ class TestCommand(DockerCommand):
         selected_defect = metadata.defects[index - 1]
 
         # Get number of extra test cases
-        number_of_extra_testcases = len(selected_defect.extra_tests) if selected_defect.extra_tests else 0
+        number_of_extra_testcases = (
+            len(selected_defect.extra_tests) if selected_defect.extra_tests else 0
+        )
 
         if not args.case:
             cases = set(range(1, selected_defect.num_cases + 1))

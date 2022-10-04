@@ -9,11 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Tuple, Union
 
 from config import config
-from errors import (
-    DppArgparseConfigCorruptedError,
-    DppArgparseFileNotFoundError,
-    DppArgparseInvalidConfigError,
-)
+from errors import DppArgparseConfigCorruptedError, DppArgparseFileNotFoundError, DppArgparseInvalidConfigError
 from taxonomy import MetaData, Taxonomy
 
 NAMESPACE_ATTR_INDEX = "index"

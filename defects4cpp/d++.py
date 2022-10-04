@@ -2,7 +2,7 @@ import sys
 from time import perf_counter
 
 from command import CommandList
-from errors import DppArgparseError, DppDockerError, DppError
+from errors import DppArgparseError, DppDockerError, DppError, DppNoSuchTagError, DppSearchError
 from message import message
 
 
@@ -11,6 +11,8 @@ def _handle_cmdline_error(e: DppError):
         message.stdout_argparse_error(str(e))
     elif isinstance(e, DppDockerError):
         message.stdout_argparse_error(str(e))
+    elif isinstance(e, DppSearchError):
+        message.stdout_search_error(str(e))
 
 
 def main():
@@ -37,7 +39,7 @@ def main():
         return 1
 
     try:
-        if name != "help":
+        if name not in ["help", "search"]:
             measure_time(commands[name], argv)
         else:
             commands[name](argv)

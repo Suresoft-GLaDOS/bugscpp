@@ -7,11 +7,7 @@ from pkgutil import iter_modules
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from config import config
-from errors.internal import (
-    DppMetaDataInitKeyError,
-    DppMetaDataInitTypeError,
-    DppTaxonomyInitInternalError,
-)
+from errors.internal import DppMetaDataInitKeyError, DppMetaDataInitTypeError, DppTaxonomyInitInternalError
 
 
 class CommandType(enum.IntEnum):
@@ -230,8 +226,12 @@ class MetaData:
                     defect["case"],
                     defect["tags"],
                     defect["description"],
-                    [[ExtraTest(e["type"], e["lines"], e["is_pass"]) for e in et] for et in defect["extra_tests"]]
-                    if "extra_tests" in defect else []
+                    [
+                        [ExtraTest(e["type"], e["lines"], e["is_pass"]) for e in et]
+                        for et in defect["extra_tests"]
+                    ]
+                    if "extra_tests" in defect
+                    else [],
                 )
                 for index, defect in enumerate(meta["defects"], start=1)
             ]

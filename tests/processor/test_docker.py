@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import pytest
 import taxonomy
 from processor.core.argparser import create_common_vcs_parser
 from processor.core.docker import Docker, Worktree
@@ -12,6 +13,7 @@ def create_dummy_worktree(path: Path) -> Worktree:
     return args.worktree
 
 
+@pytest.mark.slow
 def test_docker_image(tmp_path):
     t = taxonomy.Taxonomy()
     metadata = t["yara"]
@@ -21,6 +23,7 @@ def test_docker_image(tmp_path):
     assert docker.image is not None
 
 
+@pytest.mark.slow
 def test_docker_container(tmp_path):
     t = taxonomy.Taxonomy()
     metadata = t["yara"]
@@ -30,6 +33,7 @@ def test_docker_container(tmp_path):
         assert docker.send("echo Hello, world!", stream=False).exit_code == 0
 
 
+@pytest.mark.slow
 def test_docker_mount_directory(tmpdir):
     t = taxonomy.Taxonomy()
     metadata = t["yara"]

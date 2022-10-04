@@ -99,6 +99,18 @@ You can also see the buggy artifact is generated in the current directory.
     /path/to/cpp_peglib-buggy#1-3
     ...
 
+You can search defects by tags.
+
+::
+
+    $ python3 defects4cpp/d++.py search cve single-line memory-error
+
+    cpp_peglib#1
+    dlt_daemon#1
+    exiv2#5
+    ...
+
+
 .. end example
 
 Table of Defects

@@ -1,11 +1,10 @@
 import logging
 import shutil
-import pytest
-
 from pathlib import Path
 
-from processor.core.data import Worktree
+import pytest
 from processor.checkout import CheckoutCommand
+from processor.core.data import Worktree
 
 
 def test_git_clone_error(create_checkout, meta_json, caplog):
@@ -111,5 +110,5 @@ def test_git_apply_patch_error_patch_could_not_be_applied(
 
 def test_checkout_command():
     checkout_command = CheckoutCommand()
-    assert(checkout_command.group == "v1")
-    assert(checkout_command.help == "Get a specific defect snapshot")
+    assert checkout_command.group == "v1"
+    assert checkout_command.help == "Get a specific defect snapshot"

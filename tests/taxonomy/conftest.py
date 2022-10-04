@@ -1,17 +1,17 @@
-import json
-import re
-import os
 import errno
+import json
+import os
+import re
 import stat
-import whatthepatch
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
 from typing import Callable
 
 import pytest
-from defects4cpp.taxonomy import Taxonomy
+import whatthepatch
 
+from defects4cpp.taxonomy import Taxonomy
 
 # def get_defects(project):
 #     t = Taxonomy()[project]
@@ -28,12 +28,23 @@ from defects4cpp.taxonomy import Taxonomy
 #         test_list.append(case_tuple)
 # return test_list
 
+
 def pytest_generate_tests(metafunc):
     assert "project" in metafunc.fixturenames
     meta_project = Taxonomy()[metafunc.config.option.project]
-    start_from = int(metafunc.config.getoption('--start-from')) if metafunc.config.getoption('--start-from') else 1
-    end_to = int(metafunc.config.getoption('--end-to')) if metafunc.config.getoption('--end-to') else len(meta_project.defects)
-    assert start_from <= end_to, f"\"start_from\"({start_from}) must be less than or equal to \"end_to\"({end_to})"
+    start_from = (
+        int(metafunc.config.getoption("--start-from"))
+        if metafunc.config.getoption("--start-from")
+        else 1
+    )
+    end_to = (
+        int(metafunc.config.getoption("--end-to"))
+        if metafunc.config.getoption("--end-to")
+        else len(meta_project.defects)
+    )
+    assert (
+        start_from <= end_to
+    ), f'"start_from"({start_from}) must be less than or equal to "end_to"({end_to})'
     metafunc.parametrize("index", [index for index in range(start_from, end_to + 1)])
 
 
@@ -42,38 +53,22 @@ def pytest_addoption(parser):
         "--auto-cleanup",
         action="store_true",
         default=False,
-        help="Automatically cleanup test directories after running tests."
+        help="Automatically cleanup test directories after running tests.",
     )
     parser.addoption(
-        "--uid",
-        action="store",
-        default="",
-        help="Set uid of user defects4cpp."
+        "--uid", action="store", default="", help="Set uid of user defects4cpp."
     )
     parser.addoption(
-        "--project",
-        action="store",
-        default="",
-        required=True,
-        help="Set project name."
+        "--project", action="store", default="", required=True, help="Set project name."
     )
     parser.addoption(
-        "--start-from",
-        action="store",
-        default="",
-        help="Set test number start from"
+        "--start-from", action="store", default="", help="Set test number start from"
     )
     parser.addoption(
-        "--end-to",
-        action="store",
-        default="",
-        help="Set test number end to"
+        "--end-to", action="store", default="", help="Set test number end to"
     )
     parser.addoption(
-        "--no-skip",
-        action="store_true",
-        default=False,
-        help="Force to run tests"
+        "--no-skip", action="store_true", default=False, help="Force to run tests"
     )
 
 
@@ -196,7 +191,7 @@ def get_patch_dict(buggy_defect):
         is_buggy = False
     else:
         raise ValueError(f"Patch does not exists: {buggy_defect}")
-    with open(patch, encoding='utf-8', newline=os.linesep) as f:
+    with open(patch, encoding="utf-8", newline=os.linesep) as f:
         buggy_patches = f.read()
         for diff in whatthepatch.parse_patch(buggy_patches):
             assert diff.header.new_path == diff.header.old_path
@@ -214,6 +209,6 @@ def get_patch_dict(buggy_defect):
                     else:
                         buggy_lines.append(change.old)
             _patch_dict[path] = dict()
-            _patch_dict[path]['buggy'] = buggy_lines
-            _patch_dict[path]['fixed'] = fixed_lines
+            _patch_dict[path]["buggy"] = buggy_lines
+            _patch_dict[path]["fixed"] = fixed_lines
     return _patch_dict

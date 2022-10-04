@@ -1,32 +1,15 @@
-from errors.argparser import (
-    DppArgparseConfigCorruptedError,
-    DppArgparseDefectIndexError,
-    DppArgparseError,
-    DppArgparseFileNotFoundError,
-    DppArgparseInvalidCaseExpressionError,
-    DppArgparseInvalidConfigError,
-    DppArgparseInvalidEnvironment,
-    DppArgparseNotProjectDirectory,
-    DppArgparseTaxonomyNotFoundError,
-    DppAdditionalGcovOptionsWithoutCoverage,
-)
-from errors.checkout import (
-    DppGitApplyPatchError,
-    DppGitCheckoutError,
-    DppGitCheckoutInvalidRepositoryError,
-    DppGitCloneError,
-    DppGitError,
-    DppGitPatchNotAppliedError,
-    DppGitSubmoduleInitError,
-    DppGitWorktreeError,
-)
+from errors.argparser import (DppAdditionalGcovOptionsWithoutCoverage, DppArgparseConfigCorruptedError,
+                              DppArgparseDefectIndexError, DppArgparseError, DppArgparseFileNotFoundError,
+                              DppArgparseInvalidCaseExpressionError, DppArgparseInvalidConfigError,
+                              DppArgparseInvalidEnvironment, DppArgparseNotProjectDirectory,
+                              DppArgparseTaxonomyNotFoundError)
+from errors.checkout import (DppGitApplyPatchError, DppGitCheckoutError, DppGitCheckoutInvalidRepositoryError,
+                             DppGitCloneError, DppGitError, DppGitPatchNotAppliedError, DppGitSubmoduleInitError,
+                             DppGitWorktreeError)
 from errors.common.exception import DppError
 from errors.docker import DppDockerError, DppDockerNoClientError
-from errors.internal import (
-    DppCaseExpressionInternalError,
-    DppCommandListInternalError,
-    DppInternalError,
-)
+from errors.internal import DppCaseExpressionInternalError, DppCommandListInternalError, DppInternalError
+from errors.search import DppNoSuchTagError, DppSearchError
 
 __all__ = [
     "DppError",
@@ -53,5 +36,7 @@ __all__ = [
     "DppCommandListInternalError",
     "DppDockerError",
     "DppDockerNoClientError",
-    "DppAdditionalGcovOptionsWithoutCoverage"
+    "DppAdditionalGcovOptionsWithoutCoverage",
+    "DppSearchError",
+    "DppNoSuchTagError",
 ]

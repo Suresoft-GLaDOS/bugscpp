@@ -1,8 +1,9 @@
 import logging
 
 import pytest
-from defects4cpp.errors import DppGitCloneError
 from message import message
+
+from defects4cpp.errors import DppGitCloneError
 
 
 @pytest.fixture

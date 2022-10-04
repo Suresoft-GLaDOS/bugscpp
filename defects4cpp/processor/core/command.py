@@ -18,12 +18,13 @@ from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple
 
 import taxonomy
+from config import config
 from errors import DppCommandListInternalError
 from message import message
 from processor.core.data import Worktree
 from processor.core.docker import Docker
 from processor.core.shell import Shell
-from config import config
+
 
 class CommandRegistryMeta(type):
     """
@@ -318,7 +319,7 @@ class DockerCommand(Command):
         stream = script_generator.stream
         rebuild_image = True if args.rebuild_image else False
         user = ""  # root
-        uid = args.uid if hasattr(args, 'uid') and args.uid is not None else None
+        uid = args.uid if hasattr(args, "uid") and args.uid is not None else None
 
         self.setup(script_generator)
         with Docker(
