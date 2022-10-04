@@ -10,14 +10,8 @@ from taxonomy import Taxonomy
 
 from .data import NAMESPACE_ATTR_BUGGY, NAMESPACE_ATTR_INDEX, NAMESPACE_ATTR_WORKSPACE
 from .validator.common_command import ValidateCompilationDBTool
-from .validator.project_command import (
-    ValidateBuggy,
-    ValidateEnviron,
-    ValidateIndex,
-    ValidateProjectPath,
-    ValidateTaxonomy,
-    ValidateWorkspace,
-)
+from .validator.project_command import (ValidateBuggy, ValidateEnviron, ValidateIndex, ValidateProjectPath,
+                                        ValidateTaxonomy, ValidateWorkspace)
 
 
 def create_common_parser() -> argparse.ArgumentParser:
@@ -129,10 +123,6 @@ def create_common_project_parser() -> argparse.ArgumentParser:
         action=ValidateEnviron,
     )
     parser.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
-        help="number of jobs to run in parallel.",
-        default=1
+        "-j", "--jobs", type=int, help="number of jobs to run in parallel.", default=1
     )
     return parser

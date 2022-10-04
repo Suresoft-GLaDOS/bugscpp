@@ -17,11 +17,7 @@ if TYPE_CHECKING:
 
 from message import message
 from processor.core.argparser import create_common_project_parser
-from processor.core.command import (
-    DockerCommand,
-    DockerCommandScript,
-    DockerCommandScriptGenerator,
-)
+from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
 from processor.core.data import Worktree
 
 

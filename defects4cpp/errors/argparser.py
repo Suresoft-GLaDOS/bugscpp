@@ -10,7 +10,9 @@ class DppArgparseError(DppError):
 
 class DppAdditionalGcovOptionsWithoutCoverage(DppArgparseError):
     def __init__(self):
-        super().__init__(f"'--additional-gcov-options' should be used with '--coverage' option")
+        super().__init__(
+            f"'--additional-gcov-options' should be used with '--coverage' option"
+        )
 
 
 class DppArgparseTaxonomyNotFoundError(DppArgparseError):

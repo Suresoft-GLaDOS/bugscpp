@@ -5,11 +5,7 @@ from pathlib import Path
 from typing import Callable, Generator, List, Optional
 
 import pytest
-from processor.core.command import (
-    DockerCommand,
-    DockerCommandScript,
-    DockerCommandScriptGenerator,
-)
+from processor.core.command import DockerCommand, DockerCommandScript, DockerCommandScriptGenerator
 from processor.core.docker import Worktree
 from taxonomy.taxonomy import CommandType, MetaData, Taxonomy
 
@@ -39,10 +35,7 @@ class DummyDockerCommand(DockerCommand):
     ):
         parser = argparse.ArgumentParser()
         # Put default arguments here if something's been changed.
-        parser.set_defaults(**{"env": None,
-                               "rebuild_image": False,
-                               "jobs": 1
-                               })
+        parser.set_defaults(**{"env": None, "rebuild_image": False, "jobs": 1})
 
         super().__init__(parser)
         self.callback = callback
@@ -233,6 +226,7 @@ def test_check_coverage(setup):
     assert len(test.failed_coverage_files) > 0
 
 
+@pytest.mark.slow
 def test_run_command(setup):
     def docker_command_type_should_pass(_: Optional[int], exit_code: int, output: str):
         assert exit_code == 0
@@ -269,6 +263,7 @@ def test_run_command(setup):
     test([])
 
 
+@pytest.mark.slow
 def test_run_command_as_script(setup):
     def script_command_type_should_pass(_: Optional[int], exit_code: int, output: str):
         assert exit_code == 0
@@ -299,14 +294,14 @@ def test_run_command_as_script(setup):
     test([])
 
 
-
+@pytest.mark.slow
 def test_additional_gcov_options(setup):
     test = TestCommand()
     t = Taxonomy()
     for defect in t:
-        with open(Path(t.base) / defect / 'meta.json') as meta_json:
+        with open(Path(t.base) / defect / "meta.json") as meta_json:
             meta = json.load(meta_json)
-            gcov_data = str(meta['common']['gcov']['commands']).split(' ')
+            gcov_data = str(meta["common"]["gcov"]["commands"]).split(" ")
             for index in range(len(gcov_data)):
-                if gcov_data[index] == 'gcov':
-                    assert gcov_data[index+1] == '@DPP_ADDITIONAL_GCOV_OPTIONS@'
+                if gcov_data[index] == "gcov":
+                    assert gcov_data[index + 1] == "@DPP_ADDITIONAL_GCOV_OPTIONS@"

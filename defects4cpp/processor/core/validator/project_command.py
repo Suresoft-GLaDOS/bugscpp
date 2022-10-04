@@ -2,23 +2,11 @@ import argparse
 from pathlib import Path
 from typing import List
 
-from errors import (
-    DppArgparseDefectIndexError,
-    DppArgparseInvalidEnvironment,
-    DppArgparseNotProjectDirectory,
-    DppArgparseTaxonomyNotFoundError,
-)
-from processor.core.data import (
-    NAMESPACE_ATTR_BUGGY,
-    NAMESPACE_ATTR_INDEX,
-    NAMESPACE_ATTR_METADATA,
-    NAMESPACE_ATTR_METADATA_BASE,
-    NAMESPACE_ATTR_PATH,
-    NAMESPACE_ATTR_PATH_CONFIG_NAME,
-    NAMESPACE_ATTR_WORKSPACE,
-    Project,
-    Worktree,
-)
+from errors import (DppArgparseDefectIndexError, DppArgparseInvalidEnvironment, DppArgparseNotProjectDirectory,
+                    DppArgparseTaxonomyNotFoundError)
+from processor.core.data import (NAMESPACE_ATTR_BUGGY, NAMESPACE_ATTR_INDEX, NAMESPACE_ATTR_METADATA,
+                                 NAMESPACE_ATTR_METADATA_BASE, NAMESPACE_ATTR_PATH, NAMESPACE_ATTR_PATH_CONFIG_NAME,
+                                 NAMESPACE_ATTR_WORKSPACE, Project, Worktree)
 from taxonomy import Taxonomy
 
 

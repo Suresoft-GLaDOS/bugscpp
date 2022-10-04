@@ -15,12 +15,8 @@ from docker import DockerClient
 from docker.models.containers import Container, ExecResult
 from docker.models.images import Image
 from errors import DppError
-from errors.docker import (
-    DppDockerBuildClientError,
-    DppDockerBuildError,
-    DppDockerBuildServerError,
-    DppDockerNoClientError,
-)
+from errors.docker import (DppDockerBuildClientError, DppDockerBuildError, DppDockerBuildServerError,
+                           DppDockerNoClientError)
 from message import message
 from processor.core.data import Worktree
 
@@ -44,8 +40,8 @@ def _try_build_image(client, tag, path, verbose) -> Image:
         image, stream = client.images.build(rm=True, tag=tag, path=path, pull=True)
         if verbose:
             for chunk in stream:
-                if 'stream' in chunk:
-                    for line in chunk['stream'].splitlines():
+                if "stream" in chunk:
+                    for line in chunk["stream"].splitlines():
                         print(line)
         return image
     except docker.errors.BuildError as e:
@@ -135,12 +131,26 @@ class Docker:
                     self.client.images.pull(self._tag)
                 self._image = _cast_image(self.client.images.get(self._tag))
             except docker.errors.ImageNotFound:
-                print(f"ImageNotFound {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}")
-                self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
+                print(
+                    f"ImageNotFound {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}"
+                )
+                self._image = _build_image(
+                    self.client,
+                    self._tag,
+                    str(Path(self._dockerfile).parent),
+                    self._verbose,
+                )
             # FIXME: Temporary exception handling
             except docker.errors.APIError:
-                print(f"APIError {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}")
-                self._image = _build_image(self.client, self._tag, str(Path(self._dockerfile).parent), self._verbose)
+                print(
+                    f"APIError {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}"
+                )
+                self._image = _build_image(
+                    self.client,
+                    self._tag,
+                    str(Path(self._dockerfile).parent),
+                    self._verbose,
+                )
 
             if self._uid_of_dpp_docker_user is not None:
                 # set uid of user(defects4cpp) to self._uid_of_dpp_docker_user after checking if uid need to be changed
@@ -154,14 +164,20 @@ class Docker:
                     )
                 )
                 _, output = _container.exec_run(f"id -u {config.DPP_DOCKER_USER}")
-                uid = str(output, 'utf-8').strip('\n')
+                uid = str(output, "utf-8").strip("\n")
                 if self._uid_of_dpp_docker_user != uid:
-                    message.stdout_progress_detail(f"  Setting uid of {config.DPP_DOCKER_USER} "
-                                                   f"from {uid} "
-                                                   f"to {self._uid_of_dpp_docker_user}.")
-                    _, output = _container.exec_run(f"usermod -u {self._uid_of_dpp_docker_user} {config.DPP_DOCKER_USER}")
-                repository, tag = tuple(self._tag.split(':'))
-                self._image = _cast_image(_container.commit(repository=repository, tag=tag))
+                    message.stdout_progress_detail(
+                        f"  Setting uid of {config.DPP_DOCKER_USER} "
+                        f"from {uid} "
+                        f"to {self._uid_of_dpp_docker_user}."
+                    )
+                    _, output = _container.exec_run(
+                        f"usermod -u {self._uid_of_dpp_docker_user} {config.DPP_DOCKER_USER}"
+                    )
+                repository, tag = tuple(self._tag.split(":"))
+                self._image = _cast_image(
+                    _container.commit(repository=repository, tag=tag)
+                )
                 _container.stop()
                 _container.remove()
         return self._image

@@ -22,13 +22,10 @@ lint:
 	flake8 . --config setup.cfg
 
 test:
-ifeq ($(OS), Windows_NT)
-	@set PYTHONPATH=defects4cpp/
 	python -m pytest tests/ --ignore tests/taxonomy
-else
-	PYTHONPATH=defects4cpp/ python -m pytest tests/ --ignore tests/taxonomy
-endif
 
+test-fast:
+	python -m pytest tests/ --ignore tests/taxonomy --skip-slow
 
 coverage:
 ifeq ($(OS), Windows_NT)
