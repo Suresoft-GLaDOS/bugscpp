@@ -81,8 +81,7 @@ class ValidateCase(argparse.Action):
 
 class ValidateOutputDirectory(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
-        if not Path(values).exists():
-            raise DppArgparseFileNotFoundError(values)
+        Path(values).mkdir(parents=True, exist_ok=True)
         setattr(namespace, self.dest, values)
 
 
@@ -447,11 +446,6 @@ class TestCommand(DockerCommand):
 
         # Select cases to run. If none is given, select all.
         selected_defect = metadata.defects[index - 1]
-
-        # Get number of extra test cases
-        number_of_extra_testcases = (
-            len(selected_defect.extra_tests) if selected_defect.extra_tests else 0
-        )
 
         if not args.case:
             cases = set(range(1, selected_defect.num_cases + 1))
