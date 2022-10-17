@@ -52,12 +52,12 @@ def parse_args():
     parser.add_argument("-n", "--name", type=str, default="")
     parser.add_argument("-o", "--output", type=str, default="",
                         help="path to output. automatically set to PATH_TO_PROJECT/vulcan.yml if not set")
-    parser.add_argument("-j", "--jobs", type=int, help="number of jobs")
+    parser.add_argument("-j", "--jobs", type=int, default=1, help="number of jobs")
     return parser.parse_args()
 
 
 def write_vulcan_yml(vulcan: Vulcan, output_path: Path):
-    if not output_path:
+    if output_path:
         output_path = Path(vulcan.worktree.host) / "vulcan.yml"
     with open(PATH_TO_TEMPLATE, "r") as fp:
         template = fp.read()
