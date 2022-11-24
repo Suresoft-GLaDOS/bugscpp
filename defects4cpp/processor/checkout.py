@@ -49,9 +49,9 @@ def _git_checkout(
     if not checkout_dir.exists():
         try:
             # Pass '-f' in case worktree directory could be registered but removed.
-            repo.git.worktree("add", "-f", str(checkout_dir), defect.hash)
+            repo.git.worktree("add", "-f", str(checkout_dir.resolve()), defect.hash)
         except git.GitCommandError:
-            raise DppGitWorktreeError(repo, str(checkout_dir), defect)
+            raise DppGitWorktreeError(repo, str(checkout_dir.resolve()), defect)
 
         # git worktree list --porcelain will output
         # $ worktree path
