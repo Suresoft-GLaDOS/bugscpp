@@ -109,7 +109,7 @@ class Docker:
         self._container_name: str = f"{tag}-dpp"
         self._tag = f"hschoe/defects4cpp-ubuntu:{tag}"
         self._volume: Dict[str, Dict] = {
-            str(worktree.host): {"bind": str(worktree.container), "mode": "rw"}
+            str(worktree.host.resolve()): {"bind": str(worktree.container), "mode": "rw"}
         }
         self._working_dir: str = str(worktree.container)
         self._environ = environ
