@@ -140,11 +140,10 @@ class Docker:
                     str(Path(self._dockerfile).parent),
                     self._verbose,
                 )
-            # FIXME: Temporary exception handling
-            except docker.errors.APIError:
-                print(
-                    f"APIError {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}"
-                )
+            except docker.errors.APIError as api_error:
+                message.stdout_error(f"    An API Error occured.{os.linesep}"
+                                     f"    Find detailed message at {message.path}.")
+                message.error(__name__, f"APIError {api_error}")
                 self._image = _build_image(
                     self.client,
                     self._tag,

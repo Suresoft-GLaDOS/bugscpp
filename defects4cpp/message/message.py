@@ -153,6 +153,10 @@ class _Message:
         print(f"{Fore.YELLOW}{msg}{Fore.RESET}")
 
     @staticmethod
+    def stdout_error(msg: str):
+        print(f"{Fore.RED}{msg}{Fore.RESET}")
+
+    @staticmethod
     def stdout_stream(msg: str):
         print(f"{Fore.LIGHTBLUE_EX}{msg}{Fore.RESET}", end="")
 
