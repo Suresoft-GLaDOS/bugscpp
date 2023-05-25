@@ -31,4 +31,4 @@ def test_search_command_withouth_any_args(capsys):
     with pytest.raises(SystemExit):
         SearchCommand()([])
     captured = capsys.readouterr()
-    assert "usage: \nd++.py search TAGS" in captured.err
+    assert "usage: \nbugscpp.py search TAGS" in captured.err

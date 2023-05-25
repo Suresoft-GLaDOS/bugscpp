@@ -7,11 +7,11 @@ from typing import Any, Dict, Optional, cast
 
 import pytest
 
-from defects4cpp.command import BuildCommand, CheckoutCommand
-from defects4cpp.config import config
-from defects4cpp.processor.core.command import Command
-from defects4cpp.processor.core.data import Project, Worktree
-from defects4cpp.taxonomy import MetaData, Taxonomy
+from bugscpp.command import BuildCommand, CheckoutCommand
+from bugscpp.config import config
+from bugscpp.processor.core.command import Command
+from bugscpp.processor.core.data import Project, Worktree
+from bugscpp.taxonomy import MetaData, Taxonomy
 
 
 def pytest_addoption(parser):
@@ -33,8 +33,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def gitenv():
-    environ["GIT_COMMITTER_NAME"] = "defects4cpp"
-    environ["GIT_COMMITTER_EMAIL"] = "defects4cpp@email.com"
+    environ["GIT_COMMITTER_NAME"] = "bugscpp"
+    environ["GIT_COMMITTER_EMAIL"] = "bugscpp@email.com"
     yield
     del environ["GIT_COMMITTER_NAME"]
     del environ["GIT_COMMITTER_EMAIL"]
@@ -45,7 +45,7 @@ def dummy_config(tmp_path: Path):
     def create_dummy_config(name: str) -> Path:
         p = tmp_path / name
         p.mkdir()
-        dummy = p / ".defects4cpp.json"
+        dummy = p / ".bugscpp.json"
         with open(dummy, "w+") as fp:
             obj = {
                 "project_name": "yara",
@@ -87,9 +87,9 @@ def _create_processor(
             fp.write(
                 dedent(
                     """FROM ubuntu:20.04
-                RUN useradd --home-dir /home/workspace --shell /bin/bash defects4cpp
-                USER defects4cpp
-                ENV USER defects4cpp
+                RUN useradd --home-dir /home/workspace --shell /bin/bash bugscpp
+                USER bugscpp
+                ENV USER bugscpp
                 WORKDIR /home/workspace"""
                 )
             )

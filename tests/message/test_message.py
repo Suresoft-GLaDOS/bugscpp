@@ -3,7 +3,7 @@ import logging
 import pytest
 from message import message
 
-from defects4cpp.errors import DppGitCloneError
+from bugscpp.errors import DppGitCloneError
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def test_change_logger_path(
     assert wrapped_system_exit.type == SystemExit
     assert wrapped_system_exit.value.code == 1
 
-    with open(path / "defects4cpp.log", "r") as fp:
+    with open(path / "bugscpp.log", "r") as fp:
         assert len(fp.readlines()) > 0
 
 

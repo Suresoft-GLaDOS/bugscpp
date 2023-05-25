@@ -2,10 +2,10 @@ import argparse
 
 import pytest
 
-from defects4cpp.command import TestCommand
-from defects4cpp.errors import DppAdditionalGcovOptionsWithoutCoverage
-from defects4cpp.processor.test import (CoverageTestCommandScript, GcovCommandScript, RunGcovrTestCommandScript,
-                                        SetupTestCommandScript, TeardownTestCommandScript, TestCommandScript)
+from bugscpp.command import TestCommand
+from bugscpp.errors import DppAdditionalGcovOptionsWithoutCoverage
+from bugscpp.processor.test import (CoverageTestCommandScript, GcovCommandScript, RunGcovrTestCommandScript,
+                                    SetupTestCommandScript, TeardownTestCommandScript, TestCommandScript)
 
 test_case = 0
 test_type = ""

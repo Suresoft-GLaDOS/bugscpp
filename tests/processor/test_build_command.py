@@ -4,8 +4,8 @@ from pathlib import Path
 import docker.errors
 import pytest
 
-from defects4cpp.command import BuildCommand, CheckoutCommand
-from defects4cpp.config import config
+from bugscpp.command import BuildCommand, CheckoutCommand
+from bugscpp.config import config
 
 
 @pytest.mark.parametrize(
@@ -69,7 +69,7 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
 
     # Build yara image again
     # Try to rebuild the same image 5 times
-    # related to: https://github.com/Suresoft-GLaDOS/defects4cpp/pull/67
+    # related to: https://github.com/Suresoft-GLaDOS/bugscpp/pull/67
     rebuild_attempts = 5
     for attempt in range(1, rebuild_attempts + 1):
         with capsys.disabled():
@@ -86,7 +86,7 @@ def test_build_command_rebuild_image(create_build, meta_json, capsys):
                 x in stdout
                 for x in [
                     "start building",
-                    "hschoe/defects4cpp-ubuntu:test_build_command_rebuild_image",
+                    "hschoe/bugscpp-ubuntu:test_build_command_rebuild_image",
                     "done",
                 ]
             )

@@ -1,4 +1,4 @@
-from defects4cpp.command import CommandList, HelpCommand
+from bugscpp.command import CommandList, HelpCommand
 
 
 def test_check_help_attr():

@@ -6,14 +6,14 @@ import pytest
 from errors import (DppArgparseConfigCorruptedError, DppArgparseFileNotFoundError, DppArgparseInvalidConfigError,
                     DppArgparseNotProjectDirectory)
 
-from defects4cpp.config import config
-from defects4cpp.errors import DppArgparseInvalidEnvironment
-from defects4cpp.processor.core.argparser import (create_common_parser, create_common_project_parser,
-                                                  create_common_vcs_parser)
-from defects4cpp.processor.core.data import Project, Worktree
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.config import config
+from bugscpp.errors import DppArgparseInvalidEnvironment
+from bugscpp.processor.core.argparser import (create_common_parser, create_common_project_parser,
+                                              create_common_vcs_parser)
+from bugscpp.processor.core.data import Project, Worktree
+from bugscpp.taxonomy import Taxonomy
 
-CONFIG_NAME = ".defects4cpp.json"
+CONFIG_NAME = ".bugscpp.json"
 
 
 def test_read_config_not_exist(tmp_path):

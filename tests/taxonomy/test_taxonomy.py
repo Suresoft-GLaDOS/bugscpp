@@ -16,7 +16,7 @@ TAXONOMY_TEST_SKIP_LIST = []
 
 BUGGY_LINE_CHECK_SKIP_LIST = []
 
-CONFIG_NAME = ".defects4cpp.json"
+CONFIG_NAME = ".bugscpp.json"
 
 
 def test_taxonomy(

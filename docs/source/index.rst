@@ -1,4 +1,4 @@
-Defects4Cpp
+BugsCpp
 =======================================
 
 .. include:: ../../README.rst
@@ -10,7 +10,7 @@ Defects4Cpp
    :caption: Contents:
 
    Installation<installation>
-   Defects4cpp User Guide<guide>
+   BugsCpp User Guide<guide>
    A List of Defect Taxonomy<taxonomy>
    Frequently Asked Questions<faq>
    Contributing<contribute>

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.taxonomy import Taxonomy
 
 TARGET_TEXT = "@TABLE_OF_DEFECTS@"
 

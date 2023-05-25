@@ -9,9 +9,9 @@ while True:
     path = path.parent
     if path.parent == path:
         sys.exit(1)
-    if path.name == "defects4cpp":
+    if path.name == "bugscpp":
         break
-taxonomy_path = Path("defects4cpp/taxonomy")
+taxonomy_path = Path("bugscpp/taxonomy")
 
 table = """.. _taxonomy:
 

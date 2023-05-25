@@ -9,14 +9,14 @@ from processor.core.command import DockerCommand, DockerCommandScript, DockerCom
 from processor.core.docker import Worktree
 from taxonomy.taxonomy import CommandType, MetaData, Taxonomy
 
-from defects4cpp.command import TestCommand
+from bugscpp.command import TestCommand
 
 _DUMMY_DOCKERFILE = """
 FROM ubuntu:20.04
 
-RUN useradd --uid 1001 --home-dir /home/workspace --shell /bin/bash defects4cpp
-USER defects4cpp
-ENV USER defects4cpp
+RUN useradd --uid 1001 --home-dir /home/workspace --shell /bin/bash bugscpp
+USER bugscpp
+ENV USER bugscpp
 WORKDIR /home/workspace
 """
 
@@ -125,7 +125,7 @@ def setup(tmp_path: Path, request) -> Callable[[List[int]], TestConfig]:
         output_dir = tmp / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        dpp_config = src_dir / ".defects4cpp.json"
+        dpp_config = src_dir / ".bugscpp.json"
         with open(dpp_config, "w+") as fp:
             obj = {
                 "project_name": _TEST_PROJECT_NAME,

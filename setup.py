@@ -2,10 +2,10 @@ from setuptools import setup
 
 if __name__ == "__main__":
     setup(
-        name="defects4cpp",
+        name="bugscpp",
         version="0.1",
-        packages=["defects4cpp"],
-        url="https://github.com/Suresoft-GLaDOS/defects4cpp",
+        packages=["bugscpp"],
+        url="https://github.com/Suresoft-GLaDOS/bugscpp",
         license="MIT",
         author="suresofttech",
         author_email="analysis@suresofttech.com",

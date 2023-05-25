@@ -1,4 +1,4 @@
-from defects4cpp.command import CheckoutCommand
+from bugscpp.command import CheckoutCommand
 
 
 def test_checkout_fixed(tmp_path, gitenv):

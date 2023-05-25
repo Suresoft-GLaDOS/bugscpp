@@ -1,28 +1,28 @@
-Defects4Cpp
+BugsCpp
 ===========
 .. begin abstract
 
 |gitHub-actions-badge| |taxonomy-badge| |docs| |tests-badge| |coverage-badge|
 
-`Defects4Cpp` is another collection of reproducible bugs for C/C++ and a supporting infrastructure with the goal of automatic program debugging research
+`BugsCpp` is another collection of reproducible bugs for C/C++ and a supporting infrastructure with the goal of automatic program debugging research
 inspired by `Defects4J`_.
 
 .. _`Defects4J`: https://github.com/rjust/defects4j
-.. |github-actions-badge| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/build.yml/badge.svg
+.. |github-actions-badge| image:: https://github.com/Suresoft-GLaDOS/bugscpp/actions/workflows/build.yml/badge.svg
    :alt: Build
 
-.. |taxonomy-badge| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/taxonomy.yml/badge.svg
+.. |taxonomy-badge| image:: https://github.com/Suresoft-GLaDOS/bugscpp/actions/workflows/taxonomy.yml/badge.svg
    :alt: Taxonomy
 
-.. |docs| image:: https://github.com/Suresoft-GLaDOS/defects4cpp/actions/workflows/deploy-gh-pages.yml/badge.svg
+.. |docs| image:: https://github.com/Suresoft-GLaDOS/bugscpp/actions/workflows/deploy-gh-pages.yml/badge.svg
    :alt: Docs
 
-.. |tests-badge| image:: https://suresoft-glados.github.io/defects4cpp/reports/junit/tests-badge.svg?dummy=8484744
-   :target: https://suresoft-glados.github.io/defects4cpp/reports/junit/report.html
+.. |tests-badge| image:: https://suresoft-glados.github.io/bugscpp/reports/junit/tests-badge.svg?dummy=8484744
+   :target: https://suresoft-glados.github.io/bugscpp/reports/junit/report.html
    :alt: Tests
 
-.. |coverage-badge| image:: https://suresoft-glados.github.io/defects4cpp/reports/coverage/coverage-badge.svg?dummy=8484744
-   :target: https://suresoft-glados.github.io/defects4cpp/reports/coverage/index.html
+.. |coverage-badge| image:: https://suresoft-glados.github.io/bugscpp/reports/coverage/coverage-badge.svg?dummy=8484744
+   :target: https://suresoft-glados.github.io/bugscpp/reports/coverage/index.html
    :alt: Coverage Status
 
 .. end abstract
@@ -43,41 +43,41 @@ A list of defect taxonomy can be displayed via the following:
 
 ::
 
-    python3 defects4cpp/d++.py show
+    python3 bugscpp/bugscpp.py show
 
 For the rest commands to work, you need to checkout one of projects in the list displayed in the previous step.
 For instance, if you want to checkout `cpp_peglib` project:
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout cpp_peglib 1
+    $ python3 bugscpp/bugscpp.py checkout cpp_peglib 1
 
 Finally, to build and test `cpp_peglib`, or any project you've just cloned, run the following sequence of commands:
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/fixed#1
-    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1
+    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/fixed#1
+    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/fixed#1
 
 You can run some test cases separately like this:
 
 ::
 
-    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/fixed#1 --case 1-4,7
+    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/fixed#1 --case 1-4,7
 
 However, you are probably interested in a snapshot where a buggy commit is just made.
 The command is exactly the same except that ``--buggy`` flag is set.
 
 ::
 
-    $ python3 defects4cpp/d++.py checkout cpp_peglib 1 --buggy
+    $ python3 bugscpp/bugscpp.py checkout cpp_peglib 1 --buggy
 
 Set ``--coverage`` to generate `.gcov` data.
 
 ::
 
-    $ python3 defects4cpp/d++.py build /path/to/cpp_peglib/buggy#1 --coverage
-    $ python3 defects4cpp/d++.py test /path/to/cpp_peglib/buggy#1 --coverage
+    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/buggy#1 --coverage
+    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/buggy#1 --coverage
 
 You'll see the artifact is generated in the current directory.
 
@@ -103,7 +103,7 @@ You can search defects by tags.
 
 ::
 
-    $ python3 defects4cpp/d++.py search cve single-line memory-error
+    $ python3 bugscpp/bugscpp.py search cve single-line memory-error
 
     cpp_peglib#1
     dlt_daemon#1
@@ -200,7 +200,7 @@ Documentation
 
 For full documentation, please see `github.io`_.
 
-.. _`github.io`: https://suresoft-glados.github.io/defects4cpp/
+.. _`github.io`: https://suresoft-glados.github.io/bugscpp/
 
 Bugs/Requests/Contributing
 ==========================
@@ -221,11 +221,11 @@ License
 =======
 .. begin license
 
-Copyright `Suresoft Technologies Inc`_, 2021.
+Copyright `Suresoft Technologies Inc`_, 2021-2023.
 
-Distributed under the terms of the `MIT`_ license, Defects4Cpp is free and open source software.
+Distributed under the terms of the `MIT`_ license, BugsCpp is free and open source software.
 
-.. _`MIT`: https://github.com/Suresoft-GLaDOS/defects4cpp/blob/main/LICENSE
+.. _`MIT`: https://github.com/Suresoft-GLaDOS/bugscpp/blob/main/LICENSE
 .. _`Suresoft Technologies Inc`: http://www.suresofttech.com/en/main/index.php
 
 .. end license

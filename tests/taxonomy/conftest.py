@@ -11,7 +11,7 @@ from typing import Callable
 import pytest
 import whatthepatch
 
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.taxonomy import Taxonomy
 
 # def get_defects(project):
 #     t = Taxonomy()[project]
@@ -56,7 +56,7 @@ def pytest_addoption(parser):
         help="Automatically cleanup test directories after running tests.",
     )
     parser.addoption(
-        "--uid", action="store", default="", help="Set uid of user defects4cpp."
+        "--uid", action="store", default="", help="Set uid of user bugscpp."
     )
     parser.addoption(
         "--project", action="store", default="", required=True, help="Set project name."
