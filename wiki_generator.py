@@ -4,7 +4,7 @@ from pathlib import Path
 from taxonomy import Taxonomy
 
 
-def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki/home.md"):
+def generate_wiki_bugscpp_bugs_table(output_file_path="wiki/home.md"):
     table = generate_table()
 
     if not os.path.isdir("wiki"):
@@ -14,7 +14,7 @@ def generate_wiki_defects4cpp_bugs_table(output_file_path="wiki/home.md"):
 
 
 def generate_table():
-    table = "# Defects4cpp Bugs\n"
+    table = "# BugsCpp Bugs\n"
     table = (
         table
         + "|Project|BugID|Files|LinesAdd|LinesDel|Methods|Information|\n|--|--|--|--|--|--|--|\n"
@@ -71,7 +71,7 @@ def generate_table():
                     + "-"
                     + str(bug_id)
                     + "]"
-                    + "(https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/"
+                    + "(https://github.com/Suresoft-GLaDOS/bugscpp/wiki/"
                     + name
                     + "#"
                     + str(bug_id)
@@ -102,7 +102,7 @@ def generate_patchlog():
                         bug_tags
                         + "[`#"
                         + tag
-                        + "`](https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#"
+                        + "`](https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#"
                         + tag
                         + ")\n"
                     )
@@ -180,7 +180,7 @@ def generate_patchlog():
             output_file.write(full_patch)
 
 
-def generate_tag_page(output_file_path="wiki/tags_defects4cpp.md"):
+def generate_tag_page(output_file_path="wiki/tags_bugscpp.md"):
     t = Taxonomy()
     tag_dict = {}
     defects_list_with_tag = ""
@@ -208,7 +208,7 @@ def generate_tag_page(output_file_path="wiki/tags_defects4cpp.md"):
                 defects_list_with_tag
                 + "["
                 + defect
-                + "](https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/"
+                + "](https://github.com/Suresoft-GLaDOS/bugscpp/wiki/"
                 + defect
                 + ")<br>\n"
             )
@@ -217,82 +217,82 @@ def generate_tag_page(output_file_path="wiki/tags_defects4cpp.md"):
 
 
 def generate_sidebar(output_file_path="wiki/_sidebar.md"):
-    text_sidebar = '<h1><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki">HOME</a></h1>\n'
+    text_sidebar = '<h1><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki">HOME</a></h1>\n'
     text_sidebar = (
         text_sidebar
-        + '<h1><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp">TAGS</a></h1>\n'
+        + '<h1><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp">TAGS</a></h1>\n'
     )
     text_sidebar = text_sidebar + "<h2>Lines</h2>\n"
     text_sidebar = text_sidebar + "  <ul>\n"
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#single-line">#Single_Line</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#single-line">#Single_Line</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#multi-line">#Multi_Lines</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#multi-line">#Multi_Lines</a></li>\n'
     )
     text_sidebar = text_sidebar + "  </ul>\n"
     text_sidebar = text_sidebar + "<h2>Patch Type</h2>\n"
     text_sidebar = text_sidebar + "  <ul>\n"
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#added">#Added</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#added">#Added</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#removed">#Removed</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#removed">#Removed</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#modified">#Modified</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#modified">#Modified</a></li>\n'
     )
     text_sidebar = text_sidebar + "  </ul>\n"
     text_sidebar = text_sidebar + "<h2>Error Type</h2>\n"
     text_sidebar = text_sidebar + "  <ul>\n"
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#invalid-condition">#Invalid_Condition</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#invalid-condition">#Invalid_Condition</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#invalid-format-string">#Invalid_Format_String</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#invalid-format-string">#Invalid_Format_String</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#memory-error">#Memory_Error</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#memory-error">#Memory_Error</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#logical-error">#Logical_Error</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#logical-error">#Logical_Error</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#omission">#Omission</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#omission">#Omission</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#infinite-loop-error">#Infinite_Loop</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#infinite-loop-error">#Infinite_Loop</a></li>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '    <li><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#division-by-zero">#Division_by_Zero</a></li>\n'
+        + '    <li><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#division-by-zero">#Division_by_Zero</a></li>\n'
     )
     text_sidebar = text_sidebar + "  </ul>\n"
     text_sidebar = (
         text_sidebar
-        + '<h3><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#CVE">#CVE</a></h3>\n'
+        + '<h3><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#CVE">#CVE</a></h3>\n'
     )
     text_sidebar = (
         text_sidebar
-        + '<h3><a href="https://github.com/Suresoft-GLaDOS/defects4cpp/wiki/tags_defects4cpp#address-sanitizer">#Address_Sanitizer</a></h3>\n'
+        + '<h3><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp#address-sanitizer">#Address_Sanitizer</a></h3>\n'
     )
     with open(output_file_path, "w") as output_file:
         output_file.write(text_sidebar)
 
 
 if __name__ == "__main__":
-    generate_wiki_defects4cpp_bugs_table()
+    generate_wiki_bugscpp_bugs_table()
     generate_patchlog()
     generate_tag_page()
     generate_sidebar()
