@@ -3,7 +3,7 @@ import logging
 import pytest
 from message import message
 
-from defects4cpp.errors import DppGitCloneError
+from bugscpp.errors import DppGitCloneError
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-from defects4cpp.command import CommandList, ShowCommand
+from bugscpp.command import CommandList, ShowCommand
 
 
 def test_check_show_attr():

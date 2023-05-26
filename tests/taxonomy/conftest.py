@@ -11,7 +11,7 @@ from typing import Callable
 import pytest
 import whatthepatch
 
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.taxonomy import Taxonomy
 
 # def get_defects(project):
 #     t = Taxonomy()[project]

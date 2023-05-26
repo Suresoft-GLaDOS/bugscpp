@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.taxonomy import Taxonomy
 from readme_generator import generate_readme
 
 

@@ -7,11 +7,11 @@ from typing import Any, Dict, Optional, cast
 
 import pytest
 
-from defects4cpp.command import BuildCommand, CheckoutCommand
-from defects4cpp.config import config
-from defects4cpp.processor.core.command import Command
-from defects4cpp.processor.core.data import Project, Worktree
-from defects4cpp.taxonomy import MetaData, Taxonomy
+from bugscpp.command import BuildCommand, CheckoutCommand
+from bugscpp.config import config
+from bugscpp.processor.core.command import Command
+from bugscpp.processor.core.data import Project, Worktree
+from bugscpp.taxonomy import MetaData, Taxonomy
 
 
 def pytest_addoption(parser):

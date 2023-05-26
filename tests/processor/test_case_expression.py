@@ -4,7 +4,7 @@ import errors
 from errors import DppArgparseInvalidCaseExpressionError
 from taxonomy.taxonomy import Defect, Taxonomy
 
-from defects4cpp.command import TestCommand
+from bugscpp.command import TestCommand
 
 
 def out_of_index_error(cmd: TestCommand, default_cmds: List[str], expr: str):

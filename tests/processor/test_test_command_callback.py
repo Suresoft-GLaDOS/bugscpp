@@ -9,7 +9,7 @@ from processor.core.command import DockerCommand, DockerCommandScript, DockerCom
 from processor.core.docker import Worktree
 from taxonomy.taxonomy import CommandType, MetaData, Taxonomy
 
-from defects4cpp.command import TestCommand
+from bugscpp.command import TestCommand
 
 _DUMMY_DOCKERFILE = """
 FROM ubuntu:20.04

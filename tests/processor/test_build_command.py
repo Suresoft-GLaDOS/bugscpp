@@ -4,8 +4,8 @@ from pathlib import Path
 import docker.errors
 import pytest
 
-from defects4cpp.command import BuildCommand, CheckoutCommand
-from defects4cpp.config import config
+from bugscpp.command import BuildCommand, CheckoutCommand
+from bugscpp.config import config
 
 
 @pytest.mark.parametrize(

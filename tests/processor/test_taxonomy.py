@@ -1,8 +1,8 @@
 import pytest
 from errors.internal import DppMetaDataInitKeyError, DppMetaDataInitTypeError
 
-from defects4cpp.config import config, env
-from defects4cpp.taxonomy import Taxonomy
+from bugscpp.config import config, env
+from bugscpp.taxonomy import Taxonomy
 
 
 def test_metadata_variables_should_be_replaced():
