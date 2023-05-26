@@ -217,7 +217,9 @@ def generate_tag_page(output_file_path="wiki/tags_bugscpp.md"):
 
 
 def generate_sidebar(output_file_path="wiki/_sidebar.md"):
-    text_sidebar = '<h1><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki">HOME</a></h1>\n'
+    text_sidebar = (
+        '<h1><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki">HOME</a></h1>\n'
+    )
     text_sidebar = (
         text_sidebar
         + '<h1><a href="https://github.com/Suresoft-GLaDOS/bugscpp/wiki/tags_bugscpp">TAGS</a></h1>\n'

@@ -109,7 +109,10 @@ class Docker:
         self._container_name: str = f"{tag}-dpp"
         self._tag = f"hschoe/defects4cpp-ubuntu:{tag}"
         self._volume: Dict[str, Dict] = {
-            str(worktree.host.resolve()): {"bind": str(worktree.container), "mode": "rw"}
+            str(worktree.host.resolve()): {
+                "bind": str(worktree.container),
+                "mode": "rw",
+            }
         }
         self._working_dir: str = str(worktree.container)
         self._environ = environ
@@ -141,8 +144,10 @@ class Docker:
                     self._verbose,
                 )
             except docker.errors.APIError as api_error:
-                message.stdout_error(f"    An API Error occured.{os.linesep}"
-                                     f"    Find detailed message at {message.path}.")
+                message.stdout_error(
+                    f"    An API Error occured.{os.linesep}"
+                    f"    Find detailed message at {message.path}."
+                )
                 message.error(__name__, f"APIError {api_error}")
                 self._image = _build_image(
                     self.client,
