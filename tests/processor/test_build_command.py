@@ -52,7 +52,7 @@ def test_build_command_export_commands(project_name, tmp_path):
 
     build = BuildCommand()
     build(
-        f"{str(tmp_path / project_name / 'fixed#1')} --export={str(tmp_path)}".split()
+        f"{str(tmp_path / project_name / 'fixed-1')} --export={str(tmp_path)}".split()
     )
 
     assert (tmp_path / "compile_commands.json").exists()

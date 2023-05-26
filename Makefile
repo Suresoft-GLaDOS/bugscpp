@@ -22,10 +22,10 @@ lint:
 	flake8 . --config setup.cfg
 
 test:
-	python -m pytest tests/ --ignore tests/taxonomy
+	@PYTHONPATH=bugscpp/ python -m pytest tests/ --ignore tests/taxonomy
 
 test-fast:
-	python -m pytest tests/ --ignore tests/taxonomy --skip-slow
+	@PYTHONPATH=bugscpp/ python -m pytest tests/ --ignore tests/taxonomy --skip-slow
 
 coverage:
 ifeq ($(OS), Windows_NT)

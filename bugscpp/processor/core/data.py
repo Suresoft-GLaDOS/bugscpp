@@ -45,7 +45,7 @@ class Worktree:
     @property
     def suffix(self) -> Path:
         """Return suffix path which is appended to base path"""
-        return Path(f"{'buggy' if self.buggy else 'fixed'}#{self.index}")
+        return Path(f"{'buggy' if self.buggy else 'fixed'}-{self.index}")
 
     @property
     def host(self) -> Path:

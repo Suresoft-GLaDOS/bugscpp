@@ -33,8 +33,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def gitenv():
-    environ["GIT_COMMITTER_NAME"] = "defects4cpp"
-    environ["GIT_COMMITTER_EMAIL"] = "defects4cpp@email.com"
+    environ["GIT_COMMITTER_NAME"] = "bugscpp"
+    environ["GIT_COMMITTER_EMAIL"] = "bugscpp@email.com"
     yield
     del environ["GIT_COMMITTER_NAME"]
     del environ["GIT_COMMITTER_EMAIL"]

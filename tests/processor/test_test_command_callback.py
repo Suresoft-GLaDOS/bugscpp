@@ -120,7 +120,7 @@ class TestConfig:
 def setup(tmp_path: Path, request) -> Callable[[List[int]], TestConfig]:
     def create(case: List[int]) -> TestConfig:
         tmp = tmp_path / request.node.name
-        src_dir = tmp / _TEST_PROJECT_NAME / "fixed#1"
+        src_dir = tmp / _TEST_PROJECT_NAME / "fixed-1"
         src_dir.mkdir(parents=True, exist_ok=True)
         output_dir = tmp / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,7 @@ def setup(tmp_path: Path, request) -> Callable[[List[int]], TestConfig]:
             tmp,
             src_dir,
             output_dir,
-            [output_dir / f"{_TEST_PROJECT_NAME}-fixed#1-{i}" for i in case],
+            [output_dir / f"{_TEST_PROJECT_NAME}-fixed-1-{i}" for i in case],
         )
 
     return create

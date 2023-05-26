@@ -101,10 +101,10 @@ class TestDirectory:
     __test__ = False
 
     def fixed_output_dir(self, index: int, case: int):
-        return self.checkout_dir / f"{self.project}-fixed#{str(index)}-{str(case)}"
+        return self.checkout_dir / f"{self.project}-fixed-{str(index)}-{str(case)}"
 
     def buggy_output_dir(self, index: int, case: int):
-        return self.checkout_dir / f"{self.project}-buggy#{str(index)}-{str(case)}"
+        return self.checkout_dir / f"{self.project}-buggy-{str(index)}-{str(case)}"
 
 
 @pytest.fixture

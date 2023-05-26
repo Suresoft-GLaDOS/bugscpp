@@ -15,7 +15,7 @@ def test_search_by_tags(tags):
             continue
         for defect in taxonomy[name].defects:
             if all(tag.lower() in defect.tags for tag in tags):
-                assert f"{name}#{defect.id}" in result
+                assert f"{name}-{defect.id}" in result
 
 
 def test_search_by_tags_should_be_empty():

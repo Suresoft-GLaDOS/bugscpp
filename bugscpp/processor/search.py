@@ -42,7 +42,7 @@ def search_by_tags(tag_list=None):
             continue
         for defect in taxonomy[name].defects:
             if all(tag.lower() in defect.tags for tag in tag_list):
-                search_result.append(f"{name}#{defect.id}")
+                search_result.append(f"{name}-{defect.id}")
     return search_result
 
 

@@ -66,7 +66,7 @@ def test_write_config(tmp_path):
     with pytest.raises(DppArgparseFileNotFoundError):
         Project.write_config(worktree)
 
-    p = tmp_path / "yara" / "buggy#1"
+    p = tmp_path / "yara" / "buggy-1"
     p.mkdir(parents=True)
 
     worktree = Worktree("yara", 1, True, str(tmp_path))

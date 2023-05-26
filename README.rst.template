@@ -56,8 +56,8 @@ Finally, to build and test `cpp_peglib`, or any project you've just cloned, run 
 
 ::
 
-    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/fixed#1
-    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/fixed#1
+    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/fixed-1
+    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/fixed-1
 
 You can run some test cases separately like this:
 
@@ -76,8 +76,8 @@ Set ``--coverage`` to generate `.gcov` data.
 
 ::
 
-    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/buggy#1 --coverage
-    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/buggy#1 --coverage
+    $ python3 bugscpp/bugscpp.py build /path/to/cpp_peglib/buggy-1 --coverage
+    $ python3 bugscpp/bugscpp.py test /path/to/cpp_peglib/buggy-1 --coverage
 
 You'll see the artifact is generated in the current directory.
 
@@ -94,9 +94,9 @@ You can also see the buggy artifact is generated in the current directory.
 ::
 
     $ ls
-    /path/to/cpp_peglib-buggy#1-1
-    /path/to/cpp_peglib-buggy#1-2
-    /path/to/cpp_peglib-buggy#1-3
+    /path/to/cpp_peglib-buggy-1-1
+    /path/to/cpp_peglib-buggy-1-2
+    /path/to/cpp_peglib-buggy-1-3
     ...
 
 You can search defects by tags.
@@ -105,9 +105,9 @@ You can search defects by tags.
 
     $ python3 bugscpp/bugscpp.py search cve single-line memory-error
 
-    cpp_peglib#1
-    dlt_daemon#1
-    exiv2#5
+    cpp_peglib-1
+    dlt_daemon-1
+    exiv2-5
     ...
 
 
