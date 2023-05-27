@@ -67,7 +67,7 @@ To view a list of defect taxonomy, execute the following command:
 
 ::
 
-    $ python bugscpp/bugscpp.py show
+    python bugscpp/bugscpp.py show
 
 Project Checkout
 ----------------
@@ -76,7 +76,7 @@ To checkout a project, use the following command:
 
 ::
 
-    $ python bugscpp/bugscpp.py checkout <PROJECT> <INDEX> [-b|--buggy] [-t|--target <WORKSPACE>]
+    python bugscpp/bugscpp.py checkout <PROJECT> <INDEX> [-b|--buggy] [-t|--target <WORKSPACE>]
 
 Replace ``<PROJECT>`` with the name of the project you want to checkout, and ``<INDEX>`` with the index of the defect.
 The project will be stored in either ``./<WORKSPACE>/fixed-<INDEX>`` or ``./<PROJECT>/buggy-<INDEX>`` (if the option``-b`` is provided).
@@ -86,7 +86,7 @@ For example, to checkout the first buggy version of the ``cpp_peglib`` project, 
 
 ::
 
-    $ python bugscpp/bugscpp.py checkout cpp_peglib 1 --buggy
+    python bugscpp/bugscpp.py checkout cpp_peglib 1 --buggy
 
 By default, the project will be stored in ``./cpp_peglib/buggy-1``.
 
@@ -96,15 +96,15 @@ To build and test a project, use the following commands:
 
 ::
 
-    $ python bugscpp/bugscpp.py build <PATH>
-    $ python bugscpp/bugscpp.py test <PATH>
+    python bugscpp/bugscpp.py build <PATH>
+    python bugscpp/bugscpp.py test <PATH>
 
 Replace ``<PATH>`` with the path to the checkout directory of the project. For example, to build and test the  buggy version of ``cpp_peglib-1``, you can use the following commands:
 
 ::
 
-    $ python bugscpp/bugscpp.py build ./cpp_peglib/buggy-1
-    $ python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1
+    python bugscpp/bugscpp.py build ./cpp_peglib/buggy-1
+    python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1
 
 Running Specific Test Cases
 ---------------------------
@@ -112,13 +112,13 @@ You can run specific test cases separately using the following command:
 
 ::
 
-    $ python bugscpp/bugscpp.py test <PATH> --case <EXPR>
+    python bugscpp/bugscpp.py test <PATH> --case <EXPR>
 
 Replace ``<PATH>`` with the path to the checkout directory of the project, and ``<EXPR>`` with the test case IDs. For example, to run test cases 1 to 4 and 7 of the ``cpp_peglib`` project, use the following command:
 
 ::
 
-    $ python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1 --case 1-4,7
+    python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1 --case 1-4,7
 
 Generating Code Coverage Data
 -----------------------------
@@ -126,15 +126,15 @@ To generate code coverage data, add the ``--coverage`` flag to the build and tes
 
 ::
 
-    $ python bugscpp/bugscpp.py build <PATH> --coverage
-    $ python bugscpp/bugscpp.py test <PATH> --coverage
+    python bugscpp/bugscpp.py build <PATH> --coverage
+    python bugscpp/bugscpp.py test <PATH> --coverage
 
 For example, to generate code coverage data for the ``cpp_peglib`` project, you can use the following commands:
 
 ::
 
-    $ python bugscpp/bugscpp.py build ./cpp_peglib/buggy-1 --coverage
-    $ python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1 --coverage
+    python bugscpp/bugscpp.py build ./cpp_peglib/buggy-1 --coverage
+    python bugscpp/bugscpp.py test ./cpp_peglib/buggy-1 --coverage
 
 Searching Defects by Tags
 -------------------------
@@ -142,7 +142,7 @@ To search for defects using specific tags, use the following command:
 
 ::
 
-    $ python bugscpp/bugscpp.py search <TAG1> <TAG2> ...
+    python bugscpp/bugscpp.py search <TAG1> <TAG2> ...
 
 Replace ``<TAG1>``, ``<TAG2>``, and so on, with the specific `tags`_ you want to search for.
 
@@ -152,7 +152,7 @@ For example, to search for defects related to "cve", "single-line", and "memory-
 
 ::
 
-    $ python bugscpp/bugscpp.py search cve single-line memory-error
+    python bugscpp/bugscpp.py search cve single-line memory-error
 
 The command will display the projects that match the specified tags.
 
