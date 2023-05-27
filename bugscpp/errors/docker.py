@@ -11,7 +11,7 @@ class DppDockerBuildError(DppError):
         super().__init__(
             f"{self.msg}\n"
             "Could not build image. Please open an issue at "
-            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+            "https://github.com/Suresoft-GLaDOS/bugscpp/issues\n"
         )
 
 
@@ -21,7 +21,7 @@ class DppDockerBuildClientError(DppError):
         super().__init__(
             f"{self.msg}\n"
             "Could not build image (client error). Please open an issue at "
-            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+            "https://github.com/Suresoft-GLaDOS/bugscpp/issues\n"
         )
 
 
@@ -31,7 +31,7 @@ class DppDockerBuildServerError(DppError):
         super().__init__(
             f"{self.msg}\n"
             "Could not build image (server error). Please open an issue at "
-            "https://github.com/Suresoft-GLaDOS/defects4cpp/issues\n"
+            "https://github.com/Suresoft-GLaDOS/bugscpp/issues\n"
         )
 
 
