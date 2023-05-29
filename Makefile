@@ -33,13 +33,13 @@ ifeq ($(OS), Windows_NT)
 	python -m pytest tests/ \
 		--cov-report=xml:reports/coverage/coverage.xml \
 		--cov-report=html:reports/coverage \
-		--cov=defects4cpp \
+		--cov=bugscpp \
 		--ignore tests/taxonomy
 else
 	PYTHONPATH=bugscpp/ python -m pytest tests/ \
 		--cov-report=xml:reports/coverage/coverage.xml \
 		--cov-report=html:reports/coverage \
-		--cov=defects4cpp \
+		--cov=bugscpp \
 		--ignore tests/taxonomy
 endif
 

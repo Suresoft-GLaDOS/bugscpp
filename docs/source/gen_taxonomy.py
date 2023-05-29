@@ -4,14 +4,9 @@ import sys
 from os.path import realpath
 from pathlib import Path
 
-path = Path(realpath(__file__))
-while True:
-    path = path.parent
-    if path.parent == path:
-        sys.exit(1)
-    if path.name == "defects4cpp":
-        break
-taxonomy_path = Path("defects4cpp/taxonomy")
+project_root = Path(realpath(__file__)).parent.parent.parent
+assert project_root / "pyproject.toml", f"{project_root} is not a project root"
+taxonomy_path = Path("bugscpp/taxonomy")
 
 table = """.. _taxonomy:
 
@@ -31,7 +26,7 @@ A List of Defect Taxonomy
 """
 
 rows = []
-for entry in (path / taxonomy_path).iterdir():
+for entry in (project_root / taxonomy_path).iterdir():
     if not entry.is_dir() or entry.name.startswith("__"):
         continue
     with open(entry / "meta.json") as fp:
@@ -77,5 +72,5 @@ for entry in (path / taxonomy_path).iterdir():
         rows.append(f"     - {methods}\n")
         rows.append(f"     - {lines_add + lines_del}\n")
 
-with open(path / "docs/source/taxonomy.rst", "w+") as fp:
+with open(project_root / "docs/source/taxonomy.rst", "w+") as fp:
     fp.write(f"{table}{''.join(rows)}")

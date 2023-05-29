@@ -16,14 +16,14 @@ from pathlib import Path
 
 _path = Path(os.path.abspath(__file__))
 _root_dir = _path.parents[2]
-sys.path.insert(0, str(_root_dir / "defects4cpp"))
+sys.path.insert(0, str(_root_dir / "bugscpp"))
 sys.path.insert(0, str(_root_dir))
 
 
 # -- Project information -----------------------------------------------------
 
-project = "defects4cpp"
-copyright = "2021, Suresoft"
+project = "bugscpp"
+copyright = "2021-2023, Suresoft"
 author = "Suresoft"
 
 # The full version, including alpha/beta/rc tags
@@ -51,7 +51,7 @@ templates_path = ["_templates"]
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ["api/defects4cpp.taxonomy.*"]
+exclude_patterns = ["api/bugscpp.taxonomy.*"]
 
 
 # -- Options for HTML output -------------------------------------------------
