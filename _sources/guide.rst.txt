@@ -5,14 +5,14 @@ Defects4cpp User Guide
    :start-after: .. begin example
    :end-before: .. end example
 
-.. autoprogram:: defects4cpp.processor.checkout:CheckoutCommand().parser
-   :prog: d++ checkout
+.. autoprogram:: bugscpp.processor.checkout:CheckoutCommand().parser
+   :prog: bugscpp checkout
 
-.. autoprogram:: defects4cpp.processor.build:BuildCommand().parser
-   :prog: d++ build
+.. autoprogram:: bugscpp.processor.build:BuildCommand().parser
+   :prog: bugscpp build
 
-.. autoprogram:: defects4cpp.processor.test:TestCommand().parser
-   :prog: d++ test
+.. autoprogram:: bugscpp.processor.test:TestCommand().parser
+   :prog: bugscpp test
 
 .. _case-example:
 
