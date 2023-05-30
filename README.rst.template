@@ -59,11 +59,9 @@ Example
 =======
 .. begin example
 
-To convert the example commands to the reStructuredText (.rst) format, you can use the following:
-
-Displaying a List of Defect Taxonomy
+Displaying a List of Defects
 ------------------------------------
-To view a list of defect taxonomy, execute the following command:
+To view a list of defects, execute the following command:
 
 ::
 
