@@ -18,6 +18,7 @@ from message import message
 from processor.core.argparser import create_common_vcs_parser
 from processor.core.command import Command
 from processor.core.data import Project
+from processor.core.docker import Docker
 
 
 def _git_clone(path: Path, metadata: taxonomy.MetaData) -> git.Repo:
@@ -195,11 +196,28 @@ class CheckoutCommand(Command):
             message.info(__name__, f"creating '.defects4cpp.json' at {worktree.host}")
             # Write .defects4cpp.json in the directory.
             Project.write_config(worktree)
+            if not args.source_only:
+                try:
+                    docker = Docker(metadata.dockerfile, worktree, verbose=args.verbose)
+                    image = docker.image
+                    message.info(__name__, f"    image: '{image}'")
+                except Exception as e:
+                    message.stdout_error(
+                        f"    An API Error occured.{os.linesep}"
+                        f"    Find detailed message at {message.path}."
+                    )
 
         except DppGitError as e:
             message.error(__name__, str(e))
             message.stdout_progress_error(f"[{metadata.name}] {str(e)}")
             sys.exit(1)
+
+        # pull docker image if it does not exist
+        message.info(__name__, "pulling docker image")
+        dockerfile = metadata.dockerfile
+        tag = Path(dockerfile).parent.name
+        self._container_name: str = f"{tag}-dpp"
+        self._tag = f"hschoe/defects4cpp-ubuntu:{tag}"
 
         message.stdout_progress(f"[{metadata.name}] done")
 

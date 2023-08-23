@@ -75,6 +75,20 @@ def create_common_vcs_parser() -> argparse.ArgumentParser:
         help="checkout to the specified directory instead of the current directory.",
         action=ValidateWorkspace,
     )
+    parser.add_argument(
+        "-s",
+        "--source-only",
+        dest="source_only",
+        help="checkout source code only.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        dest="verbose",
+        help="verbose mode",
+        action="store_true",
+    )
     return parser
 
 
