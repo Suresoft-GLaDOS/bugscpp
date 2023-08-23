@@ -18,7 +18,7 @@ DPP_ADDITIONAL_GCOV_OPTIONS: str = ""
 DPP_BUILD_PRE_STEPS: List[Dict[str, any]] = []
 DPP_BUILD_POST_STEPS: List[Dict[str, any]] = []
 
-# Directory at which d++.py is placed
+# Directory at which bugcpp.py is placed
 DPP_HOME: str = os.path.realpath(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 )

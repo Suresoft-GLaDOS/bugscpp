@@ -59,7 +59,7 @@ class SearchCommand(SimpleCommand):
         self.parser.add_argument("tags", nargs="+", help="Tags to search")
         self.parser.usage = dedent(
             """
-            d++.py search TAGS
+            bugcpp.py search TAGS
             Possible tags are: {}
             """
         ).format(", ".join(all_tags))

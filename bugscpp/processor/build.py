@@ -102,7 +102,7 @@ class BuildCommand(DockerCommand):
             nargs="?",
         )
         self.parser.usage = (
-            "d++.py build PATH [-j|--jobs=JOBS] [--coverage] [-v|--verbose] [-u|--uid[=UID_DPP_DOCKER_USER] "
+            "bugcpp.py build PATH [-j|--jobs=JOBS] [--coverage] [-v|--verbose] [-u|--uid=UID_DPP_DOCKER_USER] "
             "[-e|--export[=EXPORT_PATH]]"
         )
         self.parser.description = dedent(

@@ -124,7 +124,7 @@ class CheckoutCommand(Command):
         super().__init__()
         # TODO: write argparse description in detail
         self.parser = create_common_vcs_parser()
-        self.parser.usage = "d++.py checkout PROJECT INDEX [-b|--buggy] [-t|--target]"
+        self.parser.usage = "bugcpp.py checkout PROJECT INDEX [-b|--buggy] [-t|--target WORKSPACE] [-s|--source-only] [-v|--verbose]"
         self.parser.description = dedent(
             """\
         Checkout defect taxonomy.

@@ -134,7 +134,7 @@ class Docker:
                     self.client.images.pull(self._tag)
                 self._image = _cast_image(self.client.images.get(self._tag))
             except docker.errors.ImageNotFound:
-                print(
+                message.info(
                     f"ImageNotFound {self.client}, {self._tag}, {str(Path(self._dockerfile).parent)}"
                 )
                 self._image = _build_image(
