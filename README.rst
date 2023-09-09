@@ -33,7 +33,7 @@ Requirements
 
 Hardware Requirement
 --------------------
-- AMD processor
+- CPU architecture: AMD64
 
 Software Requirements
 ---------------------
