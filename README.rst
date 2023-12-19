@@ -164,6 +164,9 @@ Table of Defects
    * - Project
      - # of bugs
      - Short Description
+   * - `berry <https://github.com/berry-lang/berry/>`_
+     - 1
+     - A ultra-lightweight embedded scripting language optimized for microcontrollers.
    * - `coreutils <https://github.com/coreutils/coreutils/>`_
      - 2
      - GNU core utilities(the union of the GNU fileutils, sh-utils, and textutils packages).
@@ -234,7 +237,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - SUM
-     - 210
+     - 211
      - Sum of all defects
 
 
