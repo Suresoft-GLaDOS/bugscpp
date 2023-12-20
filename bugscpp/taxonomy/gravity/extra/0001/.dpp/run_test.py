@@ -13,6 +13,7 @@ if __name__ == '__main__':
     root_dir = Path('test/unittest')
     disabled_dir = Path('test/unittest/disabled')
     all_gravity_files = list(root_dir.rglob('*.gravity'))
+    all_gravity_files.remove(Path('test/unittest/include_test.gravity'))
 
     sorted_gravity_files = sorted([f for f in all_gravity_files if disabled_dir not in f.parents])
 

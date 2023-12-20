@@ -185,6 +185,9 @@ Table of Defects
    * - `exiv2 <https://github.com/Exiv2/exiv2.git/>`_
      - 20
      - Exiv2 is a C++ library and a command-line utility to read, write, delete and modify Exif, IPTC, XMP and ICC image metadata
+   * - `gravity <https://github.com/marcobambini/gravity/>`_
+     - 1
+     - Gravity is a powerful, dynamically typed, lightweight, embeddable programming language written in C without any external dependencies (except for stdlib).
    * - `jerryscript <https://github.com/jerryscript-project/jerryscript.git/>`_
      - 11
      - JerryScript is a lightweight JavaScript engine for resource-constrained devices such as microcontrollers.
@@ -237,7 +240,7 @@ Table of Defects
      - 5
      - Zsh is an extended Bourne shell with many improvements, including some features of Bash, ksh, and tcsh.
    * - SUM
-     - 211
+     - 212
      - Sum of all defects
 
 
