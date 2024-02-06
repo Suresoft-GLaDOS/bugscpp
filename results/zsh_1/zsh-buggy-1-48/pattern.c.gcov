@@ -1,0 +1,4350 @@
+        -:    0:Source:pattern.c
+        -:    0:Graph:/home/workspace/Src/pattern.gcno
+        -:    0:Data:/home/workspace/Src/pattern.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * pattern.c - pattern matching
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Peter Stephenson
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Peter Stephenson or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Peter Stephenson and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Peter Stephenson and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Peter Stephenson and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: * Pattern matching code derived from the regexp library by Henry
+        -:   29: * Spencer, which has the following copyright.
+        -:   30: *
+        -:   31: *	Copyright (c) 1986 by University of Toronto.
+        -:   32: *	Written by Henry Spencer.  Not derived from licensed software.
+        -:   33: *
+        -:   34: *	Permission is granted to anyone to use this software for any
+        -:   35: *	purpose on any computer system, and to redistribute it freely,
+        -:   36: *	subject to the following restrictions:
+        -:   37: *
+        -:   38: *	1. The author is not responsible for the consequences of use of
+        -:   39: *		this software, no matter how awful, even if they arise
+        -:   40: *		from defects in it.
+        -:   41: *
+        -:   42: *	2. The origin of this software must not be misrepresented, either
+        -:   43: *		by explicit claim or by omission.
+        -:   44: *
+        -:   45: *	3. Altered versions must be plainly marked as such, and must not
+        -:   46: *		be misrepresented as being the original software.
+        -:   47: *
+        -:   48: * Eagle-eyed readers will notice this is an altered version.  Incredibly
+        -:   49: * sharp-eyed readers might even find bits that weren't altered.
+        -:   50: *
+        -:   51: *
+        -:   52: *      And I experienced a sense that, like certain regular
+        -:   53: *      expressions, seemed to match the day from beginning to end, so
+        -:   54: *      that I did not need to identify the parenthesised subexpression
+        -:   55: *      that told of dawn, nor the group of characters that indicated
+        -:   56: *      the moment when my grandfather returned home with news of
+        -:   57: *      Swann's departure for Paris; and the whole length of the month
+        -:   58: *      of May, as if matched by a closure, fitted into the buffer of my
+        -:   59: *      life with no sign of overflowing, turning the days, like a
+        -:   60: *      procession of insects that could consist of this or that
+        -:   61: *      species, into a random and unstructured repetition of different
+        -:   62: *      sequences, anchored from the first day of the month to the last
+        -:   63: *      in the same fashion as the weeks when I knew I would not see
+        -:   64: *      Gilberte and would search in vain for any occurrences of the
+        -:   65: *      string in the avenue of hawthorns by Tansonville, without my
+        -:   66: *      having to delimit explicitly the start or finish of the pattern.
+        -:   67: *
+        -:   68: *                                 M. Proust, "In Search of Lost Files",
+        -:   69: *                                 bk I, "The Walk by Bourne's Place".
+        -:   70: */
+        -:   71:
+        -:   72:#include "zsh.mdh"
+        -:   73:
+        -:   74:/*
+        -:   75: * The following union is used mostly for alignment purposes.
+        -:   76: * Normal nodes are longs, while certain nodes take a char * as an argument;
+        -:   77: * here we make sure that they both work out to the same length.
+        -:   78: * The compiled regexp we construct consists of upats stuck together;
+        -:   79: * anything else to be added (strings, numbers) is stuck after and
+        -:   80: * then aligned to a whole number of upat units.
+        -:   81: *
+        -:   82: * Note also that offsets are in terms of the sizes of these things.
+        -:   83: */
+        -:   84:union upat {
+        -:   85:    long l;
+        -:   86:    unsigned char *p;
+        -:   87:};
+        -:   88:
+        -:   89:typedef union upat *Upat;
+        -:   90:
+        -:   91:#include "pattern.pro"
+        -:   92:
+        -:   93:/* Number of active parenthesized expressions allowed in backreferencing */
+        -:   94:#define NSUBEXP  9
+        -:   95:
+        -:   96:/* definition	number	opnd?	meaning */
+        -:   97:#define	P_END	  0x00	/* no	End of program. */
+        -:   98:#define P_EXCSYNC 0x01	/* no   Test if following exclude already failed */
+        -:   99:#define P_EXCEND  0x02	/* no   Test if exclude matched orig branch */
+        -:  100:#define	P_BACK	  0x03	/* no	Match "", "next" ptr points backward. */
+        -:  101:#define	P_EXACTLY 0x04	/* lstr	Match this string. */
+        -:  102:#define	P_NOTHING 0x05	/* no	Match empty string. */
+        -:  103:#define	P_ONEHASH 0x06	/* node	Match this (simple) thing 0 or more times. */
+        -:  104:#define	P_TWOHASH 0x07	/* node	Match this (simple) thing 1 or more times. */
+        -:  105:#define P_GFLAGS  0x08	/* long Match nothing and set globbing flags */
+        -:  106:#define P_ISSTART 0x09  /* no   Match start of string. */
+        -:  107:#define P_ISEND   0x0a  /* no   Match end of string. */
+        -:  108:#define P_COUNTSTART 0x0b /* no Initialise P_COUNT */
+        -:  109:#define P_COUNT   0x0c  /* 3*long uc* node Match a number of repetitions */
+        -:  110:/* numbered so we can test bit 5 for a branch */
+        -:  111:#define	P_BRANCH  0x20	/* node	Match this alternative, or the next... */
+        -:  112:#define	P_WBRANCH 0x21	/* uc* node P_BRANCH, but match at least 1 char */
+        -:  113:/* excludes are also branches, but have bit 4 set, too */
+        -:  114:#define P_EXCLUDE 0x30	/* uc* node Exclude this from previous branch */
+        -:  115:#define P_EXCLUDP 0x31	/* uc* node Exclude, using full file path so far */
+        -:  116:/* numbered so we can test bit 6 so as not to match initial '.' */
+        -:  117:#define	P_ANY	  0x40	/* no	Match any one character. */
+        -:  118:#define	P_ANYOF	  0x41	/* str  Match any character in this string. */
+        -:  119:#define	P_ANYBUT  0x42	/* str  Match any character not in this string. */
+        -:  120:#define P_STAR    0x43	/* no   Match any set of characters. */
+        -:  121:#define P_NUMRNG  0x44	/* zr, zr Match a numeric range. */
+        -:  122:#define P_NUMFROM 0x45	/* zr   Match a number >= X */
+        -:  123:#define P_NUMTO   0x46	/* zr   Match a number <= X */
+        -:  124:#define P_NUMANY  0x47	/* no   Match any set of decimal digits */
+        -:  125:/* spaces left for P_OPEN+n,... for backreferences */
+        -:  126:#define	P_OPEN	  0x80	/* no	Mark this point in input as start of n. */
+        -:  127:#define	P_CLOSE	  0x90	/* no	Analogous to OPEN. */
+        -:  128:/*
+        -:  129: * no    no argument
+        -:  130: * zr    the range type zrange_t:  may be zlong or unsigned long
+        -:  131: * char  a single char
+        -:  132: * uc*   a pointer to unsigned char, used at run time and initialised
+        -:  133: *       to NULL.
+        -:  134: * str   null-terminated, metafied string
+        -:  135: * lstr  length as long then string, not null-terminated, unmetafied.
+        -:  136: */
+        -:  137:
+        -:  138:/*
+        -:  139: * Notes on usage:
+        -:  140: * P_WBRANCH:  This works like a branch and is used in complex closures,
+        -:  141: *    to ensure we don't succeed on a zero-length match of the pattern,
+        -:  142: *    since that would cause an infinite loop.  We do this by recording
+        -:  143: *    the positions where we have already tried to match.   See the
+        -:  144: *    P_WBRANCH test in patmatch().
+        -:  145: *
+        -:  146: *  P_ANY, P_ANYOF:  the operand is a null terminated
+        -:  147: *    string.  Normal characters match as expected.  Characters
+        -:  148: *    in the range Meta+PP_ALPHA..Meta+PP_UNKWN do the appropriate
+        -:  149: *    Posix range tests.  This relies on imeta returning true for these
+        -:  150: *    characters.  We treat unknown POSIX ranges as never matching.
+        -:  151: *    PP_RANGE means the next two (possibly metafied) characters form
+        -:  152: *    the limits of a range to test; it's too much like hard work to
+        -:  153: *    expand the range.
+        -:  154: *
+        -:  155: *  P_EXCLUDE, P_EXCSYNC, PEXCEND:  P_EXCLUDE appears in the pattern like
+        -:  156: *    P_BRANCH, but applies to the immediately preceding branch.  The code in
+        -:  157: *    the corresponding branch is followed by a P_EXCSYNC, which simply
+        -:  158: *    acts as a marker that a P_EXCLUDE comes next.  The P_EXCLUDE
+        -:  159: *    has a pointer to char embedded in it, which works
+        -:  160: *    like P_WBRANCH:  if we get to the P_EXCSYNC, and we already matched
+        -:  161: *    up to the same position, fail.  Thus we are forced to backtrack
+        -:  162: *    on closures in the P_BRANCH if the first attempt was excluded.
+        -:  163: *    Corresponding to P_EXCSYNC in the original branch, there is a
+        -:  164: *    P_EXCEND in the exclusion.  If we get to this point, and we did
+        -:  165: *    *not* match in the original branch, the exclusion itself fails,
+        -:  166: *    otherwise it succeeds since we know the tail already matches,
+        -:  167: *    so P_EXCEND is the end of the exclusion test.
+        -:  168: *    The whole sorry mess looks like this, where the upper lines
+        -:  169: *    show the linkage of the branches, and the lower shows the linkage
+        -:  170: *    of their pattern arguments.
+        -:  171: *
+        -:  172: *     	        ---------------------      ----------------------
+        -:  173: *              ^      	       	     v    ^      	         v
+        -:  174: *      ( <BRANCH>:apat-><EXCSYNC> <EXCLUDE>:excpat-><EXCEND> ) tail
+        -:  175: *                               	                         ^
+        -:  176: *		       	  |                                      |
+        -:  177: *			   --------------------------------------
+        -:  178: *
+        -:  179: * P_EXCLUDP: this behaves exactly like P_EXCLUDE, with the sole exception
+        -:  180: *   that we prepend the path so far to the exclude pattern.   This is
+        -:  181: *   for top level file globs, e.g. ** / *.c~*foo.c
+        -:  182: *                                    ^ I had to leave this space
+        -:  183: * P_NUM*: zl is a zlong if that is 64-bit, else an unsigned long.
+        -:  184: *
+        -:  185: * P_COUNTSTART, P_COUNT: a P_COUNTSTART flags the start of a quantified
+        -:  186: * closure (#cN,M) and is used to initialise the count.  Executing
+        -:  187: * the pattern leads back to the P_COUNT, while the next links of the
+        -:  188: * P_COUNTSTART and P_COUNT lead to the tail of the pattern:
+        -:  189: *
+        -:  190: *	       	        ----------------
+        -:  191: *     	       	       v       	        ^
+        -:  192: *        <COUNTSTART><COUNT>pattern<BACK> tail
+        -:  193: *	     	    v      v  	  	    ^
+        -:  194: *	            ------------------------
+        -:  195: */
+        -:  196:
+        -:  197:#define	P_OP(p)		((p)->l & 0xff)
+        -:  198:#define	P_NEXT(p)	((p)->l >> 8)
+        -:  199:#define	P_OPERAND(p)	((p) + 1)
+        -:  200:#define P_ISBRANCH(p)   ((p)->l & 0x20)
+        -:  201:#define P_ISEXCLUDE(p)	(((p)->l & 0x30) == 0x30)
+        -:  202:#define P_NOTDOT(p)	((p)->l & 0x40)
+        -:  203:
+        -:  204:/* Specific to lstr type, i.e. P_EXACTLY. */
+        -:  205:#define P_LS_LEN(p)	((p)[1].l) /* can be used as lvalue */
+        -:  206:#define P_LS_STR(p)	((char *)((p) + 2))
+        -:  207:
+        -:  208:/* Specific to P_COUNT: arguments as offset in nodes from operator */
+        -:  209:#define P_CT_CURRENT	(1)	/* Current count */
+        -:  210:#define P_CT_MIN	(2)     /* Minimum count */
+        -:  211:#define P_CT_MAX	(3)	/* Maximum count, -1 for none */
+        -:  212:#define P_CT_PTR	(4)	/* Pointer to last match start */
+        -:  213:#define P_CT_OPERAND	(5)	/* Operand of P_COUNT */
+        -:  214:
+        -:  215:/* Flags needed when pattern is executed */
+        -:  216:#define P_SIMPLE        0x01	/* Simple enough to be #/## operand. */
+        -:  217:#define P_HSTART        0x02	/* Starts with # or ##'d pattern. */
+        -:  218:#define P_PURESTR	0x04	/* Can be matched with a strcmp */
+        -:  219:
+        -:  220:#if defined(ZSH_64_BIT_TYPE) || defined(LONG_IS_64_BIT)
+        -:  221:typedef zlong zrange_t;
+        -:  222:#define ZRANGE_T_IS_SIGNED	(1)
+        -:  223:#define ZRANGE_MAX ZLONG_MAX
+        -:  224:#else
+        -:  225:typedef unsigned long zrange_t;
+        -:  226:#define ZRANGE_MAX ULONG_MAX
+        -:  227:#endif
+        -:  228:
+        -:  229:#ifdef MULTIBYTE_SUPPORT
+        -:  230:/*
+        -:  231: * Handle a byte that's not part of a valid character.
+        -:  232: *
+        -:  233: * This range in Unicode is recommended for purposes of this
+        -:  234: * kind as it corresponds to invalid characters.
+        -:  235: *
+        -:  236: * Note that this strictly only works if wchar_t represents
+        -:  237: * Unicode code points, which isn't necessarily true; however,
+        -:  238: * converting an invalid character into an unknown format is
+        -:  239: * a bit tricky...
+        -:  240: */
+        -:  241:#define WCHAR_INVALID(ch)			\
+        -:  242:    ((wchar_t) (0xDC00 + STOUC(ch)))
+        -:  243:#endif /* MULTIBYTE_SUPPORT */
+        -:  244:
+        -:  245:/*
+        -:  246: * Array of characters corresponding to zpc_chars enum, which it must match.
+        -:  247: */
+        -:  248:static const char zpc_chars[ZPC_COUNT] = {
+        -:  249:    '/', '\0', Bar, Outpar, Tilde, Inpar, Quest, Star, Inbrack, Inang,
+        -:  250:    Hat, Pound, Bnullkeep, Quest, Star, '+', Bang, '!', '@'
+        -:  251:};
+        -:  252:
+        -:  253:/*
+        -:  254: * Corresponding strings used in enable/disable -p.
+        -:  255: * NULL means no way of turning this on or off.
+        -:  256: */
+        -:  257:/**/
+        -:  258:mod_export const char *zpc_strings[ZPC_COUNT] = {
+        -:  259:   NULL, NULL, "|", NULL, "~", "(", "?", "*", "[", "<",
+        -:  260:   "^", "#", NULL, "?(", "*(", "+(", "!(", "\\!(", "@("
+        -:  261:};
+        -:  262:
+        -:  263:/*
+        -:  264: * Corresponding array of pattern disables as set by the user
+        -:  265: * using "disable -p".
+        -:  266: */
+        -:  267:/**/
+        -:  268:mod_export char zpc_disables[ZPC_COUNT];
+        -:  269:
+        -:  270:/*
+        -:  271: * Stack of saved (compressed) zpc_disables for function scope.
+        -:  272: */
+        -:  273:
+        -:  274:static struct zpc_disables_save *zpc_disables_stack;
+        -:  275:
+        -:  276:/*
+        -:  277: * Characters which terminate a simple string (ZPC_COUNT) or
+        -:  278: * an entire pattern segment (the first ZPC_SEG_COUNT).
+        -:  279: * Each entry is either the corresponding character in zpc_chars
+        -:  280: * or Marker which is guaranteed not to match a character in a
+        -:  281: * pattern we are compiling.
+        -:  282: *
+        -:  283: * The complete list indicates characters that are special, so e.g.
+        -:  284: * (testchar == special[ZPC_TILDE]) succeeds only if testchar is a Tilde
+        -:  285: * *and* Tilde is currently special.
+        -:  286: */
+        -:  287:
+        -:  288:/**/
+        -:  289:char zpc_special[ZPC_COUNT];
+        -:  290:
+        -:  291:/* Default size for pattern buffer */
+        -:  292:#define P_DEF_ALLOC 256
+        -:  293:
+        -:  294:/* Flags used in compilation */
+        -:  295:static char *patstart, *patparse;	/* input pointers */
+        -:  296:static int patnpar;		/* () count */
+        -:  297:static char *patcode;		/* point of code emission */
+        -:  298:static long patsize;		/* size of code */
+        -:  299:static char *patout;		/* start of code emission string */
+        -:  300:static long patalloc;		/* size allocated for same */
+        -:  301:
+        -:  302:/* Flags used in both compilation and execution */
+        -:  303:static int patflags;		    /* flags passed down to patcompile */
+        -:  304:static int patglobflags;  /* globbing flags & approx */
+        -:  305:
+        -:  306:/*
+        -:  307: * Increment pointer to metafied multibyte string.
+        -:  308: */
+        -:  309:#ifdef MULTIBYTE_SUPPORT
+        -:  310:typedef wint_t patint_t;
+        -:  311:
+        -:  312:#define PEOF WEOF
+        -:  313:
+        -:  314:#define METACHARINC(x) ((void)metacharinc(&x))
+        -:  315:
+        -:  316:/*
+        -:  317: * TODO: the shiftstate isn't well handled; we don't guarantee
+        -:  318: * to maintain it properly between characters.  If we don't
+        -:  319: * need it we should use mbtowc() instead.
+        -:  320: */
+        -:  321:static mbstate_t shiftstate;
+        -:  322:
+        -:  323:/*
+        -:  324: * Multibyte version: it's (almost) as easy to return the
+        -:  325: * value as not, so do so since we sometimes need it..
+        -:  326: */
+        -:  327:static wchar_t
+       82:  328:metacharinc(char **x)
+        -:  329:{
+       82:  330:    char *inptr = *x;
+        -:  331:    char inchar;
+       82:  332:    size_t ret = MB_INVALID;
+        -:  333:    wchar_t wc;
+        -:  334:
+        -:  335:    /*
+        -:  336:     * Cheat if the top bit isn't set.  This is second-guessing
+        -:  337:     * the library, but we know for sure that if the character
+        -:  338:     * set doesn't have the property that all bytes with the 8th
+        -:  339:     * bit clear are single characters then we are stuffed.
+        -:  340:     */
+       82:  341:    if (!(patglobflags & GF_MULTIBYTE) || !(STOUC(*inptr) & 0x80))
+        -:  342:    {
+       39:  343:	if (itok(*inptr))
+    #####:  344:	    inchar = ztokens[*inptr++ - Pound];
+       39:  345:	else if (*inptr == Meta) {
+    #####:  346:	    inptr++;
+    #####:  347:	    inchar = *inptr++ ^ 32;
+        -:  348:	} else {
+       39:  349:	    inchar = *inptr++;
+        -:  350:	}
+       39:  351:	*x = inptr;
+       39:  352:	return (wchar_t)STOUC(inchar);
+        -:  353:    }
+        -:  354:
+       86:  355:    while (*inptr) {
+       43:  356:	if (itok(*inptr))
+       43:  357:	    inchar = ztokens[*inptr++ - Pound];
+    #####:  358:	else if (*inptr == Meta) {
+    #####:  359:	    inptr++;
+    #####:  360:	    inchar = *inptr++ ^ 32;
+        -:  361:	} else {
+    #####:  362:	    inchar = *inptr++;
+        -:  363:	}
+       43:  364:	ret = mbrtowc(&wc, &inchar, 1, &shiftstate);
+        -:  365:
+       43:  366:	if (ret == MB_INVALID)
+    #####:  367:	    break;
+       43:  368:	if (ret == MB_INCOMPLETE)
+    #####:  369:	    continue;
+       43:  370:	*x = inptr;
+       43:  371:	return wc;
+        -:  372:    }
+        -:  373:
+        -:  374:    /* Error. */
+        -:  375:    /* Reset the shift state for next time. */
+    #####:  376:    memset(&shiftstate, 0, sizeof(shiftstate));
+    #####:  377:    return WCHAR_INVALID(*(*x)++);
+        -:  378:}
+        -:  379:
+        -:  380:#else
+        -:  381:typedef int patint_t;
+        -:  382:
+        -:  383:#define PEOF EOF
+        -:  384:
+        -:  385:#define METACHARINC(x)	((void)((x) += (*(x) == Meta) ? 2 : 1))
+        -:  386:#endif
+        -:  387:
+        -:  388:/*
+        -:  389: * Return unmetafied char from string (x is any char *).
+        -:  390: * Used with MULTIBYTE_SUPPORT if the GF_MULTIBYTE is not
+        -:  391: * in effect.
+        -:  392: */
+        -:  393:#define UNMETA(x)	(*(x) == Meta ? (x)[1] ^ 32 : *(x))
+        -:  394:
+        -:  395:/* Add n more characters, ensuring there is enough space. */
+        -:  396:
+        -:  397:enum {
+        -:  398:    PA_NOALIGN = 1,
+        -:  399:    PA_UNMETA  = 2
+        -:  400:};
+        -:  401:
+        -:  402:/**/
+        -:  403:static void
+      236:  404:patadd(char *add, int ch, long n, int paflags)
+        -:  405:{
+        -:  406:    /* Make sure everything gets aligned unless we get PA_NOALIGN. */
+      236:  407:    long newpatsize = patsize + n;
+      236:  408:    if (!(paflags & PA_NOALIGN))
+      226:  409:	newpatsize = (newpatsize + sizeof(union upat) - 1) &
+        -:  410:		      ~(sizeof(union upat) - 1);
+      236:  411:    if (patalloc < newpatsize) {
+    #####:  412:	long newpatalloc =
+    #####:  413:	    2*(newpatsize > patalloc ? newpatsize : patalloc);
+    #####:  414:	patout = (char *)zrealloc((char *)patout, newpatalloc);
+    #####:  415:	patcode = patout + patsize;
+    #####:  416:	patalloc = newpatalloc;
+        -:  417:    }
+      236:  418:    patsize = newpatsize;
+      236:  419:    if (add) {
+      218:  420:	if (paflags & PA_UNMETA) {
+        -:  421:	    /*
+        -:  422:	     * Unmetafy and untokenize the string as we go.
+        -:  423:	     * The Meta characters in add aren't counted in n.
+        -:  424:	     */
+       84:  425:	    while (n--) {
+       36:  426:		if (itok(*add))
+    #####:  427:		    *patcode++ = ztokens[*add++ - Pound];
+       36:  428:		else if (*add == Meta) {
+    #####:  429:		    add++;
+    #####:  430:		    *patcode++ = *add++ ^ 32;
+        -:  431:		} else {
+       36:  432:		    *patcode++ = *add++;
+        -:  433:		}
+        -:  434:	    }
+        -:  435:	} else {
+     1889:  436:	    while (n--)
+     1501:  437:		*patcode++ = *add++;
+        -:  438:	}
+        -:  439:    } else
+       18:  440:	*patcode++ = ch;
+      236:  441:    patcode = patout + patsize;
+      236:  442:}
+        -:  443:
+        -:  444:static long rn_offs;
+        -:  445:/* operates on pointers to union upat, returns a pointer */
+        -:  446:#define PATNEXT(p) ((rn_offs = P_NEXT(p)) ? \
+        -:  447:		    (P_OP(p) == P_BACK) ? \
+        -:  448:		    ((p)-rn_offs) : ((p)+rn_offs) : NULL)
+        -:  449:
+        -:  450:/*
+        -:  451: * Set up zpc_special with characters that end a string segment.
+        -:  452: * "Marker" cannot occur in the pattern we are compiling so
+        -:  453: * is used to mark "invalid".
+        -:  454: */
+        -:  455:static void
+       31:  456:patcompcharsset(void)
+        -:  457:{
+        -:  458:    char *spp, *disp;
+        -:  459:    int i;
+        -:  460:
+        -:  461:    /* Initialise enabled special characters */
+       31:  462:    memcpy(zpc_special, zpc_chars, ZPC_COUNT);
+        -:  463:    /* Apply user disables from disable -p */
+      651:  464:    for (i = 0, spp = zpc_special, disp = zpc_disables;
+        -:  465:	 i < ZPC_COUNT;
+      589:  466:	 i++, spp++, disp++) {
+      589:  467:	if (*disp)
+    #####:  468:	    *spp = Marker;
+        -:  469:    }
+        -:  470:
+       31:  471:    if (!isset(EXTENDEDGLOB)) {
+        -:  472:	/* Extended glob characters are not active */
+        2:  473:	zpc_special[ZPC_TILDE] = zpc_special[ZPC_HAT] =
+        2:  474:	    zpc_special[ZPC_HASH] = Marker;
+        -:  475:    }
+       31:  476:    if (!isset(KSHGLOB)) {
+        -:  477:	/*
+        -:  478:	 * Ksh glob characters are not active.
+        -:  479:	 * * and ? are shared with normal globbing, but for their
+        -:  480:	 * use here we are looking for a following Inpar.
+        -:  481:	 */
+       31:  482:	zpc_special[ZPC_KSH_QUEST] = zpc_special[ZPC_KSH_STAR] =
+       31:  483:	    zpc_special[ZPC_KSH_PLUS] = zpc_special[ZPC_KSH_BANG] =
+       31:  484:	    zpc_special[ZPC_KSH_BANG2] = zpc_special[ZPC_KSH_AT] = Marker;
+        -:  485:    }
+        -:  486:    /*
+        -:  487:     * Note that if we are using KSHGLOB, then we test for a following
+        -:  488:     * Inpar, not zpc_special[ZPC_INPAR]:  the latter makes an Inpar on
+        -:  489:     * its own active.  The zpc_special[ZPC_KSH_*] followed by any old Inpar
+        -:  490:     * discriminate ksh globbing.
+        -:  491:     */
+       31:  492:    if (isset(SHGLOB)) {
+        -:  493:	/*
+        -:  494:	 * Grouping and numeric ranges are not valid.
+        -:  495:	 * We do allow alternation, however; it's needed for
+        -:  496:	 * "case".  This may not be entirely consistent.
+        -:  497:	 *
+        -:  498:	 * Don't disable Outpar: we may need to match the end of KSHGLOB
+        -:  499:	 * parentheses and it would be difficult to tell them apart.
+        -:  500:	 */
+    #####:  501:	zpc_special[ZPC_INPAR] = zpc_special[ZPC_INANG] = Marker;
+        -:  502:    }
+       31:  503:}
+        -:  504:
+        -:  505:/* Called before parsing a set of file matches to initialize flags */
+        -:  506:
+        -:  507:/**/
+        -:  508:void
+        4:  509:patcompstart(void)
+        -:  510:{
+        4:  511:    patcompcharsset();
+        4:  512:    if (isset(CASEGLOB) || isset(CASEPATHS))
+        4:  513:	patglobflags = 0;
+        -:  514:    else
+    #####:  515:	patglobflags = GF_IGNCASE;
+        4:  516:    if (isset(MULTIBYTE))
+        4:  517:	patglobflags |= GF_MULTIBYTE;
+        4:  518:}
+        -:  519:
+        -:  520:/*
+        -:  521: * Top level pattern compilation subroutine
+        -:  522: * exp is a null-terminated, metafied string.
+        -:  523: * inflags is an or of some PAT_* flags.
+        -:  524: * endexp, if non-null, is set to a pointer to the end of the
+        -:  525: *   part of exp which was compiled.  This is used when
+        -:  526: *   compiling patterns for directories which must be
+        -:  527: *   matched recursively.
+        -:  528: */
+        -:  529:
+        -:  530:/**/
+        -:  531:mod_export Patprog
+       47:  532:patcompile(char *exp, int inflags, char **endexp)
+        -:  533:{
+       47:  534:    int flags = 0;
+       47:  535:    long len = 0;
+        -:  536:    long startoff;
+        -:  537:    Upat pscan;
+       47:  538:    char *lng, *strp = NULL;
+        -:  539:    Patprog p;
+        -:  540:
+       47:  541:    queue_signals();
+        -:  542:
+       47:  543:    startoff = sizeof(struct patprog);
+        -:  544:    /* Ensure alignment of start of program string */
+       47:  545:    startoff = (startoff + sizeof(union upat) - 1) & ~(sizeof(union upat) - 1);
+        -:  546:
+        -:  547:    /* Allocate reasonable sized chunk if none, reduce size if too big */
+       47:  548:    if (patalloc != P_DEF_ALLOC)
+        2:  549:	patout = (char *)zrealloc(patout, patalloc = P_DEF_ALLOC);
+       47:  550:    patcode = patout + startoff;
+       47:  551:    patsize = patcode - patout;
+       47:  552:    patstart = patparse = exp;
+        -:  553:    /*
+        -:  554:     * Note global patnpar numbers parentheses 1..9, while patnpar
+        -:  555:     * in struct is actual count of parentheses.
+        -:  556:     */
+       47:  557:    patnpar = 1;
+       47:  558:    patflags = inflags & ~(PAT_PURES|PAT_HAS_EXCLUDP);
+        -:  559:
+       47:  560:    if (!(patflags & PAT_FILE)) {
+       27:  561:	patcompcharsset();
+       27:  562:	zpc_special[ZPC_SLASH] = Marker;
+       27:  563:	remnulargs(patparse);
+       27:  564:	if (isset(MULTIBYTE))
+       27:  565:	    patglobflags = GF_MULTIBYTE;
+        -:  566:	else
+    #####:  567:	    patglobflags = 0;
+        -:  568:    }
+       47:  569:    if (patflags & PAT_LCMATCHUC)
+    #####:  570:	patglobflags |= GF_LCMATCHUC;
+        -:  571:    /*
+        -:  572:     * Have to be set now, since they get updated during compilation.
+        -:  573:     */
+       47:  574:    ((Patprog)patout)->globflags = patglobflags;
+        -:  575:
+       47:  576:    if (!(patflags & PAT_ANY)) {
+        -:  577:	/* Look for a really pure string, with no tokens at all. */
+       47:  578:	if (!(patglobflags & ~GF_MULTIBYTE)
+        -:  579:#ifdef __CYGWIN__
+        -:  580:	    /*
+        -:  581:	     * If the OS treats files case-insensitively and we
+        -:  582:	     * are looking at files, we don't need to use pattern
+        -:  583:	     * matching to find the file.
+        -:  584:	     */
+        -:  585:	    || (!(patglobflags & ~GF_IGNCASE) && (patflags & PAT_FILE))
+        -:  586:#endif
+        -:  587:	    )
+        -:  588:	{
+        -:  589:	    /*
+        -:  590:	     * Waah!  I wish I understood this.
+        -:  591:	     * Empty metafied strings have an initial Nularg.
+        -:  592:	     * This never corresponds to a real character in
+        -:  593:	     * a glob pattern or string, so skip it.
+        -:  594:	     */
+       47:  595:	    if (*exp == Nularg)
+    #####:  596:		exp++;
+      340:  597:	    for (strp = exp; *strp &&
+      241:  598:		     (!(patflags & PAT_FILE) || *strp != '/') && !itok(*strp);
+      101:  599:		 strp++)
+        -:  600:		;
+        -:  601:	}
+       47:  602:	if (!strp || (*strp && *strp != '/')) {
+        -:  603:	    /* No, do normal compilation. */
+       29:  604:	    strp = NULL;
+       58:  605:	    if (patcompswitch(0, &flags) == 0) {
+    #####:  606:		unqueue_signals();
+    #####:  607:		return NULL;
+        -:  608:	    }
+        -:  609:	} else {
+        -:  610:	    /*
+        -:  611:	     * Yes, copy the string, and skip compilation altogether.
+        -:  612:	     * Null terminate for the benefit of globbing.
+        -:  613:	     * Leave metafied both for globbing and for our own
+        -:  614:	     * efficiency.
+        -:  615:	     */
+       18:  616:	    patparse = strp;
+       18:  617:	    len = strp - exp;
+       18:  618:	    patadd(exp, 0, len + 1, 0);
+       18:  619:	    patout[startoff + len] = '\0';
+       18:  620:	    patflags |= PAT_PURES;
+        -:  621:	}
+        -:  622:    }
+        -:  623:
+        -:  624:    /* end of compilation: safe to use pointers */
+       47:  625:    p = (Patprog)patout;
+       47:  626:    p->startoff = startoff;
+       47:  627:    p->patstartch = '\0';
+       47:  628:    p->globend = patglobflags;
+       47:  629:    p->flags = patflags;
+       47:  630:    p->mustoff = 0;
+       47:  631:    p->size = patsize;
+       47:  632:    p->patmlen = len;
+       47:  633:    p->patnpar = patnpar-1;
+        -:  634:
+        -:  635:#ifndef __CYGWIN__  /* The filesystem itself is case-insensitive on Cygwin */
+       47:  636:    if ((patflags & PAT_FILE) && !isset(CASEGLOB) && !(patflags & PAT_PURES)) {
+    #####:  637:	p->globflags |= GF_IGNCASE;
+    #####:  638:	p->globend |= GF_IGNCASE;
+        -:  639:    }
+        -:  640:#endif
+        -:  641:
+       47:  642:    if (!strp) {
+       29:  643:	pscan = (Upat)(patout + startoff);
+        -:  644:
+       29:  645:	if (!(patflags & PAT_ANY) && P_OP(PATNEXT(pscan)) == P_END) {
+        -:  646:	    /* only one top level choice */
+       27:  647:	    pscan = P_OPERAND(pscan);
+        -:  648:
+       27:  649:	    if (flags & P_PURESTR) {
+        -:  650:		/*
+        -:  651:		 * The pattern can be matched with a simple strncmp/strcmp.
+        -:  652:		 * Careful in case we've overwritten the node for the next ptr.
+        -:  653:		 */
+    #####:  654:		char *dst = patout + startoff;
+        -:  655:		Upat next;
+    #####:  656:		p->flags |= PAT_PURES;
+    #####:  657:		for (; pscan; pscan = next) {
+    #####:  658:		    next = PATNEXT(pscan);
+    #####:  659:		    if (P_OP(pscan) == P_EXACTLY) {
+    #####:  660:			char *opnd = P_LS_STR(pscan), *mtest;
+    #####:  661:			long oplen = P_LS_LEN(pscan), ilen;
+    #####:  662:			int nmeta = 0;
+        -:  663:			/*
+        -:  664:			 * Unfortunately we unmetafied the string
+        -:  665:			 * and we need to put any metacharacters
+        -:  666:			 * back now we know it's a pure string.
+        -:  667:			 * This shouldn't happen too often, it's
+        -:  668:			 * just that there are some cases such
+        -:  669:			 * as . and .. in files where we really
+        -:  670:			 * need a pure string even if there are
+        -:  671:			 * pattern characters flying around.
+        -:  672:			 */
+    #####:  673:			for (mtest = opnd, ilen = oplen; ilen;
+    #####:  674:			     mtest++, ilen--)
+    #####:  675:			    if (imeta(*mtest))
+    #####:  676:				nmeta++;
+    #####:  677:			if (nmeta) {
+    #####:  678:			    patadd(NULL, 0, nmeta, 0);
+    #####:  679:			    p = (Patprog)patout;
+    #####:  680:			    opnd = dupstring_wlen(opnd, oplen);
+    #####:  681:			    dst = patout + startoff;
+        -:  682:			}
+        -:  683:
+    #####:  684:			while (oplen--) {
+    #####:  685:			    if (imeta(*opnd)) {
+    #####:  686:				*dst++ = Meta;
+    #####:  687:				*dst++ = *opnd++ ^ 32;
+        -:  688:			    } else {
+    #####:  689:				*dst++ = *opnd++;
+        -:  690:			    }
+        -:  691:			}
+        -:  692:			/* Only one string in a PAT_PURES, so now done. */
+    #####:  693:			break;
+        -:  694:		    }
+        -:  695:		}
+    #####:  696:		p->size = dst - patout;
+        -:  697:		/* patmlen is really strlen.  We don't need a null. */
+    #####:  698:		p->patmlen = p->size - startoff;
+        -:  699:	    } else {
+        -:  700:		/* starting point info */
+       27:  701:		if (P_OP(pscan) == P_EXACTLY && !p->globflags &&
+    #####:  702:		    P_LS_LEN(pscan))
+    #####:  703:		    p->patstartch = *P_LS_STR(pscan);
+        -:  704:		/*
+        -:  705:		 * Find the longest literal string in something expensive.
+        -:  706:		 * This is itself not all that cheap if we have
+        -:  707:		 * case-insensitive matching or approximation, so don't.
+        -:  708:		 */
+       27:  709:		if ((flags & P_HSTART) && !p->globflags) {
+    #####:  710:		    lng = NULL;
+    #####:  711:		    len = 0;
+    #####:  712:		    for (; pscan; pscan = PATNEXT(pscan))
+    #####:  713:			if (P_OP(pscan) == P_EXACTLY &&
+    #####:  714:			    P_LS_LEN(pscan) >= len) {
+    #####:  715:			    lng = P_LS_STR(pscan);
+    #####:  716:			    len = P_LS_LEN(pscan);
+        -:  717:			}
+    #####:  718:		    if (lng) {
+    #####:  719:			p->mustoff = lng - patout;
+    #####:  720:			p->patmlen = len;
+        -:  721:		    }
+        -:  722:		}
+        -:  723:	    }
+        -:  724:	}
+        -:  725:    }
+        -:  726:
+        -:  727:    /*
+        -:  728:     * The pattern was compiled in a fixed buffer:  unless told otherwise,
+        -:  729:     * we stick the compiled pattern on the heap.  This is necessary
+        -:  730:     * for files where we will often be compiling multiple segments at once.
+        -:  731:     * But if we get the ZDUP flag we always put it in zalloc()ed memory.
+        -:  732:     */
+       47:  733:    if (patflags & PAT_ZDUP) {
+        3:  734:	Patprog newp = (Patprog)zalloc(patsize);
+        3:  735:	memcpy((char *)newp, (char *)p, patsize);
+        3:  736:	p = newp;
+       44:  737:    } else if (!(patflags & PAT_STATIC)) {
+       20:  738:	Patprog newp = (Patprog)zhalloc(patsize);
+       20:  739:	memcpy((char *)newp, (char *)p, patsize);
+       20:  740:	p = newp;
+        -:  741:    }
+        -:  742:
+       47:  743:    if (endexp)
+       20:  744:	*endexp = patparse;
+        -:  745:
+       47:  746:    unqueue_signals();
+       47:  747:    return p;
+        -:  748:}
+        -:  749:
+        -:  750:/*
+        -:  751: * Main body or parenthesized subexpression in pattern
+        -:  752: * Parenthesis (and any ksh_glob gubbins) will have been removed.
+        -:  753: */
+        -:  754:
+        -:  755:/**/
+        -:  756:static long
+       32:  757:patcompswitch(int paren, int *flagp)
+        -:  758:{
+       32:  759:    long starter, br, ender, excsync = 0;
+       32:  760:    int parno = 0;
+       32:  761:    int flags, gfchanged = 0;
+       32:  762:    long savglobflags = (long)patglobflags;
+        -:  763:    Upat ptr;
+        -:  764:
+       32:  765:    *flagp = 0;
+        -:  766:
+       32:  767:    if (paren && (patglobflags & GF_BACKREF) && patnpar <= NSUBEXP) {
+        -:  768:	/*
+        -:  769:	 * parenthesized:  make an open node.
+        -:  770:	 * We can only refer to the first nine parentheses.
+        -:  771:	 * For any others, we just use P_OPEN on its own; there's
+        -:  772:	 * no gain in arbitrarily limiting the number of parentheses.
+        -:  773:	 */
+        3:  774:	parno = patnpar++;
+        3:  775:	starter = patnode(P_OPEN + parno);
+        -:  776:    } else
+       29:  777:	starter = 0;
+        -:  778:
+       32:  779:    br = patnode(P_BRANCH);
+       32:  780:    if (!patcompbranch(&flags, paren))
+    #####:  781:	return 0;
+       32:  782:    if (patglobflags != (int)savglobflags)
+        3:  783:	gfchanged++;
+       32:  784:    if (starter)
+        3:  785:	pattail(starter, br);
+        -:  786:    else
+       29:  787:	starter = br;
+        -:  788:
+       32:  789:    *flagp |= flags & (P_HSTART|P_PURESTR);
+        -:  790:
+      100:  791:    while (*patparse == zpc_chars[ZPC_BAR] ||
+       36:  792:	   (*patparse == zpc_special[ZPC_TILDE] &&
+        4:  793:	    (patparse[1] == '/' ||
+        2:  794:	     !memchr(zpc_special, patparse[1], ZPC_SEG_COUNT)))) {
+        2:  795:	int tilde = *patparse++ == zpc_special[ZPC_TILDE];
+        2:  796:	long gfnode = 0, newbr;
+        -:  797:
+        2:  798:	*flagp &= ~P_PURESTR;
+        -:  799:
+        2:  800:	if (tilde) {
+        -:  801:	    union upat up;
+        -:  802:	    /* excsync remembers the P_EXCSYNC node before a chain of
+        -:  803:	     * exclusions:  all point back to this.  only the
+        -:  804:	     * original (non-excluded) branch gets a trailing P_EXCSYNC.
+        -:  805:	     */
+        2:  806:	    if (!excsync) {
+        2:  807:		excsync = patnode(P_EXCSYNC);
+        2:  808:		patoptail(br, excsync);
+        -:  809:	    }
+        -:  810:	    /*
+        -:  811:	     * By default, approximations are turned off in exclusions:
+        -:  812:	     * we need to do this here as otherwise the code compiling
+        -:  813:	     * the exclusion doesn't know if the flags have really
+        -:  814:	     * changed if the error count gets restored.
+        -:  815:	     */
+        2:  816:	    patglobflags &= ~0xff;
+        2:  817:	    if (!(patflags & PAT_FILET) || paren) {
+    #####:  818:		br = patnode(P_EXCLUDE);
+        -:  819:	    } else {
+        -:  820:		/*
+        -:  821:		 * At top level (paren == 0) in a file glob !(patflags
+        -:  822:		 * &PAT_FILET) do the exclusion prepending the file path
+        -:  823:		 * so far.  We need to flag this to avoid unnecessarily
+        -:  824:		 * copying the path.
+        -:  825:		 */
+        2:  826:		br = patnode(P_EXCLUDP);
+        2:  827:		patflags |= PAT_HAS_EXCLUDP;
+        -:  828:	    }
+        2:  829:	    up.p = NULL;
+        2:  830:	    patadd((char *)&up, 0, sizeof(up), 0);
+        -:  831:	    /* / is not treated as special if we are at top level */
+        2:  832:	    if (!paren && zpc_special[ZPC_SLASH] == '/') {
+        2:  833:		tilde++;
+        2:  834:		zpc_special[ZPC_SLASH] = Marker;
+        -:  835:	    }
+        -:  836:	} else {
+    #####:  837:	    excsync = 0;
+    #####:  838:	    br = patnode(P_BRANCH);
+        -:  839:	    /*
+        -:  840:	     * The position of the following statements means globflags
+        -:  841:	     * set in the main branch carry over to the exclusion.
+        -:  842:	     */
+    #####:  843:	    if (!paren) {
+    #####:  844:		patglobflags = 0;
+    #####:  845:		if (((Patprog)patout)->globflags) {
+        -:  846:		    /*
+        -:  847:		     * If at top level, we need to reinitialize flags to zero,
+        -:  848:		     * since (#i)foo|bar only applies to foo and we stuck
+        -:  849:		     * the #i into the global flags.
+        -:  850:		     * We could have done it so that they only got set in the
+        -:  851:		     * first branch, but it's quite convenient having any
+        -:  852:		     * global flags set in the header and not buried in the
+        -:  853:		     * pattern.  (Or maybe it isn't and we should
+        -:  854:		     * forget this bit and always stick in an explicit GFLAGS
+        -:  855:		     * statement instead of using the header.)
+        -:  856:		     * Also, this can't happen for file globs where there are
+        -:  857:		     * no top-level |'s.
+        -:  858:		     *
+        -:  859:		     * No gfchanged, as nothing to follow branch at top
+        -:  860:		     * level.
+        -:  861:		     */
+        -:  862:		    union upat up;
+    #####:  863:		    gfnode = patnode(P_GFLAGS);
+    #####:  864:		    up.l = patglobflags;
+    #####:  865:		    patadd((char *)&up, 0, sizeof(union upat), 0);
+        -:  866:		}
+        -:  867:	    } else {
+    #####:  868:		patglobflags = (int)savglobflags;
+        -:  869:	    }
+        -:  870:	}
+        2:  871:	newbr = patcompbranch(&flags, paren);
+        2:  872:	if (tilde == 2) {
+        -:  873:	    /* restore special treatment of / */
+        2:  874:	    zpc_special[ZPC_SLASH] = '/';
+        -:  875:	}
+        2:  876:	if (!newbr)
+    #####:  877:	    return 0;
+        2:  878:	if (gfnode)
+    #####:  879:	    pattail(gfnode, newbr);
+        2:  880:	if (!tilde && patglobflags != (int)savglobflags)
+    #####:  881:	    gfchanged++;
+        2:  882:	pattail(starter, br);
+        2:  883:	if (excsync)
+        2:  884:	    patoptail(br, patnode(P_EXCEND));
+        2:  885:	*flagp |= flags & P_HSTART;
+        -:  886:    }
+        -:  887:
+        -:  888:    /*
+        -:  889:     * Make a closing node, hooking it to the end.
+        -:  890:     * Note that we can't optimize P_NOTHING out here, since another
+        -:  891:     * branch at that point would indicate the current choices continue,
+        -:  892:     * which they don't.
+        -:  893:     */
+       32:  894:    ender = patnode(paren ? parno ? P_CLOSE+parno : P_NOTHING : P_END);
+       32:  895:    pattail(starter, ender);
+        -:  896:
+        -:  897:    /*
+        -:  898:     * Hook the tails of the branches to the closing node,
+        -:  899:     * except for exclusions which terminate where they are.
+        -:  900:     */
+      101:  901:    for (ptr = (Upat)patout + starter; ptr; ptr = PATNEXT(ptr))
+       69:  902:	if (!P_ISEXCLUDE(ptr))
+       67:  903:	    patoptail(ptr-(Upat)patout, ender);
+        -:  904:
+        -:  905:    /* check for proper termination */
+       32:  906:    if ((paren && *patparse++ != Outpar) ||
+       30:  907:	(!paren && *patparse &&
+        2:  908:	 !((patflags & PAT_FILE) && *patparse == '/')))
+    #####:  909:	return 0;
+        -:  910:
+       32:  911:    if (paren && gfchanged) {
+        -:  912:	/*
+        -:  913:	 * Restore old values of flags when leaving parentheses.
+        -:  914:	 * gfchanged detects a change in any branch (except exclusions
+        -:  915:	 * which are separate), since we need to emit this even if
+        -:  916:	 * a later branch happened to put the flags back.
+        -:  917:	 */
+    #####:  918:	pattail(ender, patnode(P_GFLAGS));
+    #####:  919:	patglobflags = (int)savglobflags;
+    #####:  920:	patadd((char *)&savglobflags, 0, sizeof(long), 0);
+        -:  921:    }
+        -:  922:
+       32:  923:    return starter;
+        -:  924:}
+        -:  925:
+        -:  926:/*
+        -:  927: * Compile something ended by Bar, Outpar, Tilde, or end of string.
+        -:  928: * Note the BRANCH or EXCLUDE tag must already have been omitted:
+        -:  929: * this returns the position of the operand of that.
+        -:  930: */
+        -:  931:
+        -:  932:/**/
+        -:  933:static long
+       34:  934:patcompbranch(int *flagp, int paren)
+        -:  935:{
+       34:  936:    long chain, latest = 0, starter;
+       34:  937:    int flags = 0;
+        -:  938:
+       34:  939:    *flagp = P_PURESTR;
+        -:  940:
+       34:  941:    starter = chain = 0;
+      171:  942:    while (!memchr(zpc_special, *patparse, ZPC_SEG_COUNT) ||
+       38:  943:	   (*patparse == zpc_special[ZPC_TILDE] && patparse[1] != '/' &&
+        2:  944:	    memchr(zpc_special, patparse[1], ZPC_SEG_COUNT))) {
+       75:  945:	if ((*patparse == zpc_special[ZPC_INPAR] &&
+       72:  946:	     patparse[1] == zpc_special[ZPC_HASH]) ||
+       66:  947:	    (*patparse == zpc_special[ZPC_KSH_AT] && patparse[1] == Inpar &&
+        3:  948:	     patparse[2] == zpc_special[ZPC_HASH])) {
+        -:  949:	    /* Globbing flags. */
+        3:  950:	    char *pp1 = patparse;
+        3:  951:	    int oldglobflags = patglobflags, ignore;
+        -:  952:	    long assert;
+        3:  953:	    patparse += (*patparse == '@') ? 3 : 2;
+        3:  954:	    if (!patgetglobflags(&patparse, &assert, &ignore))
+    #####:  955:		return 0;
+        3:  956:	    if (!ignore) {
+        3:  957:		if (assert) {
+        -:  958:		    /*
+        -:  959:		     * Start/end assertion looking like flags, but
+        -:  960:		     * actually handled as a normal node
+        -:  961:		     */
+    #####:  962:		    latest = patnode(assert);
+    #####:  963:		    flags = 0;
+        -:  964:		} else {
+        3:  965:		    if (pp1 == patstart) {
+        -:  966:			/* Right at start of pattern, the simplest case.
+        -:  967:			 * Put them into the flags and don't emit anything.
+        -:  968:			 */
+    #####:  969:			((Patprog)patout)->globflags = patglobflags;
+    #####:  970:			continue;
+        3:  971:		    } else if (!*patparse) {
+        -:  972:			/* Right at the end, so just leave the flags for
+        -:  973:			 * the next Patprog in the chain to pick up.
+        -:  974:			 */
+    #####:  975:			break;
+        -:  976:		    }
+        -:  977:		    /*
+        -:  978:		     * Otherwise, we have to stick them in as a pattern
+        -:  979:		     * matching nothing.
+        -:  980:		     */
+        3:  981:		    if (oldglobflags != patglobflags) {
+        -:  982:			/* Flags changed */
+        -:  983:			union upat up;
+        3:  984:			latest = patnode(P_GFLAGS);
+        3:  985:			up.l = patglobflags;
+        3:  986:			patadd((char *)&up, 0, sizeof(union upat), 0);
+        -:  987:		    } else {
+        -:  988:			/* No effect. */
+    #####:  989:			continue;
+        -:  990:		    }
+        -:  991:		}
+    #####:  992:	    } else if (!*patparse)
+    #####:  993:		break;
+        -:  994:	    else
+    #####:  995:		continue;
+       66:  996:	} else if (*patparse == zpc_special[ZPC_HAT]) {
+        -:  997:	    /*
+        -:  998:	     * ^pat:  anything but pat.  For proper backtracking,
+        -:  999:	     * etc., we turn this into (*~pat), except without the
+        -: 1000:	     * parentheses.
+        -: 1001:	     */
+    #####: 1002:	    patparse++;
+    #####: 1003:	    latest = patcompnot(0, &flags);
+        -: 1004:	} else
+       66: 1005:	    latest = patcomppiece(&flags, paren);
+       69: 1006:	if (!latest)
+    #####: 1007:	    return 0;
+       69: 1008:	if (!starter)
+       34: 1009:	    starter = latest;
+       69: 1010:	if (!(flags & P_PURESTR))
+       42: 1011:	    *flagp &= ~P_PURESTR;
+       69: 1012:	if (!chain)
+       34: 1013:	    *flagp |= flags & P_HSTART;
+        -: 1014:	else
+       35: 1015:	    pattail(chain, latest);
+       69: 1016:	chain = latest;
+        -: 1017:    }
+        -: 1018:    /* check if there was nothing in the loop, i.e. () */
+       34: 1019:    if (!chain)
+    #####: 1020:	starter = patnode(P_NOTHING);
+        -: 1021:
+       34: 1022:    return starter;
+        -: 1023:}
+        -: 1024:
+        -: 1025:/* get glob flags, return 1 for success, 0 for failure */
+        -: 1026:
+        -: 1027:/**/
+        -: 1028:int
+        3: 1029:patgetglobflags(char **strp, long *assertp, int *ignore)
+        -: 1030:{
+        3: 1031:    char *nptr, *ptr = *strp;
+        -: 1032:    zlong ret;
+        -: 1033:
+        3: 1034:    *assertp = 0;
+        3: 1035:    *ignore = 1;
+        -: 1036:    /* (#X): assumes we are still positioned on the first X */
+        6: 1037:    for (; *ptr && *ptr != Outpar; ptr++) {
+        3: 1038:	if (*ptr == 'q') {
+        -: 1039:	    /* Glob qualifiers, ignored in pattern code */
+    #####: 1040:	    while (*ptr && *ptr != Outpar)
+    #####: 1041:		ptr++;
+    #####: 1042:	    break;
+        -: 1043:	} else {
+        3: 1044:	    *ignore = 0;
+        3: 1045:	    switch (*ptr) {
+    #####: 1046:	    case 'a':
+        -: 1047:		/* Approximate matching, max no. of errors follows */
+    #####: 1048:		ret = zstrtol(++ptr, &nptr, 10);
+        -: 1049:		/*
+        -: 1050:		 * We can't have more than 254, because we need 255 to
+        -: 1051:		 * mark 254 errors in wbranch and exclude sync strings
+        -: 1052:		 * (hypothetically --- hope no-one tries it).
+        -: 1053:		 */
+    #####: 1054:		if (ret < 0 || ret > 254 || ptr == nptr)
+    #####: 1055:		    return 0;
+    #####: 1056:		patglobflags = (patglobflags & ~0xff) | (ret & 0xff);
+    #####: 1057:		ptr = nptr-1;
+    #####: 1058:		break;
+        -: 1059:
+    #####: 1060:	    case 'l':
+        -: 1061:		/* Lowercase in pattern matches lower or upper in target */
+    #####: 1062:		patglobflags = (patglobflags & ~GF_IGNCASE) | GF_LCMATCHUC;
+    #####: 1063:		break;
+        -: 1064:
+    #####: 1065:	    case 'i':
+        -: 1066:		/* Fully case insensitive */
+    #####: 1067:		patglobflags = (patglobflags & ~GF_LCMATCHUC) | GF_IGNCASE;
+    #####: 1068:		break;
+        -: 1069:
+    #####: 1070:	    case 'I':
+        -: 1071:		/* Restore case sensitivity */
+    #####: 1072:		patglobflags &= ~(GF_LCMATCHUC|GF_IGNCASE);
+    #####: 1073:		break;
+        -: 1074:
+        3: 1075:	    case 'b':
+        -: 1076:		/* Make backreferences */
+        3: 1077:		patglobflags |= GF_BACKREF;
+        3: 1078:		break;
+        -: 1079:
+    #####: 1080:	    case 'B':
+        -: 1081:		/* Don't make backreferences */
+    #####: 1082:		patglobflags &= ~GF_BACKREF;
+    #####: 1083:		break;
+        -: 1084:
+    #####: 1085:	    case 'm':
+        -: 1086:		/* Make references to complete match */
+    #####: 1087:		patglobflags |= GF_MATCHREF;
+    #####: 1088:		break;
+        -: 1089:
+    #####: 1090:	    case 'M':
+        -: 1091:		/* Don't */
+    #####: 1092:		patglobflags &= ~GF_MATCHREF;
+    #####: 1093:		break;
+        -: 1094:
+    #####: 1095:	    case 's':
+    #####: 1096:		*assertp = P_ISSTART;
+    #####: 1097:		break;
+        -: 1098:
+    #####: 1099:	    case 'e':
+    #####: 1100:		*assertp = P_ISEND;
+    #####: 1101:		break;
+        -: 1102:
+    #####: 1103:	    case 'u':
+    #####: 1104:		patglobflags |= GF_MULTIBYTE;
+    #####: 1105:		break;
+        -: 1106:
+    #####: 1107:	    case 'U':
+    #####: 1108:		patglobflags &= ~GF_MULTIBYTE;
+    #####: 1109:		break;
+        -: 1110:
+    #####: 1111:	    default:
+    #####: 1112:		return 0;
+        -: 1113:	    }
+        -: 1114:	}
+        -: 1115:    }
+        3: 1116:    if (*ptr != Outpar)
+    #####: 1117:	return 0;
+        -: 1118:    /* Start/end assertions must appear on their own. */
+        3: 1119:    if (*assertp && (*strp)[1] != Outpar)
+    #####: 1120:	return 0;
+        3: 1121:    *strp = ptr + 1;
+        3: 1122:    return 1;
+        -: 1123:}
+        -: 1124:
+        -: 1125:
+        -: 1126:static const char *colon_stuffs[]  = {
+        -: 1127:    "alpha", "alnum", "ascii", "blank", "cntrl", "digit", "graph", 
+        -: 1128:    "lower", "print", "punct", "space", "upper", "xdigit", "IDENT",
+        -: 1129:    "IFS", "IFSSPACE", "WORD", "INCOMPLETE", "INVALID", NULL
+        -: 1130:};
+        -: 1131:
+        -: 1132:/*
+        -: 1133: * Handle the guts of a [:stuff:] character class element.
+        -: 1134: * start is the beginning of "stuff" and len is its length.
+        -: 1135: * This code is exported for the benefit of completion matching.
+        -: 1136: */
+        -: 1137:
+        -: 1138:/**/
+        -: 1139:mod_export int
+        8: 1140:range_type(char *start, int len)
+        -: 1141:{
+        -: 1142:    const char **csp;
+        -: 1143:
+       24: 1144:    for (csp = colon_stuffs; *csp; csp++) {
+       24: 1145:	if (strlen(*csp) == len && !strncmp(start, *csp, len))
+        8: 1146:		return (csp - colon_stuffs) + PP_FIRST;
+        -: 1147:    }
+        -: 1148:
+    #####: 1149:    return PP_UNKWN;
+        -: 1150:}
+        -: 1151:
+        -: 1152:
+        -: 1153:/*
+        -: 1154: * Convert the contents of a [...] or [^...] expression (just the
+        -: 1155: * ... part) back into a string.  This is used by compfiles -p/-P
+        -: 1156: * for some reason.  The compiled form (a metafied string) is
+        -: 1157: * passed in rangestr.
+        -: 1158: *
+        -: 1159: * If outstr is non-NULL the compiled form is placed there.  It
+        -: 1160: * must be sufficiently long.  A terminating NULL is appended.
+        -: 1161: *
+        -: 1162: * Return the length required, not including the terminating NULL.
+        -: 1163: *
+        -: 1164: * TODO: this is non-multibyte for now.  It will need to be defined
+        -: 1165: * appropriately with MULTIBYTE_SUPPORT when the completion matching
+        -: 1166: * code catches up.
+        -: 1167: */
+        -: 1168:
+        -: 1169:/**/
+        -: 1170:mod_export int
+    #####: 1171:pattern_range_to_string(char *rangestr, char *outstr)
+        -: 1172:{
+    #####: 1173:    int len = 0;
+        -: 1174:
+    #####: 1175:    while (*rangestr) {
+    #####: 1176:	if (imeta(STOUC(*rangestr))) {
+    #####: 1177:	    int swtype = STOUC(*rangestr) - STOUC(Meta);
+        -: 1178:
+    #####: 1179:	    if (swtype == 0) {
+        -: 1180:		/* Ordindary metafied character */
+    #####: 1181:		if (outstr)
+        -: 1182:		{
+    #####: 1183:		    *outstr++ = Meta;
+    #####: 1184:		    *outstr++ = rangestr[1] ^ 32;
+        -: 1185:		}
+    #####: 1186:		len += 2;
+    #####: 1187:		rangestr += 2;
+    #####: 1188:	    } else if (swtype == PP_RANGE) {
+        -: 1189:		/* X-Y range */
+        -: 1190:		int i;
+        -: 1191:
+    #####: 1192:		for (i = 0; i < 2; i++) {
+    #####: 1193:		    if (*rangestr == Meta) {
+    #####: 1194:			if (outstr) {
+    #####: 1195:			    *outstr++ = Meta;
+    #####: 1196:			    *outstr++ = rangestr[1];
+        -: 1197:			}
+    #####: 1198:			len += 2;
+    #####: 1199:			rangestr += 2;
+        -: 1200:		    } else {
+    #####: 1201:			if (outstr)
+    #####: 1202:			    *outstr++ = *rangestr;
+    #####: 1203:			len++;
+    #####: 1204:			rangestr++;
+        -: 1205:		    }
+        -: 1206:
+    #####: 1207:		    if (i == 0) {
+    #####: 1208:			if (outstr)
+    #####: 1209:			    *outstr++ = '-';
+    #####: 1210:			len++;
+        -: 1211:		    }
+        -: 1212:		}
+    #####: 1213:	    } else if (swtype >= PP_FIRST && swtype <= PP_LAST) {
+        -: 1214:		/* [:stuff:]; we need to output [: and :] */
+    #####: 1215:		const char *found = colon_stuffs[swtype - PP_FIRST];
+    #####: 1216:		int newlen = strlen(found);
+    #####: 1217:		if (outstr) {
+    #####: 1218:		    strcpy(outstr, "[:");
+    #####: 1219:		    outstr += 2;
+    #####: 1220:		    memcpy(outstr, found, newlen);
+    #####: 1221:		    outstr += newlen;
+    #####: 1222:		    strcpy(outstr, ":]");
+    #####: 1223:		    outstr += 2;
+        -: 1224:		}
+    #####: 1225:		len += newlen + 4;
+    #####: 1226:		rangestr++;
+        -: 1227:	    } else {
+        -: 1228:		/* shouldn't happen */
+        -: 1229:		DPUTS(1, "BUG: unknown PP_ code in pattern range");
+    #####: 1230:		rangestr++;
+        -: 1231:	    }
+        -: 1232:	} else {
+        -: 1233:	    /* ordinary character, guaranteed no Meta handling needed */
+    #####: 1234:	    if (outstr)
+    #####: 1235:		*outstr++ = *rangestr;
+    #####: 1236:	    len++;
+    #####: 1237:	    rangestr++;
+        -: 1238:	}
+        -: 1239:    }
+        -: 1240:
+    #####: 1241:    if (outstr)
+    #####: 1242:	*outstr = '\0';
+    #####: 1243:    return len;
+        -: 1244:}
+        -: 1245:
+        -: 1246:/*
+        -: 1247: * compile a chunk such as a literal string or a [...] followed
+        -: 1248: * by a possible hash operator
+        -: 1249: */
+        -: 1250:
+        -: 1251:/**/
+        -: 1252:static long
+       66: 1253:patcomppiece(int *flagp, int paren)
+        -: 1254:{
+       66: 1255:    long starter = 0, next, op, opnd;
+        -: 1256:    int flags, flags2, kshchar, len, ch, patch, nmeta;
+        -: 1257:    int hash, count;
+        -: 1258:    union upat up;
+        -: 1259:    char *nptr, *str0, *ptr, *patprev;
+       66: 1260:    zrange_t from = 0, to;
+        -: 1261:    char *charstart;
+        -: 1262:
+       66: 1263:    flags = 0;
+       66: 1264:    str0 = patprev = patparse;
+        -: 1265:    for (;;) {
+        -: 1266:	/*
+        -: 1267:	 * Check if we have a string. First, we need to make sure
+        -: 1268:	 * the string doesn't introduce a ksh-like parenthesized expression.
+        -: 1269:	 */
+      138: 1270:	kshchar = '\0';
+      102: 1271:	if (*patparse && patparse[1] == Inpar) {
+        3: 1272:	    if (*patparse == zpc_special[ZPC_KSH_PLUS])
+    #####: 1273:		kshchar = STOUC('+');
+        3: 1274:	    else if (*patparse == zpc_special[ZPC_KSH_BANG])
+    #####: 1275:		kshchar = STOUC('!');
+        3: 1276:	    else if (*patparse == zpc_special[ZPC_KSH_BANG2])
+    #####: 1277:		kshchar = STOUC('!');
+        3: 1278:	    else if (*patparse == zpc_special[ZPC_KSH_AT])
+    #####: 1279:		kshchar = STOUC('@');
+        3: 1280:	    else if (*patparse == zpc_special[ZPC_KSH_STAR])
+    #####: 1281:		kshchar = STOUC('*');
+        3: 1282:	    else if (*patparse == zpc_special[ZPC_KSH_QUEST])
+    #####: 1283:		kshchar = STOUC('?');
+        -: 1284:	}
+        -: 1285:
+        -: 1286:	/*
+        -: 1287:	 * If '(' is disabled as a pattern char, allow ')' as
+        -: 1288:	 * an ordinary string character if there are no parentheses to
+        -: 1289:	 * close.  Don't allow it otherwise, it changes the syntax.
+        -: 1290:	 */
+      102: 1291:	if (zpc_special[ZPC_INPAR] != Marker || *patparse != Outpar ||
+        -: 1292:	    paren) {
+        -: 1293:	    /*
+        -: 1294:	     * End of string (or no string at all) if ksh-type parentheses,
+        -: 1295:	     * or special character, unless that character is a tilde and
+        -: 1296:	     * the character following is an end-of-segment character.  Thus
+        -: 1297:	     * tildes are not special if there is nothing following to
+        -: 1298:	     * be excluded.
+        -: 1299:	     *
+        -: 1300:	     * Don't look for X()-style kshglobs at this point; we've
+        -: 1301:	     * checked above for the case with parentheses and we don't
+        -: 1302:	     * want to match without parentheses.
+        -: 1303:	     */
+      204: 1304:	    if (kshchar ||
+      168: 1305:		(memchr(zpc_special, *patparse, ZPC_NO_KSH_GLOB) &&
+       66: 1306:		 (*patparse != zpc_special[ZPC_TILDE] ||
+    #####: 1307:		  patparse[1] == '/' ||
+    #####: 1308:		  !memchr(zpc_special, patparse[1], ZPC_SEG_COUNT)))) {
+        -: 1309:		break;
+        -: 1310:	    }
+        -: 1311:    	}
+        -: 1312:
+        -: 1313:	/* Remember the previous character for backtracking */
+       36: 1314:	patprev = patparse;
+       36: 1315:	METACHARINC(patparse);
+        -: 1316:    }
+        -: 1317:
+       66: 1318:    if (patparse > str0) {
+       24: 1319:	long slen = patparse - str0;
+        -: 1320:	int morelen;
+        -: 1321:
+        -: 1322:	/* Ordinary string: cancel kshchar lookahead */
+       24: 1323:	kshchar = '\0';
+        -: 1324:	/*
+        -: 1325:	 * Assume it matches a simple string until we find otherwise.
+        -: 1326:	 */
+       24: 1327:	flags |= P_PURESTR;
+        -: 1328:	DPUTS(patparse == str0, "BUG: matched nothing in patcomppiece.");
+        -: 1329:	/* more than one character matched? */
+       24: 1330:	morelen = (patprev > str0);
+        -: 1331:	/*
+        -: 1332:	 * If we have more than one character, a following hash
+        -: 1333:	 * or (#c...) only applies to the last, so backtrack one character.
+        -: 1334:	 */
+       48: 1335:	if ((*patparse == zpc_special[ZPC_HASH] ||
+       27: 1336:	     (*patparse == zpc_special[ZPC_INPAR] &&
+        6: 1337:	      patparse[1] == zpc_special[ZPC_HASH] &&
+       27: 1338:	      patparse[2] == 'c') ||
+       24: 1339:	     (*patparse == zpc_special[ZPC_KSH_AT] &&
+    #####: 1340:	      patparse[1] == Inpar &&
+    #####: 1341:	      patparse[2] == zpc_special[ZPC_HASH] &&
+    #####: 1342:	      patparse[3] == 'c')) && morelen)
+    #####: 1343:	    patparse = patprev;
+        -: 1344:	/*
+        -: 1345:	 * If len is 1, we can't have an active # following, so doesn't
+        -: 1346:	 * matter that we don't make X in `XX#' simple.
+        -: 1347:	 */
+       24: 1348:	if (!morelen)
+       20: 1349:	    flags |= P_SIMPLE;
+       24: 1350:	starter = patnode(P_EXACTLY);
+        -: 1351:
+        -: 1352:	/* Get length of string without metafication. */
+       24: 1353:	nmeta = 0;
+        -: 1354:	/* inherited from domatch, but why, exactly? */
+       24: 1355:	if (*str0 == Nularg)
+    #####: 1356:	    str0++;
+       60: 1357:	for (ptr = str0; ptr < patparse; ptr++) {
+       36: 1358:	    if (*ptr == Meta) {
+    #####: 1359:		nmeta++;
+    #####: 1360:		ptr++;
+        -: 1361:	    }
+        -: 1362:	}
+       24: 1363:	slen = (patparse - str0) - nmeta;
+        -: 1364:	/* First add length, which is a long */
+       24: 1365:	patadd((char *)&slen, 0, sizeof(long), 0);
+        -: 1366:	/*
+        -: 1367:	 * Then the string, not null terminated.
+        -: 1368:	 * Unmetafy and untokenize; pass the final length,
+        -: 1369:	 * which is what we need to allocate, i.e. not including
+        -: 1370:	 * a count for each Meta in the string.
+        -: 1371:	 */
+       24: 1372:	patadd(str0, 0, slen, PA_UNMETA);
+       24: 1373:	nptr = P_LS_STR((Upat)patout + starter);
+        -: 1374:	/*
+        -: 1375:	 * It's much simpler to turn off pure string mode for
+        -: 1376:	 * any case-insensitive or approximate matching; usually,
+        -: 1377:	 * that is correct, or they wouldn't have been turned on.
+        -: 1378:	 * However, we need to make sure we match a "." or ".."
+        -: 1379:	 * in a file name as a pure string.  There's a minor bug
+        -: 1380:	 * that this will also apply to something like
+        -: 1381:	 * ..(#a1).. (i.e. the (#a1) has no effect), but if you're
+        -: 1382:	 * going to write funny patterns, you get no sympathy from me.
+        -: 1383:	 */
+       24: 1384:	if (patglobflags &
+        -: 1385:#ifdef __CYGWIN__
+        -: 1386:	    /*
+        -: 1387:	     * As above: don't use pattern matching for files
+        -: 1388:	     * just because of case insensitivity if file system
+        -: 1389:	     * is known to be case insensitive.
+        -: 1390:	     *
+        -: 1391:	     * This is known to be necessary in at least one case:
+        -: 1392:	     * if "mount -c /" is in effect, so that drives appear
+        -: 1393:	     * directly under / instead of the usual /cygdrive, they
+        -: 1394:	     * aren't shown by readdir().  So it's vital we don't use
+        -: 1395:	     * globbing to find "/c", since that'll fail.
+        -: 1396:	     */
+        -: 1397:	    ((patflags & PAT_FILE) ?
+        -: 1398:	    (0xFF|GF_LCMATCHUC) :
+        -: 1399:	    (0xFF|GF_LCMATCHUC|GF_IGNCASE))
+        -: 1400:#else
+        -: 1401:	    (0xFF|GF_LCMATCHUC|GF_IGNCASE)
+        -: 1402:#endif
+        -: 1403:	    ) {
+    #####: 1404:	    if (!(patflags & PAT_FILE))
+    #####: 1405:		flags &= ~P_PURESTR;
+    #####: 1406:	    else if (!(nptr[0] == '.' &&
+    #####: 1407:		       (slen == 1 || (nptr[1] == '.' && slen == 2))))
+    #####: 1408:		flags &= ~P_PURESTR;
+        -: 1409:	}
+        -: 1410:    } else {
+       42: 1411:	if (kshchar)
+    #####: 1412:	    patparse++;
+        -: 1413:
+       42: 1414:	patch = *patparse;
+       42: 1415:	METACHARINC(patparse);
+       42: 1416:	switch(patch) {
+    #####: 1417:	case Quest:
+        -: 1418:	    DPUTS(zpc_special[ZPC_QUEST] == Marker,
+        -: 1419:		  "Treating '?' as pattern character although disabled");
+    #####: 1420:	    flags |= P_SIMPLE;
+    #####: 1421:	    starter = patnode(P_ANY);
+    #####: 1422:	    break;
+       30: 1423:	case Star:
+        -: 1424:	    DPUTS(zpc_special[ZPC_STAR] == Marker,
+        -: 1425:		  "Treating '*' as pattern character although disabled");
+        -: 1426:	    /* kshchar is used as a sign that we can't have #'s. */
+       30: 1427:	    kshchar = -1;
+       30: 1428:	    starter = patnode(P_STAR);
+       30: 1429:	    break;
+        9: 1430:	case Inbrack:
+        -: 1431:	    DPUTS(zpc_special[ZPC_INBRACK] == Marker,
+        -: 1432:		  "Treating '[' as pattern character although disabled");
+        9: 1433:	    flags |= P_SIMPLE;
+        9: 1434:	    if (*patparse == Hat || *patparse == Bang) {
+        1: 1435:		patparse++;
+        1: 1436:		starter = patnode(P_ANYBUT);
+        -: 1437:	    } else
+        8: 1438:		starter = patnode(P_ANYOF);
+        -: 1439:	    /*
+        -: 1440:	     * []...] means match a "]" or other included characters.
+        -: 1441:	     * However, to be a bit helpful and for compatibility
+        -: 1442:	     * with other shells, don't take in that sense if
+        -: 1443:	     * there's no further "]".  That's still imperfect,
+        -: 1444:	     * but it's all we can do --- we're required to
+        -: 1445:	     * treat [$var]*[$var]with empty var as [ ... ]
+        -: 1446:	     * containing "]*[".
+        -: 1447:	     */
+        9: 1448:	    if (*patparse == Outbrack && strchr(patparse+1, Outbrack)) {
+    #####: 1449:		patparse++;
+    #####: 1450:		patadd(NULL, ']', 1, PA_NOALIGN);
+        -: 1451:	    }
+       28: 1452:	    while (*patparse && *patparse != Outbrack) {
+        -: 1453:		/* Meta is not a token */
+       18: 1454:		if (*patparse == Inbrack && patparse[1] == ':' &&
+       16: 1455:			(nptr = strchr(patparse+2, ':')) &&
+        8: 1456:			nptr[1] == Outbrack) {
+        -: 1457:			/* Posix range. */
+        8: 1458:			patparse += 2;
+        8: 1459:			len = nptr - patparse;
+        8: 1460:			ch = range_type(patparse, len);
+        8: 1461:			patparse = nptr + 2;
+        8: 1462:			if (ch != PP_UNKWN)
+        8: 1463:			    patadd(NULL, STOUC(Meta) + ch, 1, PA_NOALIGN);
+        8: 1464:			continue;
+        -: 1465:		}
+        2: 1466:		charstart = patparse;
+        2: 1467:		METACHARINC(patparse);
+        -: 1468:
+        2: 1469:		if (*patparse == Dash && patparse[1] &&
+    #####: 1470:		    patparse[1] != Outbrack) {
+    #####: 1471:		    patadd(NULL, STOUC(Meta)+PP_RANGE, 1, PA_NOALIGN);
+    #####: 1472:		    if (itok(*charstart)) {
+    #####: 1473:			patadd(0, STOUC(ztokens[*charstart - Pound]), 1,
+        -: 1474:			       PA_NOALIGN);
+        -: 1475:		    } else {
+    #####: 1476:			patadd(charstart, 0, patparse-charstart, PA_NOALIGN);
+        -: 1477:		    }
+    #####: 1478:		    charstart = ++patparse;	/* skip Dash token */
+    #####: 1479:		    METACHARINC(patparse);
+        -: 1480:		}
+        2: 1481:		if (itok(*charstart)) {
+        1: 1482:		    patadd(0, STOUC(ztokens[*charstart - Pound]), 1,
+        -: 1483:			   PA_NOALIGN);
+        -: 1484:		} else {
+        1: 1485:		    patadd(charstart, 0, patparse-charstart, PA_NOALIGN);
+        -: 1486:		}
+        -: 1487:	    }
+        9: 1488:	    if (*patparse != Outbrack)
+    #####: 1489:		return 0;
+        9: 1490:	    patparse++;
+        -: 1491:	    /* terminate null string and fix alignment */
+        9: 1492:	    patadd(NULL, 0, 1, 0);
+        9: 1493:	    break;
+        3: 1494:	case Inpar:
+        -: 1495:	    DPUTS(!kshchar && zpc_special[ZPC_INPAR] == Marker,
+        -: 1496:		  "Treating '(' as pattern character although disabled");
+        -: 1497:	    DPUTS(isset(SHGLOB) && !kshchar,
+        -: 1498:		  "Treating bare '(' as pattern character with SHGLOB");
+        3: 1499:	    if (kshchar == '!') {
+        -: 1500:		/* This is nasty, we should really either handle all
+        -: 1501:		 * kshglobbing below or here.  But most of the
+        -: 1502:		 * others look like non-ksh patterns, while this one
+        -: 1503:		 * doesn't, so we handle it here and leave the rest.
+        -: 1504:		 * We treat it like an extendedglob ^, except that
+        -: 1505:		 * it goes into parentheses.
+        -: 1506:		 *
+        -: 1507:		 * If we did do kshglob here, we could support
+        -: 1508:		 * the old behaviour that things like !(foo)##
+        -: 1509:		 * work, but it makes the code more complicated at
+        -: 1510:		 * the expense of allowing the user to do things
+        -: 1511:		 * they shouldn't.
+        -: 1512:		 */
+    #####: 1513:		if (!(starter = patcompnot(1, &flags2)))
+    #####: 1514:		    return 0;
+        3: 1515:	    } else if (!(starter = patcompswitch(1, &flags2)))
+    #####: 1516:		return 0;
+        3: 1517:	    flags |= flags2 & P_HSTART;
+        3: 1518:	    break;
+    #####: 1519:	case Inang:
+        -: 1520:	    /* Numeric glob */
+        -: 1521:	    DPUTS(zpc_special[ZPC_INANG] == Marker,
+        -: 1522:		  "Treating '<' as pattern character although disabled");
+        -: 1523:	    DPUTS(isset(SHGLOB), "Treating <..> as numeric range with SHGLOB");
+    #####: 1524:	    len = 0;		/* beginning present 1, end present 2 */
+    #####: 1525:	    if (idigit(*patparse)) {
+    #####: 1526:		from = (zrange_t) zstrtol((char *)patparse,
+        -: 1527:					 (char **)&nptr, 10);
+    #####: 1528:		patparse = nptr;
+    #####: 1529:		len |= 1;
+        -: 1530:	    }
+        -: 1531:	    DPUTS(!IS_DASH(*patparse), "BUG: - missing from numeric glob");
+    #####: 1532:	    patparse++;
+    #####: 1533:	    if (idigit(*patparse)) {
+    #####: 1534:		to = (zrange_t) zstrtol((char *)patparse,
+        -: 1535:					  (char **)&nptr, 10);
+    #####: 1536:		patparse = nptr;
+    #####: 1537:		len |= 2;
+        -: 1538:	    }
+    #####: 1539:	    if (*patparse != Outang)
+    #####: 1540:		return 0;
+    #####: 1541:	    patparse++;
+    #####: 1542:	    switch(len) {
+    #####: 1543:	    case 3:
+    #####: 1544:		starter = patnode(P_NUMRNG);
+    #####: 1545:		patadd((char *)&from, 0, sizeof(from), 0);
+    #####: 1546:		patadd((char *)&to, 0, sizeof(to), 0);
+    #####: 1547:		break;
+    #####: 1548:	    case 2:
+    #####: 1549:		starter = patnode(P_NUMTO);
+    #####: 1550:		patadd((char *)&to, 0, sizeof(to), 0);
+    #####: 1551:		break;
+    #####: 1552:	    case 1:
+    #####: 1553:		starter = patnode(P_NUMFROM);
+    #####: 1554:		patadd((char *)&from, 0, sizeof(from), 0);
+    #####: 1555:		break;
+    #####: 1556:	    case 0:
+    #####: 1557:		starter = patnode(P_NUMANY);
+    #####: 1558:		break;
+        -: 1559:	    }
+        -: 1560:	    /* This can't be simple, because it isn't.
+        -: 1561:	     * Mention in manual that matching digits with [...]
+        -: 1562:	     * is more efficient.
+        -: 1563:	     */
+    #####: 1564:	    break;
+    #####: 1565:	case Pound:
+        -: 1566:	    DPUTS(zpc_special[ZPC_HASH] == Marker,
+        -: 1567:		  "Treating '#' as pattern character although disabled");
+        -: 1568:	    DPUTS(!isset(EXTENDEDGLOB), "BUG: # not treated as string");
+        -: 1569:	    /*
+        -: 1570:	     * A hash here is an error; it should follow something
+        -: 1571:	     * repeatable.
+        -: 1572:	     */
+    #####: 1573:	    return 0;
+        -: 1574:	    break;
+    #####: 1575:	case Bnullkeep:
+        -: 1576:	    /*
+        -: 1577:	     * Marker for restoring a backslash in output:
+        -: 1578:	     * does not match a character.
+        -: 1579:	     */
+    #####: 1580:	    next = patcomppiece(flagp, paren);
+        -: 1581:	    /*
+        -: 1582:	     * Can't match a pure string since we need to do this
+        -: 1583:	     * as multiple chunks.
+        -: 1584:	     */
+    #####: 1585:	    *flagp &= ~P_PURESTR;
+    #####: 1586:	    return next;
+        -: 1587:	    break;
+        -: 1588:#ifdef DEBUG
+        -: 1589:	default:
+        -: 1590:	    dputs("BUG: character not handled in patcomppiece");
+        -: 1591:	    return 0;
+        -: 1592:	    break;
+        -: 1593:#endif
+        -: 1594:	}
+        -: 1595:    }
+        -: 1596:
+       66: 1597:    count = 0;
+      125: 1598:    if (!(hash = (*patparse == zpc_special[ZPC_HASH])) &&
+      121: 1599:	!(count = ((*patparse == zpc_special[ZPC_INPAR] &&
+        6: 1600:		    patparse[1] == zpc_special[ZPC_HASH] &&
+      121: 1601:		    patparse[2] == 'c') ||
+       59: 1602:		   (*patparse == zpc_special[ZPC_KSH_AT] &&
+    #####: 1603:		    patparse[1] == Inpar &&
+    #####: 1604:		    patparse[2] == zpc_special[ZPC_HASH] &&
+       59: 1605:		    patparse[3] == 'c'))) &&
+    #####: 1606:	(kshchar <= 0 || kshchar == '@' || kshchar == '!')) {
+       59: 1607:	*flagp = flags;
+       59: 1608:	return starter;
+        -: 1609:    }
+        -: 1610:
+        -: 1611:    /* too much at once doesn't currently work */
+        7: 1612:    if (kshchar && (hash || count))
+    #####: 1613:	return 0;
+        -: 1614:
+        7: 1615:    if (kshchar == '*') {
+    #####: 1616:	op = P_ONEHASH;
+    #####: 1617:	*flagp = P_HSTART;
+        7: 1618:    } else if (kshchar == '+') {
+    #####: 1619:	op = P_TWOHASH;
+    #####: 1620:	*flagp = P_HSTART;
+        7: 1621:    } else if (kshchar == '?') {
+    #####: 1622:	op = 0;
+    #####: 1623:	*flagp = 0;
+        7: 1624:    } else if (count) {
+    #####: 1625:	op = P_COUNT;
+    #####: 1626:	patparse += 3;
+    #####: 1627:	*flagp = P_HSTART;
+        7: 1628:    } else if (*++patparse == zpc_special[ZPC_HASH]) {
+        5: 1629:	op = P_TWOHASH;
+        5: 1630:	patparse++;
+        5: 1631:	*flagp = P_HSTART;
+        -: 1632:    } else {
+        2: 1633:	op = P_ONEHASH;
+        2: 1634:	*flagp = P_HSTART;
+        -: 1635:    }
+        -: 1636:
+        -: 1637:    /*
+        -: 1638:     * Note optimizations with pointers into P_NOTHING branches:  some
+        -: 1639:     * should logically point to next node after current piece.
+        -: 1640:     *
+        -: 1641:     * Backtracking is also encoded in a slightly obscure way:  the
+        -: 1642:     * code emitted ensures we test the non-empty branch of complex
+        -: 1643:     * patterns before the empty branch on each repetition.  Hence
+        -: 1644:     * each time we fail on a non-empty branch, we try the empty branch,
+        -: 1645:     * which is equivalent to backtracking.
+        -: 1646:     */
+        7: 1647:    if (op == P_COUNT) {
+        -: 1648:	/* (#cN,M) */
+        -: 1649:	union upat countargs[P_CT_OPERAND];
+    #####: 1650:	char *opp = patparse;
+        -: 1651:
+    #####: 1652:	countargs[0].l = P_COUNT;
+    #####: 1653:	countargs[P_CT_CURRENT].l = 0L;
+    #####: 1654:	countargs[P_CT_MIN].l = (long)zstrtol(patparse, &patparse, 10);
+    #####: 1655:	if (patparse == opp) {
+        -: 1656:	    /* missing number treated as zero */
+    #####: 1657:	    countargs[P_CT_MIN].l = 0L;
+        -: 1658:	}
+    #####: 1659:	if (*patparse != ',' && *patparse != Comma) {
+        -: 1660:	    /* either max = min or error */
+    #####: 1661:	    if (*patparse != Outpar)
+    #####: 1662:		return 0;
+    #####: 1663:	    countargs[P_CT_MAX].l = countargs[P_CT_MIN].l;
+        -: 1664:	} else {
+    #####: 1665:	    opp = ++patparse;
+    #####: 1666:	    countargs[P_CT_MAX].l = (long)zstrtol(patparse, &patparse, 10);
+    #####: 1667:	    if (*patparse != Outpar)
+    #####: 1668:		return 0;
+    #####: 1669:	    if (patparse == opp) {
+        -: 1670:		/* missing number treated as infinity: record as -1 */
+    #####: 1671:		countargs[P_CT_MAX].l = -1L;
+        -: 1672:	    }
+        -: 1673:	}
+    #####: 1674:	patparse++;
+    #####: 1675:	countargs[P_CT_PTR].p = NULL;
+        -: 1676:	/* Mark this chain as a min/max count... */
+    #####: 1677:	patinsert(P_COUNTSTART, starter, (char *)countargs, sizeof(countargs));
+        -: 1678:	/*
+        -: 1679:	 * The next of the operand is a loop back to the P_COUNT.  This is
+        -: 1680:	 * how we get recursion for the count.  We don't loop back to
+        -: 1681:	 * the P_COUNTSTART; that's used for initialising the count
+        -: 1682:	 * and saving and restoring the count for any enclosing use
+        -: 1683:	 * of the match.
+        -: 1684:	 */
+    #####: 1685:	opnd = P_OPERAND(starter) + P_CT_OPERAND;
+    #####: 1686:	pattail(opnd, patnode(P_BACK));
+    #####: 1687:	pattail(opnd, P_OPERAND(starter));
+        -: 1688:	/*
+        -: 1689:	 * The next of the counter operators is what follows the
+        -: 1690:	 * closure.
+        -: 1691:	 * This handles matching of the tail.
+        -: 1692:	 */
+    #####: 1693:	next = patnode(P_NOTHING);
+    #####: 1694:	pattail(starter, next);
+    #####: 1695:	pattail(P_OPERAND(starter), next);
+       14: 1696:    } else if ((flags & P_SIMPLE) && (op == P_ONEHASH || op == P_TWOHASH) &&
+        7: 1697:	P_OP((Upat)patout+starter) == P_ANY) {
+        -: 1698:	/* Optimize ?# to *.  Silly thing to do, since who would use
+        -: 1699:	 * use ?# ? But it makes the later code shorter.
+        -: 1700:	 */
+    #####: 1701:	Upat uptr = (Upat)patout + starter;
+    #####: 1702:	if (op == P_TWOHASH) {
+        -: 1703:	    /* ?## becomes ?* */
+    #####: 1704:	    uptr->l = (uptr->l & ~0xff) | P_ANY;
+    #####: 1705:	    pattail(starter, patnode(P_STAR));
+        -: 1706:	} else {
+    #####: 1707:	    uptr->l = (uptr->l & ~0xff) | P_STAR;
+        -: 1708:	}
+        7: 1709:    } else if ((flags & P_SIMPLE) && op && !(patglobflags & 0xff)) {
+        -: 1710:	/* Simplify, but not if we need to look for approximations. */
+        7: 1711:	patinsert(op, starter, NULL, 0);
+    #####: 1712:    } else if (op == P_ONEHASH) {
+        -: 1713:	/* Emit x# as (x&|), where & means "self". */
+    #####: 1714:	up.p = NULL;
+    #####: 1715:	patinsert(P_WBRANCH, starter, (char *)&up, sizeof(up));
+        -: 1716:	                                      /* Either x */
+    #####: 1717:	patoptail(starter, patnode(P_BACK));  /* and loop */
+    #####: 1718:	patoptail(starter, starter);	      /* back */
+    #####: 1719:	pattail(starter, patnode(P_BRANCH));  /* or */
+    #####: 1720:	pattail(starter, patnode(P_NOTHING)); /* null. */
+    #####: 1721:    } else if (op == P_TWOHASH) {
+        -: 1722:	/* Emit x## as x(&|) where & means "self". */
+    #####: 1723:	next = patnode(P_WBRANCH);	      /* Either */
+    #####: 1724:	up.p = NULL;
+    #####: 1725:	patadd((char *)&up, 0, sizeof(up), 0);
+    #####: 1726:	pattail(starter, next);
+    #####: 1727:	pattail(patnode(P_BACK), starter);    /* loop back */
+    #####: 1728:	pattail(next, patnode(P_BRANCH));     /* or */
+    #####: 1729:	pattail(starter, patnode(P_NOTHING)); /* null. */
+    #####: 1730:    } else if (kshchar == '?') {
+        -: 1731:	/* Emit ?(x) as (x|) */
+    #####: 1732:	patinsert(P_BRANCH, starter, NULL, 0); /* Either x */
+    #####: 1733:	pattail(starter, patnode(P_BRANCH));   /* or */
+    #####: 1734:	next = patnode(P_NOTHING);	       /* null */
+    #####: 1735:	pattail(starter, next);
+    #####: 1736:	patoptail(starter, next);
+        -: 1737:    }
+        7: 1738:    if (*patparse == zpc_special[ZPC_HASH])
+    #####: 1739:	return 0;
+        -: 1740:
+        7: 1741:    return starter;
+        -: 1742:}
+        -: 1743:
+        -: 1744:/*
+        -: 1745: * Turn a ^foo (paren = 0) or !(foo) (paren = 1) into *~foo with
+        -: 1746: * parentheses if necessary.   As you see, that's really quite easy.
+        -: 1747: */
+        -: 1748:
+        -: 1749:/**/
+        -: 1750:static long
+    #####: 1751:patcompnot(int paren, int *flagsp)
+        -: 1752:{
+        -: 1753:    union upat up;
+        -: 1754:    long excsync, br, excl, n, starter;
+        -: 1755:    int dummy;
+        -: 1756:
+        -: 1757:    /* Here, we're matching a star at the start. */
+    #####: 1758:    *flagsp = P_HSTART;
+        -: 1759:
+    #####: 1760:    starter = patnode(P_BRANCH);
+    #####: 1761:    br = patnode(P_STAR);
+    #####: 1762:    excsync = patnode(P_EXCSYNC);
+    #####: 1763:    pattail(br, excsync);
+    #####: 1764:    pattail(starter, excl = patnode(P_EXCLUDE));
+    #####: 1765:    up.p = NULL;
+    #####: 1766:    patadd((char *)&up, 0, sizeof(up), 0);
+    #####: 1767:    if (!(br = (paren ? patcompswitch(1, &dummy) : patcompbranch(&dummy, 0))))
+    #####: 1768:	return 0;
+    #####: 1769:    pattail(br, patnode(P_EXCEND));
+    #####: 1770:    n = patnode(P_NOTHING); /* just so much easier */
+    #####: 1771:    pattail(excsync, n);
+    #####: 1772:    pattail(excl, n);
+        -: 1773:
+    #####: 1774:    return starter;
+        -: 1775:}
+        -: 1776:
+        -: 1777:/* Emit a node */
+        -: 1778:
+        -: 1779:/**/
+        -: 1780:static long
+      139: 1781:patnode(long op)
+        -: 1782:{
+      139: 1783:    long starter = (Upat)patcode - (Upat)patout;
+        -: 1784:    union upat up;
+        -: 1785:
+      139: 1786:    up.l = op;
+      139: 1787:    patadd((char *)&up, 0, sizeof(union upat), 0);
+      139: 1788:    return starter;
+        -: 1789:}
+        -: 1790:
+        -: 1791:/*
+        -: 1792: * insert an operator in front of an already emitted operand:
+        -: 1793: * we relocate the operand.  there had better be nothing else after.
+        -: 1794: */
+        -: 1795:
+        -: 1796:/**/
+        -: 1797:static void
+        7: 1798:patinsert(long op, int opnd, char *xtra, int sz)
+        -: 1799:{
+        -: 1800:    char *src, *dst, *opdst;
+        -: 1801:    union upat buf, *lptr;
+        -: 1802:
+        7: 1803:    buf.l = 0;
+        7: 1804:    patadd((char *)&buf, 0, sizeof(buf), 0);
+        7: 1805:    if (sz)
+    #####: 1806:	patadd(xtra, 0, sz, 0);
+        7: 1807:    src = patcode - sizeof(union upat) - sz;
+        7: 1808:    dst = patcode;
+        7: 1809:    opdst = patout + opnd * sizeof(union upat);
+      126: 1810:    while (src > opdst)
+      112: 1811:	*--dst = *--src;
+        -: 1812:
+        -: 1813:    /* A cast can't be an lvalue */
+        7: 1814:    lptr = (Upat)opdst;
+        7: 1815:    lptr->l = op;
+        7: 1816:    opdst += sizeof(union upat);
+       14: 1817:    while (sz--)
+    #####: 1818:	*opdst++ = *xtra++;
+        7: 1819:}
+        -: 1820:
+        -: 1821:/* set the 'next' pointer at the end of a node chain */
+        -: 1822:
+        -: 1823:/**/
+        -: 1824:static void
+      108: 1825:pattail(long p, long val)
+        -: 1826:{
+        -: 1827:    Upat scan, temp;
+        -: 1828:    long offset;
+        -: 1829:
+      108: 1830:    scan = (Upat)patout + p;
+        -: 1831:    for (;;) {
+      216: 1832:	if (!(temp = PATNEXT(scan)))
+      108: 1833:	    break;
+       54: 1834:	scan = temp;
+        -: 1835:    }
+        -: 1836:
+      216: 1837:    offset = (P_OP(scan) == P_BACK)
+      108: 1838:	? (scan - (Upat)patout) - val : val - (scan - (Upat)patout);
+        -: 1839:
+      108: 1840:    scan->l |= offset << 8;
+      108: 1841:}
+        -: 1842:
+        -: 1843:/* do pattail, but on operand of first argument; nop if operandless */
+        -: 1844:
+        -: 1845:/**/
+        -: 1846:static void
+       71: 1847:patoptail(long p, long val)
+        -: 1848:{
+       71: 1849:    Upat ptr = (Upat)patout + p;
+       71: 1850:    int op = P_OP(ptr);
+       71: 1851:    if (!p || !P_ISBRANCH(ptr))
+       35: 1852:	return;
+       36: 1853:    if (op == P_BRANCH)
+       34: 1854:	pattail(P_OPERAND(p), val);
+        -: 1855:    else
+        2: 1856:	pattail(P_OPERAND(p) + 1, val);
+        -: 1857:}
+        -: 1858:
+        -: 1859:
+        -: 1860:/*
+        -: 1861: * Run a pattern.
+        -: 1862: */
+        -: 1863:struct rpat {
+        -: 1864:    char *patinstart;		/* Start of input string */
+        -: 1865:    char *patinend;		/* End of input string */
+        -: 1866:    char *patinput;		/* String input pointer */
+        -: 1867:    char *patinpath;		/* Full path for use with ~ exclusions */
+        -: 1868:    int   patinlen;		/* Length of last successful match.
+        -: 1869:				 * Includes count of Meta characters.
+        -: 1870:				 */
+        -: 1871:
+        -: 1872:    char *patbeginp[NSUBEXP];	/* Pointer to backref beginnings */
+        -: 1873:    char *patendp[NSUBEXP];	/* Pointer to backref ends */
+        -: 1874:    int parsfound;		/* parentheses (with backrefs) found */
+        -: 1875:
+        -: 1876:    int globdots;		/* Glob initial dots? */
+        -: 1877:};
+        -: 1878:
+        -: 1879:static struct rpat pattrystate;
+        -: 1880:
+        -: 1881:#define patinstart	(pattrystate.patinstart)
+        -: 1882:#define patinend	(pattrystate.patinend)
+        -: 1883:#define patinput	(pattrystate.patinput)
+        -: 1884:#define patinpath	(pattrystate.patinpath)
+        -: 1885:#define patinlen	(pattrystate.patinlen)
+        -: 1886:#define patbeginp	(pattrystate.patbeginp)
+        -: 1887:#define patendp		(pattrystate.patendp)
+        -: 1888:#define parsfound	(pattrystate.parsfound)
+        -: 1889:#define globdots	(pattrystate.globdots)
+        -: 1890:
+        -: 1891:
+        -: 1892:/*
+        -: 1893: * Character functions operating on unmetafied strings.
+        -: 1894: */
+        -: 1895:#ifdef MULTIBYTE_SUPPORT
+        -: 1896:
+        -: 1897:/* Get a character from the start point in a string */
+        -: 1898:#define CHARREF(x, y)	charref((x), (y), (int *)NULL)
+        -: 1899:static wchar_t
+     2133: 1900:charref(char *x, char *y, int *zmb_ind)
+        -: 1901:{
+        -: 1902:    wchar_t wc;
+        -: 1903:    size_t ret;
+        -: 1904:
+     2133: 1905:    if (!(patglobflags & GF_MULTIBYTE) || !(STOUC(*x) & 0x80))
+     2133: 1906:	return (wchar_t) STOUC(*x);
+        -: 1907:
+    #####: 1908:    ret = mbrtowc(&wc, x, y-x, &shiftstate);
+        -: 1909:
+    #####: 1910:    if (ret == MB_INVALID || ret == MB_INCOMPLETE) {
+        -: 1911:	/* Error. */
+        -: 1912:	/* Reset the shift state for next time. */
+    #####: 1913:	memset(&shiftstate, 0, sizeof(shiftstate));
+    #####: 1914:	if (zmb_ind)
+    #####: 1915:	    *zmb_ind = (ret == MB_INVALID) ? ZMB_INVALID : ZMB_INCOMPLETE;
+    #####: 1916:	return WCHAR_INVALID(*x);
+        -: 1917:    }
+        -: 1918:
+    #####: 1919:    if (zmb_ind)
+    #####: 1920:	*zmb_ind = ZMB_VALID;
+    #####: 1921:    return wc;
+        -: 1922:}
+        -: 1923:
+        -: 1924:/* Get  a pointer to the next character */
+        -: 1925:#define CHARNEXT(x, y)	charnext((x), (y))
+        -: 1926:static char *
+     4831: 1927:charnext(char *x, char *y)
+        -: 1928:{
+        -: 1929:    wchar_t wc;
+        -: 1930:    size_t ret;
+        -: 1931:
+     4831: 1932:    if (!(patglobflags & GF_MULTIBYTE) || !(STOUC(*x) & 0x80))
+     4831: 1933:	return x + 1;
+        -: 1934:
+    #####: 1935:    ret = mbrtowc(&wc, x, y-x, &shiftstate);
+        -: 1936:
+    #####: 1937:    if (ret == MB_INVALID || ret == MB_INCOMPLETE) {
+        -: 1938:	/* Error.  Treat as single byte. */
+        -: 1939:	/* Reset the shift state for next time. */
+    #####: 1940:	memset(&shiftstate, 0, sizeof(shiftstate));
+    #####: 1941:	return x + 1;
+        -: 1942:    }
+        -: 1943:
+        -: 1944:    /* Nulls here are normal characters */
+    #####: 1945:    return x + (ret ? ret : 1);
+        -: 1946:}
+        -: 1947:
+        -: 1948:/* Increment a pointer past the current character. */
+        -: 1949:#define CHARINC(x, y)	((x) = charnext((x), (y)))
+        -: 1950:
+        -: 1951:
+        -: 1952:/* Get a character and increment */
+        -: 1953:#define CHARREFINC(x, y, z)	charrefinc(&(x), (y), (z))
+        -: 1954:static wchar_t
+     1782: 1955:charrefinc(char **x, char *y, int *z)
+        -: 1956:{
+        -: 1957:    wchar_t wc;
+        -: 1958:    size_t ret;
+        -: 1959:
+     1782: 1960:    if (!(patglobflags & GF_MULTIBYTE) || !(STOUC(**x) & 0x80))
+     1782: 1961:	return (wchar_t) STOUC(*(*x)++);
+        -: 1962:
+    #####: 1963:    ret = mbrtowc(&wc, *x, y-*x, &shiftstate);
+        -: 1964:
+    #####: 1965:    if (ret == MB_INVALID || ret == MB_INCOMPLETE) {
+        -: 1966:	/* Error.  Treat as single byte, but flag. */
+    #####: 1967:	*z = 1;
+        -: 1968:	/* Reset the shift state for next time. */
+    #####: 1969:	memset(&shiftstate, 0, sizeof(shiftstate));
+    #####: 1970:	return WCHAR_INVALID(*(*x)++);
+        -: 1971:    }
+        -: 1972:
+        -: 1973:    /* Nulls here are normal characters */
+    #####: 1974:    *x += ret ? ret : 1;
+        -: 1975:
+    #####: 1976:    return wc;
+        -: 1977:}
+        -: 1978:
+        -: 1979:
+        -: 1980:/*
+        -: 1981: * Counter the number of characters between two pointers, smaller first
+        -: 1982: *
+        -: 1983: * This is used when setting values in parameters, so we obey
+        -: 1984: * the MULTIBYTE option (even if it's been overridden locally).
+        -: 1985: */
+        -: 1986:#define CHARSUB(x,y)	charsub(x, y)
+        -: 1987:static ptrdiff_t
+        2: 1988:charsub(char *x, char *y)
+        -: 1989:{
+        2: 1990:    ptrdiff_t res = 0;
+        -: 1991:    size_t ret;
+        -: 1992:    wchar_t wc;
+        -: 1993:
+        2: 1994:    if (!isset(MULTIBYTE))
+    #####: 1995:	return y - x;
+        -: 1996:
+       10: 1997:    while (x < y) {
+        6: 1998:	ret = mbrtowc(&wc, x, y-x, &shiftstate);
+        -: 1999:
+        6: 2000:	if (ret == MB_INVALID || ret == MB_INCOMPLETE) {
+        -: 2001:	    /* Error.  Treat remainder as single characters */
+    #####: 2002:	    return res + (y - x);
+        -: 2003:	}
+        -: 2004:
+        -: 2005:	/* Treat nulls as normal characters */
+        6: 2006:	if (!ret)
+    #####: 2007:	    ret = 1;
+        6: 2008:	res++;
+        6: 2009:	x += ret;
+        -: 2010:    }
+        -: 2011:
+        2: 2012:    return res;
+        -: 2013:}
+        -: 2014:
+        -: 2015:#else /* no MULTIBYTE_SUPPORT */
+        -: 2016:
+        -: 2017:/* Get a character from the start point in a string */
+        -: 2018:#define CHARREF(x, y)	(STOUC(*(x)))
+        -: 2019:/* Get  a pointer to the next character */
+        -: 2020:#define CHARNEXT(x, y)	((x)+1)
+        -: 2021:/* Increment a pointer past the current character. */
+        -: 2022:#define CHARINC(x, y)	((x)++)
+        -: 2023:/* Get a character and increment */
+        -: 2024:#define CHARREFINC(x, y, z)	(STOUC(*(x)++))
+        -: 2025:/* Counter the number of characters between two pointers, smaller first */
+        -: 2026:#define CHARSUB(x,y)	((y) - (x))
+        -: 2027:
+        -: 2028:#endif /* MULTIBYTE_SUPPORT */
+        -: 2029:
+        -: 2030:/*
+        -: 2031: * The following need to be accessed in the globbing scanner for
+        -: 2032: * a multi-component file path.  See horror story in glob.c.
+        -: 2033: */
+        -: 2034:/**/
+        -: 2035:int errsfound;				/* Total error count so far */
+        -: 2036:
+        -: 2037:/**/
+        -: 2038:int forceerrs;				/* Forced maximum error count */
+        -: 2039:
+        -: 2040:/*
+        -: 2041: * exactpos is used to remember how far down an exact string we have
+        -: 2042: * matched, if we are doing approximation and can therefore redo from
+        -: 2043: * the same point; we never need to otherwise.
+        -: 2044: *
+        -: 2045: * exactend is a pointer to the end of the string, which isn't
+        -: 2046: * null-terminated.
+        -: 2047: */
+        -: 2048:static char *exactpos, *exactend;
+        -: 2049:
+        -: 2050:/**/
+        -: 2051:void
+        4: 2052:pattrystart(void)
+        -: 2053:{
+        4: 2054:    forceerrs = -1;
+        4: 2055:    errsfound = 0;
+        4: 2056:}
+        -: 2057:
+        -: 2058:/*
+        -: 2059: * Fix up string length stuff.
+        -: 2060: *
+        -: 2061: * If we call patallocstr() with "force" to set things up early, it's
+        -: 2062: * done there, else it's done in pattryrefs().  The reason for the
+        -: 2063: * difference is in the latter case we may not be relying on
+        -: 2064: * patallocstr() having an effect.
+        -: 2065: */
+        -: 2066:
+        -: 2067:/**/
+        -: 2068:static void
+      260: 2069:patmungestring(char **string, int *stringlen, int *unmetalenin)
+        -: 2070:{
+        -: 2071:    /*
+        -: 2072:     * Special signalling of empty tokenised string.
+        -: 2073:     */
+      260: 2074:    if (*stringlen > 0 && **string == Nularg) {
+    #####: 2075:	(*string)++;
+        -: 2076:	/*
+        -: 2077:	 * If we don't have an unmetafied length
+        -: 2078:	 * and need it (we may not) we'll get it later.
+        -: 2079:	 */
+    #####: 2080:	if (*unmetalenin > 0)
+    #####: 2081:	    (*unmetalenin)--;
+    #####: 2082:	if (*stringlen > 0)
+    #####: 2083:	    (*stringlen)--;
+        -: 2084:    }
+        -: 2085:
+        -: 2086:    /* Ensure we have a metafied length */
+      260: 2087:    if (*stringlen < 0)
+      257: 2088:	*stringlen = strlen(*string);
+      260: 2089:}
+        -: 2090:
+        -: 2091:/*
+        -: 2092: * Allocate memory for pattern match.  Note this is specific to use
+        -: 2093: * of pattern *and* trial string.
+        -: 2094: *
+        -: 2095: * Unmetafy a trial string for use in pattern matching, if needed.
+        -: 2096: *
+        -: 2097: * If it is needed, returns a heap allocated string; if not needed,
+        -: 2098: * returns NULL.
+        -: 2099: *
+        -: 2100: * prog is the pattern to be executed.
+        -: 2101: * string is the metafied trial string.
+        -: 2102: * stringlen is it's length; it will be calculated if it's negative
+        -: 2103: *   (this is a simple strlen()).
+        -: 2104: * unmetalen is the unmetafied length of the string, may be -1.
+        -: 2105: * force is 1 if we always unmetafy: this is useful if we are going
+        -: 2106: *   to try again with different versions of the string.  If this is
+        -: 2107: *   called from pattryrefs() we don't force unmetafication as it won't
+        -: 2108: *   be optimal.  This option should be used if the resulting
+        -: 2109: *   patstralloc is going to be passed to pattrylen() / pattryrefs().
+        -: 2110: * In patstralloc (supplied by caller, must last until last pattry is done)
+        -: 2111: *  unmetalen is the unmetafied length of the string; it will be
+        -: 2112: *    calculated if the input value is negative.
+        -: 2113: *  unmetalenp is the umetafied length of a path segment preceding
+        -: 2114: *    the trial string needed for file mananagement; it is calculated as
+        -: 2115: *    needed so does not need to be initialised.
+        -: 2116: *  alloced is the memory allocated on the heap --- same as return value from
+        -: 2117: *    function.
+        -: 2118: */
+        -: 2119:/**/
+        -: 2120:mod_export
+      260: 2121:char *patallocstr(Patprog prog, char *string, int stringlen, int unmetalen,
+        -: 2122:		  int force, Patstralloc patstralloc)
+        -: 2123:{
+        -: 2124:    int needfullpath;
+        -: 2125:
+      260: 2126:    if (force)
+        3: 2127:	patmungestring(&string, &stringlen, &unmetalen);
+        -: 2128:
+        -: 2129:    /*
+        -: 2130:     * For a top-level ~-exclusion, we will need the full
+        -: 2131:     * path to exclude, so copy the path so far and append the
+        -: 2132:     * current test string.
+        -: 2133:     */
+      260: 2134:    needfullpath = (prog->flags & PAT_HAS_EXCLUDP) && pathpos;
+        -: 2135:
+        -: 2136:    /* Get the length of the full string when unmetafied. */
+      260: 2137:    if (unmetalen < 0)
+      257: 2138:	patstralloc->unmetalen = ztrsub(string + stringlen, string);
+        -: 2139:    else
+        3: 2140:	patstralloc->unmetalen = unmetalen;
+      260: 2141:    if (needfullpath) {
+       55: 2142:	patstralloc->unmetalenp = ztrsub(pathbuf + pathpos, pathbuf);
+       55: 2143:	if (!patstralloc->unmetalenp)
+    #####: 2144:	    needfullpath = 0;
+        -: 2145:    } else
+      205: 2146:	patstralloc->unmetalenp = 0;
+        -: 2147:    /* Initialise cache area */
+      260: 2148:    patstralloc->progstrunmeta = NULL;
+      260: 2149:    patstralloc->progstrunmetalen = 0;
+        -: 2150:
+        -: 2151:    DPUTS(needfullpath && (prog->flags & (PAT_PURES|PAT_ANY)),
+        -: 2152:	  "rum sort of file exclusion");
+        -: 2153:    /*
+        -: 2154:     * Partly for efficiency, and partly for the convenience of
+        -: 2155:     * globbing, we don't unmetafy pure string patterns, and
+        -: 2156:     * there's no reason to if the pattern is just a *.
+        -: 2157:     */
+      517: 2158:    if (force ||
+      257: 2159:	(!(prog->flags & (PAT_PURES|PAT_ANY))
+      314: 2160:	 && (needfullpath || patstralloc->unmetalen != stringlen))) {
+        -: 2161:	/*
+        -: 2162:	 * We need to copy if we need to prepend the path so far
+        -: 2163:	 * (in which case we copy both chunks), or if we have
+        -: 2164:	 * Meta characters.
+        -: 2165:	 */
+        -: 2166:	char *dst, *ptr;
+        -: 2167:	int i, icopy, ncopy;
+        -: 2168:
+       58: 2169:	dst = patstralloc->alloced =
+       58: 2170:	    zhalloc(patstralloc->unmetalen + patstralloc->unmetalenp);
+        -: 2171:
+       58: 2172:	if (needfullpath) {
+        -: 2173:	    /* loop twice, copy path buffer first time */
+       55: 2174:	    ptr = pathbuf;
+       55: 2175:	    ncopy = patstralloc->unmetalenp;
+        -: 2176:	} else {
+        -: 2177:	    /* just loop once, copy string with unmetafication */
+        3: 2178:	    ptr = string;
+        3: 2179:	    ncopy = patstralloc->unmetalen;
+        -: 2180:	}
+      168: 2181:	for (icopy = 0; icopy < 2; icopy++) {
+     2723: 2182:	    for (i = 0; i < ncopy; i++) {
+     2610: 2183:		if (*ptr == Meta) {
+    #####: 2184:		    ptr++;
+    #####: 2185:		    *dst++ = *ptr++ ^ 32;
+        -: 2186:		} else {
+     2610: 2187:		    *dst++ = *ptr++;
+        -: 2188:		}
+        -: 2189:	    }
+      113: 2190:	    if (!needfullpath)
+        3: 2191:		break;
+        -: 2192:	    /* next time append test string to path so far */
+      110: 2193:	    ptr = string;
+      110: 2194:	    ncopy = patstralloc->unmetalen;
+        -: 2195:	}
+        -: 2196:    }
+        -: 2197:    else
+        -: 2198:    {
+      202: 2199:	patstralloc->alloced = NULL;
+        -: 2200:    }
+        -: 2201:
+      260: 2202:    return patstralloc->alloced;
+        -: 2203:}
+        -: 2204:
+        -: 2205:
+        -: 2206:/*
+        -: 2207: * Test prog against null-terminated, metafied string.
+        -: 2208: */
+        -: 2209:
+        -: 2210:/**/
+        -: 2211:mod_export int
+      257: 2212:pattry(Patprog prog, char *string)
+        -: 2213:{
+      257: 2214:    return pattryrefs(prog, string, -1, -1, NULL, 0, NULL, NULL, NULL);
+        -: 2215:}
+        -: 2216:
+        -: 2217:/*
+        -: 2218: * Test prog against string of given length, no null termination
+        -: 2219: * but still metafied at this point.  offset gives an offset
+        -: 2220: * to include in reported match indices
+        -: 2221: */
+        -: 2222:
+        -: 2223:/**/
+        -: 2224:mod_export int
+       13: 2225:pattrylen(Patprog prog, char *string, int len, int unmetalen,
+        -: 2226:	  Patstralloc patstralloc, int offset)
+        -: 2227:{
+       13: 2228:    return pattryrefs(prog, string, len, unmetalen, patstralloc, offset,
+        -: 2229:		      NULL, NULL, NULL);
+        -: 2230:}
+        -: 2231:
+        -: 2232:/*
+        -: 2233: * Test prog against string with given lengths.  The input
+        -: 2234: * string is metafied; stringlen is the raw string length, and
+        -: 2235: * unmetalen the number of characters in the original string (some
+        -: 2236: * of which may now be metafied).  Either value may be -1
+        -: 2237: * to indicate a null-terminated string which will be counted.  Note
+        -: 2238: * there may be a severe penalty for this if a lot of matching is done
+        -: 2239: * on one string.
+        -: 2240: *
+        -: 2241: * If patstralloc is not NULL it is used to optimise unmetafication
+        -: 2242: * of a trial string that may be passed (or any substring may be passed) to
+        -: 2243: * pattryrefs multiple times or the same pattern (N.B. so patstralloc
+        -: 2244: * depends on both prog *and* the trial string).  This should only be
+        -: 2245: * done if there is no path prefix (pathpos == 0) as otherwise the path
+        -: 2246: * buffer and unmetafied string may not match.  To do this,
+        -: 2247: * patallocstr() is called (use force = 1 to ensure it is always
+        -: 2248: * unmetafied); paststralloc points to existing storage. Memory is
+        -: 2249: * on the heap.
+        -: 2250: *
+        -: 2251: * patstralloc->alloced and patstralloc->unmetalen contain the
+        -: 2252: * unmetafied string and its length.  In that case, the rules for the
+        -: 2253: * earlier arguments change:
+        -: 2254: * - string is an unmetafied string
+        -: 2255: * - stringlen is its unmetafied (i.e. actual) length
+        -: 2256: * - unmetalenin is not used.
+        -: 2257: * string and stringlen may refer to arbitrary substrings of
+        -: 2258: * patstralloc->alloced without any internal modification to patstralloc.
+        -: 2259: *
+        -: 2260: * patoffset is the position in the original string (not seen by
+        -: 2261: * the pattern module) at which we are trying to match.
+        -: 2262: * This is added in to the positions recorded in patbeginp and patendp
+        -: 2263: * when we are looking for substrings.  Currently this only happens
+        -: 2264: * in the parameter substitution code.  It refers to a real character
+        -: 2265: * offset, i.e. is already in the form ready for presentation to the
+        -: 2266: * general public --- this is necessary as we don't have the
+        -: 2267: * information to convert it down here.
+        -: 2268: *
+        -: 2269: * Note this is a character offset, i.e. a single possibly metafied and
+        -: 2270: * possibly multibyte character counts as 1.
+        -: 2271: *
+        -: 2272: * The last three arguments are used to report the positions for the
+        -: 2273: * backreferences. On entry, *nump should contain the maximum number
+        -: 2274: * of positions to report.  In this case the match, mbegin, mend
+        -: 2275: * arrays are not altered.
+        -: 2276: *
+        -: 2277: * If nump is NULL but endp is not NULL, then *endp is set to the
+        -: 2278: * end position of the match, taking into account patinstart.
+        -: 2279: */
+        -: 2280:
+        -: 2281:/**/
+        -: 2282:mod_export int
+      270: 2283:pattryrefs(Patprog prog, char *string, int stringlen, int unmetalenin,
+        -: 2284:	   Patstralloc patstralloc, int patoffset,
+        -: 2285:	   int *nump, int *begp, int *endp)
+        -: 2286:{
+      270: 2287:    int i, maxnpos = 0, ret;
+        -: 2288:    int origlen;
+        -: 2289:    char **sp, **ep, *ptr;
+      270: 2290:    char *progstr = (char *)prog + prog->startoff;
+        -: 2291:    struct patstralloc patstralloc_struct;
+        -: 2292:
+      270: 2293:    if (nump) {
+    #####: 2294:	maxnpos = *nump;
+    #####: 2295:	*nump = 0;
+        -: 2296:    }
+        -: 2297:
+      270: 2298:    if (!patstralloc)
+      257: 2299:	patmungestring(&string, &stringlen, &unmetalenin);
+      270: 2300:    origlen = stringlen;
+        -: 2301:
+      270: 2302:    if (patstralloc) {
+        -: 2303:	DPUTS(!patstralloc->alloced,
+        -: 2304:	      "External unmetafy didn't actually unmetafy.");
+        -: 2305:	DPUTS(patstralloc->unmetalenp,
+        -: 2306:	      "Ooh-err: pathpos with external unmetafy. I have bad vibes.");
+       13: 2307:	patinpath = NULL;
+       13: 2308:	patinstart = string;
+        -: 2309:	/* stringlen is unmetafied length; unmetalenin is ignored */
+        -: 2310:    } else {
+      257: 2311:	patstralloc = &patstralloc_struct;
+      257: 2312:	if (patallocstr(prog, string, stringlen, unmetalenin, 0, patstralloc)) {
+       55: 2313:	    patinstart = patstralloc->alloced + patstralloc->unmetalenp;
+       55: 2314:	    stringlen = patstralloc->unmetalen;
+        -: 2315:	} else
+      202: 2316:	    patinstart = string;
+      257: 2317:	if (patstralloc->unmetalenp)
+       55: 2318:	    patinpath = patstralloc->alloced;
+        -: 2319:	else
+      202: 2320:	    patinpath = NULL;
+        -: 2321:    }
+        -: 2322:
+      270: 2323:    patflags = prog->flags;
+      270: 2324:    patinend = patinstart + stringlen;
+        -: 2325:    /*
+        -: 2326:     * From now on we do not require NULL termination of
+        -: 2327:     * the test string.  There should also be no more references
+        -: 2328:     * to the variable string.
+        -: 2329:     */
+        -: 2330:
+      270: 2331:    if (prog->flags & (PAT_PURES|PAT_ANY)) {
+        -: 2332:	/*
+        -: 2333:	 * Either we are testing against a pure string,
+        -: 2334:	 * or we can match anything at all.
+        -: 2335:	 */
+        -: 2336:	int pstrlen;
+        -: 2337:	char *pstr;
+        3: 2338:	if (patstralloc->alloced)
+        -: 2339:	{
+        -: 2340:	    /*
+        -: 2341:	     * Unmetafied; we need pattern string that's also unmetafied.
+        -: 2342:	     * We'll cache it in the patstralloc structure.
+        -: 2343:	     * Note it's on the heap.
+        -: 2344:	     */
+        2: 2345:	    if (!patstralloc->progstrunmeta)
+        -: 2346:	    {
+        2: 2347:		patstralloc->progstrunmeta =
+        2: 2348:		    dupstrpfx(progstr, (int)prog->patmlen);
+        2: 2349:		unmetafy(patstralloc->progstrunmeta,
+        -: 2350:			 &patstralloc->progstrunmetalen);
+        -: 2351:	    }
+        2: 2352:	    pstr = patstralloc->progstrunmeta;
+        2: 2353:	    pstrlen = patstralloc->progstrunmetalen;
+        -: 2354:	}
+        -: 2355:	else
+        -: 2356:	{
+        -: 2357:	    /* Metafied. */
+        1: 2358:	    pstr = progstr;
+        1: 2359:	    pstrlen = (int)prog->patmlen;
+        -: 2360:	}
+        3: 2361:	if (prog->flags & PAT_ANY) {
+        -: 2362:	    /*
+        -: 2363:	     * Optimisation for a single "*": always matches
+        -: 2364:	     * (except for no_glob_dots, see below).
+        -: 2365:	     */
+    #####: 2366:	    ret = 1;
+        -: 2367:	} else {
+        -: 2368:	    /*
+        -: 2369:	     * Testing a pure string.  See if initial
+        -: 2370:	     * components match.
+        -: 2371:	     */
+        3: 2372:	    int lendiff = stringlen - pstrlen;
+        3: 2373:	    if (lendiff < 0) {
+        -: 2374:		/* No, the pattern string is too long. */
+    #####: 2375:		ret = 0;
+        3: 2376:	    } else if (!memcmp(pstr, patinstart, pstrlen)) {
+        -: 2377:		/*
+        -: 2378:		 * Initial component matches.  Matches either
+        -: 2379:		 * if lengths are the same or we are not anchored
+        -: 2380:		 * to the end of the string.
+        -: 2381:		 */
+        1: 2382:		ret = !lendiff || (prog->flags & PAT_NOANCH);
+        -: 2383:	    } else {
+        -: 2384:		/* No match. */
+        2: 2385:		ret = 0;
+        -: 2386:	    }
+        -: 2387:	}
+        3: 2388:	if (ret) {
+        -: 2389:	    /*
+        -: 2390:	     * For files, we won't match initial "."s unless
+        -: 2391:	     * glob_dots is set.
+        -: 2392:	     */
+        1: 2393:	    if ((prog->flags & PAT_NOGLD) && *patinstart == '.') {
+    #####: 2394:		ret = 0;
+        -: 2395:	    } else {
+        -: 2396:		/*
+        -: 2397:		 * Remember the length in case used for ${..#..} etc.
+        -: 2398:		 * In this case, we didn't unmetafy the pattern string
+        -: 2399:		 * in the original structure, but it might be unmetafied
+        -: 2400:		 * for use with an unmetafied test string.
+        -: 2401:		 */
+        1: 2402:		patinlen = pstrlen;
+        -: 2403:		/* if matching files, must update globbing flags */
+        1: 2404:		patglobflags = prog->globend;
+        -: 2405:
+        1: 2406:		if ((patglobflags & GF_MATCHREF) &&
+    #####: 2407:		    !(patflags & PAT_FILE)) {
+        -: 2408:		    char *str;
+        -: 2409:		    int mlen;
+        -: 2410:
+    #####: 2411:		    if (patstralloc->alloced) {
+        -: 2412:			/*
+        -: 2413:			 * Unmetafied: pstrlen contains unmetafied
+        -: 2414:			 * length in bytes.
+        -: 2415:			 */
+    #####: 2416:			str = metafy(patinstart, pstrlen, META_DUP);
+    #####: 2417:			mlen = CHARSUB(patinstart, patinstart + pstrlen);
+        -: 2418:		    } else {
+    #####: 2419:			str = ztrduppfx(patinstart, patinlen);
+        -: 2420:			/*
+        -: 2421:			 * Count the characters.  We're not using CHARSUB()
+        -: 2422:			 * because the string is still metafied.
+        -: 2423:			 */
+    #####: 2424:			MB_METACHARINIT();
+    #####: 2425:			mlen = MB_METASTRLEN2END(patinstart, 0,
+        -: 2426:						 patinstart + patinlen);
+        -: 2427:		    }
+        -: 2428:
+    #####: 2429:		    setsparam("MATCH", str);
+    #####: 2430:		    setiparam("MBEGIN",
+    #####: 2431:			      (zlong)(patoffset + !isset(KSHARRAYS)));
+    #####: 2432:		    setiparam("MEND",
+    #####: 2433:			      (zlong)(mlen + patoffset +
+    #####: 2434:				      !isset(KSHARRAYS) - 1));
+        -: 2435:		}
+        -: 2436:	    }
+        -: 2437:	}
+        -: 2438:    } else {
+        -: 2439:	/*
+        -: 2440:	 * Test for a `must match' string, unless we're scanning for a match
+        -: 2441:	 * in which case we don't need to do this each time.
+        -: 2442:	 */
+      267: 2443:	ret = 1;
+      267: 2444:	if (!(prog->flags & PAT_SCAN) && prog->mustoff)
+        -: 2445:	{
+        -: 2446:	    char *testptr;	/* start pointer into test string */
+        -: 2447:	    char *teststop;	/* last point from which we can match */
+    #####: 2448:	    char *patptr = (char *)prog + prog->mustoff;
+    #####: 2449:	    int patlen = prog->patmlen;
+    #####: 2450:	    int found = 0;
+        -: 2451:
+    #####: 2452:	    if (patlen > stringlen) {
+        -: 2453:		/* Too long, can't match. */
+    #####: 2454:		ret = 0;
+        -: 2455:	    } else {
+    #####: 2456:		teststop = patinend - patlen;
+        -: 2457:
+    #####: 2458:		for (testptr = patinstart; testptr <= teststop; testptr++)
+        -: 2459:		{
+    #####: 2460:		    if (!memcmp(testptr, patptr, patlen)) {
+    #####: 2461:			found = 1;
+    #####: 2462:			break;
+        -: 2463:		    }
+        -: 2464:		}
+        -: 2465:
+    #####: 2466:		if (!found)
+    #####: 2467:		    ret = 0;
+        -: 2468:	    }
+        -: 2469:	}
+      267: 2470:	if (!ret)
+    #####: 2471:	    return 0;
+        -: 2472:
+      267: 2473:	patglobflags = prog->globflags;
+      267: 2474:	if (!(patflags & PAT_FILE)) {
+       46: 2475:	    forceerrs = -1;
+       46: 2476:	    errsfound = 0;
+        -: 2477:	}
+      267: 2478:	globdots = !(patflags & PAT_NOGLD);
+      267: 2479:	parsfound = 0;
+        -: 2480:
+      267: 2481:	patinput = patinstart;
+        -: 2482:
+      267: 2483:	exactpos = exactend = NULL;
+        -: 2484:	/* The only external call to patmatch --- all others are recursive */
+      267: 2485:	if (patmatch((Upat)progstr)) {
+        -: 2486:	    /*
+        -: 2487:	     * we were lazy and didn't save the globflags if an exclusion
+        -: 2488:	     * failed, so set it now
+        -: 2489:	     */
+       79: 2490:	    patglobflags = prog->globend;
+        -: 2491:
+        -: 2492:	    /*
+        -: 2493:	     * Record length of successful match, including Meta
+        -: 2494:	     * characters.  Do it here so that patmatchlen() can return
+        -: 2495:	     * it even if we delete the pattern strings.
+        -: 2496:	     */
+       79: 2497:	    patinlen = patinput - patinstart;
+        -: 2498:	    /*
+        -: 2499:	     * Optimization: if we didn't find any Meta characters
+        -: 2500:	     * to begin with, we don't need to look for them now.
+        -: 2501:	     *
+        -: 2502:	     * For patstralloc passed in, we want the unmetafied length.
+        -: 2503:	     */
+      157: 2504:	    if (patstralloc == &patstralloc_struct &&
+       78: 2505:		patstralloc->unmetalen != origlen) {
+    #####: 2506:		for (ptr = patinstart; ptr < patinput; ptr++)
+    #####: 2507:		    if (imeta(*ptr))
+    #####: 2508:			patinlen++;
+        -: 2509:	    }
+        -: 2510:
+        -: 2511:	    /*
+        -: 2512:	     * Should we clear backreferences and matches on a failed
+        -: 2513:	     * match?
+        -: 2514:	     */
+       79: 2515:	    if ((patglobflags & GF_MATCHREF) && !(patflags & PAT_FILE)) {
+        -: 2516:		/*
+        -: 2517:		 * m flag: for global match.  This carries no overhead
+        -: 2518:		 * in the pattern matching part.
+        -: 2519:		 *
+        -: 2520:		 * Remember the test pattern is already unmetafied.
+        -: 2521:		 */
+        -: 2522:		char *str;
+    #####: 2523:		int mlen = CHARSUB(patinstart, patinput);
+        -: 2524:
+    #####: 2525:		str = metafy(patinstart, patinput - patinstart, META_DUP);
+    #####: 2526:		setsparam("MATCH", str);
+    #####: 2527:		setiparam("MBEGIN", (zlong)(patoffset + !isset(KSHARRAYS)));
+    #####: 2528:		setiparam("MEND",
+    #####: 2529:			  (zlong)(mlen + patoffset +
+    #####: 2530:				  !isset(KSHARRAYS) - 1));
+        -: 2531:	    }
+       79: 2532:	    if (prog->patnpar && nump) {
+        -: 2533:		/*
+        -: 2534:		 * b flag: for backreferences using parentheses. Reported
+        -: 2535:		 * directly.
+        -: 2536:		 */
+    #####: 2537:		*nump = prog->patnpar;
+        -: 2538:
+    #####: 2539:		sp = patbeginp;
+    #####: 2540:		ep = patendp;
+        -: 2541:
+    #####: 2542:		for (i = 0; i < prog->patnpar && i < maxnpos; i++) {
+    #####: 2543:		    if (parsfound & (1 << i)) {
+    #####: 2544:			if (begp)
+    #####: 2545:			    *begp++ = CHARSUB(patinstart, *sp) + patoffset;
+    #####: 2546:			if (endp)
+    #####: 2547:			    *endp++ = CHARSUB(patinstart, *ep) + patoffset
+    #####: 2548:				- 1;
+        -: 2549:		    } else {
+    #####: 2550:			if (begp)
+    #####: 2551:			    *begp++ = -1;
+    #####: 2552:			if (endp)
+    #####: 2553:			    *endp++ = -1;
+        -: 2554:		    }
+        -: 2555:
+    #####: 2556:		    sp++;
+    #####: 2557:		    ep++;
+        -: 2558:		}
+       79: 2559:	    } else if (prog->patnpar && !(patflags & PAT_FILE)) {
+        -: 2560:		/*
+        -: 2561:		 * b flag: for backreferences using parentheses.
+        -: 2562:		 */
+        1: 2563:		int palen = prog->patnpar+1;
+        -: 2564:		char **matcharr, **mbeginarr, **mendarr;
+        -: 2565:		char numbuf[DIGBUFSIZE];
+        -: 2566:
+        1: 2567:		matcharr = zshcalloc(palen*sizeof(char *));
+        1: 2568:		mbeginarr = zshcalloc(palen*sizeof(char *));
+        1: 2569:		mendarr = zshcalloc(palen*sizeof(char *));
+        -: 2570:
+        1: 2571:		sp = patbeginp;
+        1: 2572:		ep = patendp;
+        -: 2573:
+        2: 2574:		for (i = 0; i < prog->patnpar; i++) {
+        1: 2575:		    if (parsfound & (1 << i)) {
+        1: 2576:			matcharr[i] = metafy(*sp, *ep - *sp, META_DUP);
+        -: 2577:			/*
+        -: 2578:			 * mbegin and mend give indexes into the string
+        -: 2579:			 * in the standard notation, i.e. respecting
+        -: 2580:			 * KSHARRAYS, and with the end index giving
+        -: 2581:			 * the last character, not one beyond.
+        -: 2582:			 * For example, foo=foo; [[ $foo = (f)oo ]] gives
+        -: 2583:			 * (without KSHARRAYS) indexes 1 and 1, which
+        -: 2584:			 * corresponds to indexing as ${foo[1,1]}.
+        -: 2585:			 */
+        1: 2586:			sprintf(numbuf, "%ld",
+        1: 2587:				(long)(CHARSUB(patinstart, *sp) +
+        1: 2588:				       patoffset +
+        1: 2589:				       !isset(KSHARRAYS)));
+        1: 2590:			mbeginarr[i] = ztrdup(numbuf);
+        1: 2591:			sprintf(numbuf, "%ld",
+        1: 2592:				(long)(CHARSUB(patinstart, *ep) +
+        1: 2593:				       patoffset +
+        2: 2594:				       !isset(KSHARRAYS) - 1));
+        1: 2595:			mendarr[i] = ztrdup(numbuf);
+        -: 2596:		    } else {
+        -: 2597:			/* Pattern wasn't set: either it was in an
+        -: 2598:			 * unmatched branch, or a hashed parenthesis
+        -: 2599:			 * that didn't match at all.
+        -: 2600:			 */
+    #####: 2601:			matcharr[i] = ztrdup("");
+    #####: 2602:			mbeginarr[i] = ztrdup("-1");
+    #####: 2603:			mendarr[i] = ztrdup("-1");
+        -: 2604:		    }
+        1: 2605:		    sp++;
+        1: 2606:		    ep++;
+        -: 2607:		}
+        1: 2608:		setaparam("match", matcharr);
+        1: 2609:		setaparam("mbegin", mbeginarr);
+        1: 2610:		setaparam("mend", mendarr);
+        -: 2611:	    }
+        -: 2612:
+       79: 2613:	    if (!nump && endp) {
+        -: 2614:		/*
+        -: 2615:		 * We just need the overall end position.
+        -: 2616:		 */
+    #####: 2617:		*endp = CHARSUB(patinstart, patinput) + patoffset;
+        -: 2618:	    }
+        -: 2619:
+       79: 2620:	    ret = 1;
+        -: 2621:	} else
+      188: 2622:	    ret = 0;
+        -: 2623:    }
+        -: 2624:
+      270: 2625:    return ret;
+        -: 2626:}
+        -: 2627:
+        -: 2628:/*
+        -: 2629: * Return length of previous successful match.  This is
+        -: 2630: * in metafied bytes, i.e. includes a count of Meta characters,
+        -: 2631: * unless the match was done on an unmetafied string using
+        -: 2632: * a patstralloc struct, in which case it too is unmetafied.
+        -: 2633: * Unusual and futile attempt at modular encapsulation.
+        -: 2634: */
+        -: 2635:
+        -: 2636:/**/
+        -: 2637:int
+    #####: 2638:patmatchlen(void)
+        -: 2639:{
+    #####: 2640:    return patinlen;
+        -: 2641:}
+        -: 2642:
+        -: 2643:/*
+        -: 2644: * Match literal characters with case insensitivity test:  the first
+        -: 2645: * comes from the input string, the second the current pattern.
+        -: 2646: */
+        -: 2647:#ifdef MULTIBYTE_SUPPORT
+        -: 2648:#define ISUPPER(x)	iswupper(x)
+        -: 2649:#define ISLOWER(x)	iswlower(x)
+        -: 2650:#define TOUPPER(x)	towupper(x)
+        -: 2651:#define TOLOWER(x)	towlower(x)
+        -: 2652:#define ISDIGIT(x)	iswdigit(x)
+        -: 2653:#else
+        -: 2654:#define ISUPPER(x)	isupper(x)
+        -: 2655:#define ISLOWER(x)	islower(x)
+        -: 2656:#define TOUPPER(x)	toupper(x)
+        -: 2657:#define TOLOWER(x)	tolower(x)
+        -: 2658:#define ISDIGIT(x)	idigit(x)
+        -: 2659:#endif
+        -: 2660:#define CHARMATCH(chin, chpa) (chin == chpa || \
+        -: 2661:        ((patglobflags & GF_IGNCASE) ? \
+        -: 2662:	 ((ISUPPER(chin) ? TOLOWER(chin) : chin) == \
+        -: 2663:	  (ISUPPER(chpa) ? TOLOWER(chpa) : chpa)) : \
+        -: 2664:	 (patglobflags & GF_LCMATCHUC) ? \
+        -: 2665:	 (ISLOWER(chpa) && TOUPPER(chpa) == chin) : 0))
+        -: 2666:
+        -: 2667:/*
+        -: 2668: * The same but caching an expression from the first argument,
+        -: 2669: * Requires local charmatch_cache definition.
+        -: 2670: */
+        -: 2671:#define CHARMATCH_EXPR(expr, chpa) \
+        -: 2672:	(charmatch_cache = (expr), CHARMATCH(charmatch_cache, chpa))
+        -: 2673:
+        -: 2674:/*
+        -: 2675: * Main matching routine.
+        -: 2676: *
+        -: 2677: * Testing the tail end of a match is usually done by recursion, but
+        -: 2678: * we try to eliminate that in favour of looping for simple cases.
+        -: 2679: */
+        -: 2680:
+        -: 2681:/**/
+        -: 2682:static int
+      766: 2683:patmatch(Upat prog)
+        -: 2684:{
+        -: 2685:    /* Current and next nodes */
+      766: 2686:    Upat scan = prog, next, opnd;
+        -: 2687:    char *start, *save, *chrop, *chrend, *compend;
+      766: 2688:    int savglobflags, op, no, min, fail = 0, saverrsfound;
+        -: 2689:    zrange_t from, to, comp;
+        -: 2690:    patint_t nextch;
+      766: 2691:    int q = queue_signal_level();
+        -: 2692:
+        -: 2693:    /*
+        -: 2694:     * To avoid overhead of saving state if there are no queued signals
+        -: 2695:     * waiting, we pierce the signals.h veil and examine queue state.
+        -: 2696:     */
+        -: 2697:#define check_for_signals() do if (queue_front != queue_rear) { \
+        -: 2698:	    int savpatflags = patflags, savpatglobflags = patglobflags; \
+        -: 2699:            char *savexactpos = exactpos, *savexactend = exactend; \
+        -: 2700:	    struct rpat savpattrystate = pattrystate; \
+        -: 2701:	    dont_queue_signals(); \
+        -: 2702:	    restore_queue_signals(q); \
+        -: 2703:	    exactpos = savexactpos; \
+        -: 2704:	    exactend = savexactend; \
+        -: 2705:	    patflags = savpatflags; \
+        -: 2706:	    patglobflags = savpatglobflags; \
+        -: 2707:	    pattrystate = savpattrystate; \
+        -: 2708:	} while (0)
+        -: 2709:
+      766: 2710:    check_for_signals();
+        -: 2711:
+     1942: 2712:    while  (scan && !errflag) {
+     1176: 2713:	next = PATNEXT(scan);
+        -: 2714:
+     1397: 2715:	if (!globdots && P_NOTDOT(scan) && patinput == patinstart &&
+      442: 2716:	    patinput < patinend && *patinput == '.')
+       17: 2717:	    return 0;
+        -: 2718:
+     1159: 2719:	switch (P_OP(scan)) {
+    #####: 2720:	case P_ANY:
+    #####: 2721:	    if (patinput == patinend)
+    #####: 2722:		fail = 1;
+        -: 2723:	    else
+    #####: 2724:		CHARINC(patinput, patinend);
+    #####: 2725:	    break;
+      507: 2726:	case P_EXACTLY:
+        -: 2727:	    /*
+        -: 2728:	     * acts as nothing if *chrop is null:  this is used by
+        -: 2729:	     * approx code.
+        -: 2730:	     */
+      507: 2731:	    if (exactpos) {
+    #####: 2732:		chrop = exactpos;
+    #####: 2733:		chrend = exactend;
+        -: 2734:	    } else {
+      507: 2735:		chrop = P_LS_STR(scan);
+      507: 2736:		chrend = chrop + P_LS_LEN(scan);
+        -: 2737:	    }
+      507: 2738:	    exactpos = NULL;
+     1409: 2739:	    while (chrop < chrend && patinput < patinend) {
+      891: 2740:		char *savpatinput = patinput;
+      891: 2741:		char *savchrop = chrop;
+      891: 2742:		int badin = 0, badpa = 0;
+        -: 2743:		/*
+        -: 2744:		 * Care with character matching:
+        -: 2745:		 * We do need to convert the character to wide
+        -: 2746:		 * representation if possible, because we may need
+        -: 2747:		 * to do case transformation.  However, we should
+        -: 2748:		 * be careful in case one, but not the other, wasn't
+        -: 2749:		 * representable in the current locale---in that
+        -: 2750:		 * case they don't match even if the returned
+        -: 2751:		 * values (one properly converted, one raw) are
+        -: 2752:		 * the same.
+        -: 2753:		 */
+      891: 2754:		patint_t chin = CHARREFINC(patinput, patinend, &badin);
+      891: 2755:		patint_t chpa = CHARREFINC(chrop, chrend, &badpa);
+      891: 2756:		if (!CHARMATCH(chin, chpa) || badin != badpa) {
+      496: 2757:		    fail = 1;
+      496: 2758:		    patinput = savpatinput;
+      496: 2759:		    chrop = savchrop;
+      496: 2760:		    break;
+        -: 2761:		}
+        -: 2762:	    }
+      507: 2763:	    if (chrop < chrend) {
+      502: 2764:		exactpos = chrop;
+      502: 2765:		exactend = chrend;
+      502: 2766:		fail = 1;
+        -: 2767:	    }
+      507: 2768:	    break;
+        8: 2769:	case P_ANYOF:
+        -: 2770:	case P_ANYBUT:
+        8: 2771:	    if (patinput == patinend)
+    #####: 2772:		fail = 1;
+        -: 2773:	    else {
+        -: 2774:#ifdef MULTIBYTE_SUPPORT
+        -: 2775:		int zmb_ind;
+        8: 2776:		wchar_t cr = charref(patinput, patinend, &zmb_ind);
+        8: 2777:		char *scanop = (char *)P_OPERAND(scan);
+        8: 2778:		if (patglobflags & GF_MULTIBYTE) {
+       16: 2779:		    if (mb_patmatchrange(scanop, cr, zmb_ind, NULL, NULL) ^
+        8: 2780:			(P_OP(scan) == P_ANYOF))
+        1: 2781:			fail = 1;
+        -: 2782:		    else
+        7: 2783:			CHARINC(patinput, patinend);
+    #####: 2784:		} else if (patmatchrange(scanop, (int)cr, NULL, NULL) ^
+    #####: 2785:			   (P_OP(scan) == P_ANYOF))
+    #####: 2786:		    fail = 1;
+        -: 2787:		else
+    #####: 2788:		    CHARINC(patinput, patinend);
+        -: 2789:#else
+        -: 2790:		if (patmatchrange((char *)P_OPERAND(scan),
+        -: 2791:				  CHARREF(patinput, patinend), NULL, NULL) ^
+        -: 2792:		    (P_OP(scan) == P_ANYOF))
+        -: 2793:		    fail = 1;
+        -: 2794:		else
+        -: 2795:		    CHARINC(patinput, patinend);
+        -: 2796:#endif
+        -: 2797:	    }
+        8: 2798:	    break;
+    #####: 2799:	case P_NUMRNG:
+        -: 2800:	case P_NUMFROM:
+        -: 2801:	case P_NUMTO:
+        -: 2802:	    /*
+        -: 2803:	     * To do this properly, we really have to treat numbers as
+        -: 2804:	     * closures:  that's so things like <1-1000>33 will
+        -: 2805:	     * match 633 (they didn't up to 3.1.6).  To avoid making this
+        -: 2806:	     * too inefficient, we see if there's an exact match next:
+        -: 2807:	     * if there is, and it's not a digit, we return 1 after
+        -: 2808:	     * the first attempt.
+        -: 2809:	     */
+    #####: 2810:	    op = P_OP(scan);
+    #####: 2811:	    start = (char *)P_OPERAND(scan);
+    #####: 2812:	    from = to = 0;
+    #####: 2813:	    if (op != P_NUMTO) {
+        -: 2814:#ifdef ZSH_64_BIT_TYPE
+        -: 2815:		/* We can't rely on pointer alignment being good enough. */
+        -: 2816:		memcpy((char *)&from, start, sizeof(zrange_t));
+        -: 2817:#else
+    #####: 2818:		from = *((zrange_t *) start);
+        -: 2819:#endif
+    #####: 2820:		start += sizeof(zrange_t);
+        -: 2821:	    }
+    #####: 2822:	    if (op != P_NUMFROM) {
+        -: 2823:#ifdef ZSH_64_BIT_TYPE
+        -: 2824:		memcpy((char *)&to, start, sizeof(zrange_t));
+        -: 2825:#else
+    #####: 2826:		to = *((zrange_t *) start);
+        -: 2827:#endif
+        -: 2828:	    }
+    #####: 2829:	    start = compend = patinput;
+    #####: 2830:	    comp = 0;
+    #####: 2831:	    while (patinput < patinend && idigit(*patinput)) {
+    #####: 2832:		int out_of_range = 0;
+    #####: 2833:		int digit = *patinput - '0';
+    #####: 2834:		if (comp > ZRANGE_MAX / (zlong)10) {
+    #####: 2835:		    out_of_range = 1;
+        -: 2836:		} else {
+    #####: 2837:		    zrange_t c10 = comp ? comp * 10 : 0;
+    #####: 2838:		    if (ZRANGE_MAX - c10 < digit) {
+    #####: 2839:			out_of_range = 1;
+        -: 2840:		    } else {
+    #####: 2841:			comp = c10;
+    #####: 2842:			comp += digit;
+        -: 2843:		    }
+        -: 2844:		}
+    #####: 2845:		patinput++;
+    #####: 2846:		compend++;
+        -: 2847:
+    #####: 2848:		if (out_of_range ||
+    #####: 2849:		    (comp & ((zrange_t)1 << (sizeof(comp)*8 -
+        -: 2850:#ifdef ZRANGE_T_IS_SIGNED
+        -: 2851:					    2
+        -: 2852:#else
+        -: 2853:					    1
+        -: 2854:#endif
+        -: 2855:				)))) {
+        -: 2856:		    /*
+        -: 2857:		     * Out of range (allowing for signedness, which
+        -: 2858:		     * we need if we are using zlongs).
+        -: 2859:		     * This is as far as we can go.
+        -: 2860:		     * If we're doing a range "from", skip all the
+        -: 2861:		     * remaining numbers.  Otherwise, we can't
+        -: 2862:		     * match beyond the previous point anyway.
+        -: 2863:		     * Leave the pointer to the last calculated
+        -: 2864:		     * position (compend) where it was before.
+        -: 2865:		     */
+    #####: 2866:		    if (op == P_NUMFROM) {
+    #####: 2867:			while (patinput < patinend && idigit(*patinput))
+    #####: 2868:			    patinput++;
+        -: 2869:		    }
+        -: 2870:		}
+        -: 2871:	    }
+    #####: 2872:	    save = patinput;
+    #####: 2873:	    no = 0;
+    #####: 2874:	    while (patinput > start) {
+        -: 2875:		/* if already too small, no power on earth can save it */
+    #####: 2876:		if (comp < from && patinput <= compend)
+    #####: 2877:		    break;
+    #####: 2878:		if ((op == P_NUMFROM || comp <= to) && patmatch(next)) {
+    #####: 2879:		    return 1;
+        -: 2880:		}
+    #####: 2881:		if (!no && P_OP(next) == P_EXACTLY &&
+    #####: 2882:		    (!P_LS_LEN(next) ||
+    #####: 2883:		     !idigit(STOUC(*P_LS_STR(next)))) &&
+    #####: 2884:		    !(patglobflags & 0xff))
+    #####: 2885:		    return 0;
+    #####: 2886:		patinput = --save;
+    #####: 2887:		no++;
+        -: 2888:		/*
+        -: 2889:		 * With a range start and an unrepresentable test
+        -: 2890:		 * number, we just back down the test string without
+        -: 2891:		 * changing the number until we get to a representable
+        -: 2892:		 * one.
+        -: 2893:		 */
+    #####: 2894:		if (patinput < compend)
+    #####: 2895:		    comp /= 10;
+        -: 2896:	    }
+    #####: 2897:	    patinput = start;
+    #####: 2898:	    fail = 1;
+    #####: 2899:	    break;
+    #####: 2900:	case P_NUMANY:
+        -: 2901:	    /* This is <->: any old set of digits, don't bother comparing */
+    #####: 2902:	    start = patinput;
+    #####: 2903:	    while (patinput < patinend && idigit(*patinput))
+    #####: 2904:		patinput++;
+    #####: 2905:	    save = patinput;
+    #####: 2906:	    no = 0;
+    #####: 2907:	    while (patinput > start) {
+    #####: 2908:		if (patmatch(next))
+    #####: 2909:		    return 1;
+    #####: 2910:		if (!no && P_OP(next) == P_EXACTLY &&
+    #####: 2911:		    (!P_LS_LEN(next) ||
+    #####: 2912:		     !idigit(*P_LS_STR(next))) &&
+    #####: 2913:		    !(patglobflags & 0xff))
+    #####: 2914:		    return 0;
+    #####: 2915:		patinput = --save;
+    #####: 2916:		no++;
+        -: 2917:	    }
+    #####: 2918:	    patinput = start;
+    #####: 2919:	    fail = 1;
+    #####: 2920:	    break;
+    #####: 2921:	case P_NOTHING:
+    #####: 2922:	    break;
+    #####: 2923:	case P_BACK:
+    #####: 2924:	    break;
+        1: 2925:	case P_GFLAGS:
+        1: 2926:	    patglobflags = P_OPERAND(scan)->l;
+        1: 2927:	    break;
+        1: 2928:	case P_OPEN:
+        -: 2929:	case P_OPEN+1:
+        -: 2930:	case P_OPEN+2:
+        -: 2931:	case P_OPEN+3:
+        -: 2932:	case P_OPEN+4:
+        -: 2933:	case P_OPEN+5:
+        -: 2934:	case P_OPEN+6:
+        -: 2935:	case P_OPEN+7:
+        -: 2936:	case P_OPEN+8:
+        -: 2937:	case P_OPEN+9:
+        1: 2938:	    no = P_OP(scan) - P_OPEN;
+        1: 2939:	    save = patinput;
+        -: 2940:
+        1: 2941:	    if (patmatch(next)) {
+        -: 2942:		/*
+        -: 2943:		 * Don't set patbeginp if some later invocation of
+        -: 2944:		 * the same parentheses already has.
+        -: 2945:		 */
+        1: 2946:		if (no && !(parsfound & (1 << (no - 1)))) {
+        1: 2947:		    patbeginp[no-1] = save;
+        1: 2948:		    parsfound |= 1 << (no - 1);
+        -: 2949:		}
+        1: 2950:		return 1;
+        -: 2951:	    } else
+    #####: 2952:		return 0;
+        -: 2953:	    break;
+        1: 2954:	case P_CLOSE:
+        -: 2955:	case P_CLOSE+1:
+        -: 2956:	case P_CLOSE+2:
+        -: 2957:	case P_CLOSE+3:
+        -: 2958:	case P_CLOSE+4:
+        -: 2959:	case P_CLOSE+5:
+        -: 2960:	case P_CLOSE+6:
+        -: 2961:	case P_CLOSE+7:
+        -: 2962:	case P_CLOSE+8:
+        -: 2963:	case P_CLOSE+9:
+        1: 2964:	    no = P_OP(scan) - P_CLOSE;
+        1: 2965:	    save = patinput;
+        -: 2966:
+        1: 2967:	    if (patmatch(next)) {
+        1: 2968:		if (no && !(parsfound & (1 << (no + 15)))) {
+        1: 2969:		    patendp[no-1] = save;
+        1: 2970:		    parsfound |= 1 << (no + 15);
+        -: 2971:		}
+        1: 2972:		return 1;
+        -: 2973:	    } else
+    #####: 2974:		return 0;
+        -: 2975:	    break;
+       44: 2976:	case P_EXCSYNC:
+        -: 2977:	    /* See the P_EXCLUDE code below for where syncptr comes from */
+        -: 2978:	    {
+        -: 2979:		unsigned char *syncptr;
+        -: 2980:		Upat after;
+       44: 2981:		after = P_OPERAND(scan);
+        -: 2982:		DPUTS(!P_ISEXCLUDE(after),
+        -: 2983:		      "BUG: EXCSYNC not followed by EXCLUDE.");
+        -: 2984:		DPUTS(!P_OPERAND(after)->p,
+        -: 2985:		      "BUG: EXCSYNC not handled by EXCLUDE");
+       44: 2986:		syncptr = P_OPERAND(after)->p + (patinput - patinstart);
+        -: 2987:		/*
+        -: 2988:		 * If we already matched from here, this time we fail.
+        -: 2989:		 * See WBRANCH code for story about error count.
+        -: 2990:		 */
+       44: 2991:		if (*syncptr && errsfound + 1 >= *syncptr)
+    #####: 2992:		    return 0;
+        -: 2993:		/*
+        -: 2994:		 * Else record that we (possibly) matched this time.
+        -: 2995:		 * No harm if we don't:  then the previous test will just
+        -: 2996:		 * short cut the attempted match that is bound to fail.
+        -: 2997:		 * We never try to exclude something that has already
+        -: 2998:		 * failed anyway.
+        -: 2999:		 */
+       44: 3000:		*syncptr = errsfound + 1;
+        -: 3001:	    }
+       44: 3002:	    break;
+    #####: 3003:	case P_EXCEND:
+        -: 3004:	    /*
+        -: 3005:	     * This is followed by a P_EXCSYNC, but only in the P_EXCLUDE
+        -: 3006:	     * branch.  Actually, we don't bother following it:  all we
+        -: 3007:	     * need to know is that we successfully matched so far up
+        -: 3008:	     * to the end of the asserted pattern; the endpoint
+        -: 3009:	     * in the target string is nulled out.
+        -: 3010:	     */
+    #####: 3011:	    if (!(fail = (patinput < patinend)))
+    #####: 3012:		return 1;
+    #####: 3013:	    break;
+      268: 3014:	case P_BRANCH:
+        -: 3015:	case P_WBRANCH:
+        -: 3016:	    /* P_EXCLUDE shouldn't occur without a P_BRANCH */
+      268: 3017:	    if (!P_ISBRANCH(next)) {
+        -: 3018:		/* no choice, avoid recursion */
+        -: 3019:		DPUTS(P_OP(scan) == P_WBRANCH,
+        -: 3020:		      "BUG: WBRANCH with no alternative.");
+      213: 3021:		next = P_OPERAND(scan);
+        -: 3022:	    } else {
+        -: 3023:		do {
+       55: 3024:		    save = patinput;
+       55: 3025:		    savglobflags = patglobflags;
+       55: 3026:		    saverrsfound = errsfound;
+       55: 3027:		    if (P_ISEXCLUDE(next)) {
+        -: 3028:			/*
+        -: 3029:			 * The strategy is to test the asserted pattern,
+        -: 3030:			 * recording via P_EXCSYNC how far the part to
+        -: 3031:			 * be excluded matched.  We then set the
+        -: 3032:			 * length of the test string to that
+        -: 3033:			 * point and see if the exclusion as far as
+        -: 3034:			 * P_EXCEND also matches that string.
+        -: 3035:			 * We need to keep testing the asserted pattern
+        -: 3036:			 * by backtracking, since the first attempt
+        -: 3037:			 * may be excluded while a later attempt may not.
+        -: 3038:			 * For this we keep a pointer just after
+        -: 3039:			 * the P_EXCLUDE which is tested by the P_EXCSYNC
+        -: 3040:			 * to see if we matched there last time, in which
+        -: 3041:			 * case we fail.  If there is nothing to backtrack
+        -: 3042:			 * over, that doesn't matter:  we should fail anyway.
+        -: 3043:			 * The pointer also tells us where the asserted
+        -: 3044:			 * pattern matched for use by the exclusion.
+        -: 3045:			 *
+        -: 3046:			 * It's hard to allocate space for this
+        -: 3047:			 * beforehand since we may need to do it
+        -: 3048:			 * recursively.
+        -: 3049:			 *
+        -: 3050:			 * P.S. in case you were wondering, this code
+        -: 3051:			 * is horrible.
+        -: 3052:			 */
+        -: 3053:			Upat syncstrp;
+        -: 3054:			char *origpatinend;
+        -: 3055:			unsigned char *oldsyncstr;
+       55: 3056:			char *matchpt = NULL;
+       55: 3057:			int ret, savglobdots, matchederrs = 0;
+       55: 3058:			int savparsfound = parsfound;
+        -: 3059:			DPUTS(P_OP(scan) == P_WBRANCH,
+        -: 3060:			      "BUG: excluded WBRANCH");
+       55: 3061:			syncstrp = P_OPERAND(next);
+        -: 3062:			/*
+        -: 3063:			 * Unlike WBRANCH, each test at the same exclude
+        -: 3064:			 * sync point (due to an external loop) is separate,
+        -: 3065:			 * i.e testing (foo~bar)# is no different from
+        -: 3066:			 * (foo~bar)(foo~bar)... from the exclusion point
+        -: 3067:			 * of view, so we use a different sync string.
+        -: 3068:			 */
+       55: 3069:			oldsyncstr = syncstrp->p;
+       55: 3070:			syncstrp->p = (unsigned char *)
+       55: 3071:			    zshcalloc((patinend - patinstart) + 1);
+       55: 3072:			origpatinend = patinend;
+      110: 3073:			while ((ret = patmatch(P_OPERAND(scan)))) {
+        -: 3074:			    unsigned char *syncpt;
+        -: 3075:			    char *savpatinstart;
+       44: 3076:			    int savforce = forceerrs;
+       44: 3077:			    int savpatflags = patflags, synclen;
+       44: 3078:			    forceerrs = -1;
+       44: 3079:			    savglobdots = globdots;
+       44: 3080:			    matchederrs = errsfound;
+       44: 3081:			    matchpt = patinput;    /* may not be end */
+       44: 3082:			    globdots = 1;	   /* OK to match . first */
+        -: 3083:			    /* Find the point where the scan
+        -: 3084:			     * matched the part to be excluded: because
+        -: 3085:			     * of backtracking, the one
+        -: 3086:			     * most recently matched will be the first.
+        -: 3087:			     * (Luckily, backtracking is done after all
+        -: 3088:			     * possibilities for approximation have been
+        -: 3089:			     * checked.)
+        -: 3090:			     */
+       44: 3091:			    for (syncpt = syncstrp->p; !*syncpt; syncpt++)
+        -: 3092:				;
+       44: 3093:			    synclen = syncpt - syncstrp->p;
+       44: 3094:			    if (patinstart + synclen != patinend) {
+        -: 3095:				/*
+        -: 3096:				 * Temporarily mark the string as
+        -: 3097:				 * ending at this point.
+        -: 3098:				 */
+        -: 3099:				DPUTS(patinstart + synclen > matchpt,
+        -: 3100:				      "BUG: EXCSYNC failed");
+        -: 3101:
+    #####: 3102:				patinend = patinstart + synclen;
+        -: 3103:				/*
+        -: 3104:				 * If this isn't really the end of the string,
+        -: 3105:				 * remember this for the (#e) assertion.
+        -: 3106:				 */
+    #####: 3107:				patflags |= PAT_NOTEND;
+        -: 3108:			    }
+       44: 3109:			    savpatinstart = patinstart;
+       44: 3110:			    next = PATNEXT(scan);
+      132: 3111:			    while (next && P_ISEXCLUDE(next)) {
+       44: 3112:				patinput = save;
+        -: 3113:				/*
+        -: 3114:				 * turn off approximations in exclusions:
+        -: 3115:				 * note we keep remaining patglobflags
+        -: 3116:				 * set by asserted branch (or previous
+        -: 3117:				 * excluded branches, for consistency).
+        -: 3118:				 */
+       44: 3119:				patglobflags &= ~0xff;
+       44: 3120:				errsfound = 0;
+       44: 3121:				opnd = P_OPERAND(next) + 1;
+       44: 3122:				if (P_OP(next) == P_EXCLUDP && patinpath) {
+        -: 3123:				    /*
+        -: 3124:				     * Top level exclusion with a file,
+        -: 3125:				     * applies to whole path so add the
+        -: 3126:				     * segments already matched.
+        -: 3127:				     * We copied these in front of the
+        -: 3128:				     * test pattern, so patinend doesn't
+        -: 3129:				     * need moving.
+        -: 3130:				     */
+        -: 3131:				    DPUTS(patinput != patinstart,
+        -: 3132:					  "BUG: not at start excluding path");
+       44: 3133:				    patinput = patinstart = patinpath;
+        -: 3134:				}
+       44: 3135:				if (patmatch(opnd)) {
+    #####: 3136:				    ret = 0;
+        -: 3137:				    /*
+        -: 3138:				     * Another subtlety: if we exclude the
+        -: 3139:				     * match, any parentheses just found
+        -: 3140:				     * become invalidated.
+        -: 3141:				     */
+    #####: 3142:				    parsfound = savparsfound;
+        -: 3143:				}
+       44: 3144:				if (patinpath) {
+       44: 3145:				    patinput = savpatinstart +
+       44: 3146:					(patinput - patinstart);
+       44: 3147:				    patinstart = savpatinstart;
+        -: 3148:				}
+       44: 3149:				if (!ret)
+    #####: 3150:				    break;
+       44: 3151:				next = PATNEXT(next);
+        -: 3152:			    }
+        -: 3153:			    /*
+        -: 3154:			     * Restore original end position.
+        -: 3155:			     */
+       44: 3156:			    patinend = origpatinend;
+       44: 3157:			    patflags = savpatflags;
+       44: 3158:			    globdots = savglobdots;
+       44: 3159:			    forceerrs = savforce;
+       44: 3160:			    if (ret)
+       44: 3161:				break;
+    #####: 3162:			    patinput = save;
+    #####: 3163:			    patglobflags = savglobflags;
+    #####: 3164:			    errsfound = saverrsfound;
+        -: 3165:			}
+       55: 3166:			zfree((char *)syncstrp->p,
+       55: 3167:			      (patinend - patinstart) + 1);
+       55: 3168:			syncstrp->p = oldsyncstr;
+       55: 3169:			if (ret) {
+       44: 3170:			    patinput = matchpt;
+       44: 3171:			    errsfound = matchederrs;
+       44: 3172:			    return 1;
+        -: 3173:			}
+       33: 3174:			while ((scan = PATNEXT(scan)) &&
+       22: 3175:			       P_ISEXCLUDE(scan))
+        -: 3176:			    ;
+        -: 3177:		    } else {
+    #####: 3178:			int ret = 1, pfree = 0;
+    #####: 3179:			Upat ptrp = NULL;
+        -: 3180:			unsigned char *ptr;
+    #####: 3181:			if (P_OP(scan) == P_WBRANCH) {
+        -: 3182:			    /*
+        -: 3183:			     * This is where we make sure that we are not
+        -: 3184:			     * repeatedly matching zero-length strings in
+        -: 3185:			     * a closure, which would cause an infinite loop,
+        -: 3186:			     * and also remove exponential behaviour in
+        -: 3187:			     * backtracking nested closures.
+        -: 3188:			     * The P_WBRANCH operator leaves a space for a
+        -: 3189:			     * uchar *, initialized to NULL, which is
+        -: 3190:			     * turned into a string the same length as the
+        -: 3191:			     * target string.  Every time we match from a
+        -: 3192:			     * particular point in the target string, we
+        -: 3193:			     * stick a 1 at the corresponding point here.
+        -: 3194:			     * If we come round to the same branch again, and
+        -: 3195:			     * there is already a 1, then the test fails.
+        -: 3196:			     */
+    #####: 3197:			    opnd = P_OPERAND(scan);
+    #####: 3198:			    ptrp = opnd++;
+    #####: 3199:			    if (!ptrp->p) {
+    #####: 3200:				ptrp->p = (unsigned char *)
+    #####: 3201:				    zshcalloc((patinend - patinstart) + 1);
+    #####: 3202:				pfree = 1;
+        -: 3203:			    }
+    #####: 3204:			    ptr = ptrp->p + (patinput - patinstart);
+        -: 3205:
+        -: 3206:			    /*
+        -: 3207:			     * Without approximation, this is just a
+        -: 3208:			     * single bit test.  With approximation, we
+        -: 3209:			     * need to know how many errors there were
+        -: 3210:			     * last time we made the test.  If errsfound
+        -: 3211:			     * is now smaller than it was, hence we can
+        -: 3212:			     * make more approximations in the remaining
+        -: 3213:			     * code, we continue with the test.
+        -: 3214:			     * (This is why the max number of errors is
+        -: 3215:			     * 254, not 255.)
+        -: 3216:			     */
+    #####: 3217:			    if (*ptr && errsfound + 1 >= *ptr)
+    #####: 3218:				ret = 0;
+    #####: 3219:			    *ptr = errsfound + 1;
+        -: 3220:			} else
+    #####: 3221:			    opnd = P_OPERAND(scan);
+    #####: 3222:			if (ret)
+    #####: 3223:			    ret = patmatch(opnd);
+    #####: 3224:			if (pfree) {
+    #####: 3225:			    zfree((char *)ptrp->p,
+    #####: 3226:				  (patinend - patinstart) + 1);
+    #####: 3227:			    ptrp->p = NULL;
+        -: 3228:			}
+    #####: 3229:			if (ret)
+    #####: 3230:			    return 1;
+    #####: 3231:			scan = PATNEXT(scan);
+        -: 3232:		    }
+       11: 3233:		    patinput = save;
+       11: 3234:		    patglobflags = savglobflags;
+       11: 3235:		    errsfound = saverrsfound;
+        -: 3236:		    DPUTS(P_OP(scan) == P_WBRANCH,
+        -: 3237:			  "BUG: WBRANCH not first choice.");
+       11: 3238:		    next = PATNEXT(scan);
+       11: 3239:		} while (scan && P_ISBRANCH(scan));
+       11: 3240:		return 0;
+        -: 3241:	    }
+      213: 3242:	    break;
+      261: 3243:	case P_STAR:
+        -: 3244:	    /* Handle specially for speed, although really P_ONEHASH+P_ANY */
+      522: 3245:	    while (P_OP(next) == P_STAR) {
+        -: 3246:		/*
+        -: 3247:		 * If there's another * following we can optimise it
+        -: 3248:		 * out.  Chains of *'s can give pathologically bad
+        -: 3249:		 * performance.
+        -: 3250:		 */
+    #####: 3251:		scan = next;
+    #####: 3252:		next = PATNEXT(scan);
+        -: 3253:	    }
+        -: 3254:	    /*FALLTHROUGH*/
+        -: 3255:	case P_ONEHASH:
+        -: 3256:	case P_TWOHASH:
+        -: 3257:	    /*
+        -: 3258:	     * This is just simple cases, matching one character.
+        -: 3259:	     * With approximations, we still handle * this way, since
+        -: 3260:	     * no approximation is ever necessary, but other closures
+        -: 3261:	     * are handled by the more complicated branching method
+        -: 3262:	     */
+      278: 3263:	    op = P_OP(scan);
+        -: 3264:	    /* Note that no counts possibly metafied characters */
+      278: 3265:	    start = patinput;
+        -: 3266:	    {
+        -: 3267:		char *lastcharstart;
+        -: 3268:		/*
+        -: 3269:		 * Array to record the start of characters for
+        -: 3270:		 * backtracking.
+        -: 3271:		 */
+      278: 3272:		VARARR(char, charstart, patinend-patinput);
+      278: 3273:		memset(charstart, 0, patinend-patinput);
+        -: 3274:
+      278: 3275:		if (op == P_STAR) {
+     5322: 3276:		    for (no = 0; patinput < patinend;
+     4800: 3277:			 CHARINC(patinput, patinend))
+        -: 3278:		    {
+     4800: 3279:			charstart[patinput-start] = 1;
+     4800: 3280:			no++;
+        -: 3281:		    }
+        -: 3282:		    /* simple optimization for reasonably common case */
+      261: 3283:		    if (P_OP(next) == P_END)
+       32: 3284:			return 1;
+        -: 3285:		} else {
+        -: 3286:		    DPUTS(patglobflags & 0xff,
+        -: 3287:			  "BUG: wrong backtracking with approximation.");
+       17: 3288:		    if (!globdots && P_NOTDOT(P_OPERAND(scan)) &&
+    #####: 3289:			patinput == patinstart && patinput < patinend &&
+    #####: 3290:			CHARREF(patinput, patinend) == ZWC('.'))
+    #####: 3291:			return 0;
+       17: 3292:		    no = patrepeat(P_OPERAND(scan), charstart);
+        -: 3293:		}
+      246: 3294:		min = (op == P_TWOHASH) ? 1 : 0;
+        -: 3295:		/*
+        -: 3296:		 * Lookahead to avoid useless matches. This is not possible
+        -: 3297:		 * with approximation.
+        -: 3298:		 */
+      431: 3299:		if (P_OP(next) == P_EXACTLY && P_LS_LEN(next) &&
+      230: 3300:		    !(patglobflags & 0xff)) {
+      185: 3301:		    char *nextop = P_LS_STR(next);
+        -: 3302:#ifdef MULTIBYTE_SUPPORT
+        -: 3303:		    /* else second argument of CHARREF isn't used */
+      185: 3304:		    int nextlen = P_LS_LEN(next);
+        -: 3305:#endif
+        -: 3306:		    /*
+        -: 3307:		     * If that P_EXACTLY is last (common in simple patterns,
+        -: 3308:		     * such as *.c), then it can be only be matched at one
+        -: 3309:		     * point in the test string, so record that.
+        -: 3310:		     */
+      325: 3311:		    if (P_OP(PATNEXT(next)) == P_END &&
+      140: 3312:			!(patflags & PAT_NOANCH)) {
+      140: 3313:			int ptlen = patinend - patinput;
+      140: 3314:			int lenmatch = patinend -
+    #####: 3315:			    (min ? CHARNEXT(start, patinend) : start);
+        -: 3316:			/* Are we in the right range? */
+      280: 3317:			if (P_LS_LEN(next) > lenmatch ||
+      140: 3318:			    P_LS_LEN(next) < ptlen)
+    #####: 3319:			    return 0;
+        -: 3320:			/* Yes, just position appropriately and test. */
+      140: 3321:			patinput += ptlen - P_LS_LEN(next);
+        -: 3322:			/*
+        -: 3323:			 * Here we will need to be careful that patinput is not
+        -: 3324:			 * in the middle of a multibyte character.
+        -: 3325:			 */
+        -: 3326:			/* Continue loop with P_EXACTLY test. */
+      140: 3327:			break;
+        -: 3328:		    }
+       45: 3329:		    nextch = CHARREF(nextop, nextop + nextlen);
+        -: 3330:		} else
+       61: 3331:		    nextch = PEOF;
+      106: 3332:		savglobflags = patglobflags;
+      106: 3333:		saverrsfound = errsfound;
+      106: 3334:		lastcharstart = charstart + (patinput - start);
+      106: 3335:		if (no >= min) {
+     2046: 3336:		    for (;;) {
+        -: 3337:			patint_t charmatch_cache;
+     4240: 3338:			if (nextch == PEOF ||
+     4135: 3339:			    (patinput < patinend &&
+     2045: 3340:			     CHARMATCH_EXPR(CHARREF(patinput, patinend),
+        -: 3341:					    nextch))) {
+      398: 3342:			    if (patmatch(next))
+       57: 3343:				return 1;
+        -: 3344:			}
+     2093: 3345:			if (--no < min)
+       47: 3346:			    break;
+        -: 3347:			/* find start of previous full character */
+     2046: 3348:			while (!*--lastcharstart)
+        -: 3349:			    DPUTS(lastcharstart < charstart,
+        -: 3350:				  "lastcharstart invalid");
+     2046: 3351:			patinput = start + (lastcharstart-charstart);
+     2046: 3352:			patglobflags = savglobflags;
+     2046: 3353:			errsfound = saverrsfound;
+        -: 3354:		    }
+        -: 3355:		}
+        -: 3356:	    }
+        -: 3357:	    /*
+        -: 3358:	     * As with branches, the patmatch(next) stuff for *
+        -: 3359:	     * handles approximation, so we don't need to try
+        -: 3360:	     * anything here.
+        -: 3361:	     */
+       49: 3362:	    return 0;
+    #####: 3363:	case P_ISSTART:
+    #####: 3364:	    if (patinput != patinstart || (patflags & PAT_NOTSTART))
+    #####: 3365:		fail = 1;
+    #####: 3366:	    break;
+    #####: 3367:	case P_ISEND:
+    #####: 3368:	    if (patinput < patinend || (patflags & PAT_NOTEND))
+    #####: 3369:		fail = 1;
+    #####: 3370:	    break;
+    #####: 3371:	case P_COUNTSTART:
+        -: 3372:	    {
+        -: 3373:		/*
+        -: 3374:		 * Save and restore the current count and the
+        -: 3375:		 * start pointer in case the pattern has been
+        -: 3376:		 * executed by a previous repetition of a
+        -: 3377:		 * closure.
+        -: 3378:		 */
+    #####: 3379:		long *curptr = &P_OPERAND(scan)[P_CT_CURRENT].l;
+    #####: 3380:		long savecount = *curptr;
+    #####: 3381:		unsigned char *saveptr = scan[P_CT_PTR].p;
+        -: 3382:		int ret;
+        -: 3383:
+    #####: 3384:		*curptr = 0L;
+    #####: 3385:		ret = patmatch(P_OPERAND(scan));
+    #####: 3386:		*curptr = savecount;
+    #####: 3387:		scan[P_CT_PTR].p = saveptr;
+    #####: 3388:		return ret;
+        -: 3389:	    }
+    #####: 3390:	case P_COUNT:
+        -: 3391:	    {
+        -: 3392:		/* (#cN,M): execution is relatively straightforward */
+    #####: 3393:		long cur = scan[P_CT_CURRENT].l;
+    #####: 3394:		long min = scan[P_CT_MIN].l;
+    #####: 3395:		long max = scan[P_CT_MAX].l;
+        -: 3396:
+    #####: 3397:		if (cur && cur >= min &&
+    #####: 3398:		    (unsigned char *)patinput == scan[P_CT_PTR].p) {
+        -: 3399:		    /*
+        -: 3400:		     * Not at the first attempt to match so
+        -: 3401:		     * the previous attempt managed zero length.
+        -: 3402:		     * We can do this indefinitely so there's
+        -: 3403:		     * no point in going on.  Simply try to
+        -: 3404:		     * match the remainder of the pattern.
+        -: 3405:		     */
+    #####: 3406:		    return patmatch(next);
+        -: 3407:		}
+    #####: 3408:		scan[P_CT_PTR].p = (unsigned char *)patinput;
+        -: 3409:
+    #####: 3410:		if (max < 0 || cur < max) {
+    #####: 3411:		    char *patinput_thistime = patinput;
+    #####: 3412:		    scan[P_CT_CURRENT].l = cur + 1;
+    #####: 3413:		    if (patmatch(scan + P_CT_OPERAND))
+    #####: 3414:			return 1;
+    #####: 3415:		    scan[P_CT_CURRENT].l = cur;
+    #####: 3416:		    patinput = patinput_thistime;
+        -: 3417:		}
+    #####: 3418:		if (cur < min)
+    #####: 3419:		    return 0;
+    #####: 3420:		return patmatch(next);
+        -: 3421:	    }
+       51: 3422:	case P_END:
+       51: 3423:	    if (!(fail = (patinput < patinend && !(patflags & PAT_NOANCH))))
+       47: 3424:		return 1;
+        4: 3425:	    break;
+        -: 3426:#ifdef DEBUG
+        -: 3427:	default:
+        -: 3428:	    dputs("BUG: bad operand in patmatch.");
+        -: 3429:	    return 0;
+        -: 3430:	    break;
+        -: 3431:#endif
+        -: 3432:	}
+        -: 3433:
+      917: 3434:	if (fail) {
+      507: 3435:	    if (errsfound < (patglobflags & 0xff) &&
+    #####: 3436:		(forceerrs == -1 || errsfound < forceerrs)) {
+        -: 3437:		/*
+        -: 3438:		 * Approximation code.  There are four possibilities
+        -: 3439:		 *
+        -: 3440:		 * 1. omit character from input string
+        -: 3441:		 * 2. transpose characters in input and pattern strings
+        -: 3442:		 * 3. omit character in both input and pattern strings
+        -: 3443:		 * 4. omit character from pattern string.
+        -: 3444:		 *
+        -: 3445:		 * which we try in that order.
+        -: 3446:		 *
+        -: 3447:		 * Of these, 2, 3 and 4 require an exact match string
+        -: 3448:		 * (P_EXACTLY) while 1, 2 and 3 require that we not
+        -: 3449:		 * have reached the end of the input string.
+        -: 3450:		 *
+        -: 3451:		 * Note in each case after making the approximation we
+        -: 3452:		 * need to retry the *same* pattern; this is what
+        -: 3453:		 * requires exactpos, a slightly doleful way of
+        -: 3454:		 * communicating with the exact character matcher.
+        -: 3455:		 */
+    #####: 3456:		char *savexact = exactpos;
+    #####: 3457:		save = patinput;
+    #####: 3458:		savglobflags = patglobflags;
+    #####: 3459:		saverrsfound = ++errsfound;
+    #####: 3460:		fail = 0;
+        -: 3461:
+        -: 3462:		DPUTS(P_OP(scan) != P_EXACTLY && exactpos,
+        -: 3463:		      "BUG: non-exact match has set exactpos");
+        -: 3464:
+        -: 3465:		/* Try omitting a character from the input string */
+    #####: 3466:		if (patinput < patinend) {
+    #####: 3467:		    CHARINC(patinput, patinend);
+        -: 3468:		    /* If we are not on an exact match, then this is
+        -: 3469:		     * our last gasp effort, so we can optimize out
+        -: 3470:		     * the recursive call.
+        -: 3471:		     */
+    #####: 3472:		    if (P_OP(scan) != P_EXACTLY)
+    #####: 3473:			continue;
+    #####: 3474:		    if (patmatch(scan))
+    #####: 3475:			return 1;
+        -: 3476:		}
+        -: 3477:
+    #####: 3478:		if (P_OP(scan) == P_EXACTLY) {
+    #####: 3479:		    char *nextexact = savexact;
+        -: 3480:		    DPUTS(!savexact,
+        -: 3481:			  "BUG: exact match has not set exactpos");
+    #####: 3482:		    CHARINC(nextexact, exactend);
+        -: 3483:
+    #####: 3484:		    if (save < patinend) {
+    #####: 3485:			char *nextin = save;
+    #####: 3486:			CHARINC(nextin, patinend);
+    #####: 3487:			patglobflags = savglobflags;
+    #####: 3488:			errsfound = saverrsfound;
+    #####: 3489:			exactpos = savexact;
+        -: 3490:
+        -: 3491:			/*
+        -: 3492:			 * Try swapping two characters in patinput and
+        -: 3493:			 * exactpos
+        -: 3494:			 */
+    #####: 3495:			if (save < patinend && nextin < patinend &&
+    #####: 3496:			    nextexact < exactend) {
+    #####: 3497:			    patint_t cin0 = CHARREF(save, patinend);
+    #####: 3498:			    patint_t cpa0 = CHARREF(exactpos, exactend);
+    #####: 3499:			    patint_t cin1 = CHARREF(nextin, patinend);
+    #####: 3500:			    patint_t cpa1 = CHARREF(nextexact, exactend);
+        -: 3501:
+    #####: 3502:			    if (CHARMATCH(cin0, cpa1) &&
+    #####: 3503:				CHARMATCH(cin1, cpa0)) {
+    #####: 3504:				patinput = nextin;
+    #####: 3505:				CHARINC(patinput, patinend);
+    #####: 3506:				exactpos = nextexact;
+    #####: 3507:				CHARINC(exactpos, exactend);
+    #####: 3508:				if (patmatch(scan))
+    #####: 3509:				    return 1;
+        -: 3510:
+    #####: 3511:				patglobflags = savglobflags;
+    #####: 3512:				errsfound = saverrsfound;
+        -: 3513:			    }
+        -: 3514:			}
+        -: 3515:
+        -: 3516:			/*
+        -: 3517:			 * Try moving up both strings.
+        -: 3518:			 */
+    #####: 3519:			patinput = nextin;
+    #####: 3520:			exactpos = nextexact;
+    #####: 3521:			if (patmatch(scan))
+    #####: 3522:			    return 1;
+        -: 3523:
+    #####: 3524:			patinput = save;
+    #####: 3525:			patglobflags = savglobflags;
+    #####: 3526:			errsfound = saverrsfound;
+    #####: 3527:			exactpos = savexact;
+        -: 3528:		    }
+        -: 3529:
+        -: 3530:		    DPUTS(exactpos == exactend, "approximating too far");
+        -: 3531:		    /*
+        -: 3532:		     * Try moving up the exact match pattern.
+        -: 3533:		     * This must be the last attempt, so just loop
+        -: 3534:		     * instead of calling recursively.
+        -: 3535:		     */
+    #####: 3536:		    CHARINC(exactpos, exactend);
+    #####: 3537:		    continue;
+        -: 3538:		}
+        -: 3539:	    }
+      507: 3540:	    exactpos = NULL;
+      507: 3541:	    return 0;
+        -: 3542:	}
+        -: 3543:
+      410: 3544:	scan = next;
+        -: 3545:
+        -: 3546:	/* Allow handlers to run once per loop */
+      410: 3547:	check_for_signals();
+        -: 3548:    }
+        -: 3549:
+    #####: 3550:    return 0;
+        -: 3551:}
+        -: 3552:
+        -: 3553:
+        -: 3554:/**/
+        -: 3555:#ifdef MULTIBYTE_SUPPORT
+        -: 3556:
+        -: 3557:/*
+        -: 3558: * See if character ch matches a pattern range specification.
+        -: 3559: * The null-terminated specification is in range; the test
+        -: 3560: * character is in ch.
+        -: 3561: *
+        -: 3562: * zmb is one of the enum defined above charref(), for indicating
+        -: 3563: * incomplete or invalid multibyte characters.
+        -: 3564: *
+        -: 3565: * indptr is used by completion matching, which is why this
+        -: 3566: * function is exported.  If indptr is not NULL we set *indptr
+        -: 3567: * to the index of the character in the range string, adjusted
+        -: 3568: * in the case of "A-B" ranges such that A would count as its
+        -: 3569: * normal index (say IA), B would count as IA + (B-A), and any
+        -: 3570: * character within the range as appropriate.  We're not strictly
+        -: 3571: * guaranteed this fits within a wint_t, but if this is Unicode
+        -: 3572: * in 32 bits we have a fair amount of distance left over.
+        -: 3573: *
+        -: 3574: * mtp is used in the same circumstances.  *mtp returns the match type:
+        -: 3575: * 0 for a standard character, else the PP_ index.  It's not
+        -: 3576: * useful if the match failed.
+        -: 3577: */
+        -: 3578:
+        -: 3579:/**/
+        -: 3580:mod_export int
+       43: 3581:mb_patmatchrange(char *range, wchar_t ch, int zmb_ind, wint_t *indptr, int *mtp)
+        -: 3582:{
+        -: 3583:    wchar_t r1, r2;
+        -: 3584:
+       43: 3585:    if (indptr)
+    #####: 3586:	*indptr = 0;
+        -: 3587:    /*
+        -: 3588:     * Careful here: unlike other strings, range is a NULL-terminated,
+        -: 3589:     * metafied string, because we need to treat the Posix and hyphenated
+        -: 3590:     * ranges specially.
+        -: 3591:     */
+      106: 3592:    while (*range) {
+       44: 3593:	if (imeta(STOUC(*range))) {
+       42: 3594:	    int swtype = STOUC(*range++) - STOUC(Meta);
+       42: 3595:	    if (mtp)
+    #####: 3596:		*mtp = swtype;
+       42: 3597:	    switch (swtype) {
+    #####: 3598:	    case 0:
+        -: 3599:		/* ordinary metafied character */
+    #####: 3600:		range--;
+    #####: 3601:		if (metacharinc(&range) == ch)
+    #####: 3602:		    return 1;
+    #####: 3603:		break;
+    #####: 3604:	    case PP_ALPHA:
+    #####: 3605:		if (iswalpha(ch))
+    #####: 3606:		    return 1;
+    #####: 3607:		break;
+        8: 3608:	    case PP_ALNUM:
+        8: 3609:		if (iswalnum(ch))
+        8: 3610:		    return 1;
+    #####: 3611:		break;
+    #####: 3612:	    case PP_ASCII:
+    #####: 3613:		if ((ch & ~0x7f) == 0)
+    #####: 3614:		    return 1;
+    #####: 3615:		break;
+       34: 3616:	    case PP_BLANK:
+        -: 3617:#if !defined(HAVE_ISWBLANK) && !defined(iswblank)
+        -: 3618:/*
+        -: 3619: * iswblank() is GNU and C99. There's a remote chance that some
+        -: 3620: * systems still don't support it (but would support the other ones
+        -: 3621: * if MULTIBYTE_SUPPORT is enabled).
+        -: 3622: */
+        -: 3623:#define iswblank(c) (c == L' ' || c == L'\t')
+        -: 3624:#endif
+       34: 3625:		if (iswblank(ch))
+       16: 3626:		    return 1;
+       18: 3627:		break;
+    #####: 3628:	    case PP_CNTRL:
+    #####: 3629:		if (iswcntrl(ch))
+    #####: 3630:		    return 1;
+    #####: 3631:		break;
+    #####: 3632:	    case PP_DIGIT:
+    #####: 3633:		if (iswdigit(ch))
+    #####: 3634:		    return 1;
+    #####: 3635:		break;
+    #####: 3636:	    case PP_GRAPH:
+    #####: 3637:		if (iswgraph(ch))
+    #####: 3638:		    return 1;
+    #####: 3639:		break;
+    #####: 3640:	    case PP_LOWER:
+    #####: 3641:		if (iswlower(ch))
+    #####: 3642:		    return 1;
+    #####: 3643:		break;
+    #####: 3644:	    case PP_PRINT:
+    #####: 3645:		if (WC_ISPRINT(ch))
+    #####: 3646:		    return 1;
+    #####: 3647:		break;
+    #####: 3648:	    case PP_PUNCT:
+    #####: 3649:		if (iswpunct(ch))
+    #####: 3650:		    return 1;
+    #####: 3651:		break;
+    #####: 3652:	    case PP_SPACE:
+    #####: 3653:		if (iswspace(ch))
+    #####: 3654:		    return 1;
+    #####: 3655:		break;
+    #####: 3656:	    case PP_UPPER:
+    #####: 3657:		if (iswupper(ch))
+    #####: 3658:		    return 1;
+    #####: 3659:		break;
+    #####: 3660:	    case PP_XDIGIT:
+    #####: 3661:		if (iswxdigit(ch))
+    #####: 3662:		    return 1;
+    #####: 3663:		break;
+    #####: 3664:	    case PP_IDENT:
+    #####: 3665:		if (wcsitype(ch, IIDENT))
+    #####: 3666:		    return 1;
+    #####: 3667:		break;
+    #####: 3668:	    case PP_IFS:
+    #####: 3669:		if (wcsitype(ch, ISEP))
+    #####: 3670:		    return 1;
+    #####: 3671:		break;
+    #####: 3672:	    case PP_IFSSPACE:
+        -: 3673:		/* must be ASCII space character */
+    #####: 3674:		if (ch < 128 && iwsep((int)ch))
+    #####: 3675:		    return 1;
+    #####: 3676:		break;
+    #####: 3677:	    case PP_WORD:
+    #####: 3678:		if (wcsitype(ch, IWORD))
+    #####: 3679:		    return 1;
+    #####: 3680:		break;
+    #####: 3681:	    case PP_RANGE:
+    #####: 3682:		r1 = metacharinc(&range);
+    #####: 3683:		r2 = metacharinc(&range);
+    #####: 3684:		if (r1 <= ch && ch <= r2) {
+    #####: 3685:		    if (indptr)
+    #####: 3686:			*indptr += ch - r1;
+    #####: 3687:		    return 1;
+        -: 3688:		}
+        -: 3689:		/* Careful not to screw up counting with bogus range */
+    #####: 3690:		if (indptr && r1 < r2) {
+        -: 3691:		    /*
+        -: 3692:		     * This gets incremented again below to get
+        -: 3693:		     * us past the range end.  This is correct.
+        -: 3694:		     */
+    #####: 3695:		    *indptr += r2 - r1;
+        -: 3696:		}
+    #####: 3697:		break;
+    #####: 3698:	    case PP_INCOMPLETE:
+    #####: 3699:		if (zmb_ind == ZMB_INCOMPLETE)
+    #####: 3700:		    return 1;
+    #####: 3701:		break;
+    #####: 3702:	    case PP_INVALID:
+    #####: 3703:		if (zmb_ind == ZMB_INVALID)
+    #####: 3704:		    return 1;
+    #####: 3705:		break;
+    #####: 3706:	    case PP_UNKWN:
+        -: 3707:		DPUTS(1, "BUG: unknown posix range passed through.\n");
+    #####: 3708:		break;
+    #####: 3709:	    default:
+        -: 3710:		DPUTS(1, "BUG: unknown metacharacter in range.");
+    #####: 3711:		break;
+        -: 3712:	    }
+        2: 3713:	} else if (metacharinc(&range) == ch) {
+    #####: 3714:	    if (mtp)
+    #####: 3715:		*mtp = 0;
+    #####: 3716:	    return 1;
+        -: 3717:	}
+       20: 3718:	if (indptr)
+    #####: 3719:	    (*indptr)++;
+        -: 3720:    }
+       19: 3721:    return 0;
+        -: 3722:}
+        -: 3723:
+        -: 3724:
+        -: 3725:/*
+        -: 3726: * This is effectively the reverse of mb_patmatchrange().
+        -: 3727: * Given a range descriptor of the same form, and an index into it,
+        -: 3728: * try to determine the character that is matched.  If the index
+        -: 3729: * points to a [:...:] generic style match, set chr to WEOF and
+        -: 3730: * return the type in mtp instead.  Return 1 if successful, 0 if
+        -: 3731: * there was no corresponding index.  Note all pointer arguments
+        -: 3732: * must be non-null.
+        -: 3733: */
+        -: 3734:
+        -: 3735:/**/
+        -: 3736:mod_export int
+    #####: 3737:mb_patmatchindex(char *range, wint_t ind, wint_t *chr, int *mtp)
+        -: 3738:{
+        -: 3739:    wchar_t r1, r2, rchr;
+        -: 3740:    wint_t rdiff;
+        -: 3741:
+    #####: 3742:    *chr = WEOF;
+    #####: 3743:    *mtp = 0;
+        -: 3744:
+    #####: 3745:    while (*range) {
+    #####: 3746:	if (imeta(STOUC(*range))) {
+    #####: 3747:	    int swtype = STOUC(*range++) - STOUC(Meta);
+    #####: 3748:	    switch (swtype) {
+    #####: 3749:	    case 0:
+    #####: 3750:		range--;
+    #####: 3751:		rchr = metacharinc(&range);
+    #####: 3752:		if (!ind) {
+    #####: 3753:		    *chr = (wint_t) rchr;
+    #####: 3754:		    return 1;
+        -: 3755:		}
+    #####: 3756:		break;
+        -: 3757:
+    #####: 3758:	    case PP_ALPHA:
+        -: 3759:	    case PP_ALNUM:
+        -: 3760:	    case PP_ASCII:
+        -: 3761:	    case PP_BLANK:
+        -: 3762:	    case PP_CNTRL:
+        -: 3763:	    case PP_DIGIT:
+        -: 3764:	    case PP_GRAPH:
+        -: 3765:	    case PP_LOWER:
+        -: 3766:	    case PP_PRINT:
+        -: 3767:	    case PP_PUNCT:
+        -: 3768:	    case PP_SPACE:
+        -: 3769:	    case PP_UPPER:
+        -: 3770:	    case PP_XDIGIT:
+        -: 3771:	    case PP_IDENT:
+        -: 3772:	    case PP_IFS:
+        -: 3773:	    case PP_IFSSPACE:
+        -: 3774:	    case PP_WORD:
+        -: 3775:	    case PP_INCOMPLETE:
+        -: 3776:	    case PP_INVALID:
+    #####: 3777:		if (!ind) {
+    #####: 3778:		    *mtp = swtype;
+    #####: 3779:		    return 1;
+        -: 3780:		}
+    #####: 3781:		break;
+        -: 3782:
+    #####: 3783:	    case PP_RANGE:
+    #####: 3784:		r1 = metacharinc(&range);
+    #####: 3785:		r2 = metacharinc(&range);
+    #####: 3786:		rdiff = (wint_t)r2 - (wint_t)r1; 
+    #####: 3787:		if (rdiff >= ind) {
+    #####: 3788:		    *chr = (wint_t)r1 + ind;
+    #####: 3789:		    return 1;
+        -: 3790:		}
+        -: 3791:		/* note the extra decrement to ind below */
+    #####: 3792:		ind -= rdiff;
+    #####: 3793:		break;
+    #####: 3794:	    case PP_UNKWN:
+        -: 3795:		DPUTS(1, "BUG: unknown posix range passed through.\n");
+    #####: 3796:		break;
+    #####: 3797:	    default:
+        -: 3798:		DPUTS(1, "BUG: unknown metacharacter in range.");
+    #####: 3799:		break;
+        -: 3800:	    }
+        -: 3801:	} else {
+    #####: 3802:	    rchr = metacharinc(&range);
+    #####: 3803:	    if (!ind) {
+    #####: 3804:		*chr = (wint_t)rchr;
+    #####: 3805:		return 1;
+        -: 3806:	    }
+        -: 3807:	}
+    #####: 3808:	if (!ind--)
+    #####: 3809:	    break;
+        -: 3810:    }
+        -: 3811:
+        -: 3812:    /* No corresponding index. */
+    #####: 3813:    return 0;
+        -: 3814:}
+        -: 3815:
+        -: 3816:/**/
+        -: 3817:#endif /* MULTIBYTE_SUPPORT */
+        -: 3818:
+        -: 3819:/*
+        -: 3820: * Identical function to mb_patmatchrange() above for single-byte
+        -: 3821: * characters.
+        -: 3822: */
+        -: 3823:
+        -: 3824:/**/
+        -: 3825:mod_export int
+    #####: 3826:patmatchrange(char *range, int ch, int *indptr, int *mtp)
+        -: 3827:{
+        -: 3828:    int r1, r2;
+        -: 3829:
+    #####: 3830:    if (indptr)
+    #####: 3831:	*indptr = 0;
+        -: 3832:    /*
+        -: 3833:     * Careful here: unlike other strings, range is a NULL-terminated,
+        -: 3834:     * metafied string, because we need to treat the Posix and hyphenated
+        -: 3835:     * ranges specially.
+        -: 3836:     */
+    #####: 3837:    for (; *range; range++) {
+    #####: 3838:	if (imeta(STOUC(*range))) {
+    #####: 3839:	    int swtype = STOUC(*range) - STOUC(Meta);
+    #####: 3840:	    if (mtp)
+    #####: 3841:		*mtp = swtype;
+    #####: 3842:	    switch (swtype) {
+    #####: 3843:	    case 0:
+    #####: 3844:		if (STOUC(*++range ^ 32) == ch)
+    #####: 3845:		    return 1;
+    #####: 3846:		break;
+    #####: 3847:	    case PP_ALPHA:
+    #####: 3848:		if (isalpha(ch))
+    #####: 3849:		    return 1;
+    #####: 3850:		break;
+    #####: 3851:	    case PP_ALNUM:
+    #####: 3852:		if (isalnum(ch))
+    #####: 3853:		    return 1;
+    #####: 3854:		break;
+    #####: 3855:	    case PP_ASCII:
+    #####: 3856:		if ((ch & ~0x7f) == 0)
+    #####: 3857:		    return 1;
+    #####: 3858:		break;
+    #####: 3859:	    case PP_BLANK:
+        -: 3860:#if !defined(HAVE_ISBLANK) && !defined(isblank)
+        -: 3861:/*
+        -: 3862: * isblank() is GNU and C99. There's a remote chance that some
+        -: 3863: * systems still don't support it.
+        -: 3864: */
+        -: 3865:#define isblank(c) (c == ' ' || c == '\t')
+        -: 3866:#endif
+    #####: 3867:		if (isblank(ch))
+    #####: 3868:		    return 1;
+    #####: 3869:		break;
+    #####: 3870:	    case PP_CNTRL:
+    #####: 3871:		if (iscntrl(ch))
+    #####: 3872:		    return 1;
+    #####: 3873:		break;
+    #####: 3874:	    case PP_DIGIT:
+    #####: 3875:		if (isdigit(ch))
+    #####: 3876:		    return 1;
+    #####: 3877:		break;
+    #####: 3878:	    case PP_GRAPH:
+    #####: 3879:		if (isgraph(ch))
+    #####: 3880:		    return 1;
+    #####: 3881:		break;
+    #####: 3882:	    case PP_LOWER:
+    #####: 3883:		if (islower(ch))
+    #####: 3884:		    return 1;
+    #####: 3885:		break;
+    #####: 3886:	    case PP_PRINT:
+    #####: 3887:		if (ZISPRINT(ch))
+    #####: 3888:		    return 1;
+    #####: 3889:		break;
+    #####: 3890:	    case PP_PUNCT:
+    #####: 3891:		if (ispunct(ch))
+    #####: 3892:		    return 1;
+    #####: 3893:		break;
+    #####: 3894:	    case PP_SPACE:
+    #####: 3895:		if (isspace(ch))
+    #####: 3896:		    return 1;
+    #####: 3897:		break;
+    #####: 3898:	    case PP_UPPER:
+    #####: 3899:		if (isupper(ch))
+    #####: 3900:		    return 1;
+    #####: 3901:		break;
+    #####: 3902:	    case PP_XDIGIT:
+    #####: 3903:		if (isxdigit(ch))
+    #####: 3904:		    return 1;
+    #####: 3905:		break;
+    #####: 3906:	    case PP_IDENT:
+    #####: 3907:		if (iident(ch))
+    #####: 3908:		    return 1;
+    #####: 3909:		break;
+    #####: 3910:	    case PP_IFS:
+    #####: 3911:		if (isep(ch))
+    #####: 3912:		    return 1;
+    #####: 3913:		break;
+    #####: 3914:	    case PP_IFSSPACE:
+    #####: 3915:		if (iwsep(ch))
+    #####: 3916:		    return 1;
+    #####: 3917:		break;
+    #####: 3918:	    case PP_WORD:
+    #####: 3919:		if (iword(ch))
+    #####: 3920:		    return 1;
+    #####: 3921:		break;
+    #####: 3922:	    case PP_RANGE:
+    #####: 3923:		range++;
+    #####: 3924:		r1 = STOUC(UNMETA(range));
+    #####: 3925:		METACHARINC(range);
+    #####: 3926:		r2 = STOUC(UNMETA(range));
+    #####: 3927:		if (*range == Meta)
+    #####: 3928:		    range++;
+    #####: 3929:		if (r1 <= ch && ch <= r2) {
+    #####: 3930:		    if (indptr)
+    #####: 3931:			*indptr += ch - r1;
+    #####: 3932:		    return 1;
+        -: 3933:		}
+    #####: 3934:		if (indptr && r1 < r2)
+    #####: 3935:		    *indptr += r2 - r1;
+    #####: 3936:		break;
+    #####: 3937:	    case PP_INCOMPLETE:
+        -: 3938:	    case PP_INVALID:
+        -: 3939:		/* Never true if not in multibyte mode */
+    #####: 3940:		break;
+    #####: 3941:	    case PP_UNKWN:
+        -: 3942:		DPUTS(1, "BUG: unknown posix range passed through.\n");
+    #####: 3943:		break;
+    #####: 3944:	    default:
+        -: 3945:		DPUTS(1, "BUG: unknown metacharacter in range.");
+    #####: 3946:		break;
+        -: 3947:	    }
+    #####: 3948:	} else if (STOUC(*range) == ch) {
+    #####: 3949:	    if (mtp)
+    #####: 3950:		*mtp = 0;
+    #####: 3951:	    return 1;
+        -: 3952:	}
+    #####: 3953:	if (indptr)
+    #####: 3954:	    (*indptr)++;
+        -: 3955:    }
+    #####: 3956:    return 0;
+        -: 3957:}
+        -: 3958:
+        -: 3959:
+        -: 3960:/**/
+        -: 3961:#ifndef MULTIBYTE_SUPPORT
+        -: 3962:
+        -: 3963:/*
+        -: 3964: * Identical function to mb_patmatchindex() above for single-byte
+        -: 3965: * characters.  Here -1 represents a character that needs a special type.
+        -: 3966: *
+        -: 3967: * Unlike patmatchrange, we only need this in ZLE, which always
+        -: 3968: * uses MULTIBYTE_SUPPORT if compiled in; hence we don't use
+        -: 3969: * this function in that case.
+        -: 3970: */
+        -: 3971:
+        -: 3972:/**/
+        -: 3973:mod_export int
+        -: 3974:patmatchindex(char *range, int ind, int *chr, int *mtp)
+        -: 3975:{
+        -: 3976:    int r1, r2, rdiff, rchr;
+        -: 3977:
+        -: 3978:    *chr = -1;
+        -: 3979:    *mtp = 0;
+        -: 3980:
+        -: 3981:    for (; *range; range++) {
+        -: 3982:	if (imeta(STOUC(*range))) {
+        -: 3983:	    int swtype = STOUC(*range) - STOUC(Meta);
+        -: 3984:	    switch (swtype) {
+        -: 3985:	    case 0:
+        -: 3986:		/* ordinary metafied character */
+        -: 3987:		rchr = STOUC(*++range) ^ 32;
+        -: 3988:		if (!ind) {
+        -: 3989:		    *chr = rchr;
+        -: 3990:		    return 1;
+        -: 3991:		}
+        -: 3992:		break;
+        -: 3993:
+        -: 3994:	    case PP_ALPHA:
+        -: 3995:	    case PP_ALNUM:
+        -: 3996:	    case PP_ASCII:
+        -: 3997:	    case PP_BLANK:
+        -: 3998:	    case PP_CNTRL:
+        -: 3999:	    case PP_DIGIT:
+        -: 4000:	    case PP_GRAPH:
+        -: 4001:	    case PP_LOWER:
+        -: 4002:	    case PP_PRINT:
+        -: 4003:	    case PP_PUNCT:
+        -: 4004:	    case PP_SPACE:
+        -: 4005:	    case PP_UPPER:
+        -: 4006:	    case PP_XDIGIT:
+        -: 4007:	    case PP_IDENT:
+        -: 4008:	    case PP_IFS:
+        -: 4009:	    case PP_IFSSPACE:
+        -: 4010:	    case PP_WORD:
+        -: 4011:	    case PP_INCOMPLETE:
+        -: 4012:	    case PP_INVALID:
+        -: 4013:		if (!ind) {
+        -: 4014:		    *mtp = swtype;
+        -: 4015:		    return 1;
+        -: 4016:		}
+        -: 4017:		break;
+        -: 4018:
+        -: 4019:	    case PP_RANGE:
+        -: 4020:		range++;
+        -: 4021:		r1 = STOUC(UNMETA(range));
+        -: 4022:		METACHARINC(range);
+        -: 4023:		r2 = STOUC(UNMETA(range));
+        -: 4024:		if (*range == Meta)
+        -: 4025:		    range++;
+        -: 4026:		rdiff = r2 - r1; 
+        -: 4027:		if (rdiff >= ind) {
+        -: 4028:		    *chr = r1 + ind;
+        -: 4029:		    return 1;
+        -: 4030:		}
+        -: 4031:		/* note the extra decrement to ind below */
+        -: 4032:		ind -= rdiff;
+        -: 4033:		break;
+        -: 4034:	    case PP_UNKWN:
+        -: 4035:		DPUTS(1, "BUG: unknown posix range passed through.\n");
+        -: 4036:		break;
+        -: 4037:	    default:
+        -: 4038:		DPUTS(1, "BUG: unknown metacharacter in range.");
+        -: 4039:		break;
+        -: 4040:	    }
+        -: 4041:	} else {
+        -: 4042:	    if (!ind) {
+        -: 4043:		*chr = STOUC(*range);
+        -: 4044:		return 1;
+        -: 4045:	    }
+        -: 4046:	}
+        -: 4047:	if (!ind--)
+        -: 4048:	    break;
+        -: 4049:    }
+        -: 4050:
+        -: 4051:    /* No corresponding index. */
+        -: 4052:    return 0;
+        -: 4053:}
+        -: 4054:
+        -: 4055:/**/
+        -: 4056:#endif /* MULTIBYTE_SUPPORT */
+        -: 4057:
+        -: 4058:/*
+        -: 4059: * Repeatedly match something simple and say how many times.
+        -: 4060: * charstart is an array parallel to that starting at patinput
+        -: 4061: * and records the start of (possibly multibyte) characters
+        -: 4062: * to aid in later backtracking.
+        -: 4063: */
+        -: 4064:
+        -: 4065:/**/
+       17: 4066:static int patrepeat(Upat p, char *charstart)
+        -: 4067:{
+       17: 4068:    int count = 0;
+        -: 4069:    patint_t tch, charmatch_cache;
+        -: 4070:    char *scan, *opnd;
+        -: 4071:
+       17: 4072:    scan = patinput;
+       17: 4073:    opnd = (char *)P_OPERAND(p);
+        -: 4074:
+       17: 4075:    switch(P_OP(p)) {
+        -: 4076:#ifdef DEBUG
+        -: 4077:    case P_ANY:
+        -: 4078:	dputs("BUG: ?# did not get optimized to *");
+        -: 4079:	return 0;
+        -: 4080:	break;
+        -: 4081:#endif
+    #####: 4082:    case P_EXACTLY:
+        -: 4083:	DPUTS(P_LS_LEN(p) != 1, "closure following more than one character");
+    #####: 4084:	tch = CHARREF(P_LS_STR(p), P_LS_STR(p) + P_LS_LEN(p));
+    #####: 4085:	while (scan < patinend &&
+    #####: 4086:	       CHARMATCH_EXPR(CHARREF(scan, patinend), tch)) {
+    #####: 4087:	    charstart[scan-patinput] = 1;
+    #####: 4088:	    count++;
+    #####: 4089:	    CHARINC(scan, patinend);
+        -: 4090:	}
+    #####: 4091:	break;
+       17: 4092:    case P_ANYOF:
+        -: 4093:    case P_ANYBUT:
+       58: 4094:	while (scan < patinend) {
+        -: 4095:#ifdef MULTIBYTE_SUPPORT
+        -: 4096:	    int zmb_ind;
+       35: 4097:	    wchar_t cr = charref(scan, patinend, &zmb_ind);
+       35: 4098:	    if (patglobflags & GF_MULTIBYTE) {
+       70: 4099:		if (mb_patmatchrange(opnd, cr, zmb_ind, NULL, NULL) ^
+       35: 4100:		    (P_OP(p) == P_ANYOF))
+       22: 4101:		    break;
+    #####: 4102:	    } else if (patmatchrange(opnd, (int)cr, NULL, NULL) ^
+    #####: 4103:		       (P_OP(p) == P_ANYOF))
+    #####: 4104:		break;
+        -: 4105:#else
+        -: 4106:	    if (patmatchrange(opnd, CHARREF(scan, patinend), NULL, NULL) ^
+        -: 4107:		(P_OP(p) == P_ANYOF))
+        -: 4108:		break;
+        -: 4109:#endif
+       24: 4110:	    charstart[scan-patinput] = 1;
+       24: 4111:	    count++;
+       24: 4112:	    CHARINC(scan, patinend);
+        -: 4113:	}
+       17: 4114:	break;
+        -: 4115:#ifdef DEBUG
+        -: 4116:    default:
+        -: 4117:	dputs("BUG: something very strange is happening in patrepeat");
+        -: 4118:	return 0;
+        -: 4119:	break;
+        -: 4120:#endif
+        -: 4121:    }
+        -: 4122:
+       17: 4123:    patinput = scan;
+       17: 4124:    return count;
+        -: 4125:}
+        -: 4126:
+        -: 4127:/* Free a patprog. */
+        -: 4128:
+        -: 4129:/**/
+        -: 4130:mod_export void
+    #####: 4131:freepatprog(Patprog prog)
+        -: 4132:{
+    #####: 4133:    if (prog && prog != dummy_patprog1 && prog != dummy_patprog2)
+    #####: 4134:	zfree(prog, prog->size);
+    #####: 4135:}
+        -: 4136:
+        -: 4137:/* Disable or reenable a pattern character */
+        -: 4138:
+        -: 4139:/**/
+        -: 4140:int
+    #####: 4141:pat_enables(const char *cmd, char **patp, int enable)
+        -: 4142:{
+    #####: 4143:    int ret = 0;
+        -: 4144:    const char **stringp;
+        -: 4145:    char *disp;
+        -: 4146:
+    #####: 4147:    if (!*patp) {
+    #####: 4148:	int done = 0;
+    #####: 4149:	for (stringp = zpc_strings, disp = zpc_disables;
+    #####: 4150:	     stringp < zpc_strings + ZPC_COUNT;
+    #####: 4151:	     stringp++, disp++) {
+    #####: 4152:	    if (!*stringp)
+    #####: 4153:		continue;
+    #####: 4154:	    if (enable ? *disp : !*disp)
+    #####: 4155:		continue;
+    #####: 4156:	    if (done)
+    #####: 4157:		putc(' ', stdout);
+    #####: 4158:	    printf("'%s'", *stringp);
+    #####: 4159:	    done = 1;
+        -: 4160:	}
+    #####: 4161:	if (done)
+    #####: 4162:	    putc('\n', stdout);
+    #####: 4163:	return 0;
+        -: 4164:    }
+        -: 4165:
+    #####: 4166:    for (; *patp; patp++) {
+    #####: 4167:	for (stringp = zpc_strings, disp = zpc_disables;
+    #####: 4168:	     stringp < zpc_strings + ZPC_COUNT;
+    #####: 4169:	     stringp++, disp++) {
+    #####: 4170:	    if (*stringp && !strcmp(*stringp, *patp)) {
+    #####: 4171:		*disp = (char)!enable;
+    #####: 4172:		break;
+        -: 4173:	    }
+        -: 4174:	}
+    #####: 4175:	if (stringp == zpc_strings + ZPC_COUNT) {
+    #####: 4176:	    zerrnam(cmd, "invalid pattern: %s", *patp);
+    #####: 4177:	    ret = 1;
+        -: 4178:	}
+        -: 4179:    }
+        -: 4180:
+    #####: 4181:    return ret;
+        -: 4182:}
+        -: 4183:
+        -: 4184:/*
+        -: 4185: * Save the current state of pattern disables, returning the saved value.
+        -: 4186: */
+        -: 4187:
+        -: 4188:/**/
+        -: 4189:unsigned int
+       23: 4190:savepatterndisables(void)
+        -: 4191:{
+        -: 4192:    unsigned int disables, bit;
+        -: 4193:    char *disp;
+        -: 4194:
+       23: 4195:    disables = 0;
+      483: 4196:    for (bit = 1, disp = zpc_disables;
+      460: 4197:	 disp < zpc_disables + ZPC_COUNT;
+      437: 4198:	 bit <<= 1, disp++) {
+      437: 4199:	if (*disp)
+    #####: 4200:	    disables |= bit;
+        -: 4201:    }
+       23: 4202:    return disables;
+        -: 4203:}
+        -: 4204:
+        -: 4205:/*
+        -: 4206: * Function scope saving pattern enables.
+        -: 4207: */
+        -: 4208:
+        -: 4209:/**/
+        -: 4210:void
+       23: 4211:startpatternscope(void)
+        -: 4212:{
+        -: 4213:    Zpc_disables_save newdis;
+        -: 4214:
+       23: 4215:    newdis = (Zpc_disables_save)zalloc(sizeof(*newdis));
+       23: 4216:    newdis->next = zpc_disables_stack;
+       23: 4217:    newdis->disables = savepatterndisables();
+        -: 4218:
+       23: 4219:    zpc_disables_stack = newdis;
+       23: 4220:}
+        -: 4221:
+        -: 4222:/*
+        -: 4223: * Restore completely the state of pattern disables.
+        -: 4224: */
+        -: 4225:
+        -: 4226:/**/
+        -: 4227:void
+    #####: 4228:restorepatterndisables(unsigned int disables)
+        -: 4229:{
+        -: 4230:    char *disp;
+        -: 4231:    unsigned int bit;
+        -: 4232:
+    #####: 4233:    for (bit = 1, disp = zpc_disables;
+    #####: 4234:	 disp < zpc_disables + ZPC_COUNT;
+    #####: 4235:	 bit <<= 1, disp++) {
+    #####: 4236:	if (disables & bit)
+    #####: 4237:	    *disp = 1;
+        -: 4238:	else
+    #####: 4239:	    *disp = 0;
+        -: 4240:    }
+    #####: 4241:}
+        -: 4242:
+        -: 4243:/*
+        -: 4244: * Function scope to restore pattern enables if localpatterns is turned on.
+        -: 4245: */
+        -: 4246:
+        -: 4247:/**/
+        -: 4248:void
+       23: 4249:endpatternscope(void)
+        -: 4250:{
+        -: 4251:    Zpc_disables_save olddis;
+        -: 4252:
+       23: 4253:    olddis = zpc_disables_stack;
+       23: 4254:    zpc_disables_stack = olddis->next;
+        -: 4255:
+       23: 4256:    if (isset(LOCALPATTERNS))
+    #####: 4257:	restorepatterndisables(olddis->disables);
+        -: 4258:
+       23: 4259:    zfree(olddis, sizeof(*olddis));
+       23: 4260:}
+        -: 4261:
+        -: 4262:/* Reinitialise pattern disables */
+        -: 4263:
+        -: 4264:/**/
+        -: 4265:void
+        2: 4266:clearpatterndisables(void)
+        -: 4267:{
+        2: 4268:    memset(zpc_disables, 0, ZPC_COUNT);
+        2: 4269:}
+        -: 4270:
+        -: 4271:
+        -: 4272:/* Check to see if str is eligible for filename generation. */
+        -: 4273:
+        -: 4274:/**/
+        -: 4275:mod_export int
+     2105: 4276:haswilds(char *str)
+        -: 4277:{
+        -: 4278:    char *start;
+        -: 4279:
+        -: 4280:    /* `[' and `]' are legal even if bad patterns are usually not. */
+     2105: 4281:    if ((*str == Inbrack || *str == Outbrack) && !str[1])
+    #####: 4282:	return 0;
+        -: 4283:
+        -: 4284:    /* If % is immediately followed by ?, then that ? is     *
+        -: 4285:     * not treated as a wildcard.  This is so you don't have *
+        -: 4286:     * to escape job references such as %?foo.               */
+     2105: 4287:    if (str[0] == '%' && str[1] == Quest)
+    #####: 4288:	str[1] = '?';
+        -: 4289:
+        -: 4290:    /*
+        -: 4291:     * Note that at this point zpc_special has not been set up.
+        -: 4292:     */
+     2105: 4293:    start = str;
+    17186: 4294:    for (; *str; str++) {
+    15085: 4295:	switch (*str) {
+    #####: 4296:	    case Inpar:
+    #####: 4297:		if ((!isset(SHGLOB) && !zpc_disables[ZPC_INPAR]) ||
+    #####: 4298:		    (str > start && isset(KSHGLOB) &&
+    #####: 4299:		     ((str[-1] == Quest && !zpc_disables[ZPC_KSH_QUEST]) ||
+    #####: 4300:		      (str[-1] == Star && !zpc_disables[ZPC_KSH_STAR]) ||
+    #####: 4301:		      (str[-1] == '+' && !zpc_disables[ZPC_KSH_PLUS]) ||
+    #####: 4302:		      (str[-1] == Bang && !zpc_disables[ZPC_KSH_BANG]) ||
+    #####: 4303:		      (str[-1] == '!' && !zpc_disables[ZPC_KSH_BANG2]) ||
+    #####: 4304:		      (str[-1] == '@' && !zpc_disables[ZPC_KSH_AT]))))
+    #####: 4305:		    return 1;
+    #####: 4306:		break;
+        -: 4307:
+    #####: 4308:	    case Bar:
+    #####: 4309:		if (!zpc_disables[ZPC_BAR])
+    #####: 4310:		    return 1;
+    #####: 4311:		break;
+        -: 4312:
+        4: 4313:	    case Star:
+        4: 4314:		if (!zpc_disables[ZPC_STAR])
+        4: 4315:		    return 1;
+    #####: 4316:		break;
+        -: 4317:
+    #####: 4318:	    case Inbrack:
+    #####: 4319:		if (!zpc_disables[ZPC_INBRACK])
+    #####: 4320:		    return 1;
+    #####: 4321:		break;
+        -: 4322:
+    #####: 4323:	    case Inang:
+    #####: 4324:		if (!zpc_disables[ZPC_INANG])
+    #####: 4325:		    return 1;
+    #####: 4326:		break;
+        -: 4327:
+    #####: 4328:	    case Quest:
+    #####: 4329:		if (!zpc_disables[ZPC_QUEST])
+    #####: 4330:		    return 1;
+    #####: 4331:		break;
+        -: 4332:
+    #####: 4333:	    case Pound:
+    #####: 4334:		if (isset(EXTENDEDGLOB) && !zpc_disables[ZPC_HASH])
+    #####: 4335:		    return 1;
+    #####: 4336:		break;
+        -: 4337:
+    #####: 4338:	    case Hat:
+    #####: 4339:		if (isset(EXTENDEDGLOB) && !zpc_disables[ZPC_HAT])
+    #####: 4340:		    return 1;
+    #####: 4341:		break;
+        -: 4342:	}
+        -: 4343:    }
+     2101: 4344:    return 0;
+        -: 4345:}

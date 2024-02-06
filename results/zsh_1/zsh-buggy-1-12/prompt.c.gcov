@@ -1,0 +1,2130 @@
+        -:    0:Source:prompt.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * prompt.c - construct zsh prompts
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "prompt.pro"
+        -:   32:
+        -:   33:/* text attribute mask */
+        -:   34:
+        -:   35:/**/
+        -:   36:mod_export zattr txtattrmask;
+        -:   37:
+        -:   38:/* the command stack for use with %_ in prompts */
+        -:   39:
+        -:   40:/**/
+        -:   41:unsigned char *cmdstack;
+        -:   42:/**/
+        -:   43:int cmdsp;
+        -:   44:
+        -:   45:/* parser states, for %_ */
+        -:   46:
+        -:   47:static char *cmdnames[CS_COUNT] = {
+        -:   48:    "for",      "while",     "repeat",    "select",
+        -:   49:    "until",    "if",        "then",      "else",
+        -:   50:    "elif",     "math",      "cond",      "cmdor",
+        -:   51:    "cmdand",   "pipe",      "errpipe",   "foreach",
+        -:   52:    "case",     "function",  "subsh",     "cursh",
+        -:   53:    "array",    "quote",     "dquote",    "bquote",
+        -:   54:    "cmdsubst", "mathsubst", "elif-then", "heredoc",
+        -:   55:    "heredocd", "brace",     "braceparam", "always",
+        -:   56:};
+        -:   57:
+        -:   58:
+        -:   59:struct buf_vars;
+        -:   60:
+        -:   61:struct buf_vars {
+        -:   62:/* Previous set of prompt variables on the stack. */
+        -:   63:
+        -:   64:    struct buf_vars *last;
+        -:   65:
+        -:   66:/* The buffer into which an expanded and metafied prompt is being written, *
+        -:   67: * and its size.                                                           */
+        -:   68:
+        -:   69:    char *buf;
+        -:   70:    int bufspc;
+        -:   71:
+        -:   72:/* bp is the pointer to the current position in the buffer, where the next *
+        -:   73: * character will be added.                                                */
+        -:   74:
+        -:   75:    char *bp;
+        -:   76:
+        -:   77:/* Position of the start of the current line in the buffer */
+        -:   78:
+        -:   79:    char *bufline;
+        -:   80:
+        -:   81:/* bp1 is an auxiliary pointer into the buffer, which when non-NULL is *
+        -:   82: * moved whenever the buffer is reallocated.  It is used when data is   *
+        -:   83: * being temporarily held in the buffer.                                */
+        -:   84:
+        -:   85:    char *bp1;
+        -:   86:
+        -:   87:/* The format string, for %-expansion. */
+        -:   88:
+        -:   89:    char *fm;
+        -:   90:
+        -:   91:/* Non-zero if truncating the current segment of the buffer. */
+        -:   92:
+        -:   93:    int truncwidth;
+        -:   94:
+        -:   95:/* Current level of nesting of %{ / %} sequences. */
+        -:   96:
+        -:   97:    int dontcount;
+        -:   98:
+        -:   99:/* Level of %{ / %} surrounding a truncation segment. */
+        -:  100:
+        -:  101:    int trunccount;
+        -:  102:
+        -:  103:/* Strings to use for %r and %R (for the spelling prompt). */
+        -:  104:
+        -:  105:    char *rstring, *Rstring;
+        -:  106:};
+        -:  107:
+        -:  108:typedef struct buf_vars *Buf_vars;
+        -:  109:
+        -:  110:/* The currently active prompt output variables */
+        -:  111:static Buf_vars bv;
+        -:  112:
+        -:  113:/*
+        -:  114: * Expand path p; maximum is npath segments where 0 means the whole path.
+        -:  115: * If tilde is 1, try and find a named directory to use.
+        -:  116: */
+        -:  117:
+        -:  118:static void
+    #####:  119:promptpath(char *p, int npath, int tilde)
+        -:  120:{
+    #####:  121:    char *modp = p;
+        -:  122:    Nameddir nd;
+        -:  123:
+    #####:  124:    if (tilde && ((nd = finddir(p))))
+    #####:  125:	modp = tricat("~", nd->node.nam, p + strlen(nd->dir));
+        -:  126:
+    #####:  127:    if (npath) {
+        -:  128:	char *sptr;
+    #####:  129:	if (npath > 0) {
+    #####:  130:	    for (sptr = modp + strlen(modp); sptr > modp; sptr--) {
+    #####:  131:		if (*sptr == '/' && !--npath) {
+    #####:  132:		    sptr++;
+    #####:  133:		    break;
+        -:  134:		}
+        -:  135:	    }
+    #####:  136:	    if (*sptr == '/' && sptr[1] && sptr != modp)
+    #####:  137:		sptr++;
+    #####:  138:	    stradd(sptr);
+        -:  139:	} else {
+        -:  140:	    char cbu;
+    #####:  141:	    for (sptr = modp+1; *sptr; sptr++)
+    #####:  142:		if (*sptr == '/' && !++npath)
+    #####:  143:		    break;
+    #####:  144:	    cbu = *sptr;
+    #####:  145:	    *sptr = 0;
+    #####:  146:	    stradd(modp);
+    #####:  147:	    *sptr = cbu;
+        -:  148:	}
+        -:  149:    } else
+    #####:  150:	stradd(modp);
+        -:  151:
+    #####:  152:    if (p != modp)
+    #####:  153:	zsfree(modp);
+    #####:  154:}
+        -:  155:
+        -:  156:/*
+        -:  157: * Perform prompt expansion on a string, putting the result in a
+        -:  158: * permanently-allocated string.  If ns is non-zero, this string
+        -:  159: * may have embedded Inpar and Outpar, which indicate a toggling
+        -:  160: * between spacing and non-spacing parts of the prompt, and
+        -:  161: * Nularg, which (in a non-spacing sequence) indicates a
+        -:  162: * `glitch' space.
+        -:  163: *
+        -:  164: * txtchangep gives an integer controlling the attributes of
+        -:  165: * the prompt.  This is for use in zle to maintain the attributes
+        -:  166: * consistently.  Other parts of the shell should not need to use it.
+        -:  167: */
+        -:  168:
+        -:  169:/**/
+        -:  170:mod_export char *
+    #####:  171:promptexpand(char *s, int ns, char *rs, char *Rs, zattr *txtchangep)
+        -:  172:{
+        -:  173:    struct buf_vars new_vars;
+        -:  174:
+    #####:  175:    if(!s)
+    #####:  176:	return ztrdup("");
+        -:  177:
+    #####:  178:    if ((termflags & TERM_UNKNOWN) && (unset(INTERACTIVE)))
+    #####:  179:        init_term();
+        -:  180:
+    #####:  181:    if (isset(PROMPTSUBST)) {
+    #####:  182:	int olderr = errflag;
+    #####:  183:	int oldval = lastval;
+        -:  184:
+    #####:  185:	s = dupstring(s);
+    #####:  186:	if (!parsestr(&s))
+    #####:  187:	    singsub(&s);
+        -:  188:	/*
+        -:  189:	 * We don't need the special Nularg hack here and we're
+        -:  190:	 * going to be using Nularg for other things.
+        -:  191:	 */
+    #####:  192:	if (*s == Nularg && s[1] == '\0')
+    #####:  193:	    *s = '\0';
+        -:  194:
+        -:  195:	/*
+        -:  196:	 * Ignore errors and status change in prompt substitution.
+        -:  197:	 * However, keep any user interrupt error that occurred.
+        -:  198:	 */
+    #####:  199:	errflag = olderr | (errflag & ERRFLAG_INT);
+    #####:  200:	lastval = oldval;
+        -:  201:    }
+        -:  202:
+    #####:  203:    memset(&new_vars, 0, sizeof(new_vars));
+    #####:  204:    new_vars.last = bv;
+    #####:  205:    bv = &new_vars;
+        -:  206:
+    #####:  207:    new_vars.rstring = rs;
+    #####:  208:    new_vars.Rstring = Rs;
+    #####:  209:    new_vars.fm = s;
+    #####:  210:    new_vars.bufspc = 256;
+    #####:  211:    new_vars.bp = new_vars.bufline = new_vars.buf = zshcalloc(new_vars.bufspc);
+    #####:  212:    new_vars.bp1 = NULL;
+    #####:  213:    new_vars.truncwidth = 0;
+        -:  214:
+    #####:  215:    putpromptchar(1, '\0', txtchangep);
+    #####:  216:    addbufspc(2);
+    #####:  217:    if (new_vars.dontcount)
+    #####:  218:	*new_vars.bp++ = Outpar;
+    #####:  219:    *new_vars.bp = '\0';
+    #####:  220:    if (!ns) {
+        -:  221:	/* If zero, Inpar, Outpar and Nularg should be removed. */
+    #####:  222:	for (new_vars.bp = new_vars.buf; *new_vars.bp; ) {
+    #####:  223:	    if (*new_vars.bp == Meta)
+    #####:  224:		new_vars.bp += 2;
+    #####:  225:	    else if (*new_vars.bp == Inpar || *new_vars.bp == Outpar ||
+    #####:  226:		     *new_vars.bp == Nularg)
+    #####:  227:		chuck(new_vars.bp);
+        -:  228:	    else
+    #####:  229:		new_vars.bp++;
+        -:  230:	}
+        -:  231:    }
+        -:  232:
+    #####:  233:    bv = new_vars.last;
+        -:  234:
+    #####:  235:    return new_vars.buf;
+        -:  236:}
+        -:  237:
+        -:  238:/* Parse the argument for %F and %K */
+        -:  239:static zattr
+    #####:  240:parsecolorchar(zattr arg, int is_fg)
+        -:  241:{
+    #####:  242:    if (bv->fm[1] == '{') {
+        -:  243:	char *ep;
+    #####:  244:	bv->fm += 2; /* skip over F{ */
+    #####:  245:	if ((ep = strchr(bv->fm, '}'))) {
+    #####:  246:	    char oc = *ep, *col, *coll;
+    #####:  247:	    *ep = '\0';
+        -:  248:	    /* expand the contents of the argument so you can use
+        -:  249:	     * %v for example */
+    #####:  250:	    coll = col = promptexpand(bv->fm, 0, NULL, NULL, NULL);
+    #####:  251:	    *ep = oc;
+    #####:  252:	    arg = match_colour((const char **)&coll, is_fg, 0);
+    #####:  253:	    free(col);
+    #####:  254:	    bv->fm = ep;
+        -:  255:	} else {
+    #####:  256:	    arg = match_colour((const char **)&bv->fm, is_fg, 0);
+    #####:  257:	    if (*bv->fm != '}')
+    #####:  258:		bv->fm--;
+        -:  259:	}
+        -:  260:    } else
+    #####:  261:	arg = match_colour(NULL, is_fg, arg);
+    #####:  262:    return arg;
+        -:  263:}
+        -:  264:
+        -:  265:/* Perform %- and !-expansion as required on a section of the prompt.  The *
+        -:  266: * section is ended by an instance of endchar.  If doprint is 0, the valid *
+        -:  267: * % sequences are merely skipped over, and nothing is stored.             */
+        -:  268:
+        -:  269:/**/
+        -:  270:static int
+    #####:  271:putpromptchar(int doprint, int endchar, zattr *txtchangep)
+        -:  272:{
+        -:  273:    char *ss, *hostnam;
+        -:  274:    int t0, arg, test, sep, j, numjobs, len;
+        -:  275:    zattr atr;
+        -:  276:    struct tm *tm;
+        -:  277:    struct timespec ts;
+        -:  278:    time_t timet;
+        -:  279:    Nameddir nd;
+        -:  280:
+    #####:  281:    for (; *bv->fm && *bv->fm != endchar; bv->fm++) {
+    #####:  282:	arg = 0;
+    #####:  283:	if (*bv->fm == '%' && isset(PROMPTPERCENT)) {
+    #####:  284:	    int minus = 0;
+    #####:  285:	    bv->fm++;
+    #####:  286:	    if (*bv->fm == '-') {
+    #####:  287:		minus = 1;
+    #####:  288:		bv->fm++;
+        -:  289:	    }
+    #####:  290:	    if (idigit(*bv->fm)) {
+    #####:  291:		arg = zstrtol(bv->fm, &bv->fm, 10);
+    #####:  292:		if (minus)
+    #####:  293:		    arg *= -1;
+    #####:  294:	    } else if (minus)
+    #####:  295:		arg = -1;
+    #####:  296:	    if (*bv->fm == '(') {
+        -:  297:		int tc, otruncwidth;
+        -:  298:
+    #####:  299:		if (idigit(*++bv->fm)) {
+    #####:  300:		    arg = zstrtol(bv->fm, &bv->fm, 10);
+    #####:  301:		} else if (arg < 0) {
+        -:  302:		    /* negative numbers don't make sense here */
+    #####:  303:		    arg *= -1;
+        -:  304:		}
+    #####:  305:		test = 0;
+    #####:  306:		ss = pwd;
+    #####:  307:		switch (tc = *bv->fm) {
+    #####:  308:		case 'c':
+        -:  309:		case '.':
+        -:  310:		case '~':
+    #####:  311:		    if ((nd = finddir(ss))) {
+    #####:  312:			arg--;
+    #####:  313:			ss += strlen(nd->dir);
+        -:  314:		    } /*FALLTHROUGH*/
+        -:  315:		case '/':
+        -:  316:		case 'C':
+        -:  317:		    /* `/' gives 0, `/any' gives 1, etc. */
+    #####:  318:		    if (*ss && *ss++ == '/' && *ss)
+    #####:  319:			arg--;
+    #####:  320:		    for (; *ss; ss++)
+    #####:  321:			if (*ss == '/')
+    #####:  322:			    arg--;
+    #####:  323:		    if (arg <= 0)
+    #####:  324:			test = 1;
+    #####:  325:		    break;
+    #####:  326:		case 't':
+        -:  327:		case 'T':
+        -:  328:		case 'd':
+        -:  329:		case 'D':
+        -:  330:		case 'w':
+    #####:  331:		    timet = time(NULL);
+    #####:  332:		    tm = localtime(&timet);
+    #####:  333:		    switch (tc) {
+    #####:  334:		    case 't':
+    #####:  335:			test = (arg == tm->tm_min);
+    #####:  336:			break;
+    #####:  337:		    case 'T':
+    #####:  338:			test = (arg == tm->tm_hour);
+    #####:  339:			break;
+    #####:  340:		    case 'd':
+    #####:  341:			test = (arg == tm->tm_mday);
+    #####:  342:			break;
+    #####:  343:		    case 'D':
+    #####:  344:			test = (arg == tm->tm_mon);
+    #####:  345:			break;
+    #####:  346:		    case 'w':
+    #####:  347:			test = (arg == tm->tm_wday);
+    #####:  348:			break;
+        -:  349:		    }
+    #####:  350:		    break;
+    #####:  351:		case '?':
+    #####:  352:		    if (lastval == arg)
+    #####:  353:			test = 1;
+    #####:  354:		    break;
+    #####:  355:		case '#':
+    #####:  356:		    if (geteuid() == (uid_t)arg)
+    #####:  357:			test = 1;
+    #####:  358:		    break;
+    #####:  359:		case 'g':
+    #####:  360:		    if (getegid() == (gid_t)arg)
+    #####:  361:			test = 1;
+    #####:  362:		    break;
+    #####:  363:		case 'j':
+    #####:  364:		    for (numjobs = 0, j = 1; j <= maxjob; j++)
+    #####:  365:			if (jobtab[j].stat && jobtab[j].procs &&
+    #####:  366:		    	    !(jobtab[j].stat & STAT_NOPRINT)) numjobs++;
+    #####:  367:		    if (numjobs >= arg)
+    #####:  368:		    	test = 1;
+    #####:  369:		    break;
+    #####:  370:		case 'l':
+    #####:  371:		    *bv->bp = '\0';
+    #####:  372:		    countprompt(bv->bufline, &t0, 0, 0);
+    #####:  373:		    if (minus)
+    #####:  374:			t0 = zterm_columns - t0;
+    #####:  375:		    if (t0 >= arg)
+    #####:  376:			test = 1;
+    #####:  377:		    break;
+    #####:  378:		case 'e':
+        -:  379:		    {
+    #####:  380:			Funcstack fsptr = funcstack;
+    #####:  381:			test = arg;
+    #####:  382:			while (fsptr && test > 0) {
+    #####:  383:			    test--;
+    #####:  384:			    fsptr = fsptr->prev;
+        -:  385:			}
+    #####:  386:			test = !test;
+        -:  387:		    }
+    #####:  388:		    break;
+    #####:  389:		case 'L':
+    #####:  390:		    if (shlvl >= arg)
+    #####:  391:			test = 1;
+    #####:  392:		    break;
+    #####:  393:		case 'S':
+    #####:  394:		    if (time(NULL) - shtimer.tv_sec >= arg)
+    #####:  395:			test = 1;
+    #####:  396:		    break;
+    #####:  397:		case 'v':
+    #####:  398:		    if (arrlen_ge(psvar, arg))
+    #####:  399:			test = 1;
+    #####:  400:		    break;
+    #####:  401:		case 'V':
+    #####:  402:		    if (psvar && *psvar && arrlen_ge(psvar, arg)) {
+    #####:  403:			if (*psvar[(arg ? arg : 1) - 1])
+    #####:  404:			    test = 1;
+        -:  405:		    }
+    #####:  406:		    break;
+    #####:  407:		case '_':
+    #####:  408:		    test = (cmdsp >= arg);
+    #####:  409:		    break;
+    #####:  410:		case '!':
+    #####:  411:		    test = privasserted();
+    #####:  412:		    break;
+    #####:  413:		default:
+    #####:  414:		    test = -1;
+    #####:  415:		    break;
+        -:  416:		}
+    #####:  417:		if (!*bv->fm || !(sep = *++bv->fm))
+    #####:  418:		    return 0;
+    #####:  419:		bv->fm++;
+        -:  420:		/* Don't do the current truncation until we get back */
+    #####:  421:		otruncwidth = bv->truncwidth;
+    #####:  422:		bv->truncwidth = 0;
+    #####:  423:		if (!putpromptchar(test == 1 && doprint, sep,
+    #####:  424:				   txtchangep) || !*++bv->fm ||
+    #####:  425:		    !putpromptchar(test == 0 && doprint, ')',
+        -:  426:				   txtchangep)) {
+    #####:  427:		    bv->truncwidth = otruncwidth;
+    #####:  428:		    return 0;
+        -:  429:		}
+    #####:  430:		bv->truncwidth = otruncwidth;
+    #####:  431:		continue;
+        -:  432:	    }
+    #####:  433:	    if (!doprint)
+    #####:  434:		switch(*bv->fm) {
+    #####:  435:		  case '[':
+    #####:  436:		    while(idigit(*++bv->fm));
+    #####:  437:		    while(*++bv->fm != ']');
+    #####:  438:		    continue;
+    #####:  439:		  case '<':
+    #####:  440:		    while(*++bv->fm != '<');
+    #####:  441:		    continue;
+    #####:  442:		  case '>':
+    #####:  443:		    while(*++bv->fm != '>');
+    #####:  444:		    continue;
+    #####:  445:		  case 'D':
+    #####:  446:		    if(bv->fm[1]=='{')
+    #####:  447:			while(*++bv->fm != '}');
+    #####:  448:		    continue;
+    #####:  449:		  default:
+    #####:  450:		    continue;
+        -:  451:		}
+    #####:  452:	    switch (*bv->fm) {
+    #####:  453:	    case '~':
+    #####:  454:		promptpath(pwd, arg, 1);
+    #####:  455:		break;
+    #####:  456:	    case 'd':
+        -:  457:	    case '/':
+    #####:  458:		promptpath(pwd, arg, 0);
+    #####:  459:		break;
+    #####:  460:	    case 'c':
+        -:  461:	    case '.':
+    #####:  462:		promptpath(pwd, arg ? arg : 1, 1);
+    #####:  463:		break;
+    #####:  464:	    case 'C':
+    #####:  465:		promptpath(pwd, arg ? arg : 1, 0);
+    #####:  466:		break;
+    #####:  467:	    case 'N':
+    #####:  468:		promptpath(scriptname ? scriptname : argzero, arg, 0);
+    #####:  469:		break;
+    #####:  470:	    case 'h':
+        -:  471:	    case '!':
+    #####:  472:		addbufspc(DIGBUFSIZE);
+    #####:  473:		convbase(bv->bp, curhist, 10);
+    #####:  474:		bv->bp += strlen(bv->bp);
+    #####:  475:		break;
+    #####:  476:	    case 'j':
+    #####:  477:		for (numjobs = 0, j = 1; j <= maxjob; j++)
+    #####:  478:		    if (jobtab[j].stat && jobtab[j].procs &&
+    #####:  479:		    	!(jobtab[j].stat & STAT_NOPRINT)) numjobs++;
+    #####:  480:		addbufspc(DIGBUFSIZE);
+    #####:  481:		sprintf(bv->bp, "%d", numjobs);
+    #####:  482:		bv->bp += strlen(bv->bp);
+    #####:  483:		break;
+    #####:  484:	    case 'M':
+    #####:  485:		queue_signals();
+    #####:  486:		if ((hostnam = getsparam("HOST")))
+    #####:  487:		    stradd(hostnam);
+    #####:  488:		unqueue_signals();
+    #####:  489:		break;
+    #####:  490:	    case 'm':
+    #####:  491:		if (!arg)
+    #####:  492:		    arg++;
+    #####:  493:		queue_signals();
+    #####:  494:		if (!(hostnam = getsparam("HOST"))) {
+    #####:  495:		    unqueue_signals();
+    #####:  496:		    break;
+        -:  497:		}
+    #####:  498:		if (arg < 0) {
+    #####:  499:		    for (ss = hostnam + strlen(hostnam); ss > hostnam; ss--)
+    #####:  500:			if (ss[-1] == '.' && !++arg)
+    #####:  501:			    break;
+    #####:  502:		    stradd(ss);
+        -:  503:		} else {
+    #####:  504:		    for (ss = hostnam; *ss; ss++)
+    #####:  505:			if (*ss == '.' && !--arg)
+    #####:  506:			    break;
+    #####:  507:		    stradd(*ss ? dupstrpfx(hostnam, ss - hostnam) : hostnam);
+        -:  508:		}
+    #####:  509:		unqueue_signals();
+    #####:  510:		break;
+    #####:  511:	    case 'S':
+    #####:  512:		txtchangeset(txtchangep, TXTSTANDOUT, TXTNOSTANDOUT);
+    #####:  513:		txtset(TXTSTANDOUT);
+    #####:  514:		tsetcap(TCSTANDOUTBEG, TSC_PROMPT);
+    #####:  515:		break;
+    #####:  516:	    case 's':
+    #####:  517:		txtchangeset(txtchangep, TXTNOSTANDOUT, TXTSTANDOUT);
+    #####:  518:		txtunset(TXTSTANDOUT);
+    #####:  519:		tsetcap(TCSTANDOUTEND, TSC_PROMPT|TSC_DIRTY);
+    #####:  520:		break;
+    #####:  521:	    case 'B':
+    #####:  522:		txtchangeset(txtchangep, TXTBOLDFACE, TXTNOBOLDFACE);
+    #####:  523:		txtset(TXTBOLDFACE);
+    #####:  524:		tsetcap(TCBOLDFACEBEG, TSC_PROMPT|TSC_DIRTY);
+    #####:  525:		break;
+    #####:  526:	    case 'b':
+    #####:  527:		txtchangeset(txtchangep, TXTNOBOLDFACE, TXTBOLDFACE);
+    #####:  528:		txtunset(TXTBOLDFACE);
+    #####:  529:		tsetcap(TCALLATTRSOFF, TSC_PROMPT|TSC_DIRTY);
+    #####:  530:		break;
+    #####:  531:	    case 'U':
+    #####:  532:		txtchangeset(txtchangep, TXTUNDERLINE, TXTNOUNDERLINE);
+    #####:  533:		txtset(TXTUNDERLINE);
+    #####:  534:		tsetcap(TCUNDERLINEBEG, TSC_PROMPT);
+    #####:  535:		break;
+    #####:  536:	    case 'u':
+    #####:  537:		txtchangeset(txtchangep, TXTNOUNDERLINE, TXTUNDERLINE);
+    #####:  538:		txtunset(TXTUNDERLINE);
+    #####:  539:		tsetcap(TCUNDERLINEEND, TSC_PROMPT|TSC_DIRTY);
+    #####:  540:		break;
+    #####:  541:	    case 'F':
+    #####:  542:		atr = parsecolorchar(arg, 1);
+    #####:  543:		if (!(atr & (TXT_ERROR | TXTNOFGCOLOUR))) {
+    #####:  544:		    txtchangeset(txtchangep, atr & TXT_ATTR_FG_ON_MASK,
+        -:  545:				 TXTNOFGCOLOUR | TXT_ATTR_FG_COL_MASK);
+    #####:  546:		    txtunset(TXT_ATTR_FG_COL_MASK);
+    #####:  547:		    txtset(atr & TXT_ATTR_FG_ON_MASK);
+    #####:  548:		    set_colour_attribute(atr, COL_SEQ_FG, TSC_PROMPT);
+    #####:  549:		    break;
+        -:  550:		}
+        -:  551:		/* else FALLTHROUGH */
+        -:  552:	    case 'f':
+    #####:  553:		txtchangeset(txtchangep, TXTNOFGCOLOUR, TXT_ATTR_FG_ON_MASK);
+    #####:  554:		txtunset(TXT_ATTR_FG_ON_MASK);
+    #####:  555:		set_colour_attribute(TXTNOFGCOLOUR, COL_SEQ_FG, TSC_PROMPT);
+    #####:  556:		break;
+    #####:  557:	    case 'K':
+    #####:  558:		atr = parsecolorchar(arg, 0);
+    #####:  559:		if (!(atr & (TXT_ERROR | TXTNOBGCOLOUR))) {
+    #####:  560:		    txtchangeset(txtchangep, atr & TXT_ATTR_BG_ON_MASK,
+        -:  561:				 TXTNOBGCOLOUR | TXT_ATTR_BG_COL_MASK);
+    #####:  562:		    txtunset(TXT_ATTR_BG_COL_MASK);
+    #####:  563:		    txtset(atr & TXT_ATTR_BG_ON_MASK);
+    #####:  564:		    set_colour_attribute(atr, COL_SEQ_BG, TSC_PROMPT);
+    #####:  565:		    break;
+        -:  566:		}
+        -:  567:		/* else FALLTHROUGH */
+        -:  568:	    case 'k':
+    #####:  569:		txtchangeset(txtchangep, TXTNOBGCOLOUR, TXT_ATTR_BG_ON_MASK);
+    #####:  570:		txtunset(TXT_ATTR_BG_ON_MASK);
+    #####:  571:		set_colour_attribute(TXTNOBGCOLOUR, COL_SEQ_BG, TSC_PROMPT);
+    #####:  572:		break;
+    #####:  573:	    case '[':
+    #####:  574:		if (idigit(*++bv->fm))
+    #####:  575:		    arg = zstrtol(bv->fm, &bv->fm, 10);
+    #####:  576:		if (!prompttrunc(arg, ']', doprint, endchar, txtchangep))
+    #####:  577:		    return *bv->fm;
+    #####:  578:		break;
+    #####:  579:	    case '<':
+        -:  580:	    case '>':
+        -:  581:		/* Test (minus) here so -0 means "at the right margin" */
+    #####:  582:		if (minus) {
+    #####:  583:		    *bv->bp = '\0';
+    #####:  584:		    countprompt(bv->bufline, &t0, 0, 0);
+    #####:  585:		    arg = zterm_columns - t0 + arg;
+    #####:  586:		    if (arg <= 0)
+    #####:  587:			arg = 1;
+        -:  588:		}
+    #####:  589:		if (!prompttrunc(arg, *bv->fm, doprint, endchar, txtchangep))
+    #####:  590:		    return *bv->fm;
+    #####:  591:		break;
+    #####:  592:	    case '{': /*}*/
+    #####:  593:		if (!bv->dontcount++) {
+    #####:  594:		    addbufspc(1);
+    #####:  595:		    *bv->bp++ = Inpar;
+        -:  596:		}
+    #####:  597:		if (arg <= 0)
+    #####:  598:		    break;
+        -:  599:		/* else */
+        -:  600:		/* FALLTHROUGH */
+        -:  601:	    case 'G':
+    #####:  602:		if (arg > 0) {
+    #####:  603:		    addbufspc(arg);
+    #####:  604:		    while (arg--)
+    #####:  605:			*bv->bp++ = Nularg;
+        -:  606:		} else {
+    #####:  607:		    addbufspc(1);
+    #####:  608:		    *bv->bp++ = Nularg;
+        -:  609:		}
+    #####:  610:		break;
+    #####:  611:	    case /*{*/ '}':
+    #####:  612:		if (bv->trunccount && bv->trunccount >= bv->dontcount)
+    #####:  613:		    return *bv->fm;
+    #####:  614:		if (bv->dontcount && !--bv->dontcount) {
+    #####:  615:		    addbufspc(1);
+    #####:  616:		    *bv->bp++ = Outpar;
+        -:  617:		}
+    #####:  618:		break;
+    #####:  619:	    case 't':
+        -:  620:	    case '@':
+        -:  621:	    case 'T':
+        -:  622:	    case '*':
+        -:  623:	    case 'w':
+        -:  624:	    case 'W':
+        -:  625:	    case 'D':
+        -:  626:		{
+    #####:  627:		    char *tmfmt, *dd, *tmbuf = NULL;
+        -:  628:
+    #####:  629:		    switch (*bv->fm) {
+    #####:  630:		    case 'T':
+    #####:  631:			tmfmt = "%K:%M";
+    #####:  632:			break;
+    #####:  633:		    case '*':
+    #####:  634:			tmfmt = "%K:%M:%S";
+    #####:  635:			break;
+    #####:  636:		    case 'w':
+    #####:  637:			tmfmt = "%a %f";
+    #####:  638:			break;
+    #####:  639:		    case 'W':
+    #####:  640:			tmfmt = "%m/%d/%y";
+    #####:  641:			break;
+    #####:  642:		    case 'D':
+    #####:  643:			if (bv->fm[1] == '{' /*}*/) {
+    #####:  644:			    for (ss = bv->fm + 2; *ss && *ss != /*{*/ '}'; ss++)
+    #####:  645:				if(*ss == '\\' && ss[1])
+    #####:  646:				    ss++;
+    #####:  647:			    dd = tmfmt = tmbuf = zalloc(ss - bv->fm);
+    #####:  648:			    for (ss = bv->fm + 2; *ss && *ss != /*{*/ '}';
+    #####:  649:				 ss++) {
+    #####:  650:				if(*ss == '\\' && ss[1])
+    #####:  651:				    ss++;
+    #####:  652:				*dd++ = *ss;
+        -:  653:			    }
+    #####:  654:			    *dd = 0;
+    #####:  655:			    bv->fm = ss - !*ss;
+    #####:  656:			    if (!*tmfmt) {
+    #####:  657:				free(tmbuf);
+    #####:  658:				continue;
+        -:  659:			    }
+        -:  660:			} else
+    #####:  661:			    tmfmt = "%y-%m-%d";
+    #####:  662:			break;
+    #####:  663:		    default:
+    #####:  664:			tmfmt = "%l:%M%p";
+    #####:  665:			break;
+        -:  666:		    }
+    #####:  667:		    zgettime(&ts);
+    #####:  668:		    tm = localtime(&ts.tv_sec);
+        -:  669:		    /*
+        -:  670:		     * Hack because strftime won't say how
+        -:  671:		     * much space it actually needs.  Try to add it
+        -:  672:		     * a few times until it works.  Some formats don't
+        -:  673:		     * actually have a length, so we could go on for
+        -:  674:		     * ever.
+        -:  675:		     */
+    #####:  676:		    for(j = 0, t0 = strlen(tmfmt)*8; j < 3; j++, t0*=2) {
+    #####:  677:			addbufspc(t0);
+    #####:  678:			if ((len = ztrftime(bv->bp, t0, tmfmt, tm, ts.tv_nsec))
+        -:  679:			    >= 0)
+    #####:  680:			    break;
+        -:  681:		    }
+        -:  682:		    /* There is enough room for this because addbufspc(t0)
+        -:  683:		     * allocates room for t0 * 2 bytes. */
+    #####:  684:		    if (len >= 0)
+    #####:  685:			metafy(bv->bp, len, META_NOALLOC);
+    #####:  686:		    bv->bp += strlen(bv->bp);
+    #####:  687:		    zsfree(tmbuf);
+    #####:  688:		    break;
+        -:  689:		}
+    #####:  690:	    case 'n':
+    #####:  691:		stradd(get_username());
+    #####:  692:		break;
+    #####:  693:	    case 'l':
+    #####:  694:		if (*ttystrname) {
+    #####:  695:                   ss = (strncmp(ttystrname, "/dev/tty", 8) ?
+    #####:  696:                           ttystrname + 5 : ttystrname + 8);
+    #####:  697:		    stradd(ss);
+        -:  698:		} else
+    #####:  699:		    stradd("()");
+    #####:  700:		break;
+    #####:  701:	    case 'y':
+    #####:  702:		if (*ttystrname) {
+    #####:  703:		    ss = (strncmp(ttystrname, "/dev/", 5) ?
+    #####:  704:			    ttystrname : ttystrname + 5);
+    #####:  705:		    stradd(ss);
+        -:  706:		} else
+    #####:  707:		    stradd("()");
+    #####:  708:		break;
+    #####:  709:	    case 'L':
+    #####:  710:		addbufspc(DIGBUFSIZE);
+        -:  711:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  712:		sprintf(bv->bp, "%lld", shlvl);
+        -:  713:#else
+    #####:  714:		sprintf(bv->bp, "%ld", (long)shlvl);
+        -:  715:#endif
+    #####:  716:		bv->bp += strlen(bv->bp);
+    #####:  717:		break;
+    #####:  718:	    case '?':
+    #####:  719:		addbufspc(DIGBUFSIZE);
+        -:  720:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  721:		sprintf(bv->bp, "%lld", lastval);
+        -:  722:#else
+    #####:  723:		sprintf(bv->bp, "%ld", (long)lastval);
+        -:  724:#endif
+    #####:  725:		bv->bp += strlen(bv->bp);
+    #####:  726:		break;
+    #####:  727:	    case '%':
+        -:  728:	    case ')':
+    #####:  729:		addbufspc(1);
+    #####:  730:		*bv->bp++ = *bv->fm;
+    #####:  731:		break;
+    #####:  732:	    case '#':
+    #####:  733:		addbufspc(1);
+    #####:  734:		*bv->bp++ = privasserted() ? '#' : '%';
+    #####:  735:		break;
+    #####:  736:	    case 'v':
+    #####:  737:		if (!arg)
+    #####:  738:		    arg = 1;
+    #####:  739:		else if (arg < 0)
+    #####:  740:		    arg += arrlen(psvar) + 1;
+    #####:  741:		if (arg > 0 && arrlen_ge(psvar, arg))
+    #####:  742:		    stradd(psvar[arg - 1]);
+    #####:  743:		break;
+    #####:  744:	    case 'E':
+    #####:  745:                tsetcap(TCCLEAREOL, TSC_PROMPT);
+    #####:  746:		break;
+    #####:  747:	    case '^':
+    #####:  748:		if (cmdsp) {
+    #####:  749:		    if (arg >= 0) {
+    #####:  750:			if (arg > cmdsp || arg == 0)
+    #####:  751:			    arg = cmdsp;
+    #####:  752:			for (t0 = cmdsp - 1; arg--; t0--) {
+    #####:  753:			    stradd(cmdnames[cmdstack[t0]]);
+    #####:  754:			    if (arg) {
+    #####:  755:				addbufspc(1);
+    #####:  756:				*bv->bp++=' ';
+        -:  757:			    }
+        -:  758:			}
+        -:  759:		    } else {
+    #####:  760:			arg = -arg;
+    #####:  761:			if (arg > cmdsp)
+    #####:  762:			    arg = cmdsp;
+    #####:  763:			for (t0 = arg - 1; arg--; t0--) {
+    #####:  764:			    stradd(cmdnames[cmdstack[t0]]);
+    #####:  765:			    if (arg) {
+    #####:  766:				addbufspc(1);
+    #####:  767:				*bv->bp++=' ';
+        -:  768:			    }
+        -:  769:			}
+        -:  770:		    }
+        -:  771:		}
+    #####:  772:		break;
+    #####:  773:	    case '_':
+    #####:  774:		if (cmdsp) {
+    #####:  775:		    if (arg >= 0) {
+    #####:  776:			if (arg > cmdsp || arg == 0)
+    #####:  777:			    arg = cmdsp;
+    #####:  778:			for (t0 = cmdsp - arg; arg--; t0++) {
+    #####:  779:			    stradd(cmdnames[cmdstack[t0]]);
+    #####:  780:			    if (arg) {
+    #####:  781:				addbufspc(1);
+    #####:  782:				*bv->bp++=' ';
+        -:  783:			    }
+        -:  784:			}
+        -:  785:		    } else {
+    #####:  786:			arg = -arg;
+    #####:  787:			if (arg > cmdsp)
+    #####:  788:			    arg = cmdsp;
+    #####:  789:			for (t0 = 0; arg--; t0++) {
+    #####:  790:			    stradd(cmdnames[cmdstack[t0]]);
+    #####:  791:			    if (arg) {
+    #####:  792:				addbufspc(1);
+    #####:  793:				*bv->bp++=' ';
+        -:  794:			    }
+        -:  795:			}
+        -:  796:		    }
+        -:  797:		}
+    #####:  798:		break;
+    #####:  799:	    case 'r':
+    #####:  800:		if(bv->rstring)
+    #####:  801:		    stradd(bv->rstring);
+    #####:  802:		break;
+    #####:  803:	    case 'R':
+    #####:  804:		if(bv->Rstring)
+    #####:  805:		    stradd(bv->Rstring);
+    #####:  806:		break;
+    #####:  807:	    case 'e':
+        -:  808:	    {
+    #####:  809:		int depth = 0;
+    #####:  810:		Funcstack fsptr = funcstack;
+    #####:  811:		while (fsptr) {
+    #####:  812:		    depth++;
+    #####:  813:		    fsptr = fsptr->prev;
+        -:  814:		}
+    #####:  815:		addbufspc(DIGBUFSIZE);
+    #####:  816:		sprintf(bv->bp, "%d", depth);
+    #####:  817:		bv->bp += strlen(bv->bp);
+    #####:  818:		break;
+        -:  819:	    }
+    #####:  820:	    case 'I':
+    #####:  821:		if (funcstack && funcstack->tp != FS_SOURCE &&
+    #####:  822:		    !IN_EVAL_TRAP()) {
+        -:  823:		    /*
+        -:  824:		     * We're in a function or an eval with
+        -:  825:		     * EVALLINENO.  Calculate the line number in
+        -:  826:		     * the file.
+        -:  827:		     */
+    #####:  828:		    zlong flineno = lineno + funcstack->flineno;
+        -:  829:		    /* take account of eval line nos. starting at 1 */
+    #####:  830:		    if (funcstack->tp == FS_EVAL)
+    #####:  831:			lineno--;
+    #####:  832:		    addbufspc(DIGBUFSIZE);
+        -:  833:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  834:		    sprintf(bv->bp, "%lld", flineno);
+        -:  835:#else
+    #####:  836:		    sprintf(bv->bp, "%ld", (long)flineno);
+        -:  837:#endif
+    #####:  838:		    bv->bp += strlen(bv->bp);
+    #####:  839:		    break;
+        -:  840:		}
+        -:  841:		/* else we're in a file and lineno is already correct */
+        -:  842:		/* FALLTHROUGH */
+        -:  843:	    case 'i':
+    #####:  844:		addbufspc(DIGBUFSIZE);
+        -:  845:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  846:		sprintf(bv->bp, "%lld", lineno);
+        -:  847:#else
+    #####:  848:		sprintf(bv->bp, "%ld", (long)lineno);
+        -:  849:#endif
+    #####:  850:		bv->bp += strlen(bv->bp);
+    #####:  851:		break;
+    #####:  852:	    case 'x':
+    #####:  853:		if (funcstack && funcstack->tp != FS_SOURCE &&
+    #####:  854:		    !IN_EVAL_TRAP())
+    #####:  855:		    promptpath(funcstack->filename ? funcstack->filename : "",
+        -:  856:			       arg, 0);
+        -:  857:		else
+    #####:  858:		    promptpath(scriptfilename ? scriptfilename : argzero,
+        -:  859:			       arg, 0);
+    #####:  860:		break;
+    #####:  861:	    case '\0':
+    #####:  862:		return 0;
+    #####:  863:	    case Meta:
+    #####:  864:		bv->fm++;
+    #####:  865:		break;
+        -:  866:	    }
+    #####:  867:	} else if(*bv->fm == '!' && isset(PROMPTBANG)) {
+    #####:  868:	    if(doprint) {
+    #####:  869:		if(bv->fm[1] == '!') {
+    #####:  870:		    bv->fm++;
+    #####:  871:		    addbufspc(1);
+    #####:  872:		    pputc('!');
+        -:  873:		} else {
+    #####:  874:		    addbufspc(DIGBUFSIZE);
+    #####:  875:		    convbase(bv->bp, curhist, 10);
+    #####:  876:		    bv->bp += strlen(bv->bp);
+        -:  877:		}
+        -:  878:	    }
+        -:  879:	} else {
+    #####:  880:	    char c = *bv->fm == Meta ? *++bv->fm ^ 32 : *bv->fm;
+        -:  881:
+    #####:  882:	    if (doprint) {
+    #####:  883:		addbufspc(1);
+    #####:  884:		pputc(c);
+        -:  885:	    }
+        -:  886:	}
+        -:  887:    }
+        -:  888:
+    #####:  889:    return *bv->fm;
+        -:  890:}
+        -:  891:
+        -:  892:/* pputc adds a character to the buffer, metafying.  There must *
+        -:  893: * already be space.                                            */
+        -:  894:
+        -:  895:/**/
+        -:  896:static void
+    #####:  897:pputc(char c)
+        -:  898:{
+    #####:  899:    if (imeta(c)) {
+    #####:  900:	*bv->bp++ = Meta;
+    #####:  901:	c ^= 32;
+        -:  902:    }
+    #####:  903:    *bv->bp++ = c;
+    #####:  904:    if (c == '\n' && !bv->dontcount)
+    #####:  905:	bv->bufline = bv->bp;
+    #####:  906:}
+        -:  907:
+        -:  908:/* Make sure there is room for `need' more characters in the buffer. */
+        -:  909:
+        -:  910:/**/
+        -:  911:static void
+    #####:  912:addbufspc(int need)
+        -:  913:{
+    #####:  914:    need *= 2;   /* for metafication */
+    #####:  915:    if((bv->bp - bv->buf) + need > bv->bufspc) {
+    #####:  916:	int bo = bv->bp - bv->buf;
+    #####:  917:	int bo1 = bv->bp1 ? bv->bp1 - bv->buf : -1;
+    #####:  918:	ptrdiff_t bufline_off = bv->bufline ? bv->bufline - bv->buf : -1;
+        -:  919:
+    #####:  920:	if(need & 255)
+    #####:  921:	    need = (need | 255) + 1;
+    #####:  922:	bv->buf = realloc(bv->buf, bv->bufspc += need);
+    #####:  923:	memset(bv->buf + bv->bufspc - need, 0, need);
+    #####:  924:	bv->bp = bv->buf + bo;
+    #####:  925:	if(bo1 != -1)
+    #####:  926:	    bv->bp1 = bv->buf + bo1;
+    #####:  927:	if (bufline_off != -1)
+    #####:  928:	    bv->bufline = bv->buf + bufline_off;
+        -:  929:    }
+    #####:  930:}
+        -:  931:
+        -:  932:/* stradd() adds a metafied string to the prompt, *
+        -:  933: * in a visible representation.                   */
+        -:  934:
+        -:  935:/**/
+        -:  936:void
+    #####:  937:stradd(char *d)
+        -:  938:{
+        -:  939:#ifdef MULTIBYTE_SUPPORT
+        -:  940:    char *ums, *ups;
+    #####:  941:    int upslen, eol = 0;
+        -:  942:    mbstate_t mbs;
+        -:  943:
+    #####:  944:    memset(&mbs, 0, sizeof mbs);
+    #####:  945:    ums = ztrdup(d);
+    #####:  946:    ups = unmetafy(ums, &upslen);
+        -:  947:
+        -:  948:    /*
+        -:  949:     * We now have a raw string of possibly multibyte characters.
+        -:  950:     * Read each character one by one.
+        -:  951:     */
+    #####:  952:    while (upslen > 0) {
+        -:  953:	wchar_t cc;
+        -:  954:	char *pc;
+    #####:  955:	size_t cnt = eol ? MB_INVALID : mbrtowc(&cc, ups, upslen, &mbs);
+        -:  956:
+    #####:  957:	switch (cnt) {
+    #####:  958:	case MB_INCOMPLETE:
+    #####:  959:	    eol = 1;
+        -:  960:	    /* FALL THROUGH */
+    #####:  961:	case MB_INVALID:
+        -:  962:	    /* Bad character.  Take the next byte on its own. */
+    #####:  963:	    pc = nicechar(*ups);
+    #####:  964:	    cnt = 1;
+    #####:  965:	    memset(&mbs, 0, sizeof mbs);
+    #####:  966:	    break;
+    #####:  967:	case 0:
+    #####:  968:	    cnt = 1;
+        -:  969:	    /* FALL THROUGH */
+    #####:  970:	default:
+        -:  971:	    /* Take full wide character in one go */
+    #####:  972:	    mb_charinit();
+    #####:  973:	    pc = wcs_nicechar(cc, NULL, NULL);
+    #####:  974:	    break;
+        -:  975:	}
+        -:  976:	/* Keep output as metafied string. */
+    #####:  977:	addbufspc(strlen(pc));
+        -:  978:
+    #####:  979:	upslen -= cnt;
+    #####:  980:	ups += cnt;
+        -:  981:
+        -:  982:	/* Put printed representation into the buffer */
+    #####:  983:	while (*pc)
+    #####:  984:	    *bv->bp++ = *pc++;
+        -:  985:    }
+        -:  986:
+    #####:  987:    free(ums);
+        -:  988:#else
+        -:  989:    char *ps, *pc;
+        -:  990:    addbufspc(niceztrlen(d));
+        -:  991:    /* This loop puts the nice representation of the string into the
+        -:  992:     * prompt buffer. */
+        -:  993:    for (ps = d; *ps; ps++) {
+        -:  994:	for (pc = nicechar(*ps == Meta ? *++ps^32 : *ps); *pc; pc++)
+        -:  995:	    *bv->bp++ = *pc;
+        -:  996:    }
+        -:  997:#endif
+    #####:  998:}
+        -:  999:
+        -: 1000:/* tsetcap(), among other things, can write a termcap string into the buffer. */
+        -: 1001:
+        -: 1002:/**/
+        -: 1003:mod_export void
+    #####: 1004:tsetcap(int cap, int flags)
+        -: 1005:{
+    #####: 1006:    if (tccan(cap) && !isset(SINGLELINEZLE) &&
+    #####: 1007:        !(termflags & (TERM_NOUP|TERM_BAD|TERM_UNKNOWN))) {
+    #####: 1008:	switch (flags & TSC_OUTPUT_MASK) {
+    #####: 1009:	case TSC_RAW:
+    #####: 1010:	    tputs(tcstr[cap], 1, putraw);
+    #####: 1011:	    break;
+    #####: 1012:	case 0:
+        -: 1013:	default:
+    #####: 1014:	    tputs(tcstr[cap], 1, putshout);
+    #####: 1015:	    break;
+    #####: 1016:	case TSC_PROMPT:
+    #####: 1017:	    if (!bv->dontcount) {
+    #####: 1018:		addbufspc(1);
+    #####: 1019:		*bv->bp++ = Inpar;
+        -: 1020:	    }
+    #####: 1021:	    tputs(tcstr[cap], 1, putstr);
+    #####: 1022:	    if (!bv->dontcount) {
+    #####: 1023:		int glitch = 0;
+        -: 1024:
+    #####: 1025:		if (cap == TCSTANDOUTBEG || cap == TCSTANDOUTEND)
+    #####: 1026:		    glitch = tgetnum("sg");
+    #####: 1027:		else if (cap == TCUNDERLINEBEG || cap == TCUNDERLINEEND)
+    #####: 1028:		    glitch = tgetnum("ug");
+    #####: 1029:		if(glitch < 0)
+    #####: 1030:		    glitch = 0;
+    #####: 1031:		addbufspc(glitch + 1);
+    #####: 1032:		while(glitch--)
+    #####: 1033:		    *bv->bp++ = Nularg;
+    #####: 1034:		*bv->bp++ = Outpar;
+        -: 1035:	    }
+    #####: 1036:	    break;
+        -: 1037:	}
+        -: 1038:
+    #####: 1039:	if (flags & TSC_DIRTY) {
+    #####: 1040:	    flags &= ~TSC_DIRTY;
+    #####: 1041:	    if (txtisset(TXTBOLDFACE) && cap != TCBOLDFACEBEG)
+    #####: 1042:		tsetcap(TCBOLDFACEBEG, flags);
+    #####: 1043:	    if (txtisset(TXTSTANDOUT))
+    #####: 1044:		tsetcap(TCSTANDOUTBEG, flags);
+    #####: 1045:	    if (txtisset(TXTUNDERLINE))
+    #####: 1046:		tsetcap(TCUNDERLINEBEG, flags);
+    #####: 1047:	    if (txtisset(TXTFGCOLOUR))
+    #####: 1048:		set_colour_attribute(txtattrmask, COL_SEQ_FG, TSC_PROMPT);
+    #####: 1049:	    if (txtisset(TXTBGCOLOUR))
+    #####: 1050:		set_colour_attribute(txtattrmask, COL_SEQ_BG, TSC_PROMPT);
+        -: 1051:	}
+        -: 1052:    }
+    #####: 1053:}
+        -: 1054:
+        -: 1055:/**/
+        -: 1056:int
+    #####: 1057:putstr(int d)
+        -: 1058:{
+    #####: 1059:    addbufspc(1);
+    #####: 1060:    pputc(d);
+    #####: 1061:    return 0;
+        -: 1062:}
+        -: 1063:
+        -: 1064:/*
+        -: 1065: * Count height etc. of a prompt string returned by promptexpand().
+        -: 1066: * This depends on the current terminal width, and tabs and
+        -: 1067: * newlines require nontrivial processing.
+        -: 1068: * Passing `overf' as -1 means to ignore columns (absolute width).
+        -: 1069: *
+        -: 1070: * If multibyte is enabled, take account of multibyte characters
+        -: 1071: * by locating them and finding out their screen width.
+        -: 1072: */
+        -: 1073:
+        -: 1074:/**/
+        -: 1075:mod_export void
+    #####: 1076:countprompt(char *str, int *wp, int *hp, int overf)
+        -: 1077:{
+    #####: 1078:    int w = 0, h = 1, multi = 0, wcw = 0;
+    #####: 1079:    int s = 1;
+        -: 1080:#ifdef MULTIBYTE_SUPPORT
+        -: 1081:    char inchar;
+        -: 1082:    mbstate_t mbs;
+        -: 1083:    wchar_t wc;
+        -: 1084:
+    #####: 1085:    memset(&mbs, 0, sizeof(mbs));
+        -: 1086:#endif
+        -: 1087:
+    #####: 1088:    for (; *str; str++) {
+        -: 1089:	/*
+        -: 1090:	 * Avoid double-incrementing the height when there's a newline in the
+        -: 1091:	 * prompt and the line it terminates takes up exactly the width of the
+        -: 1092:	 * terminal
+        -: 1093:	 */
+    #####: 1094:	while (w > zterm_columns && overf >= 0 && !multi) {
+    #####: 1095:	    h++;
+    #####: 1096:	    if (wcw) {
+        -: 1097:		/*
+        -: 1098:		 * Wide characters don't get split off. They move to the
+        -: 1099:		 * next line if there is not enough space.
+        -: 1100:		 */
+    #####: 1101:		w = wcw;
+    #####: 1102:		break;
+        -: 1103:	    } else {
+        -: 1104:		/*
+        -: 1105:		 * Tabs overflow to the next line as if they were made of spaces.
+        -: 1106:		 */
+    #####: 1107:		w -= zterm_columns;
+        -: 1108:	    }
+        -: 1109:	}
+    #####: 1110:	wcw = 0;
+        -: 1111:	/*
+        -: 1112:	 * Input string should be metafied, so tokens in it should
+        -: 1113:	 * be real tokens, even if there are multibyte characters.
+        -: 1114:	 */
+    #####: 1115:	if (*str == Inpar)
+    #####: 1116:	    s = 0;
+    #####: 1117:	else if (*str == Outpar)
+    #####: 1118:	    s = 1;
+    #####: 1119:	else if (*str == Nularg)
+    #####: 1120:	    w++;
+    #####: 1121:	else if (s) {
+    #####: 1122:	    if (*str == Meta) {
+        -: 1123:#ifdef MULTIBYTE_SUPPORT
+    #####: 1124:		inchar = *++str ^ 32;
+        -: 1125:#else
+        -: 1126:		str++;
+        -: 1127:#endif
+        -: 1128:	    } else {
+        -: 1129:#ifdef MULTIBYTE_SUPPORT
+        -: 1130:		/*
+        -: 1131:		 * Don't look for tab or newline in the middle
+        -: 1132:		 * of a multibyte character.  Otherwise, we are
+        -: 1133:		 * relying on the character set being an extension
+        -: 1134:		 * of ASCII so it's safe to test a single byte.
+        -: 1135:		 */
+    #####: 1136:		if (!multi) {
+        -: 1137:#endif
+    #####: 1138:		    if (*str == '\t') {
+    #####: 1139:			w = (w | 7) + 1;
+    #####: 1140:			continue;
+    #####: 1141:		    } else if (*str == '\n') {
+    #####: 1142:			w = 0;
+    #####: 1143:			h++;
+    #####: 1144:			continue;
+        -: 1145:		    }
+        -: 1146:#ifdef MULTIBYTE_SUPPORT
+        -: 1147:		}
+        -: 1148:
+    #####: 1149:		inchar = *str;
+        -: 1150:#endif
+        -: 1151:	    }
+        -: 1152:
+        -: 1153:#ifdef MULTIBYTE_SUPPORT
+    #####: 1154:	    switch (mbrtowc(&wc, &inchar, 1, &mbs)) {
+    #####: 1155:	    case MB_INCOMPLETE:
+        -: 1156:		/* Character is incomplete -- keep looking. */
+    #####: 1157:		multi = 1;
+    #####: 1158:		break;
+    #####: 1159:	    case MB_INVALID:
+    #####: 1160:		memset(&mbs, 0, sizeof mbs);
+        -: 1161:		/* Invalid character: assume single width. */
+    #####: 1162:		multi = 0;
+    #####: 1163:		w++;
+    #####: 1164:		break;
+    #####: 1165:	    case 0:
+    #####: 1166:		multi = 0;
+    #####: 1167:		break;
+    #####: 1168:	    default:
+        -: 1169:		/*
+        -: 1170:		 * If the character isn't printable, WCWIDTH() returns
+        -: 1171:		 * -1.  We assume width 1.
+        -: 1172:		 */
+    #####: 1173:		wcw = WCWIDTH(wc);
+    #####: 1174:		if (wcw >= 0)
+    #####: 1175:		    w += wcw;
+        -: 1176:		else
+    #####: 1177:		    w++;
+    #####: 1178:		multi = 0;
+    #####: 1179:		break;
+        -: 1180:	    }
+        -: 1181:#else
+        -: 1182:	    w++;
+        -: 1183:#endif
+    #####: 1184:	}
+        -: 1185:    }
+        -: 1186:    /*
+        -: 1187:     * multi may still be set if we were in the middle of the character.
+        -: 1188:     * This isn't easy to handle generally; just assume there's no
+        -: 1189:     * output.
+        -: 1190:     */
+    #####: 1191:    while (w > zterm_columns && overf >= 0) {
+    #####: 1192:	h++;
+    #####: 1193:	if (wcw) {
+    #####: 1194:	    w = wcw;
+    #####: 1195:	    break;
+        -: 1196:	} else {
+    #####: 1197:	    w -= zterm_columns;
+        -: 1198:	}
+        -: 1199:    }
+    #####: 1200:    if (w == zterm_columns && overf == 0) {
+    #####: 1201:	w = 0;
+    #####: 1202:	h++;
+        -: 1203:    }
+    #####: 1204:    if(wp)
+    #####: 1205:	*wp = w;
+    #####: 1206:    if(hp)
+    #####: 1207:	*hp = h;
+    #####: 1208:}
+        -: 1209:
+        -: 1210:/**/
+        -: 1211:static int
+    #####: 1212:prompttrunc(int arg, int truncchar, int doprint, int endchar,
+        -: 1213:	    zattr *txtchangep)
+        -: 1214:{
+    #####: 1215:    if (arg > 0) {
+    #####: 1216:	char ch = *bv->fm, *ptr, *truncstr;
+    #####: 1217:	int truncatleft = ch == '<';
+    #####: 1218:	int w = bv->bp - bv->buf;
+        -: 1219:
+        -: 1220:	/*
+        -: 1221:	 * If there is already a truncation active, return so that
+        -: 1222:	 * can be finished, backing up so that the new truncation
+        -: 1223:	 * can be started afterwards.
+        -: 1224:	 */
+    #####: 1225:	if (bv->truncwidth) {
+    #####: 1226:	    while (*--bv->fm != '%')
+        -: 1227:		;
+    #####: 1228:	    bv->fm--;
+    #####: 1229:	    return 0;
+        -: 1230:	}
+        -: 1231:
+    #####: 1232:	bv->truncwidth = arg;
+    #####: 1233:	if (*bv->fm != ']')
+    #####: 1234:	    bv->fm++;
+    #####: 1235:	while (*bv->fm && *bv->fm != truncchar) {
+    #####: 1236:	    if (*bv->fm == '\\' && bv->fm[1])
+    #####: 1237:		++bv->fm;
+    #####: 1238:	    addbufspc(1);
+    #####: 1239:	    *bv->bp++ = *bv->fm++;
+        -: 1240:	}
+    #####: 1241:	if (!*bv->fm)
+    #####: 1242:	    return 0;
+    #####: 1243:	if (bv->bp - bv->buf == w && truncchar == ']') {
+    #####: 1244:	    addbufspc(1);
+    #####: 1245:	    *bv->bp++ = '<';
+        -: 1246:	}
+    #####: 1247:	ptr = bv->buf + w;	/* addbufspc() may have realloc()'d bv->buf */
+        -: 1248:	/*
+        -: 1249:	 * Now:
+        -: 1250:	 *   bv->buf is the start of the output prompt buffer
+        -: 1251:	 *   ptr is the start of the truncation string
+        -: 1252:	 *   bv->bp is the end of the truncation string
+        -: 1253:	 */
+    #####: 1254:	truncstr = ztrduppfx(ptr, bv->bp - ptr);
+        -: 1255:
+    #####: 1256:	bv->bp = ptr;
+    #####: 1257:	w = bv->bp - bv->buf;
+    #####: 1258:	bv->fm++;
+    #####: 1259:	bv->trunccount = bv->dontcount;
+    #####: 1260:	putpromptchar(doprint, endchar, txtchangep);
+    #####: 1261:	bv->trunccount = 0;
+    #####: 1262:	ptr = bv->buf + w;	/* putpromptchar() may have realloc()'d */
+    #####: 1263:	*bv->bp = '\0';
+        -: 1264:	/*
+        -: 1265:	 * Now:
+        -: 1266:	 *   ptr is the start of the truncation string and also
+        -: 1267:	 *     where we need to start putting any truncated output
+        -: 1268:	 *   bv->bp is the end of the string we have just added, which
+        -: 1269:	 *     may need truncating.
+        -: 1270:	 */
+        -: 1271:
+        -: 1272:	/*
+        -: 1273:	 * w below is screen width if multibyte support is enabled
+        -: 1274:	 * (note that above it was a raw string pointer difference).
+        -: 1275:	 * It's the full width of the string we may need to truncate.
+        -: 1276:	 *
+        -: 1277:	 * bv->truncwidth has come from the user, so we interpret this
+        -: 1278:	 * as a screen width, too.
+        -: 1279:	 */
+    #####: 1280:	countprompt(ptr, &w, 0, -1);
+    #####: 1281:	if (w > bv->truncwidth) {
+        -: 1282:	    /*
+        -: 1283:	     * We need to truncate.  t points to the truncation string
+        -: 1284:	     * -- which is inserted literally, without nice
+        -: 1285:	     * representation.  twidth is its printing width, and maxwidth
+        -: 1286:	     * is the amount of the main string that we want to keep.
+        -: 1287:	     * Note that if the truncation string is longer than the
+        -: 1288:	     * truncation length (twidth > bv->truncwidth), the truncation
+        -: 1289:	     * string is used in full.
+        -: 1290:	     */
+    #####: 1291:	    char *t = truncstr;
+    #####: 1292:	    int fullen = bv->bp - ptr;
+        -: 1293:	    int twidth, maxwidth;
+    #####: 1294:	    int ntrunc = strlen(t);
+        -: 1295:
+    #####: 1296:	    twidth = MB_METASTRWIDTH(t);
+    #####: 1297:	    if (twidth < bv->truncwidth) {
+    #####: 1298:		maxwidth = bv->truncwidth - twidth;
+        -: 1299:		/*
+        -: 1300:		 * It's not safe to assume there are no invisible substrings
+        -: 1301:		 * just because the width is less than the full string
+        -: 1302:		 * length since there may be multibyte characters.
+        -: 1303:		 */
+    #####: 1304:		addbufspc(ntrunc+1);
+        -: 1305:		/* may have realloc'd */
+    #####: 1306:		ptr = bv->bp - fullen;
+        -: 1307:
+    #####: 1308:		if (truncatleft) {
+        -: 1309:		    /*
+        -: 1310:		     * To truncate at the left, selectively copy
+        -: 1311:		     * maxwidth bytes from the main prompt, preceded
+        -: 1312:		     * by the truncation string in full.
+        -: 1313:		     *
+        -: 1314:		     * We're overwriting the string containing the
+        -: 1315:		     * text to be truncated, so copy it.  We've
+        -: 1316:		     * just ensured there's sufficient space at the
+        -: 1317:		     * end of the prompt string.
+        -: 1318:		     *
+        -: 1319:		     * Pointer into text to be truncated.
+        -: 1320:		     */
+        -: 1321:		    char *fulltextptr, *fulltext;
+        -: 1322:		    int remw;
+        -: 1323:#ifdef MULTIBYTE_SUPPORT
+        -: 1324:		    mbstate_t mbs;
+    #####: 1325:		    memset(&mbs, 0, sizeof mbs);
+        -: 1326:#endif
+        -: 1327:
+    #####: 1328:		    fulltextptr = fulltext = ptr + ntrunc;
+    #####: 1329:		    memmove(fulltext, ptr, fullen);
+    #####: 1330:		    fulltext[fullen] = '\0';
+        -: 1331:
+        -: 1332:		    /* Copy the truncstr into place. */
+    #####: 1333:		    while (*t)
+    #####: 1334:			*ptr++ = *t++;
+        -: 1335:
+        -: 1336:		    /*
+        -: 1337:		     * Find the point in the text at which we should
+        -: 1338:		     * start copying, i.e. when the remaining width
+        -: 1339:		     * is less than or equal to the maximum width.
+        -: 1340:		     */
+    #####: 1341:		    remw = w;
+    #####: 1342:		    while (remw > maxwidth && *fulltextptr) {
+    #####: 1343:			if (*fulltextptr == Inpar) {
+        -: 1344:			    /*
+        -: 1345:			     * Text marked as invisible: copy
+        -: 1346:			     * regardless, since we don't know what
+        -: 1347:			     * this does.  It only affects the width
+        -: 1348:			     * if there are Nularg's present.
+        -: 1349:			     * However, even in that case we
+        -: 1350:			     * can't break the sequence down, so
+        -: 1351:			     * we still loop over the entire group.
+        -: 1352:			     */
+        -: 1353:			    for (;;) {
+    #####: 1354:				*ptr++ = *fulltextptr;
+    #####: 1355:				if (*fulltextptr == '\0' ||
+    #####: 1356:				    *fulltextptr++ == Outpar)
+        -: 1357:				    break;
+    #####: 1358:				if (fulltextptr[-1] == Nularg)
+    #####: 1359:				    remw--;
+        -: 1360:			    }
+        -: 1361:			} else {
+        -: 1362:#ifdef MULTIBYTE_SUPPORT
+        -: 1363:			    /*
+        -: 1364:			     * Normal text: build up a multibyte character.
+        -: 1365:			     */
+        -: 1366:			    char inchar;
+        -: 1367:			    wchar_t cc;
+        -: 1368:			    int wcw;
+        -: 1369:
+        -: 1370:			    /*
+        -: 1371:			     * careful: string is still metafied (we
+        -: 1372:			     * need that because we don't know a
+        -: 1373:			     * priori when to stop and the resulting
+        -: 1374:			     * string must be metafied).
+        -: 1375:			     */
+    #####: 1376:			    if (*fulltextptr == Meta)
+    #####: 1377:				inchar = *++fulltextptr ^ 32;
+        -: 1378:			    else
+    #####: 1379:				inchar = *fulltextptr;
+    #####: 1380:			    fulltextptr++;
+    #####: 1381:			    switch (mbrtowc(&cc, &inchar, 1, &mbs)) {
+    #####: 1382:			    case MB_INCOMPLETE:
+        -: 1383:				/* Incomplete multibyte character. */
+    #####: 1384:				break;
+    #####: 1385:			    case MB_INVALID:
+        -: 1386:				/* Reset invalid state. */
+    #####: 1387:				memset(&mbs, 0, sizeof mbs);
+        -: 1388:				/* FALL THROUGH */
+    #####: 1389:			    case 0:
+        -: 1390:				/* Assume a single-byte character. */
+    #####: 1391:				remw--;
+    #####: 1392:				break;
+    #####: 1393:			    default:
+    #####: 1394:				wcw = WCWIDTH(cc);
+    #####: 1395:				if (wcw >= 0)
+    #####: 1396:				    remw -= wcw;
+        -: 1397:				else
+    #####: 1398:				    remw--;
+    #####: 1399:				break;
+        -: 1400:			    }
+        -: 1401:#else
+        -: 1402:			    /* Single byte character */
+        -: 1403:			    if (*fulltextptr == Meta)
+        -: 1404:				fulltextptr++;
+        -: 1405:			    fulltextptr++;
+        -: 1406:			    remw--;
+        -: 1407:#endif
+        -: 1408:			}
+        -: 1409:		    }
+        -: 1410:
+        -: 1411:		    /*
+        -: 1412:		     * Now simply copy the rest of the text.  Still
+        -: 1413:		     * metafied, so this is easy.
+        -: 1414:		     */
+    #####: 1415:		    while (*fulltextptr)
+    #####: 1416:			*ptr++ = *fulltextptr++;
+        -: 1417:		    /* Mark the end of copying */
+    #####: 1418:		    bv->bp = ptr;
+        -: 1419:		} else {
+        -: 1420:		    /*
+        -: 1421:		     * Truncating at the right is easier: just leave
+        -: 1422:		     * enough characters until we have reached the
+        -: 1423:		     * maximum width.
+        -: 1424:		     */
+    #####: 1425:		    char *skiptext = ptr;
+        -: 1426:#ifdef MULTIBYTE_SUPPORT
+        -: 1427:		    mbstate_t mbs;
+    #####: 1428:		    memset(&mbs, 0, sizeof mbs);
+        -: 1429:#endif
+        -: 1430:
+    #####: 1431:		    while (maxwidth > 0 && *skiptext) {
+    #####: 1432:			if (*skiptext == Inpar) {
+        -: 1433:			    /* see comment on left truncation above */
+        -: 1434:			    for (;;) {
+    #####: 1435:				if (*skiptext == '\0' ||
+    #####: 1436:				    *skiptext++ == Outpar)
+        -: 1437:				    break;
+    #####: 1438:				if (skiptext[-1] == Nularg)
+    #####: 1439:				    maxwidth--;
+        -: 1440:			    }
+        -: 1441:			} else {
+        -: 1442:#ifdef MULTIBYTE_SUPPORT
+        -: 1443:			    char inchar;
+        -: 1444:			    wchar_t cc;
+        -: 1445:			    int wcw;
+        -: 1446:
+    #####: 1447:			    if (*skiptext == Meta)
+    #####: 1448:				inchar = *++skiptext ^ 32;
+        -: 1449:			    else
+    #####: 1450:				inchar = *skiptext;
+    #####: 1451:			    skiptext++;
+    #####: 1452:			    switch (mbrtowc(&cc, &inchar, 1, &mbs)) {
+    #####: 1453:			    case MB_INCOMPLETE:
+        -: 1454:				/* Incomplete character. */
+    #####: 1455:				break;
+    #####: 1456:			    case MB_INVALID:
+        -: 1457:				/* Reset invalid state. */
+    #####: 1458:				memset(&mbs, 0, sizeof mbs);
+        -: 1459:				/* FALL THROUGH */
+    #####: 1460:			    case 0:
+        -: 1461:				/* Assume a single-byte character. */
+    #####: 1462:				maxwidth--;
+    #####: 1463:				break;
+    #####: 1464:			    default:
+    #####: 1465:				wcw = WCWIDTH(cc);
+    #####: 1466:				if (wcw >= 0)
+    #####: 1467:				    maxwidth -= wcw;
+        -: 1468:				else
+    #####: 1469:				    maxwidth--;
+    #####: 1470:				break;
+        -: 1471:			    }
+        -: 1472:#else
+        -: 1473:			    if (*skiptext == Meta)
+        -: 1474:				skiptext++;
+        -: 1475:			    skiptext++;
+        -: 1476:			    maxwidth--;
+        -: 1477:#endif
+        -: 1478:			}
+        -: 1479:		    }
+        -: 1480:		    /*
+        -: 1481:		     * We don't need the visible text from now on,
+        -: 1482:		     * but we'd better copy any invisible bits.
+        -: 1483:		     * History dictates that these go after the
+        -: 1484:		     * truncation string.  This is sensible since
+        -: 1485:		     * they may, for example, turn off an effect which
+        -: 1486:		     * should apply to all text at this point.
+        -: 1487:		     *
+        -: 1488:		     * Copy the truncstr.
+        -: 1489:		     */
+    #####: 1490:		    ptr = skiptext;
+    #####: 1491:		    while (*t)
+    #####: 1492:			*ptr++ = *t++;
+    #####: 1493:		    bv->bp = ptr;
+    #####: 1494:		    if (*skiptext) {
+        -: 1495:			/* Move remaining text so we don't overwrite it */
+    #####: 1496:			memmove(bv->bp, skiptext, strlen(skiptext)+1);
+    #####: 1497:			skiptext = bv->bp;
+        -: 1498:
+        -: 1499:			/*
+        -: 1500:			 * Copy anything we want, updating bv->bp
+        -: 1501:			 */
+    #####: 1502:			while (*skiptext) {
+    #####: 1503:			    if (*skiptext == Inpar) {
+        -: 1504:				for (;;) {
+    #####: 1505:				    *bv->bp++ = *skiptext;
+    #####: 1506:				    if (*skiptext == Outpar ||
+    #####: 1507:					*skiptext == '\0')
+        -: 1508:					break;
+    #####: 1509:				    skiptext++;
+        -: 1510:				}
+        -: 1511:			    }
+        -: 1512:			    else
+    #####: 1513:				skiptext++;
+        -: 1514:			}
+        -: 1515:		    }
+        -: 1516:		}
+        -: 1517:	    } else {
+        -: 1518:		/* Just copy truncstr; no other text appears. */
+    #####: 1519:		while (*t)
+    #####: 1520:		    *ptr++ = *t++;
+    #####: 1521:		bv->bp = ptr;
+        -: 1522:	    }
+    #####: 1523:	    *bv->bp = '\0';
+        -: 1524:	}
+    #####: 1525:	zsfree(truncstr);
+    #####: 1526:	bv->truncwidth = 0;
+        -: 1527:	/*
+        -: 1528:	 * We may have returned early from the previous putpromptchar *
+        -: 1529:	 * because we found another truncation following this one.    *
+        -: 1530:	 * In that case we need to do the rest now.                   *
+        -: 1531:	 */
+    #####: 1532:	if (!*bv->fm)
+    #####: 1533:	    return 0;
+    #####: 1534:	if (*bv->fm != endchar) {
+    #####: 1535:	    bv->fm++;
+        -: 1536:	    /*
+        -: 1537:	     * With bv->truncwidth set to zero, we always reach endchar *
+        -: 1538:	     * (or the terminating NULL) this time round.         *
+        -: 1539:	     */
+    #####: 1540:	    if (!putpromptchar(doprint, endchar, txtchangep))
+    #####: 1541:		return 0;
+        -: 1542:	}
+        -: 1543:	/* Now we have to trick it into matching endchar again */
+    #####: 1544:	bv->fm--;
+        -: 1545:    } else {
+    #####: 1546:	if (*bv->fm != endchar)
+    #####: 1547:	    bv->fm++;
+    #####: 1548:	while(*bv->fm && *bv->fm != truncchar) {
+    #####: 1549:	    if (*bv->fm == '\\' && bv->fm[1])
+    #####: 1550:		bv->fm++;
+    #####: 1551:	    bv->fm++;
+        -: 1552:	}
+    #####: 1553:	if (bv->truncwidth || !*bv->fm)
+    #####: 1554:	    return 0;
+        -: 1555:    }
+    #####: 1556:    return 1;
+        -: 1557:}
+        -: 1558:
+        -: 1559:/**/
+        -: 1560:void
+     1033: 1561:cmdpush(int cmdtok)
+        -: 1562:{
+     1033: 1563:    if (cmdsp >= 0 && cmdsp < CMDSTACKSZ)
+     1033: 1564:	cmdstack[cmdsp++] = (unsigned char)cmdtok;
+     1033: 1565:}
+        -: 1566:
+        -: 1567:/**/
+        -: 1568:void
+      972: 1569:cmdpop(void)
+        -: 1570:{
+      972: 1571:    if (cmdsp <= 0) {
+        -: 1572:	DPUTS(1, "BUG: cmdstack empty");
+    #####: 1573:	fflush(stderr);
+        -: 1574:    } else
+      972: 1575:	cmdsp--;
+      972: 1576:}
+        -: 1577:
+        -: 1578:
+        -: 1579:/*****************************************************************************
+        -: 1580: * Utilities dealing with colour and other forms of highlighting.
+        -: 1581: *
+        -: 1582: * These are shared by prompts and by zle, so it's easiest to have them
+        -: 1583: * in the main shell.
+        -: 1584: *****************************************************************************/
+        -: 1585:
+        -: 1586:/* Defines standard ANSI colour names in index order */
+        -: 1587:static const char *ansi_colours[] = {
+        -: 1588:    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+        -: 1589:    "default", NULL
+        -: 1590:};
+        -: 1591:
+        -: 1592:/* Defines the available types of highlighting */
+        -: 1593:struct highlight {
+        -: 1594:    const char *name;
+        -: 1595:    zattr mask_on;
+        -: 1596:    zattr mask_off;
+        -: 1597:};
+        -: 1598:
+        -: 1599:static const struct highlight highlights[] = {
+        -: 1600:    { "none", 0, TXT_ATTR_ON_MASK },
+        -: 1601:    { "bold", TXTBOLDFACE, 0 },
+        -: 1602:    { "standout", TXTSTANDOUT, 0 },
+        -: 1603:    { "underline", TXTUNDERLINE, 0 },
+        -: 1604:    { NULL, 0, 0 }
+        -: 1605:};
+        -: 1606:
+        -: 1607:/*
+        -: 1608: * Return index of ANSI colour for which *teststrp is an abbreviation.
+        -: 1609: * Any non-alphabetic character ends the abbreviation.
+        -: 1610: * 8 is the special value for default (note this is *not* the
+        -: 1611: * right sequence for default which is typically 9).
+        -: 1612: * -1 is failure.
+        -: 1613: */
+        -: 1614:
+        -: 1615:static int
+    #####: 1616:match_named_colour(const char **teststrp)
+        -: 1617:{
+    #####: 1618:    const char *teststr = *teststrp, *end, **cptr;
+        -: 1619:    int len;
+        -: 1620:
+    #####: 1621:    for (end = teststr; ialpha(*end); end++)
+        -: 1622:	;
+    #####: 1623:    len = end - teststr;
+    #####: 1624:    *teststrp = end;
+        -: 1625:
+    #####: 1626:    for (cptr = ansi_colours; *cptr; cptr++) {
+    #####: 1627:	if (!strncmp(teststr, *cptr, len))
+    #####: 1628:	    return cptr - ansi_colours;
+        -: 1629:    }
+        -: 1630:
+    #####: 1631:    return -1;
+        -: 1632:}
+        -: 1633:
+        -: 1634:/*
+        -: 1635: * Match just the colour part of a highlight specification.
+        -: 1636: * If teststrp is NULL, use the already parsed numeric colour.
+        -: 1637: * Return the attributes to set in the attribute variable.
+        -: 1638: * Return -1 for out of range.  Does not check the character
+        -: 1639: * following the colour specification.
+        -: 1640: */
+        -: 1641:
+        -: 1642:/**/
+        -: 1643:mod_export zattr
+    #####: 1644:match_colour(const char **teststrp, int is_fg, int colour)
+        -: 1645:{
+    #####: 1646:    int shft, named = 0, tc;
+        -: 1647:    zattr on;
+        -: 1648:
+    #####: 1649:    if (is_fg) {
+    #####: 1650:	shft = TXT_ATTR_FG_COL_SHIFT;
+    #####: 1651:	on = TXTFGCOLOUR;
+    #####: 1652:	tc = TCFGCOLOUR;
+        -: 1653:    } else {
+    #####: 1654:	shft = TXT_ATTR_BG_COL_SHIFT;
+    #####: 1655:	on = TXTBGCOLOUR;
+    #####: 1656:	tc = TCBGCOLOUR;
+        -: 1657:    }
+    #####: 1658:    if (teststrp) {
+    #####: 1659:	if (**teststrp == '#' && isxdigit((*teststrp)[1])) {
+        -: 1660:	    struct color_rgb color;
+        -: 1661:	    char *end;
+    #####: 1662:	    zlong col = zstrtol(*teststrp+1, &end, 16);
+    #####: 1663:            if (end - *teststrp == 4) {
+    #####: 1664:		color.red = col >> 8 | ((col >> 8) << 4);
+    #####: 1665:		color.green = (col & 0xf0) >> 4;
+    #####: 1666:		color.green |= color.green << 4;
+    #####: 1667:		color.blue = col & 0xf;
+    #####: 1668:		color.blue |= color.blue << 4;
+    #####: 1669:	    } else if (end - *teststrp == 7) {
+    #####: 1670:		color.red = col >> 16;
+    #####: 1671:		color.green = (col & 0xff00) >> 8;
+    #####: 1672:		color.blue = col & 0xff;
+        -: 1673:	    } else
+    #####: 1674:		return TXT_ERROR;
+    #####: 1675:	    *teststrp = end;
+    #####: 1676:	    colour = runhookdef(GETCOLORATTR, &color) - 1;
+    #####: 1677:	    if (colour == -1) { /* no hook function added, try true color (24-bit) */
+    #####: 1678:		colour = (((color.red << 8) + color.green) << 8) + color.blue;
+    #####: 1679:		return on | (is_fg ? TXT_ATTR_FG_24BIT : TXT_ATTR_BG_24BIT) |
+    #####: 1680:			(zattr)colour << shft;
+    #####: 1681:	    } else if (colour <= -2) {
+    #####: 1682:		return TXT_ERROR;
+        -: 1683:	    }
+    #####: 1684:	} else if ((named = ialpha(**teststrp))) {
+    #####: 1685:	    colour = match_named_colour(teststrp);
+    #####: 1686:	    if (colour == 8) {
+        -: 1687:		/* default */
+    #####: 1688:		return is_fg ? TXTNOFGCOLOUR : TXTNOBGCOLOUR;
+        -: 1689:	    }
+    #####: 1690:	    if (colour < 0)
+    #####: 1691:		return TXT_ERROR;
+        -: 1692:	}
+        -: 1693:	else {
+    #####: 1694:	    colour = (int)zstrtol(*teststrp, (char **)teststrp, 10);
+    #####: 1695:	    if (colour < 0 || colour >= 256)
+    #####: 1696:		return TXT_ERROR;
+        -: 1697:	}
+        -: 1698:    }
+        -: 1699:
+        -: 1700:    /* Out of range of termcap colours and basic ANSI set. */
+    #####: 1701:    if (tccan(tc) && colour > 7 && colour >= tccolours)
+    #####: 1702:	return TXT_ERROR;
+        -: 1703:
+    #####: 1704:    return on | (zattr)colour << shft;
+        -: 1705:}
+        -: 1706:
+        -: 1707:/*
+        -: 1708: * Match a set of highlights in the given teststr.
+        -: 1709: * Set *on_var to reflect the values found.
+        -: 1710: * Return a pointer to the first character not consumed.
+        -: 1711: */
+        -: 1712:
+        -: 1713:/**/
+        -: 1714:mod_export const char *
+    #####: 1715:match_highlight(const char *teststr, zattr *on_var)
+        -: 1716:{
+    #####: 1717:    int found = 1;
+        -: 1718:
+    #####: 1719:    *on_var = 0;
+    #####: 1720:    while (found && *teststr) {
+        -: 1721:	const struct highlight *hl;
+        -: 1722:
+    #####: 1723:	found = 0;
+    #####: 1724:	if (strpfx("fg=", teststr) || strpfx("bg=", teststr)) {
+    #####: 1725:	    int is_fg = (teststr[0] == 'f');
+        -: 1726:	    zattr atr;
+        -: 1727:
+    #####: 1728:	    teststr += 3;
+    #####: 1729:	    atr = match_colour(&teststr, is_fg, 0);
+    #####: 1730:	    if (*teststr == ',')
+    #####: 1731:		teststr++;
+    #####: 1732:	    else if (*teststr && *teststr != ' ')
+    #####: 1733:		break;
+    #####: 1734:	    found = 1;
+        -: 1735:	    /* skip out of range colours but keep scanning attributes */
+    #####: 1736:	    if (atr != TXT_ERROR)
+    #####: 1737:		*on_var |= atr;
+        -: 1738:	} else {
+    #####: 1739:	    for (hl = highlights; hl->name; hl++) {
+    #####: 1740:		if (strpfx(hl->name, teststr)) {
+    #####: 1741:		    const char *val = teststr + strlen(hl->name);
+        -: 1742:
+    #####: 1743:		    if (*val == ',')
+    #####: 1744:			val++;
+    #####: 1745:		    else if (*val && *val != ' ')
+    #####: 1746:			break;
+        -: 1747:
+    #####: 1748:		    *on_var |= hl->mask_on;
+    #####: 1749:		    *on_var &= ~hl->mask_off;
+    #####: 1750:		    teststr = val;
+    #####: 1751:		    found = 1;
+        -: 1752:		}
+        -: 1753:	    }
+        -: 1754:	}
+        -: 1755:    }
+        -: 1756:
+    #####: 1757:    return teststr;
+        -: 1758:}
+        -: 1759:
+        -: 1760:/*
+        -: 1761: * Count or output a string for colour information: used
+        -: 1762: * by output_highlight(). count when buf is NULL.
+        -: 1763: * returned count excludes the terminating null byte.
+        -: 1764: */
+        -: 1765:
+        -: 1766:static int
+    #####: 1767:output_colour(int colour, int fg_bg, int truecol, char *buf)
+        -: 1768:{
+    #####: 1769:    int atrlen = 3, len;
+    #####: 1770:    char *ptr = buf;
+    #####: 1771:    if (buf) {
+    #####: 1772:	strcpy(ptr, fg_bg == COL_SEQ_FG ? "fg=" : "bg=");
+    #####: 1773:	ptr += 3;
+        -: 1774:    }
+    #####: 1775:    if (truecol) {
+        -: 1776:	/* length of hex triplet always 7, don't need sprintf to count */
+    #####: 1777:	atrlen += buf ? sprintf(ptr, "#%02x%02x%02x", colour >> 16,
+    #####: 1778:		(colour >> 8) & 0xff, colour & 0xff) : 7;
+        -: 1779:    /* colour should only be > 7 if using termcap but let's be safe. Update:
+        -: 1780:     * currently other places in code don't always imply that colour > 7 =>
+        -: 1781:     * using-termcap - if zle_highlight will be non-default, then it will be
+        -: 1782:     * used instead of termcap even for colour > 7. Here this just emits the
+        -: 1783:     * color number, so it works fine for both zle_highlight and tercap cases
+        -: 1784:     */
+    #####: 1785:    } else if (colour > 7) {
+        -: 1786:	char digbuf[DIGBUFSIZE];
+    #####: 1787:	sprintf(digbuf, "%d", colour);
+    #####: 1788:	len = strlen(digbuf);
+    #####: 1789:	atrlen += len;
+    #####: 1790:	if (buf)
+    #####: 1791:	    strcpy(ptr, digbuf);
+        -: 1792:    } else {
+    #####: 1793:	len = strlen(ansi_colours[colour]);
+    #####: 1794:	atrlen += len;
+    #####: 1795:	if (buf)
+    #####: 1796:	    strcpy(ptr, ansi_colours[colour]);
+        -: 1797:    }
+        -: 1798:
+    #####: 1799:    return atrlen;
+        -: 1800:}
+        -: 1801:
+        -: 1802:/*
+        -: 1803: * Count the length needed for outputting highlighting information
+        -: 1804: * as a string based on the bits for the attributes.
+        -: 1805: *
+        -: 1806: * If buf is not NULL, output the strings into the buffer, too.
+        -: 1807: * As conventional with strings, the allocated length should be
+        -: 1808: * at least the returned value plus 1 for the NUL byte.
+        -: 1809: */
+        -: 1810:
+        -: 1811:/**/
+        -: 1812:mod_export int
+    #####: 1813:output_highlight(zattr atr, char *buf)
+        -: 1814:{
+        -: 1815:    const struct highlight *hp;
+    #####: 1816:    int atrlen = 0, len;
+    #####: 1817:    char *ptr = buf;
+        -: 1818:
+    #####: 1819:    if (atr & TXTFGCOLOUR) {
+    #####: 1820:	len = output_colour(txtchangeget(atr, TXT_ATTR_FG_COL),
+        -: 1821:			    COL_SEQ_FG,
+    #####: 1822:			    (atr & TXT_ATTR_FG_24BIT),
+        -: 1823:			    ptr);
+    #####: 1824:	atrlen += len;
+    #####: 1825:	if (buf)
+    #####: 1826:	    ptr += len;
+        -: 1827:    }
+    #####: 1828:    if (atr & TXTBGCOLOUR) {
+    #####: 1829:	if (atrlen) {
+    #####: 1830:	    atrlen++;
+    #####: 1831:	    if (buf) {
+    #####: 1832:		strcpy(ptr, ",");
+    #####: 1833:		ptr++;
+        -: 1834:	    }
+        -: 1835:	}
+    #####: 1836:	len = output_colour(txtchangeget(atr, TXT_ATTR_BG_COL),
+        -: 1837:			    COL_SEQ_BG,
+    #####: 1838:			    (atr & TXT_ATTR_BG_24BIT),
+        -: 1839:			    ptr);
+    #####: 1840:	atrlen += len;
+    #####: 1841:	if (buf)
+    #####: 1842:	    ptr += len;
+        -: 1843:    }
+    #####: 1844:    for (hp = highlights; hp->name; hp++) {
+    #####: 1845:	if (hp->mask_on & atr) {
+    #####: 1846:	    if (atrlen) {
+    #####: 1847:		atrlen++;
+    #####: 1848:		if (buf) {
+    #####: 1849:		    strcpy(ptr, ",");
+    #####: 1850:		    ptr++;
+        -: 1851:		}
+        -: 1852:	    }
+    #####: 1853:	    len = strlen(hp->name);
+    #####: 1854:	    atrlen += len;
+    #####: 1855:	    if (buf) {
+    #####: 1856:		strcpy(ptr, hp->name);
+    #####: 1857:		ptr += len;
+        -: 1858:	    }
+        -: 1859:	}
+        -: 1860:    }
+        -: 1861:
+    #####: 1862:    if (atrlen == 0) {
+    #####: 1863:	if (buf)
+    #####: 1864:	    strcpy(ptr, "none");
+    #####: 1865:	return 4;
+        -: 1866:    }
+    #####: 1867:    return atrlen;
+        -: 1868:}
+        -: 1869:
+        -: 1870:/* Structure and array for holding special colour terminal sequences */
+        -: 1871:
+        -: 1872:/* Start of escape sequence for foreground colour */
+        -: 1873:#define TC_COL_FG_START	"\033[3"
+        -: 1874:/* End of escape sequence for foreground colour */
+        -: 1875:#define TC_COL_FG_END	"m"
+        -: 1876:/* Code to reset foreground colour */
+        -: 1877:#define TC_COL_FG_DEFAULT	"9"
+        -: 1878:
+        -: 1879:/* Start of escape sequence for background colour */
+        -: 1880:#define TC_COL_BG_START	"\033[4"
+        -: 1881:/* End of escape sequence for background colour */
+        -: 1882:#define TC_COL_BG_END	"m"
+        -: 1883:/* Code to reset background colour */
+        -: 1884:#define TC_COL_BG_DEFAULT	"9"
+        -: 1885:
+        -: 1886:struct colour_sequences {
+        -: 1887:    char *start;		/* Escape sequence start */
+        -: 1888:    char *end;			/* Escape sequence terminator */
+        -: 1889:    char *def;			/* Code to reset default colour */
+        -: 1890:};
+        -: 1891:static struct colour_sequences fg_bg_sequences[2];
+        -: 1892:
+        -: 1893:/*
+        -: 1894: * We need a buffer for colour sequence composition.  It may
+        -: 1895: * vary depending on the sequences set.  However, it's inefficient
+        -: 1896: * allocating it separately every time we send a colour sequence,
+        -: 1897: * so do it once per refresh.
+        -: 1898: */
+        -: 1899:static char *colseq_buf;
+        -: 1900:
+        -: 1901:/*
+        -: 1902: * Count how often this has been allocated, for recursive usage.
+        -: 1903: */
+        -: 1904:static int colseq_buf_allocs;
+        -: 1905:
+        -: 1906:/**/
+        -: 1907:void
+        2: 1908:set_default_colour_sequences(void)
+        -: 1909:{
+        2: 1910:    fg_bg_sequences[COL_SEQ_FG].start = ztrdup(TC_COL_FG_START);
+        2: 1911:    fg_bg_sequences[COL_SEQ_FG].end = ztrdup(TC_COL_FG_END);
+        2: 1912:    fg_bg_sequences[COL_SEQ_FG].def = ztrdup(TC_COL_FG_DEFAULT);
+        -: 1913:
+        2: 1914:    fg_bg_sequences[COL_SEQ_BG].start = ztrdup(TC_COL_BG_START);
+        2: 1915:    fg_bg_sequences[COL_SEQ_BG].end = ztrdup(TC_COL_BG_END);
+        2: 1916:    fg_bg_sequences[COL_SEQ_BG].def = ztrdup(TC_COL_BG_DEFAULT);
+        2: 1917:}
+        -: 1918:
+        -: 1919:static void
+    #####: 1920:set_colour_code(char *str, char **var)
+        -: 1921:{
+        -: 1922:    char *keyseq;
+        -: 1923:    int len;
+        -: 1924:
+    #####: 1925:    zsfree(*var);
+    #####: 1926:    keyseq = getkeystring(str, &len, GETKEYS_BINDKEY, NULL);
+    #####: 1927:    *var = metafy(keyseq, len, META_DUP);
+    #####: 1928:}
+        -: 1929:
+        -: 1930:/* Allocate buffer for colour code composition */
+        -: 1931:
+        -: 1932:/**/
+        -: 1933:mod_export void
+    #####: 1934:allocate_colour_buffer(void)
+        -: 1935:{
+        -: 1936:    char **atrs;
+        -: 1937:    int lenfg, lenbg, len;
+        -: 1938:
+    #####: 1939:    if (colseq_buf_allocs++)
+    #####: 1940:	return;
+        -: 1941:
+    #####: 1942:    atrs = getaparam("zle_highlight");
+    #####: 1943:    if (atrs) {
+    #####: 1944:	for (; *atrs; atrs++) {
+    #####: 1945:	    if (strpfx("fg_start_code:", *atrs)) {
+    #####: 1946:		set_colour_code(*atrs + 14, &fg_bg_sequences[COL_SEQ_FG].start);
+    #####: 1947:	    } else if (strpfx("fg_default_code:", *atrs)) {
+    #####: 1948:		set_colour_code(*atrs + 16, &fg_bg_sequences[COL_SEQ_FG].def);
+    #####: 1949:	    } else if (strpfx("fg_end_code:", *atrs)) {
+    #####: 1950:		set_colour_code(*atrs + 12, &fg_bg_sequences[COL_SEQ_FG].end);
+    #####: 1951:	    } else if (strpfx("bg_start_code:", *atrs)) {
+    #####: 1952:		set_colour_code(*atrs + 14, &fg_bg_sequences[COL_SEQ_BG].start);
+    #####: 1953:	    } else if (strpfx("bg_default_code:", *atrs)) {
+    #####: 1954:		set_colour_code(*atrs + 16, &fg_bg_sequences[COL_SEQ_BG].def);
+    #####: 1955:	    } else if (strpfx("bg_end_code:", *atrs)) {
+    #####: 1956:		set_colour_code(*atrs + 12, &fg_bg_sequences[COL_SEQ_BG].end);
+        -: 1957:	    }
+        -: 1958:	}
+        -: 1959:    }
+        -: 1960:
+    #####: 1961:    lenfg = strlen(fg_bg_sequences[COL_SEQ_FG].def);
+        -: 1962:    /* always need 1 character for non-default code */
+    #####: 1963:    if (lenfg < 1)
+    #####: 1964:	lenfg = 1;
+    #####: 1965:    lenfg += strlen(fg_bg_sequences[COL_SEQ_FG].start) +
+    #####: 1966:	strlen(fg_bg_sequences[COL_SEQ_FG].end);
+        -: 1967:
+    #####: 1968:    lenbg = strlen(fg_bg_sequences[COL_SEQ_BG].def);
+        -: 1969:    /* always need 1 character for non-default code */
+    #####: 1970:    if (lenbg < 1)
+    #####: 1971:	lenbg = 1;
+    #####: 1972:    lenbg += strlen(fg_bg_sequences[COL_SEQ_BG].start) +
+    #####: 1973:	strlen(fg_bg_sequences[COL_SEQ_BG].end);
+        -: 1974:
+    #####: 1975:    len = lenfg > lenbg ? lenfg : lenbg;
+        -: 1976:    /* add 1 for the null and 14 for truecolor */
+    #####: 1977:    colseq_buf = (char *)zalloc(len+15);
+        -: 1978:}
+        -: 1979:
+        -: 1980:/* Free the colour buffer previously allocated. */
+        -: 1981:
+        -: 1982:/**/
+        -: 1983:mod_export void
+    #####: 1984:free_colour_buffer(void)
+        -: 1985:{
+    #####: 1986:    if (--colseq_buf_allocs)
+    #####: 1987:	return;
+        -: 1988:
+        -: 1989:    DPUTS(!colseq_buf, "Freeing colour sequence buffer without alloc");
+        -: 1990:    /* Free buffer for colour code composition */
+    #####: 1991:    free(colseq_buf);
+    #####: 1992:    colseq_buf = NULL;
+        -: 1993:}
+        -: 1994:
+        -: 1995:/*
+        -: 1996: * Handle outputting of a colour for prompts or zle.
+        -: 1997: * colour is the numeric colour, 0 to 255 (or less if termcap
+        -: 1998: * says fewer are supported).
+        -: 1999: * fg_bg indicates if we're changing the foreground or background.
+        -: 2000: * tc indicates the termcap code to use, if appropriate.
+        -: 2001: * def indicates if we're resetting the default colour.
+        -: 2002: * flags is either 0 or TSC_PROMPT.
+        -: 2003: */
+        -: 2004:
+        -: 2005:/**/
+        -: 2006:mod_export void
+    #####: 2007:set_colour_attribute(zattr atr, int fg_bg, int flags)
+        -: 2008:{
+        -: 2009:    char *ptr;
+    #####: 2010:    int do_free, is_prompt = (flags & TSC_PROMPT) ? 1 : 0;
+        -: 2011:    int colour, tc, def, use_truecolor;
+    #####: 2012:    int is_default_zle_highlight = 1;
+        -: 2013:
+    #####: 2014:    if (fg_bg == COL_SEQ_FG) {
+    #####: 2015:	colour = txtchangeget(atr, TXT_ATTR_FG_COL);
+    #####: 2016:	tc = TCFGCOLOUR;
+    #####: 2017:	def = txtchangeisset(atr, TXTNOFGCOLOUR);
+    #####: 2018:	use_truecolor = txtchangeisset(atr, TXT_ATTR_FG_24BIT);
+        -: 2019:    } else {
+    #####: 2020:	colour = txtchangeget(atr, TXT_ATTR_BG_COL);
+    #####: 2021:	tc = TCBGCOLOUR;
+    #####: 2022:	def = txtchangeisset(atr, TXTNOBGCOLOUR);
+    #####: 2023:	use_truecolor = txtchangeisset(atr, TXT_ATTR_BG_24BIT);
+        -: 2024:    }
+        -: 2025:
+        -: 2026:    /* Test if current zle_highlight settings are customized, or
+        -: 2027:     * the typical "standard" codes */
+    #####: 2028:    if (0 != strcmp(fg_bg_sequences[fg_bg].start, fg_bg == COL_SEQ_FG ? TC_COL_FG_START : TC_COL_BG_START) ||
+        -: 2029:	/* the same in-fix for both FG and BG */
+    #####: 2030:	0 != strcmp(fg_bg_sequences[fg_bg].def, TC_COL_FG_DEFAULT) ||
+        -: 2031:	/* the same suffix for both FG and BG */
+    #####: 2032:	0 != strcmp(fg_bg_sequences[fg_bg].end, TC_COL_FG_END))
+        -: 2033:    {
+    #####: 2034:	is_default_zle_highlight = 0;
+        -: 2035:    }
+        -: 2036:
+        -: 2037:    /*
+        -: 2038:     * If we're not restoring the default or applying true color,
+        -: 2039:     * try to use the termcap sequence.
+        -: 2040:     *
+        -: 2041:     * We have already sanitised the values we allow from the
+        -: 2042:     * highlighting variables, so much of this shouldn't be
+        -: 2043:     * necessary at this point, but we might as well be safe.
+        -: 2044:     */
+    #####: 2045:    if (!def && !use_truecolor && is_default_zle_highlight)
+        -: 2046:    {
+        -: 2047:	/*
+        -: 2048:	 * We can if it's available, and either we couldn't get
+        -: 2049:	 * the maximum number of colours, or the colour is in range.
+        -: 2050:	 */
+    #####: 2051:	if (tccan(tc) && (tccolours < 0 || colour < tccolours))
+        -: 2052:	{
+    #####: 2053:	    if (is_prompt)
+        -: 2054:	    {
+    #####: 2055:		if (!bv->dontcount) {
+    #####: 2056:		    addbufspc(1);
+    #####: 2057:		    *bv->bp++ = Inpar;
+        -: 2058:		}
+    #####: 2059:		tputs(tgoto(tcstr[tc], colour, colour), 1, putstr);
+    #####: 2060:		if (!bv->dontcount) {
+    #####: 2061:		    addbufspc(1);
+    #####: 2062:		    *bv->bp++ = Outpar;
+        -: 2063:		}
+        -: 2064:	    } else {
+    #####: 2065:		tputs(tgoto(tcstr[tc], colour, colour), 1, putshout);
+        -: 2066:	    }
+        -: 2067:	    /* That worked. */
+    #####: 2068:	    return;
+        -: 2069:	}
+        -: 2070:	/*
+        -: 2071:	 * Nope, that didn't work.
+        -: 2072:	 * If 0 to 7, assume standard ANSI works, if 8 to 255, assume
+        -: 2073:         * typical 256-color escapes works, otherwise it won't.
+        -: 2074:	 */
+    #####: 2075:	if (colour > 255)
+    #####: 2076:	    return;
+        -: 2077:    }
+        -: 2078:
+    #####: 2079:    if ((do_free = (colseq_buf == NULL))) {
+        -: 2080:	/* This can happen when moving the cursor in trashzle() */
+    #####: 2081:	allocate_colour_buffer();
+        -: 2082:    }
+        -: 2083:
+        -: 2084:    /* Build the reset-code: .start + .def + . end
+        -: 2085:     * or the typical true-color code: .start + 8;2;%d;%d;%d + .end
+        -: 2086:     * or the typical 256-color code: .start + 8;5;%d + .end
+        -: 2087:     */
+    #####: 2088:    if (use_truecolor)
+    #####: 2089:	strcpy(colseq_buf, fg_bg == COL_SEQ_FG ? TC_COL_FG_START : TC_COL_BG_START);
+        -: 2090:    else
+    #####: 2091:	strcpy(colseq_buf, fg_bg_sequences[fg_bg].start);
+        -: 2092:
+    #####: 2093:    ptr = colseq_buf + strlen(colseq_buf);
+    #####: 2094:    if (def) {
+    #####: 2095:	if (use_truecolor)
+    #####: 2096:	    strcpy(ptr, fg_bg == COL_SEQ_FG ? TC_COL_FG_DEFAULT : TC_COL_BG_DEFAULT);
+        -: 2097:	else
+    #####: 2098:	    strcpy(ptr, fg_bg_sequences[fg_bg].def);
+    #####: 2099:	while (*ptr)
+    #####: 2100:	    ptr++;
+    #####: 2101:    } else if (use_truecolor) {
+    #####: 2102:	ptr += sprintf(ptr, "8;2;%d;%d;%d", colour >> 16,
+    #####: 2103:		(colour >> 8) & 0xff, colour & 0xff);
+    #####: 2104:    } else if (colour > 7 && colour <= 255) {
+    #####: 2105:	ptr += sprintf(ptr, "%d", colour);
+        -: 2106:    } else
+    #####: 2107:	*ptr++ = colour + '0';
+    #####: 2108:    if (use_truecolor)
+    #####: 2109:	strcpy(ptr, fg_bg == COL_SEQ_FG ? TC_COL_FG_END : TC_COL_BG_END);
+        -: 2110:    else
+    #####: 2111:	strcpy(ptr, fg_bg_sequences[fg_bg].end);
+        -: 2112:
+    #####: 2113:    if (is_prompt) {
+    #####: 2114:	if (!bv->dontcount) {
+    #####: 2115:	    addbufspc(1);
+    #####: 2116:	    *bv->bp++ = Inpar;
+        -: 2117:	}
+    #####: 2118:	tputs(colseq_buf, 1, putstr);
+    #####: 2119:	if (!bv->dontcount) {
+    #####: 2120:	    addbufspc(1);
+    #####: 2121:	    *bv->bp++ = Outpar;
+        -: 2122:	}
+        -: 2123:    } else
+    #####: 2124:	tputs(colseq_buf, 1, putshout);
+        -: 2125:
+    #####: 2126:    if (do_free)
+    #####: 2127:	free_colour_buffer();
+        -: 2128:}

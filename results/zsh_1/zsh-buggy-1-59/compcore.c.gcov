@@ -1,0 +1,3602 @@
+        -:    0:Source:compcore.c
+        -:    0:Graph:/home/workspace/Src/Zle/compcore.gcno
+        -:    0:Data:/home/workspace/Src/Zle/compcore.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * compcore.c - the complete module, completion core code
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "complete.mdh"
+        -:   31:#include "compcore.pro"
+        -:   32:
+        -:   33:/* Flags saying what we have to do with the result. */
+        -:   34:
+        -:   35:/**/
+        -:   36:int useexact, useline, uselist, forcelist, startauto;
+        -:   37:
+        -:   38:/**/
+        -:   39:mod_export int iforcemenu;
+        -:   40:
+        -:   41:/* Non-zero if we should go back to the last prompt. */
+        -:   42:
+        -:   43:/**/
+        -:   44:mod_export int dolastprompt;
+        -:   45:
+        -:   46:/* Non-zero if we should keep an old list. */
+        -:   47:
+        -:   48:/**/
+        -:   49:mod_export int oldlist, oldins;
+        -:   50:
+        -:   51:/* Original prefix/suffix lengths. Flag saying if they changed. */
+        -:   52:
+        -:   53:/**/
+        -:   54:int origlpre, origlsuf, lenchanged;
+        -:   55:
+        -:   56:/* This is used to decide when the cursor should be moved to the end of    *
+        -:   57: * the inserted word: 0 - never, 1 - only when a single match is inserted, *
+        -:   58: * 2 - when a full match is inserted (single or menu), 3 - always.         */
+        -:   59:
+        -:   60:/**/
+        -:   61:int movetoend;
+        -:   62:
+        -:   63:/* The match and group number to insert when starting menucompletion.   */
+        -:   64:
+        -:   65:/**/
+        -:   66:mod_export int insmnum, insspace;
+        -:   67:
+        -:   68:#if 0
+        -:   69:/* group-numbers in compstate[insert] */
+        -:   70:int insgnum, insgroup; /* mod_export */
+        -:   71:#endif
+        -:   72:
+        -:   73:/* Information about menucompletion. */
+        -:   74:
+        -:   75:/**/
+        -:   76:mod_export struct menuinfo minfo;
+        -:   77:
+        -:   78:/* Number of matches accepted with accept-and-menu-complete */
+        -:   79:
+        -:   80:/**/
+        -:   81:mod_export int menuacc;
+        -:   82:
+        -:   83:/* Brace insertion stuff. */
+        -:   84:
+        -:   85:/**/
+        -:   86:int hasunqu, useqbr, brpcs, brscs;
+        -:   87:
+        -:   88:/* Flags saying in what kind of string we are. */
+        -:   89:
+        -:   90:/**/
+        -:   91:mod_export int ispar, linwhat;
+        -:   92:
+        -:   93:/* A parameter expansion prefix (like ${). */
+        -:   94:
+        -:   95:/**/
+        -:   96:char *parpre;
+        -:   97:
+        -:   98:/* Flags for parameter expansions for new style completion. */
+        -:   99:
+        -:  100:/**/
+        -:  101:int parflags;
+        -:  102:
+        -:  103:/* Match flags for all matches in this group. */
+        -:  104:
+        -:  105:/**/
+        -:  106:mod_export int mflags;
+        -:  107:
+        -:  108:/* Flags saying how the parameter expression we are in is quoted. */
+        -:  109:
+        -:  110:/**/
+        -:  111:int parq, eparq;
+        -:  112:
+        -:  113:/* We store the following prefixes/suffixes:                               *
+        -:  114: * ipre,ripre  -- the ignored prefix (quoted and unquoted)                 *
+        -:  115: * isuf        -- the ignored suffix                                       */
+        -:  116:
+        -:  117:/**/
+        -:  118:mod_export char *ipre, *ripre, *isuf;
+        -:  119:
+        -:  120:/* The list of matches.  fmatches contains the matches we first ignore *
+        -:  121: * because of fignore.                                                 */
+        -:  122:
+        -:  123:/**/
+        -:  124:mod_export LinkList matches;
+        -:  125:/**/
+        -:  126:LinkList fmatches;
+        -:  127:
+        -:  128:/* This holds the list of matches-groups. lastmatches holds the last list of 
+        -:  129: * permanently allocated matches, pmatches is the same for the list
+        -:  130: * currently built, amatches is the heap allocated stuff during completion
+        -:  131: * (after all matches have been generated it is an alias for pmatches), and
+        -:  132: * lmatches/lastlmatches is a pointer to the last element in the lists. */
+        -:  133:
+        -:  134:/**/
+        -:  135:mod_export Cmgroup lastmatches, pmatches, amatches, lmatches, lastlmatches;
+        -:  136:
+        -:  137:/* Non-zero if we have permanently allocated matches (old and new). */
+        -:  138:
+        -:  139:/**/
+        -:  140:mod_export int hasoldlist, hasperm;
+        -:  141:
+        -:  142:/* Non-zero if we have a match representing all other matches. */
+        -:  143:
+        -:  144:/**/
+        -:  145:int hasallmatch;
+        -:  146:
+        -:  147:/* Non-zero if we have newly added matches. */
+        -:  148:
+        -:  149:/**/
+        -:  150:mod_export int newmatches;
+        -:  151:
+        -:  152:/* Number of permanently allocated matches and groups. */
+        -:  153:
+        -:  154:/**/
+        -:  155:mod_export int permmnum, permgnum, lastpermmnum, lastpermgnum;
+        -:  156:
+        -:  157:/* The total number of matches and the number of matches to be listed. */
+        -:  158:
+        -:  159:/**/
+        -:  160:mod_export int nmatches;
+        -:  161:/**/
+        -:  162:mod_export int smatches;
+        -:  163:
+        -:  164:/* != 0 if more than one match and at least two different matches */
+        -:  165:
+        -:  166:/**/
+        -:  167:mod_export int diffmatches;
+        -:  168:
+        -:  169:/* The number of messages. */
+        -:  170:
+        -:  171:/**/
+        -:  172:mod_export int nmessages;
+        -:  173:
+        -:  174:/* != 0 if only explanation strings should be printed */
+        -:  175:
+        -:  176:/**/
+        -:  177:mod_export int onlyexpl;
+        -:  178:
+        -:  179:/* Information about the matches for listing. */
+        -:  180:
+        -:  181:/**/
+        -:  182:mod_export struct cldata listdat;
+        -:  183:
+        -:  184:/* This flag is non-zero if we are completing a pattern (with globcomplete) */
+        -:  185:
+        -:  186:/**/
+        -:  187:mod_export int ispattern, haspattern;
+        -:  188:
+        -:  189:/* Non-zero if at least one match was added without/with -U. */
+        -:  190:
+        -:  191:/**/
+        -:  192:mod_export int hasmatched, hasunmatched;
+        -:  193:
+        -:  194:/* The current group of matches. */
+        -:  195:
+        -:  196:/**/
+        -:  197:Cmgroup mgroup;
+        -:  198:
+        -:  199:/* Match counter: all matches. */
+        -:  200:
+        -:  201:/**/
+        -:  202:mod_export int mnum;
+        -:  203:
+        -:  204:/* The match counter when unambig_data() was called. */
+        -:  205:
+        -:  206:/**/
+        -:  207:mod_export int unambig_mnum;
+        -:  208:
+        -:  209:/* Length of longest/shortest match. */
+        -:  210:
+        -:  211:/**/
+        -:  212:int maxmlen, minmlen;
+        -:  213:
+        -:  214:/* This holds the explanation strings we have to print in this group and *
+        -:  215: * a pointer to the current cexpl structure. */
+        -:  216:
+        -:  217:/**/
+        -:  218:LinkList expls;
+        -:  219:
+        -:  220:/**/
+        -:  221:mod_export Cexpl curexpl;
+        -:  222:
+        -:  223:/* A stack of completion matchers to be used. */
+        -:  224:
+        -:  225:/**/
+        -:  226:mod_export Cmlist mstack;
+        -:  227:
+        -:  228:/* The completion matchers used when building new stuff for the line. */
+        -:  229:
+        -:  230:/**/
+        -:  231:mod_export Cmlist bmatchers;
+        -:  232:
+        -:  233:/* A list with references to all matchers we used. */
+        -:  234:
+        -:  235:/**/
+        -:  236:mod_export LinkList matchers;
+        -:  237:
+        -:  238:/* A heap of free Cline structures. */
+        -:  239:
+        -:  240:/**/
+        -:  241:mod_export Cline freecl;
+        -:  242:
+        -:  243:/* Ambiguous information. */
+        -:  244:
+        -:  245:/**/
+        -:  246:mod_export Aminfo ainfo, fainfo;
+        -:  247:
+        -:  248:/* The memory heap to use for new style completion generation. */
+        -:  249:
+        -:  250:/**/
+        -:  251:mod_export Heap compheap;
+        -:  252:
+        -:  253:/* A list of some data.
+        -:  254: *
+        -:  255: * Well, actually, it's the list of all compctls used so far, but since
+        -:  256: * conceptually we don't know anything about compctls here... */
+        -:  257:
+        -:  258:/**/
+        -:  259:mod_export LinkList allccs;
+        -:  260:
+        -:  261:/* This says what of the state the line is in when completion is started *
+        -:  262: * came from a previous completion. If the FC_LINE bit is set, the       *
+        -:  263: * string was inserted. If FC_INWORD is set, the last completion moved   *
+        -:  264: * the cursor into the word although it was at the end of it when the    *
+        -:  265: * last completion was invoked.                                          *
+        -:  266: * This is used to detect if the string should be taken as an exact      *
+        -:  267: * match (see do_ambiguous()) and if the cursor has to be moved to the   *
+        -:  268: * end of the word before generating the completions.                    */
+        -:  269:
+        -:  270:/**/
+        -:  271:int fromcomp;
+        -:  272:
+        -:  273:/* This holds the end-position of the last string inserted into the line. */
+        -:  274:
+        -:  275:/**/
+        -:  276:mod_export int lastend;
+        -:  277:
+        -:  278:#define inststr(X) inststrlen((X),1,-1)
+        -:  279:
+        -:  280:/*
+        -:  281: * Main completion entry point, called from zle. 
+        -:  282: * At this point the line is already metafied.
+        -:  283: */
+        -:  284:
+        -:  285:/**/
+        -:  286:int
+      168:  287:do_completion(UNUSED(Hookdef dummy), Compldat dat)
+        -:  288:{
+      168:  289:    int ret = 0, lst = dat->lst, incmd = dat->incmd, osl = showinglist;
+      168:  290:    char *s = dat->s;
+        -:  291:    char *opm;
+        -:  292:    LinkNode n;
+        -:  293:
+        -:  294:    METACHECK();
+        -:  295:
+      168:  296:    pushheap();
+        -:  297:
+      168:  298:    ainfo = fainfo = NULL;
+      168:  299:    matchers = newlinklist();
+        -:  300:
+      168:  301:    zsfree(compqstack);
+      168:  302:    compqstack = zalloc(2);
+        -:  303:    /*
+        -:  304:     * It looks like we may need to do stuff with backslashes even
+        -:  305:     * if instring is QT_NONE.
+        -:  306:     */
+      168:  307:    *compqstack = (instring == QT_NONE) ? QT_BACKSLASH : (char)instring;
+      168:  308:    compqstack[1] = '\0';
+        -:  309:
+      168:  310:    hasunqu = 0;
+      168:  311:    useline = (wouldinstab ? -1 : (lst != COMP_LIST_COMPLETE));
+      168:  312:    useexact = isset(RECEXACT);
+      168:  313:    zsfree(compexactstr);
+      168:  314:    compexactstr = ztrdup("");
+      336:  315:    uselist = (useline ?
+      328:  316:	       ((isset(AUTOLIST) && !isset(BASHAUTOLIST)) ? 
+      492:  317:		(isset(LISTAMBIGUOUS) ? 3 : 2) : 0) : 1);
+      168:  318:    zsfree(comppatmatch);
+      168:  319:    opm = comppatmatch = ztrdup(useglob ? "*" : "");
+      168:  320:    zsfree(comppatinsert);
+      168:  321:    comppatinsert = ztrdup("menu");
+      168:  322:    forcelist = 0;
+      168:  323:    haspattern = 0;
+      168:  324:    complistmax = getiparam("LISTMAX");
+      168:  325:    zsfree(complastprompt);
+      168:  326:    complastprompt = ztrdup(isset(ALWAYSLASTPROMPT) ? "yes" : "");
+      168:  327:    dolastprompt = 1;
+      168:  328:    zsfree(complist);
+      336:  329:    complist = ztrdup(isset(LISTROWSFIRST) ?
+      168:  330:		      (isset(LISTPACKED) ? "packed rows" : "rows") :
+    #####:  331:		      (isset(LISTPACKED) ? "packed" : ""));
+      168:  332:    startauto = isset(AUTOMENU);
+      168:  333:    movetoend = ((zlemetacs == we || isset(ALWAYSTOEND)) ? 2 : 1);
+      168:  334:    showinglist = 0;
+      168:  335:    hasmatched = hasunmatched = 0;
+      168:  336:    minmlen = 1000000;
+      168:  337:    maxmlen = -1;
+      168:  338:    compignored = 0;
+      168:  339:    nmessages = 0;
+      168:  340:    hasallmatch = 0;
+        -:  341:
+        -:  342:    /* Make sure we have the completion list and compctl. */
+      168:  343:    if (makecomplist(s, incmd, lst)) {
+        -:  344:	/* Error condition: feeeeeeeeeeeeep(). */
+        9:  345:	zlemetacs = 0;
+        9:  346:	foredel(zlemetall, CUT_RAW);
+        9:  347:	inststr(origline);
+        9:  348:	zlemetacs = origcs;
+        9:  349:	clearlist = 1;
+        9:  350:	ret = 1;
+        9:  351:	minfo.cur = NULL;
+        9:  352:	if (useline < 0) {
+        -:  353:	    /* unmetafy line before calling ZLE */
+    #####:  354:	    unmetafy_line();
+    #####:  355:	    ret = selfinsert(zlenoargs);
+    #####:  356:	    metafy_line();
+        -:  357:	}
+        9:  358:	goto compend;
+        -:  359:    }
+      159:  360:    zsfree(lastprebr);
+      159:  361:    zsfree(lastpostbr);
+      159:  362:    lastprebr = lastpostbr = NULL;
+        -:  363:
+      159:  364:    if (comppatmatch && *comppatmatch && comppatmatch != opm)
+    #####:  365:	haspattern = 1;
+      159:  366:    if (iforcemenu) {
+    #####:  367:	if (nmatches)
+    #####:  368:            do_ambig_menu();
+    #####:  369:	ret = !nmatches;
+      159:  370:    } else if (useline < 0) {
+        -:  371:	/* unmetafy line before calling ZLE */
+    #####:  372:	unmetafy_line();
+    #####:  373:	ret = selfinsert(zlenoargs);
+    #####:  374:	metafy_line();
+      159:  375:    } else if (!useline && uselist) {
+        -:  376:	/* All this and the guy only wants to see the list, sigh. */
+       26:  377:	zlemetacs = 0;
+       26:  378:	foredel(zlemetall, CUT_RAW);
+       26:  379:	inststr(origline);
+       26:  380:	zlemetacs = origcs;
+       26:  381:	showinglist = -2;
+      133:  382:    } else if (useline == 2 && nmatches > 1) {
+    #####:  383:	do_allmatches(1);
+        -:  384:
+    #####:  385:	minfo.cur = NULL;
+        -:  386:
+    #####:  387:	if (forcelist)
+    #####:  388:	    showinglist = -2;
+        -:  389:	else
+    #####:  390:	    invalidatelist();
+      133:  391:    } else if (useline) {
+        -:  392:	/* We have matches. */
+      130:  393:	if (nmatches > 1 && diffmatches) {
+        -:  394:	    /* There is more than one match. */
+       40:  395:	    ret = do_ambiguous();
+        -:  396:
+       80:  397:	    if (!showinglist && uselist && listshown && (usemenu == 2 || oldlist))
+        2:  398:		showinglist = osl;
+      180:  399:	} else if (nmatches == 1 || (nmatches > 1 && !diffmatches)) {
+        -:  400:	    /* Only one match. */
+       90:  401:	    Cmgroup m = amatches;
+        -:  402:#ifdef ZSH_HEAP_DEBUG
+        -:  403:	    if (memory_validate(m->heap_id)) {
+        -:  404:		HEAP_ERROR(m->heap_id);
+        -:  405:	    }
+        -:  406:#endif
+        -:  407:
+      291:  408:	    while (!m->mcount)
+      111:  409:		m = m->next;
+       90:  410:	    minfo.cur = NULL;
+       90:  411:	    minfo.asked = 0;
+       90:  412:	    do_single(m->matches[0]);
+       90:  413:	    if (forcelist) {
+    #####:  414:		if (uselist)
+    #####:  415:		    showinglist = -2;
+        -:  416:		else
+    #####:  417:		    clearlist = 1;
+        -:  418:	    } else
+       90:  419:		invalidatelist();
+    #####:  420:	} else if (nmessages && forcelist) {
+    #####:  421:	    if (uselist)
+    #####:  422:		showinglist = -2;
+        -:  423:	    else
+    #####:  424:		clearlist = 1;
+        -:  425:	}
+        -:  426:    } else {
+        3:  427:	invalidatelist();
+        3:  428:	lastambig = isset(BASHAUTOLIST);
+        3:  429:	if (forcelist)
+    #####:  430:	    clearlist = 1;
+        3:  431:	zlemetacs = 0;
+        3:  432:	foredel(zlemetall, CUT_RAW);
+        3:  433:	inststr(origline);
+        3:  434:	zlemetacs = origcs;
+        -:  435:    }
+        -:  436:    /* Print the explanation strings if needed. */
+      262:  437:    if (!showinglist && validlist && usemenu != 2 && uselist &&
+    #####:  438:	(nmatches != 1 || diffmatches) &&
+    #####:  439:	useline >= 0 && useline != 2 && (!oldlist || !listshown)) {
+    #####:  440:	onlyexpl = 3;
+    #####:  441:	showinglist = -2;
+        -:  442:    }
+      327:  443: compend:
+      446:  444:    for (n = firstnode(matchers); n; incnode(n))
+      278:  445:	freecmatcher((Cmatcher) getdata(n));
+        -:  446:
+      168:  447:    zlemetall = strlen(zlemetaline);
+      168:  448:    if (zlemetacs > zlemetall)
+    #####:  449:	zlemetacs = zlemetall;
+      168:  450:    popheap();
+        -:  451:
+      168:  452:    return ret;
+        -:  453:}
+        -:  454:
+        -:  455:/* Before and after hooks called by zle. */
+        -:  456:
+        -:  457:static int oldmenucmp;
+        -:  458:
+        -:  459:/**/
+        -:  460:int
+      168:  461:before_complete(UNUSED(Hookdef dummy), int *lst)
+        -:  462:{
+      168:  463:    oldmenucmp = menucmp;
+        -:  464:
+      168:  465:    if (showagain && validlist)
+    #####:  466:	showinglist = -2;
+      168:  467:    showagain = 0;
+        -:  468:
+        -:  469:    /* If we are doing a menu-completion... */
+        -:  470:
+      168:  471:    if (minfo.cur && menucmp && *lst != COMP_LIST_EXPAND) {
+    #####:  472:	do_menucmp(*lst);
+    #####:  473:	return 1;
+        -:  474:    }
+      168:  475:    if (minfo.cur && menucmp && validlist && *lst == COMP_LIST_COMPLETE) {
+    #####:  476:	showinglist = -2;
+    #####:  477:	onlyexpl = listdat.valid = 0;
+    #####:  478:	return 1;
+        -:  479:    }
+        -:  480:
+        -:  481:    /* We may have to reset the cursor to its position after the   *
+        -:  482:     * string inserted by the last completion. */
+        -:  483:
+        -:  484:    /*
+        -:  485:     * Currently this hook runs before metafication.
+        -:  486:     * This is the only hook of the three defined here of
+        -:  487:     * which that is true.
+        -:  488:     */
+      168:  489:    if ((fromcomp & FC_INWORD) && (zlecs = lastend) > zlell)
+    #####:  490:	zlecs = zlell;
+        -:  491:
+        -:  492:    /* Check if we have to start a menu-completion (via automenu). */
+        -:  493:
+      172:  494:    if (startauto && lastambig &&
+        6:  495:	(!isset(BASHAUTOLIST) || lastambig == 2))
+        3:  496:	usemenu = 2;
+        -:  497:
+      168:  498:    return 0;
+        -:  499:}
+        -:  500:
+        -:  501:/**/
+        -:  502:int
+      168:  503:after_complete(UNUSED(Hookdef dummy), int *dat)
+        -:  504:{
+      168:  505:    if (menucmp && !oldmenucmp) {
+        -:  506:	struct chdata cdat;
+        -:  507:	int ret;
+        -:  508:
+        3:  509:	cdat.matches = amatches;
+        -:  510:#ifdef ZSH_HEAP_DEBUG
+        -:  511:	if (memory_validate(cdat.matches->heap_id)) {
+        -:  512:	    HEAP_ERROR(cdat.matches->heap_id);
+        -:  513:	}
+        -:  514:#endif
+        3:  515:	cdat.num = nmatches;
+        3:  516:	cdat.nmesg = nmessages;
+        3:  517:	cdat.cur = NULL;
+        3:  518:	if ((ret = runhookdef(MENUSTARTHOOK, (void *) &cdat))) {
+    #####:  519:	    dat[1] = 0;
+    #####:  520:	    menucmp = menuacc = 0;
+    #####:  521:	    minfo.cur = NULL;
+    #####:  522:	    if (ret >= 2) {
+    #####:  523:		fixsuffix();
+    #####:  524:		zlemetacs = 0;
+    #####:  525:		foredel(zlemetall, CUT_RAW);
+    #####:  526:		inststr(origline);
+    #####:  527:		zlemetacs = origcs;
+    #####:  528:		if (ret == 2) {
+    #####:  529:		    clearlist = 1;
+    #####:  530:		    invalidatelist();
+        -:  531:		}
+        -:  532:	    }
+        -:  533:	}
+        -:  534:    }
+      168:  535:    return 0;
+        -:  536:}
+        -:  537:
+        -:  538:/* This calls the given completion widget function. */
+        -:  539:
+        -:  540:static int parwb, parwe, paroffs;
+        -:  541:
+        -:  542:/**/
+        -:  543:static void
+      168:  544:callcompfunc(char *s, char *fn)
+        -:  545:{
+        -:  546:    Shfunc shfunc;
+      168:  547:    int lv = lastval;
+        -:  548:    char buf[20];
+        -:  549:
+        -:  550:    METACHECK();
+        -:  551:
+      168:  552:    if ((shfunc = getshfunc(fn))) {
+        -:  553:	char **p, *tmp;
+      168:  554:	int aadd = 0, usea = 1, icf = incompfunc, osc = sfcontext;
+        -:  555:	unsigned int rset, kset;
+      168:  556:	Param *ocrpms = comprpms, *ockpms = compkpms;
+        -:  557:
+      168:  558:	comprpms = (Param *) zalloc(CP_REALPARAMS * sizeof(Param));
+      168:  559:	compkpms = (Param *) zalloc(CP_KEYPARAMS * sizeof(Param));
+        -:  560:
+      168:  561:	rset = CP_ALLREALS;
+      168:  562:	kset = CP_ALLKEYS &
+        -:  563:	    ~(CP_PARAMETER | CP_REDIRECT | CP_QUOTE | CP_QUOTING |
+        -:  564:	      CP_EXACTSTR | CP_OLDLIST | CP_OLDINS |
+      168:  565:	      (useglob ? 0 : CP_PATMATCH));
+      168:  566:	zsfree(compvared);
+      168:  567:	if (varedarg) {
+    #####:  568:	    compvared = ztrdup(varedarg);
+    #####:  569:	    kset |= CP_VARED;
+        -:  570:	} else
+      168:  571:	    compvared = ztrdup("");
+      168:  572:	if (!*complastprompt)
+      168:  573:	    kset &= ~CP_LASTPROMPT;
+      168:  574:	zsfree(compcontext);
+      168:  575:	zsfree(compparameter);
+      168:  576:	zsfree(compredirect);
+      168:  577:	compparameter = compredirect = "";
+      168:  578:	if (ispar)
+    #####:  579:	    compcontext = (ispar == 2 ? "brace_parameter" : "parameter");
+      168:  580:        else if (linwhat == IN_PAR)
+    #####:  581:            compcontext = "assign_parameter";
+      168:  582:	else if (linwhat == IN_MATH) {
+    #####:  583:	    if (insubscr) {
+    #####:  584:		compcontext = "subscript";
+    #####:  585:		if (varname) {
+    #####:  586:		    compparameter = varname;
+    #####:  587:		    kset |= CP_PARAMETER;
+        -:  588:		}
+        -:  589:	    } else
+    #####:  590:		compcontext = "math";
+    #####:  591:	    usea = 0;
+      168:  592:	} else if (lincmd) {
+    #####:  593:	    if (insubscr) {
+    #####:  594:		compcontext = "subscript";
+    #####:  595:		kset |= CP_PARAMETER;
+        -:  596:	    } else
+    #####:  597:		compcontext = "command";
+      168:  598:	} else if (linredir) {
+    #####:  599:	    compcontext = "redirect";
+    #####:  600:	    if (rdstr)
+    #####:  601:		compredirect = rdstr;
+    #####:  602:	    kset |= CP_REDIRECT;
+        -:  603:	} else {
+      168:  604:	    switch (linwhat) {
+    #####:  605:	    case IN_ENV:
+    #####:  606:		compcontext = (linarr ? "array_value" : "value");
+    #####:  607:		compparameter = varname;
+    #####:  608:		kset |= CP_PARAMETER;
+    #####:  609:		if (!clwpos) {
+    #####:  610:		    clwpos = 1;
+    #####:  611:		    clwnum = 2;
+    #####:  612:		    zsfree(clwords[1]);
+    #####:  613:		    clwords[1] = ztrdup(s);
+    #####:  614:		    zsfree(clwords[2]);
+    #####:  615:		    clwords[2] = NULL;
+        -:  616:		}
+    #####:  617:		aadd = 1;
+    #####:  618:		break;
+    #####:  619:	    case IN_COND:
+    #####:  620:		compcontext = "condition";
+    #####:  621:		break;
+      168:  622:	    default:
+      168:  623:		if (cmdstr)
+      168:  624:		    compcontext = "command";
+        -:  625:		else {
+    #####:  626:		    compcontext = "value";
+    #####:  627:		    kset |= CP_PARAMETER;
+    #####:  628:		    if (clwords[0])
+    #####:  629:			compparameter = clwords[0];
+    #####:  630:		    aadd = 1;
+        -:  631:		}
+        -:  632:	    }
+        -:  633:	}
+      168:  634:	compcontext = ztrdup(compcontext);
+      168:  635:	if (compwords)
+      167:  636:	    freearray(compwords);
+      336:  637:	if (usea && (!aadd || clwords[0])) {
+        -:  638:	    char **q;
+        -:  639:
+      168:  640:	    q = compwords = (char **)
+      168:  641:		zalloc((clwnum + 1) * sizeof(char *));
+      671:  642:	    for (p = clwords + aadd; *p; p++, q++)
+      503:  643:		untokenize(*q = ztrdup(*p));
+      168:  644:	    *q = NULL;
+        -:  645:	} else
+    #####:  646:	    compwords = (char **) zshcalloc(sizeof(char *));
+        -:  647:
+      168:  648:	if (compredirs)
+      167:  649:	    freearray(compredirs);
+      168:  650:        if (rdstrs)
+      168:  651:            compredirs = zlinklist2array(rdstrs, 1);
+        -:  652:        else
+    #####:  653:            compredirs = (char **) zshcalloc(sizeof(char *));
+        -:  654:
+        -:  655:	/*
+        -:  656:	 * We need to untokenize compparameter which is the
+        -:  657:	 * raw internals of a parameter subscript.
+        -:  658:	 *
+        -:  659:	 * The double memory duplication is a bit ugly: the additional
+        -:  660:	 * dupstring() is necessary because untokenize() might change
+        -:  661:	 * the string length and so later zsfree() would get the wrong
+        -:  662:	 * length of the string.
+        -:  663:	 */
+      168:  664:	compparameter = dupstring(compparameter);
+      168:  665:	untokenize(compparameter);
+      168:  666:	compparameter = ztrdup(compparameter);
+      168:  667:	compredirect = ztrdup(compredirect);
+      168:  668:	zsfree(compquote);
+      168:  669:	zsfree(compquoting);
+      168:  670:	if (instring > QT_BACKSLASH) {
+    #####:  671:	    switch (instring) {
+    #####:  672:	    case QT_SINGLE:
+    #####:  673:		compquote = ztrdup("\'");
+    #####:  674:		compquoting = ztrdup("single");
+    #####:  675:		break;
+        -:  676:
+    #####:  677:	    case QT_DOUBLE:
+    #####:  678:		compquote = ztrdup("\"");
+    #####:  679:		compquoting = ztrdup("double");
+    #####:  680:		break;
+        -:  681:
+    #####:  682:	    case QT_DOLLARS:
+    #####:  683:		compquote = ztrdup("$'");
+    #####:  684:		compquoting = ztrdup("dollars");
+    #####:  685:		break;
+        -:  686:	    }
+    #####:  687:	    kset |= CP_QUOTE | CP_QUOTING;
+      168:  688:	} else if (inbackt) {
+    #####:  689:	    compquote = ztrdup("`");
+    #####:  690:	    compquoting = ztrdup("backtick");
+    #####:  691:	    kset |= CP_QUOTE | CP_QUOTING;
+        -:  692:	} else {
+      168:  693:	    compquote = ztrdup("");
+      168:  694:	    compquoting = ztrdup("");
+        -:  695:	}
+      168:  696:	zsfree(compprefix);
+      168:  697:	zsfree(compsuffix);
+      168:  698:	makebangspecial(0);
+      168:  699:	if (unset(COMPLETEINWORD)) {
+    #####:  700:	    tmp = (linwhat == IN_MATH ? dupstring(s) : multiquote(s, 0));
+    #####:  701:	    untokenize(tmp);
+    #####:  702:	    compprefix = ztrdup(tmp);
+    #####:  703:	    compsuffix = ztrdup("");
+        -:  704:	} else {
+        -:  705:	    char *ss, sav;
+        -:  706:	    
+      168:  707:	    ss = s + offs;
+        -:  708:
+      168:  709:	    sav = *ss;
+      168:  710:	    *ss = '\0';
+      168:  711:	    tmp = (linwhat == IN_MATH ? dupstring(s) : multiquote(s, 0));
+      168:  712:	    untokenize(tmp);
+      168:  713:	    compprefix = ztrdup(tmp);
+      168:  714:	    *ss = sav;
+      168:  715:	    ss = (linwhat == IN_MATH ? dupstring(ss) : multiquote(ss, 0));
+      168:  716:	    untokenize(ss);
+      168:  717:	    compsuffix = ztrdup(ss);
+        -:  718:	}
+      168:  719:	makebangspecial(1);
+      168:  720:        zsfree(complastprefix);
+      168:  721:        zsfree(complastsuffix);
+      168:  722:        complastprefix = ztrdup(compprefix);
+      168:  723:        complastsuffix = ztrdup(compsuffix);
+      168:  724:	zsfree(compiprefix);
+      168:  725:	zsfree(compisuffix);
+      168:  726:	if (parwb < 0) {
+      168:  727:	    compiprefix = ztrdup("");
+      168:  728:	    compisuffix = ztrdup("");
+        -:  729:	} else {
+        -:  730:	    int l;
+        -:  731:
+    #####:  732:	    compiprefix = (char *) zalloc((l = wb - parwb) + 1);
+    #####:  733:	    memcpy(compiprefix, zlemetaline + parwb, l);
+    #####:  734:	    compiprefix[l] = '\0';
+    #####:  735:	    compisuffix = (char *) zalloc((l = parwe - we) + 1);
+    #####:  736:	    memcpy(compisuffix, zlemetaline + we, l);
+    #####:  737:	    compisuffix[l] = '\0';
+        -:  738:
+    #####:  739:	    wb = parwb;
+    #####:  740:	    we = parwe;
+    #####:  741:	    offs = paroffs;
+        -:  742:	}
+      168:  743:	zsfree(compqiprefix);
+      168:  744:	compqiprefix = ztrdup(qipre ? qipre : "");
+      168:  745:	zsfree(compqisuffix);
+      168:  746:	compqisuffix = ztrdup(qisuf ? qisuf : "");
+      336:  747:	origlpre = (strlen(compqiprefix) + strlen(compiprefix) +
+      168:  748:		    strlen(compprefix));
+      336:  749:	origlsuf = (strlen(compqisuffix) + strlen(compisuffix) +
+      168:  750:		    strlen(compsuffix));
+      168:  751:	lenchanged = 0;
+      168:  752:	compcurrent = (usea ? (clwpos + 1 - aadd) : 0);
+        -:  753:
+      168:  754:	zsfree(complist);
+      168:  755:	switch (uselist) {
+        4:  756:	case 0: complist = ""; kset &= ~CP_LIST; break;
+        4:  757:	case 1: complist = "list"; break;
+    #####:  758:	case 2: complist = "autolist"; break;
+      160:  759:	case 3: complist = "ambiguous"; break;
+        -:  760:	}
+      168:  761:	if (isset(LISTPACKED))
+    #####:  762:	    complist = dyncat(complist, " packed");
+      168:  763:	if (isset(LISTROWSFIRST))
+      168:  764:	    complist = dyncat(complist, " rows");
+        -:  765:
+      168:  766:	complist = ztrdup(complist);
+      168:  767:	zsfree(compinsert);
+      168:  768:	if (useline) {
+      164:  769:	    switch (usemenu) {
+      161:  770:	    case 0:
+      322:  771:		compinsert = (isset(AUTOMENU) ?
+      161:  772:			      "automenu-unambiguous" :
+        -:  773:			      "unambiguous");
+      161:  774:		break;
+    #####:  775:	    case 1: compinsert = "menu"; break;
+        3:  776:	    case 2: compinsert = "automenu"; break;
+        -:  777:	    }
+        -:  778:	} else {
+        4:  779:	    compinsert = "";
+        4:  780:	    kset &= ~CP_INSERT;
+        -:  781:	}
+      336:  782:	compinsert = (useline < 0 ? tricat("tab ", "", compinsert) :
+      168:  783:		      ztrdup(compinsert));
+      168:  784:	zsfree(compexact);
+      168:  785:	if (useexact)
+    #####:  786:	    compexact = ztrdup("accept");
+        -:  787:	else {
+      168:  788:	    compexact = ztrdup("");
+      168:  789:	    kset &= ~CP_EXACT;
+        -:  790:	}
+      168:  791:	zsfree(comptoend);
+      168:  792:	if (movetoend == 1)
+    #####:  793:	    comptoend = ztrdup("single");
+        -:  794:	else
+      168:  795:	    comptoend = ztrdup("match");
+      168:  796:	zsfree(compoldlist);
+      168:  797:	zsfree(compoldins);
+      168:  798:	if (hasoldlist && lastpermmnum) {
+        5:  799:	    if (listshown)
+        5:  800:		compoldlist = "shown";
+        -:  801:	    else
+    #####:  802:		compoldlist = "yes";
+        5:  803:	    kset |= CP_OLDLIST;
+       10:  804:	    if (minfo.cur) {
+    #####:  805:		sprintf(buf, "%d", (*(minfo.cur))->gnum);
+    #####:  806:		compoldins = buf;
+    #####:  807:		kset |= CP_OLDINS;
+        -:  808:	    } else
+        5:  809:		compoldins = "";
+        -:  810:	} else
+      163:  811:	    compoldlist = compoldins = "";
+      168:  812:	compoldlist = ztrdup(compoldlist);
+      168:  813:	compoldins = ztrdup(compoldins);
+        -:  814:
+      168:  815:	incompfunc = 1;
+      168:  816:	startparamscope();
+      168:  817:	makecompparams();
+      168:  818:	comp_setunset(rset, (~rset & CP_ALLREALS),
+      168:  819:		      kset, (~kset & CP_ALLKEYS));
+      168:  820:	makezleparams(1);
+      168:  821:	sfcontext = SFC_CWIDGET;
+      168:  822:	NEWHEAPS(compheap) {
+      168:  823:	    LinkList largs = NULL;
+      168:  824:	    int oxt = isset(XTRACE);
+        -:  825:
+      168:  826:	    if (*cfargs) {
+    #####:  827:		char **p = cfargs;
+        -:  828:
+    #####:  829:		largs = newlinklist();
+    #####:  830:		addlinknode(largs, dupstring(fn));
+    #####:  831:		while (*p)
+    #####:  832:		    addlinknode(largs, dupstring(*p++));
+        -:  833:	    }
+      168:  834:	    opts[XTRACE] = 0;
+      168:  835:	    cfret = doshfunc(shfunc, largs, 1);
+      168:  836:	    opts[XTRACE] = oxt;
+      168:  837:	} OLDHEAPS;
+      168:  838:	sfcontext = osc;
+      168:  839:	endparamscope();
+      168:  840:	lastcmd = 0;
+      168:  841:	incompfunc = icf;
+      168:  842:	startauto = 0;
+        -:  843:
+      168:  844:	if (!complist)
+    #####:  845:	    uselist = 0;
+      168:  846:	else if (!strncmp(complist, "list", 4))
+       19:  847:	    uselist = 1;
+      149:  848:	else if (!strncmp(complist, "auto", 4))
+    #####:  849:	    uselist = 2;
+      149:  850:	else if (!strncmp(complist, "ambig", 5))
+      145:  851:	    uselist = 3;
+        -:  852:	else
+        4:  853:	    uselist = 0;
+      168:  854:	forcelist = (complist && strstr(complist, "force"));
+      504:  855:	onlyexpl = (complist ? ((strstr(complist, "expl") ? 1 : 0) |
+      336:  856:				(strstr(complist, "messages") ? 2 : 0)) : 0);
+        -:  857:
+      168:  858:	if (!compinsert)
+    #####:  859:	    useline = 0;
+      168:  860:	else if (strstr(compinsert, "tab"))
+    #####:  861:	    useline = -1;
+      336:  862:	else if (!strcmp(compinsert, "unambig") ||
+      336:  863:		 !strcmp(compinsert, "unambiguous") ||
+      168:  864:		 !strcmp(compinsert, "automenu-unambiguous"))
+      136:  865:	    useline = 1, usemenu = 0;
+       32:  866:	else if (!strcmp(compinsert, "all"))
+    #####:  867:	    useline = 2, usemenu = 0;
+       32:  868:	else if (idigit(*compinsert)) {
+        -:  869:#if 0
+        -:  870:	    /* group-numbers in compstate[insert] */
+        -:  871:	    char *m;
+        -:  872:#endif
+    #####:  873:	    useline = 1; usemenu = 3;
+    #####:  874:	    insmnum = atoi(compinsert);
+        -:  875:#if 0
+        -:  876:	    /* group-numbers in compstate[insert] */
+        -:  877:	    if ((m = strchr(compinsert, ':'))) {
+        -:  878:		insgroup = 1;
+        -:  879:		insgnum = atoi(m + 1);
+        -:  880:	    }
+        -:  881:#endif
+    #####:  882:	    insspace = (compinsert[strlen(compinsert) - 1] == ' ');
+        -:  883:	} else {
+        -:  884:	    char *p;
+        -:  885:
+       32:  886:	    if (strpfx("menu", compinsert))
+    #####:  887:		useline = 1, usemenu = 1;
+       32:  888:	    else if (strpfx("auto", compinsert))
+        3:  889:		useline = 1, usemenu = 2;
+        -:  890:	    else {
+       29:  891:		useline = usemenu = 0;
+        -:  892:		/* if compstate[insert] was emptied, no unambiguous prefix
+        -:  893:		 * ever gets inserted so allow the next tab to already start
+        -:  894:		 * menu completion */
+       29:  895:		startauto = lastambig = isset(AUTOMENU);
+        -:  896:	    }
+        -:  897:
+       32:  898:	    if (useline && (p = strchr(compinsert, ':'))) {
+    #####:  899:		insmnum = atoi(++p);
+        -:  900:#if 0
+        -:  901:		/* group-numbers in compstate[insert] */
+        -:  902:		if ((p = strchr(p, ':'))) {
+        -:  903:		    insgroup = 1;
+        -:  904:		    insgnum = atoi(p + 1);
+        -:  905:		}
+        -:  906:#endif
+        -:  907:	    }
+        -:  908:	}
+      472:  909:	startauto = startauto || ((compinsert &&
+      152:  910:		      !strcmp(compinsert, "automenu-unambiguous")) ||
+        9:  911:		     (bashlistfirst && isset(AUTOMENU) &&
+    #####:  912:                      (!compinsert || !*compinsert)));
+      168:  913:	useexact = (compexact && !strcmp(compexact, "accept"));
+        -:  914:
+      168:  915:	if (!comptoend || !*comptoend)
+    #####:  916:	    movetoend = 0;
+      168:  917:	else if (!strcmp(comptoend, "single"))
+    #####:  918:	    movetoend = 1;
+      168:  919:	else if (!strcmp(comptoend, "always"))
+    #####:  920:	    movetoend = 3;
+        -:  921:	else
+      168:  922:	    movetoend = 2;
+        -:  923:
+      168:  924:	oldlist = (hasoldlist && compoldlist && !strcmp(compoldlist, "keep"));
+      350:  925:	oldins = (hasoldlist && minfo.cur &&
+      168:  926:		  compoldins && !strcmp(compoldins, "keep"));
+        -:  927:
+      168:  928:	zfree(comprpms, CP_REALPARAMS * sizeof(Param));
+      168:  929:	zfree(compkpms, CP_KEYPARAMS * sizeof(Param));
+      168:  930:	comprpms = ocrpms;
+      168:  931:	compkpms = ockpms;
+        -:  932:    }
+      168:  933:    lastval = lv;
+      168:  934:}
+        -:  935:
+        -:  936:/* Create the completion list.  This is called whenever some bit of   *
+        -:  937: * completion code needs the list.                                    *
+        -:  938: * Along with the list is maintained the prefixes/suffixes etc.  When *
+        -:  939: * any of this becomes invalid -- e.g. if some text is changed on the *
+        -:  940: * command line -- invalidatelist() should be called, to set          *
+        -:  941: * validlist to zero and free up the memory used.  This function      *
+        -:  942: * returns non-zero on error.                                         */
+        -:  943:
+        -:  944:/**/
+        -:  945:static int
+      168:  946:makecomplist(char *s, int incmd, int lst)
+        -:  947:{
+        -:  948:    char *p;
+      168:  949:    int owb = wb, owe = we, ooffs = offs;
+        -:  950:
+        -:  951:    /* Inside $... ? */
+      168:  952:    if (compfunc && (p = check_param(s, 0, 0))) {
+    #####:  953:	s = p;
+    #####:  954:	parwb = owb;
+    #####:  955:	parwe = owe;
+    #####:  956:	paroffs = ooffs;
+        -:  957:    } else
+      168:  958:	parwb = -1;
+        -:  959:
+      168:  960:    linwhat = inwhat;
+        -:  961:
+      168:  962:    if (compfunc) {
+      168:  963:	char *os = s;
+      168:  964:	int onm = nmatches, odm = diffmatches, osi = movefd(0);
+        -:  965:
+      168:  966:	bmatchers = NULL;
+      168:  967:	mstack = NULL;
+        -:  968:
+      168:  969:	ainfo = (Aminfo) hcalloc(sizeof(struct aminfo));
+      168:  970:	fainfo = (Aminfo) hcalloc(sizeof(struct aminfo));
+        -:  971:
+      168:  972:	freecl = NULL;
+        -:  973:
+      168:  974:	if (!validlist)
+      163:  975:	    lastambig = 0;
+      168:  976:	amatches = NULL;
+      168:  977:	mnum = 0;
+      168:  978:	unambig_mnum = -1;
+      168:  979:	isuf = NULL;
+      168:  980:	insmnum = zmult;
+        -:  981:#if 0
+        -:  982:	/* group-numbers in compstate[insert] */
+        -:  983:	insgnum = 1;
+        -:  984:	insgroup = 0;
+        -:  985:#endif
+      168:  986:	oldlist = oldins = 0;
+      168:  987:	begcmgroup("default", 0);
+      168:  988:	menucmp = menuacc = newmatches = onlyexpl = 0;
+        -:  989:
+      168:  990:	s = dupstring(os);
+      168:  991:	callcompfunc(s, compfunc);
+      168:  992:	endcmgroup(NULL);
+        -:  993:
+        -:  994:	/* Needed for compcall. */
+      168:  995:	runhookdef(COMPCTLCLEANUPHOOK, NULL);
+        -:  996:
+      168:  997:	if (oldlist) {
+        1:  998:	    nmatches = onm;
+        1:  999:	    diffmatches = odm;
+        1: 1000:	    validlist = 1;
+        1: 1001:	    amatches = lastmatches;
+        -: 1002:#ifdef ZSH_HEAP_DEBUG
+        -: 1003:	    if (memory_validate(amatches->heap_id)) {
+        -: 1004:		HEAP_ERROR(amatches->heap_id);
+        -: 1005:	    }
+        -: 1006:#endif
+        1: 1007:	    lmatches = lastlmatches;
+        1: 1008:	    if (pmatches) {
+        1: 1009:		freematches(pmatches, 1);
+        1: 1010:		pmatches = NULL;
+        1: 1011:		hasperm = 0;
+        -: 1012:	    }
+        1: 1013:	    redup(osi, 0);
+        -: 1014:
+        1: 1015:	    return 0;
+        -: 1016:	}
+      167: 1017:	if (lastmatches) {
+       13: 1018:	    freematches(lastmatches, 1);
+       13: 1019:	    lastmatches = NULL;
+        -: 1020:	}
+      167: 1021:	permmatches(1);
+      167: 1022:	amatches = pmatches;
+      167: 1023:	lastpermmnum = permmnum;
+      167: 1024:	lastpermgnum = permgnum;
+        -: 1025:
+      167: 1026:	lastmatches = pmatches;
+      167: 1027:	lastlmatches = lmatches;
+      167: 1028:	pmatches = NULL;
+      167: 1029:	hasperm = 0;
+      167: 1030:	hasoldlist = 1;
+        -: 1031:
+      167: 1032:	if ((nmatches || nmessages) && !errflag) {
+      158: 1033:	    validlist = 1;
+        -: 1034:
+      158: 1035:	    redup(osi, 0);
+        -: 1036:
+      158: 1037:	    return 0;
+        -: 1038:	}
+        9: 1039:	redup(osi, 0);
+        9: 1040:	return 1;
+        -: 1041:    } else {
+        -: 1042:	struct ccmakedat dat;
+        -: 1043:
+    #####: 1044:	dat.str = s;
+    #####: 1045:	dat.incmd = incmd;
+    #####: 1046:	dat.lst = lst;
+    #####: 1047:	runhookdef(COMPCTLMAKEHOOK, (void *) &dat);
+        -: 1048:
+        -: 1049:	/* Needed for compcall. */
+    #####: 1050:	runhookdef(COMPCTLCLEANUPHOOK, NULL);
+        -: 1051:
+    #####: 1052:	return dat.lst;
+        -: 1053:    }
+        -: 1054:}
+        -: 1055:
+        -: 1056:/*
+        -: 1057: * Quote 's' according to compqstack, aka $compstate[all_quotes].
+        -: 1058: *
+        -: 1059: * If 'ign' is 1, skip the innermost quoting level.  Otherwise 'ign'
+        -: 1060: * must be 0.
+        -: 1061: */
+        -: 1062:
+        -: 1063:/**/
+        -: 1064:mod_export char *
+     1199: 1065:multiquote(char *s, int ign)
+        -: 1066:{
+     1199: 1067:    if (s) {
+     1199: 1068:	char *os = s, *p = compqstack;
+        -: 1069:
+     1199: 1070:	if (p && *p && (ign == 0 || p[1])) {
+      448: 1071:	    if (ign)
+    #####: 1072:		p++;
+     1344: 1073:	    while (*p) {
+      448: 1074:		s = quotestring(s, *p);
+      448: 1075:		p++;
+        -: 1076:	    }
+        -: 1077:	}
+     1199: 1078:	return (s == os ? dupstring(s) : s);
+        -: 1079:    }
+        -: 1080:    DPUTS(1, "BUG: null pointer in multiquote()");
+    #####: 1081:    return NULL;
+        -: 1082:}
+        -: 1083:
+        -: 1084:/*
+        -: 1085: * tildequote(s, ign): Equivalent to multiquote(s, ign), except that if
+        -: 1086: * compqstack[0] == QT_BACKSLASH and s[0] == '~', then that tilde is not
+        -: 1087: * quoted.
+        -: 1088: */
+        -: 1089:
+        -: 1090:/**/
+        -: 1091:mod_export char *
+    #####: 1092:tildequote(char *s, int ign)
+        -: 1093:{
+    #####: 1094:    if (s) {
+        -: 1095:	int tilde;
+        -: 1096:
+    #####: 1097:	if ((tilde = (*s == '~')))
+    #####: 1098:	    *s = 'x';
+    #####: 1099:	s = multiquote(s, ign);
+    #####: 1100:	if (tilde)
+    #####: 1101:	    *s = '~';
+        -: 1102:
+    #####: 1103:	return s;
+        -: 1104:    }
+        -: 1105:    DPUTS(1, "BUG: null pointer in tildequote()");
+    #####: 1106:    return NULL;
+        -: 1107:}
+        -: 1108:
+        -: 1109:/* Check if we have to complete a parameter name. */
+        -: 1110:
+        -: 1111:/**/
+        -: 1112:mod_export char *
+      168: 1113:check_param(char *s, int set, int test)
+        -: 1114:{
+        -: 1115:    char *p;
+      168: 1116:    int found = 0, qstring = 0;
+        -: 1117:
+      168: 1118:    zsfree(parpre);
+      168: 1119:    parpre = NULL;
+        -: 1120:
+      168: 1121:    if (!test)
+      168: 1122:	ispar = parq = eparq = 0;
+        -: 1123:    /*
+        -: 1124:     * Try to find a `$'.
+        -: 1125:     *
+        -: 1126:     * TODO: passing s as a parameter while we get some mysterious
+        -: 1127:     * offset "offs" into it via a global sucks badly.
+        -: 1128:     *
+        -: 1129:     * From ../lex.c we know:
+        -: 1130:     * wb is the beginning position of the current word in the line
+        -: 1131:     * we is the position of the end of the current word in the line
+        -: 1132:     * From zle_tricky.c we know:
+        -: 1133:     * offs is position within the word where we are completing
+        -: 1134:     *
+        -: 1135:     * So wb + offs is the current cursor position if COMPLETE_IN_WORD
+        -: 1136:     * is set, otherwise it is the end of the word (same as we).
+        -: 1137:     * 
+        -: 1138:     * Note below we are thus stepping backward from our completion
+        -: 1139:     * position to find a '$' in the current word (if any).
+        -: 1140:     */ 
+      366: 1141:    for (p = s + offs; ; p--) {
+      564: 1142:	if (*p == String || *p == Qstring) {
+        -: 1143:	    /*
+        -: 1144:	     * String followed by Snull (unquoted) or
+        -: 1145:	     * QString followed by ' (quoted) indicate a nested
+        -: 1146:	     * $'...', not a substitution.
+        -: 1147:	     *
+        -: 1148:	     * TODO: the argument passing is obscure, no idea if
+        -: 1149:	     * it's safe to test for the "'" at the end.
+        -: 1150:	     */
+    #####: 1151:	    if (p < s + offs &&
+    #####: 1152:		!(*p == String && p[1] == Snull) &&
+    #####: 1153:		!(*p == Qstring && p[1] == '\'')) {
+    #####: 1154:		found = 1;
+    #####: 1155:		qstring = (*p == Qstring);
+    #####: 1156:		break;
+        -: 1157:	    }
+        -: 1158:	}
+      366: 1159:	if (p == s)
+      168: 1160:	    break;
+        -: 1161:    }
+      168: 1162:    if (found) {
+        -: 1163:	/*
+        -: 1164:	 * Handle $$'s
+        -: 1165:	 *
+        -: 1166:	 * TODO: this is already bad enough, so I haven't tried
+        -: 1167:	 * testing for $'...' here.  If we parsed this forwards
+        -: 1168:	 * it wouldn't be quite so bad.
+        -: 1169:	 */
+    #####: 1170:	while (p > s && (p[-1] == String || p[-1] == Qstring))
+    #####: 1171:	    p--;
+    #####: 1172:	while ((p[1] == String || p[1] == Qstring) &&
+    #####: 1173:	       (p[2] == String || p[2] == Qstring))
+    #####: 1174:	    p += 2;
+        -: 1175:    }
+      168: 1176:    if (found &&
+    #####: 1177:	p[1] != Inpar && p[1] != Inbrack && p[1] != Snull) {
+        -: 1178:	/* This is a parameter expression, not $(...), $[...], $'...'. */
+    #####: 1179:	char *b = p + 1, *e = b, *ie;
+    #####: 1180:	int br = 1, nest = 0;
+        -: 1181:
+    #####: 1182:	if (*b == Inbrace) {
+    #####: 1183:	    char *tb = b;
+        -: 1184:
+        -: 1185:	    /* If this is a ${...}, see if we are before the '}'. */
+    #####: 1186:	    if (!skipparens(Inbrace, Outbrace, &tb) && tb - s <= offs)
+    #####: 1187:		return NULL;
+        -: 1188:
+        -: 1189:	    /* Ignore the possible (...) flags. */
+    #####: 1190:	    tb = ++b, br++;
+    #####: 1191:	    if ((qstring ? skipparens('(', ')', &tb) :
+    #####: 1192:		 skipparens(Inpar, Outpar, &tb)) > 0 || tb - s >= offs) {
+        -: 1193:		/*
+        -: 1194:		 * We are still within the parameter flags.  There's no
+        -: 1195:		 * point trying to do anything clever here with
+        -: 1196:		 * parameter names.  Instead, just report that we are in
+        -: 1197:		 * a brace parameter but let the completion function
+        -: 1198:		 * decide what to do about it.
+        -: 1199:		 */
+    #####: 1200:		ispar = 2;
+    #####: 1201:		return NULL;
+        -: 1202:	    }
+    #####: 1203:	    if ((qstring ? '(' : Inpar) == *b) {
+        -: 1204:		/*
+        -: 1205:		 * We are inside the braces but on the opening paren.
+        -: 1206:		 * There is nothing useful to complete here?
+        -: 1207:		 */
+    #####: 1208:		return NULL;
+        -: 1209:	    } else
+    #####: 1210:		b = tb;	/* Skip over the flags */
+        -: 1211:
+    #####: 1212:	    for (tb = p - 1; tb > s && *tb != Outbrace && *tb != Inbrace; tb--);
+    #####: 1213:	    if (tb > s && *tb == Inbrace && (tb[-1] == String || *tb == Qstring))
+    #####: 1214:		nest = 1;
+        -: 1215:	}
+        -: 1216:
+        -: 1217:	/* Ignore the stuff before the parameter name. */
+    #####: 1218:	for (; *b; b++)
+    #####: 1219:	    if (*b != '^' && *b != Hat &&
+    #####: 1220:		*b != '=' && *b != Equals &&
+    #####: 1221:		*b != '~' && *b != Tilde)
+    #####: 1222:		break;
+    #####: 1223:	if (*b == '#' || *b == Pound || *b == '+')
+    #####: 1224:	    b++;
+        -: 1225:
+    #####: 1226:	e = b;
+    #####: 1227:	if (br) {
+    #####: 1228:	    while (*e == (test ? Dnull : '"'))
+    #####: 1229:		e++, parq++;
+    #####: 1230:	    if (!test)
+    #####: 1231:		b = e;
+        -: 1232:	}
+        -: 1233:	/* Find the end of the name. */
+    #####: 1234:	if (*e == Quest || *e == Star || *e == String || *e == Qstring ||
+    #####: 1235:	    *e == '?'   || *e == '*'  || *e == '$'    ||
+    #####: 1236:	    *e == '-'   || *e == '!'  || *e == '@')
+    #####: 1237:	    e++;
+    #####: 1238:	else if (idigit(*e))
+    #####: 1239:	    while (idigit(*e))
+    #####: 1240:		e++;
+    #####: 1241:	else if ((ie = itype_end(e, IIDENT, 0)) != e) {
+        -: 1242:	    do {
+    #####: 1243:		e = ie;
+    #####: 1244:		if (comppatmatch && *comppatmatch &&
+    #####: 1245:		    (*e == Star || *e == Quest))
+    #####: 1246:		    ie = e + 1;
+        -: 1247:		else
+    #####: 1248:		    ie = itype_end(e, IIDENT, 0);
+    #####: 1249:	    } while (ie != e);
+        -: 1250:	}
+        -: 1251:
+        -: 1252:	/* Now make sure that the cursor is inside the name. */
+    #####: 1253:	if (offs <= e - s && offs >= b - s) {
+        -: 1254:	    char sav;
+        -: 1255:
+    #####: 1256:	    if (br) {
+    #####: 1257:		p = e;
+    #####: 1258:		while (*p == (test ? Dnull : '"'))
+    #####: 1259:		    p++, parq--, eparq++;
+        -: 1260:	    }
+        -: 1261:	    /* It is. */
+    #####: 1262:	    if (test)
+    #####: 1263:		return b;
+        -: 1264:	    /* If we were called from makecomplistflags(), we have to set the
+        -: 1265:	     * global variables. */
+        -: 1266:
+    #####: 1267:	    if (set) {
+    #####: 1268:		if (br >= 2) {
+    #####: 1269:		    mflags |= CMF_PARBR;
+    #####: 1270:		    if (nest)
+    #####: 1271:			mflags |= CMF_PARNEST;
+        -: 1272:		}
+        -: 1273:		/* Get the prefix (anything up to the character before the name). */
+    #####: 1274:		isuf = dupstring(e);
+    #####: 1275:		untokenize(isuf);
+    #####: 1276:		sav = *b;
+    #####: 1277:		*b = *e = '\0';
+    #####: 1278:		ripre = dyncat((ripre ? ripre : ""), s);
+    #####: 1279:		ipre = dyncat((ipre ? ipre : ""), s);
+    #####: 1280:		*b = sav;
+        -: 1281:
+    #####: 1282:		untokenize(ipre);
+        -: 1283:	    }
+        -: 1284:	    /* Save the prefix. */
+    #####: 1285:	    if (compfunc) {
+    #####: 1286:		parflags = (br >= 2 ? CMF_PARBR | (nest ? CMF_PARNEST : 0) : 0);
+    #####: 1287:		sav = *b;
+    #####: 1288:		*b = '\0';
+    #####: 1289:		untokenize(parpre = ztrdup(s));
+    #####: 1290:		*b = sav;
+        -: 1291:	    }
+        -: 1292:	    /* And adjust wb, we, and offs again. */
+    #####: 1293:	    offs -= b - s;
+    #####: 1294:	    wb = zlemetacs - offs;
+    #####: 1295:	    we = wb + e - b;
+    #####: 1296:	    ispar = (br >= 2 ? 2 : 1);
+    #####: 1297:	    b[we-wb] = '\0';
+    #####: 1298:	    return b;
+    #####: 1299:	} else if (offs > e - s && *e == ':') {
+        -: 1300:	    /*
+        -: 1301:	     * Guess whether we are in modifiers.
+        -: 1302:	     * If the name is followed by a : and the stuff after
+        -: 1303:	     * that is either colons or alphanumerics we probably are.
+        -: 1304:	     * This is a very rough guess.
+        -: 1305:	     */
+    #####: 1306:	    char *offsptr = s + offs;
+    #####: 1307:	    for (; e < offsptr; e++) {
+    #####: 1308:		if (*e != ':' && !ialnum(*e))
+    #####: 1309:		    break;
+        -: 1310:	    }
+    #####: 1311:	    ispar = (br >= 2 ? 2 : 1);
+    #####: 1312:	    return NULL;
+        -: 1313:	}
+        -: 1314:    }
+      168: 1315:    return NULL;
+        -: 1316:}
+        -: 1317:
+        -: 1318:/* Copy the given string and remove backslashes from the copy and return it. */
+        -: 1319:
+        -: 1320:/**/
+        -: 1321:mod_export char *
+      128: 1322:rembslash(char *s)
+        -: 1323:{
+      128: 1324:    char *t = s = dupstring(s);
+        -: 1325:
+      620: 1326:    while (*s)
+      364: 1327:	if (*s == '\\') {
+        2: 1328:	    chuck(s);
+        2: 1329:	    if (*s)
+        2: 1330:		s++;
+        -: 1331:	} else
+      362: 1332:	    s++;
+        -: 1333:
+      128: 1334:    return t;
+        -: 1335:}
+        -: 1336:
+        -: 1337:/* Remove one of every pair of single quotes, without copying. Return
+        -: 1338: * the number of removed quotes. */
+        -: 1339:
+        -: 1340:/**/
+        -: 1341:mod_export int
+    #####: 1342:remsquote(char *s)
+        -: 1343:{
+    #####: 1344:    int ret = 0, qa = (isset(RCQUOTES) ? 1 : 3);
+    #####: 1345:    char *t = s;
+        -: 1346:
+    #####: 1347:    while (*s)
+    #####: 1348:	if (qa == 1 ?
+    #####: 1349:            (s[0] == '\'' && s[1] == '\'') :
+    #####: 1350:            (s[0] == '\'' && s[1] == '\\' && s[2] == '\'' && s[3] == '\'')) {
+    #####: 1351:            ret += qa;
+    #####: 1352:            *t++ = '\'';
+    #####: 1353:            s += qa + 1;
+        -: 1354:	} else
+    #####: 1355:	    *t++ = *s++;
+    #####: 1356:    *t = '\0';
+        -: 1357:
+    #####: 1358:    return ret;
+        -: 1359:}
+        -: 1360:
+        -: 1361:/* This should probably be moved into tokenize(). */
+        -: 1362:
+        -: 1363:/**/
+        -: 1364:mod_export char *
+    #####: 1365:ctokenize(char *p)
+        -: 1366:{
+    #####: 1367:    char *r = p;
+    #####: 1368:    int bslash = 0;
+        -: 1369:
+    #####: 1370:    tokenize(p);
+        -: 1371:
+    #####: 1372:    for (p = r; *p; p++) {
+    #####: 1373:	if (*p == '\\')
+    #####: 1374:	    bslash = 1;
+        -: 1375:	else {
+    #####: 1376:	    if (*p == '$' || *p == '{' || *p == '}') {
+    #####: 1377:		if (bslash)
+    #####: 1378:		    p[-1] = Bnull;
+        -: 1379:		else
+    #####: 1380:		    *p = (*p == '$' ? String :
+    #####: 1381:			  (*p == '{' ? Inbrace : Outbrace));
+        -: 1382:	    }
+    #####: 1383:	    bslash = 0;
+        -: 1384:	}
+        -: 1385:    }
+    #####: 1386:    return r;
+        -: 1387:}
+        -: 1388:
+        -: 1389:
+        -: 1390:/*
+        -: 1391: * This function reconstructs the full completion argument in
+        -: 1392: * heap memory by concatenating and, if untok is non-zero, untokenizing
+        -: 1393: * the ignored prefix and the active prefix and suffix.
+        -: 1394: * (It appears from the function that the ignored prefix won't
+        -: 1395: * be tokenized but I haven't checked this.)
+        -: 1396: * ipl and/or pl may be passed and if so will be set to the ignored
+        -: 1397: * prefix length and active prefix length respectively.
+        -: 1398: */
+        -: 1399:
+        -: 1400:/**/
+        -: 1401:mod_export char *
+    #####: 1402:comp_str(int *ipl, int *pl, int untok)
+        -: 1403:{
+    #####: 1404:    char *p = dupstring(compprefix);
+    #####: 1405:    char *s = dupstring(compsuffix);
+    #####: 1406:    char *ip = dupstring(compiprefix);
+        -: 1407:    char *str;
+        -: 1408:    int lp, ls, lip;
+        -: 1409:
+    #####: 1410:    if (!untok) {
+    #####: 1411:	ctokenize(p);
+    #####: 1412:	remnulargs(p);
+    #####: 1413:	ctokenize(s);
+    #####: 1414:	remnulargs(s);
+        -: 1415:    }
+    #####: 1416:    lp = strlen(p);
+    #####: 1417:    ls = strlen(s);
+    #####: 1418:    lip = strlen(ip);
+    #####: 1419:    str = zhalloc(lip + lp + ls + 1);
+    #####: 1420:    strcpy(str, ip);
+    #####: 1421:    strcat(str, p);
+    #####: 1422:    strcat(str, s);
+        -: 1423:
+    #####: 1424:    if (ipl)
+    #####: 1425:	*ipl = lip;
+    #####: 1426:    if (pl)
+    #####: 1427:	*pl = lp;
+        -: 1428:
+    #####: 1429:    return str;
+        -: 1430:}
+        -: 1431:
+        -: 1432:/**/
+        -: 1433:mod_export char *
+      168: 1434:comp_quoting_string(int stype)
+        -: 1435:{
+      168: 1436:    switch (stype)
+        -: 1437:    {
+    #####: 1438:    case QT_SINGLE:
+    #####: 1439:	return "'";
+    #####: 1440:    case QT_DOUBLE:
+    #####: 1441:	return "\"";
+    #####: 1442:    case QT_DOLLARS:
+    #####: 1443:	return "$'";
+      168: 1444:    default:			/* shuts up compiler */
+      168: 1445:	return "\\";
+        -: 1446:    }
+        -: 1447:}
+        -: 1448:
+        -: 1449:/*
+        -: 1450: * This is the code behind compset -q, which splits the
+        -: 1451: * the current word as if it were a command line.
+        -: 1452: *
+        -: 1453: * This is one of those completion functions that merits the
+        -: 1454: * coveted title "not just ordinarily horrific".
+        -: 1455: */
+        -: 1456:
+        -: 1457:/**/
+        -: 1458:int
+    #####: 1459:set_comp_sep(void)
+        -: 1460:{
+        -: 1461:    /*
+        -: 1462:     * s: full (reconstructed) completion argument
+        -: 1463:     * lip: ignored prefix length
+        -: 1464:     * lp: active prefix length
+        -: 1465:     * 1: the number "one" => untokenize
+        -: 1466:     */
+        -: 1467:    int lip, lp;
+    #####: 1468:    char *s = comp_str(&lip, &lp, 1);
+    #####: 1469:    LinkList foo = newlinklist();
+        -: 1470:    LinkNode n;
+        -: 1471:    /* Save word position */
+    #####: 1472:    int owe = we, owb = wb;
+        -: 1473:    /*
+        -: 1474:     * Values of word beginning and end and cursor after subtractions
+        -: 1475:     * due to separators.   I think these are indexes into zlemetaline,
+        -: 1476:     * but with some subtractions; they don't see to be indexes into
+        -: 1477:     * s, which is the current argument before quote stripping.
+        -: 1478:     */
+        -: 1479:    int swb, swe, scs;
+        -: 1480:    /* Offset into current word after subtractions. */
+        -: 1481:    int soffs;
+        -: 1482:    /* Current state of error suppression. */
+    #####: 1483:    int ne = noerrs;
+        -: 1484:    /* Length of tmp string */
+        -: 1485:    int tl;
+        -: 1486:    /* flag that we've got the current completion word, perhaps? */
+    #####: 1487:    int got = 0;
+        -: 1488:    /*
+        -: 1489:     * i starts off as the number of the completion word we're looking at,
+        -: 1490:     * which is why it's initialised, but is then recycled as a
+        -: 1491:     * loop variable.  j is always a loop variable.
+        -: 1492:     */
+    #####: 1493:    int i = 0, j;
+        -: 1494:    /*
+        -: 1495:     * cur: completion word currently being completed (0 offset).
+        -: 1496:     * sl: length of string s, the string we're manipulating.
+        -: 1497:     * css: modification of offset into current word beyond cursor
+        -: 1498:     * position due to the effects of backslashing, counted during our first
+        -: 1499:     * examination of compqstack for double quotes and dollar quotes.
+        -: 1500:     * However, for some reason, when the current quoting scheme is
+        -: 1501:     * backslashing we modify swb directly later rather than counting it at
+        -: 1502:     * the point we remove the backquotes.
+        -: 1503:     */
+    #####: 1504:    int cur = -1, sl, css = 0;
+        -: 1505:    /*
+        -: 1506:     * Flag that we're doing the thing with backslashes mentioned
+        -: 1507:     * for css.
+        -: 1508:     */
+    #####: 1509:    int remq = 0;
+        -: 1510:    /*
+        -: 1511:     * dq: backslash-removals for double quotes
+        -: 1512:     * odq: value of dq before modification for active (Bnull'ed)
+        -: 1513:     *      backslashes, or something.
+        -: 1514:     * sq: quote-removals for single quotes; either RCQUOTES or '\'' which
+        -: 1515:     *     are specially handled (but currently only if RCQUOTES is not
+        -: 1516:     *     set, which isn't necessarily correct if the quotes were typed by
+        -: 1517:     *     the user).
+        -: 1518:     * osq: c.f. odq, taking account of Snull's and embedded "'"'s.
+        -: 1519:     * qttype: type of quotes using standard QT_* definitions.
+        -: 1520:     * lsq: when quoting is single quotes (QT_SINGLE), counts the offset
+        -: 1521:     *      adjustment needed in the word being examined in the lexer loop.
+        -: 1522:     * sqq: the value of lsq for the current completion word.
+        -: 1523:     * qa:  not, unfortunately, a question and answer session with the
+        -: 1524:     *      original author, but the number of characters being removed
+        -: 1525:     *      when stripping single quotes: 1 for RCQUOTES, 3 otherwise
+        -: 1526:     *      (because we leave a "'" in the final string).
+        -: 1527:     */
+    #####: 1528:    int dq = 0, odq, sq = 0, qttype, sqq = 0, lsq = 0, qa = 0;
+        -: 1529:    /* dolq: like sq and dq but for dollars quoting. */
+    #####: 1530:    int dolq = 0;
+        -: 1531:    /* remember some global variable values (except lp is local) */
+    #####: 1532:    int ois = instring, oib = inbackt, noffs = lp, ona = noaliases;
+        -: 1533:    /*
+        -: 1534:     * tmp: used for temporary processing of strings
+        -: 1535:     * p: loop pointer for tmp etc.
+        -: 1536:     * ns: holds yet another version of the current completion string,
+        -: 1537:     *     goodness knows how it differs from s, tmp, ts, ...
+        -: 1538:     * ts: untokenized ns
+        -: 1539:     * ol: saves old metafied editing line
+        -: 1540:     * sav: save character when NULLed; careful, there's a nested
+        -: 1541:     *      definition of sav just to keep you on your toes
+        -: 1542:     * qp, qs: prefix and suffix strings deduced from s.
+        -: 1543:     */
+        -: 1544:    char *tmp, *p, *ns, *ts, *ol, sav, *qp, *qs;
+        -: 1545:
+        -: 1546:    METACHECK();
+        -: 1547:
+    #####: 1548:    s += lip;
+    #####: 1549:    wb += lip;
+    #####: 1550:    untokenize(s);
+        -: 1551:
+    #####: 1552:    swb = swe = soffs = 0;
+    #####: 1553:    ns = NULL;
+        -: 1554:
+        -: 1555:    /* Put the string in the lexer buffer and call the lexer to *
+        -: 1556:     * get the words we have to expand.                        */
+    #####: 1557:    zle_save_positions();
+    #####: 1558:    ol = zlemetaline;
+    #####: 1559:    addedx = 1;
+    #####: 1560:    noerrs = 1;
+    #####: 1561:    zcontext_save();
+    #####: 1562:    lexflags = LEXFLAGS_ZLE;
+        -: 1563:    /*
+        -: 1564:     * tl is the length of the temporary string including
+        -: 1565:     * the space at the start and the x at the cursor position,
+        -: 1566:     * but not the NULL byte.
+        -: 1567:     */
+    #####: 1568:    tl = strlen(s) + 2;
+    #####: 1569:    tmp = (char *) zhalloc(tl + 1);
+    #####: 1570:    tmp[0] = ' ';
+    #####: 1571:    memcpy(tmp + 1, s, noffs);
+    #####: 1572:    tmp[(scs = zlemetacs = 1 + noffs)] = 'x';
+    #####: 1573:    strcpy(tmp + 2 + noffs, s + noffs);
+        -: 1574:
+    #####: 1575:    switch ((qttype = *compqstack)) {
+    #####: 1576:    case QT_BACKSLASH:
+    #####: 1577:        remq = 1;
+    #####: 1578:	tmp = rembslash(tmp);
+    #####: 1579:        break;
+        -: 1580:
+    #####: 1581:    case QT_SINGLE:
+    #####: 1582:        if (isset(RCQUOTES))
+    #####: 1583:            qa = 1;
+        -: 1584:        else
+    #####: 1585:            qa = 3;
+    #####: 1586:        sq = remsquote(tmp);
+    #####: 1587:        break;
+        -: 1588:
+    #####: 1589:    case QT_DOUBLE:
+    #####: 1590:        for (j = 0, p = tmp; *p; p++, j++)
+        -: 1591:	    /*
+        -: 1592:	     * I added the handling for " here: before it just handled
+        -: 1593:	     * backslashes.  This meant that a \" inside a " wasn't
+        -: 1594:	     * handled properly.  I presume that was an oversight.
+        -: 1595:	     * I don't know if this is the right place to fix this
+        -: 1596:	     * particular problem because I'm utterly confused by
+        -: 1597:	     * the structure of the code in this function.
+        -: 1598:	     */
+    #####: 1599:            if (*p == '\\' && (p[1] == '\\' || p[1] == '"')) {
+    #####: 1600:		dq++;
+    #####: 1601:                chuck(p);
+    #####: 1602:		if (*p == '"')
+    #####: 1603:		    zlemetacs--;
+    #####: 1604:		else if (j > zlemetacs) {
+    #####: 1605:                    zlemetacs++;
+    #####: 1606:                    css++;
+        -: 1607:                }
+    #####: 1608:                if (!*p)
+    #####: 1609:                    break;
+        -: 1610:            }
+    #####: 1611:	break;
+        -: 1612:
+    #####: 1613:    case QT_DOLLARS:
+    #####: 1614:	j = zlemetacs;
+    #####: 1615:	tmp = getkeystring(tmp, &sl,
+        -: 1616:			   GETKEY_DOLLAR_QUOTE|GETKEY_UPDATE_OFFSET,
+        -: 1617:			   &zlemetacs);
+        -: 1618:	/* The number of bytes we removed because of $' quoting */
+    #####: 1619:	dolq = tl - sl;
+        -: 1620:	/* Offset into the word is modified, too... */
+    #####: 1621:	css += zlemetacs - j;
+    #####: 1622:	break;
+        -: 1623:
+    #####: 1624:    case QT_NONE:
+        -: 1625:    default: /* to silence compiler warnings */
+        -: 1626:#ifdef DEBUG
+        -: 1627:	dputs("BUG: head of compqstack is NULL");
+        -: 1628:#endif
+    #####: 1629:	break;
+        -: 1630:
+        -: 1631:    }
+    #####: 1632:    odq = dq;
+    #####: 1633:    inpush(dupstrspace(tmp), 0, NULL);
+    #####: 1634:    zlemetaline = tmp;
+        -: 1635:    /*
+        -: 1636:     * tl is the length of temporary string, calculated above.
+        -: 1637:     * It seems zlemetall need not include the 'x' added at the cursor.
+        -: 1638:     * addedx is taken care of in function gotword() (lex.c).
+        -: 1639:     */
+    #####: 1640:    zlemetall = tl - addedx;
+    #####: 1641:    strinbeg(0);
+    #####: 1642:    noaliases = 1;
+        -: 1643:    do {
+    #####: 1644:	ctxtlex();
+    #####: 1645:	if (tok == LEXERR) {
+        -: 1646:	    int j;
+        -: 1647:
+    #####: 1648:	    if (!tokstr)
+    #####: 1649:		break;
+        -: 1650:	    /*
+        -: 1651:	     * If there was an error, it may be because we're in
+        -: 1652:	     * an unterminated string.  Count the active quote
+        -: 1653:	     * characters to see.  We need an odd number.
+        -: 1654:	     * This works for $', too, since the ' there is an Snull.
+        -: 1655:	     */
+    #####: 1656:	    for (j = 0, p = tokstr; *p; p++) {
+    #####: 1657:		if (*p == Snull || *p == Dnull)
+    #####: 1658:		    j++;
+        -: 1659:            }
+    #####: 1660:	    if (j & 1) {
+    #####: 1661:		tok = STRING;
+    #####: 1662:		if (p > tokstr && p[-1] == ' ')
+    #####: 1663:		    p[-1] = '\0';
+        -: 1664:	    }
+        -: 1665:	}
+    #####: 1666:	if (tok == ENDINPUT)
+    #####: 1667:	    break;
+    #####: 1668:	if (tokstr && *tokstr) {
+    #####: 1669:            for (p = tokstr; dq && *p; p++) {
+    #####: 1670:                if (*p == Bnull) {
+    #####: 1671:                    dq--;
+    #####: 1672:                    if (p[1] == '\\')
+    #####: 1673:                        dq--;
+        -: 1674:                }
+        -: 1675:            }
+    #####: 1676:            if (qttype == QT_SINGLE) {
+    #####: 1677:                for (p = tokstr, lsq = 0; *p; p++) {
+    #####: 1678:                    if (sq && *p == Snull)
+    #####: 1679:                        sq -= qa;
+    #####: 1680:                    if (*p == '\'') {
+    #####: 1681:                        sq -= qa;
+    #####: 1682:                        lsq += qa;
+        -: 1683:                    }
+        -: 1684:                }
+        -: 1685:            }
+        -: 1686:            else
+    #####: 1687:                lsq = 0;
+    #####: 1688:	    addlinknode(foo, (p = ztrdup(tokstr)));
+        -: 1689:        }
+        -: 1690:	else
+    #####: 1691:	    p = NULL;
+    #####: 1692:	if (!got && !lexflags) {
+        -: 1693:	    DPUTS(!p, "no current word in substr");
+    #####: 1694:	    got = 1;
+    #####: 1695:	    cur = countlinknodes(foo) - 1;  /* cur is 0 offset */
+    #####: 1696:	    swb = wb - dq - sq - dolq;
+    #####: 1697:	    swe = we - dq - sq - dolq;
+    #####: 1698:            sqq = lsq;
+    #####: 1699:	    soffs = zlemetacs - swb - css;
+        -: 1700:	    DPUTS2(p[soffs] != 'x', "expecting 'x' at offset %d of \"%s\"",
+        -: 1701:		   soffs, p);
+    #####: 1702:	    chuck(p + soffs);
+    #####: 1703:	    ns = dupstring(p);
+        -: 1704:	}
+    #####: 1705:	i++;
+    #####: 1706:    } while (tok != ENDINPUT && tok != LEXERR);
+    #####: 1707:    noaliases = ona;
+    #####: 1708:    strinend();
+    #####: 1709:    inpop();
+    #####: 1710:    errflag &= ~ERRFLAG_ERROR;
+    #####: 1711:    noerrs = ne;
+    #####: 1712:    zcontext_restore();
+    #####: 1713:    wb = owb;
+    #####: 1714:    we = owe;
+    #####: 1715:    zlemetaline = ol;
+    #####: 1716:    zle_restore_positions();
+    #####: 1717:    if (cur < 0 || i < 1)
+    #####: 1718:	return 1;
+    #####: 1719:    owb = offs;
+    #####: 1720:    offs = soffs;
+    #####: 1721:    if ((p = check_param(ns, 0, 1))) {
+    #####: 1722:	for (p = ns; *p; p++)
+    #####: 1723:	    if (*p == Dnull)
+    #####: 1724:		*p = '"';
+    #####: 1725:	    else if (*p == Snull)
+    #####: 1726:		*p = '\'';
+        -: 1727:    }
+    #####: 1728:    offs = owb;
+        -: 1729:
+    #####: 1730:    untokenize(ts = dupstring(ns));
+        -: 1731:
+    #####: 1732:    if (*ns == Snull || *ns == Dnull ||
+    #####: 1733:	((*ns == String || *ns == Qstring) && ns[1] == Snull)) {
+    #####: 1734:	char *tsptr = ts, *nsptr = ns, sav;
+    #####: 1735:	switch (*ns) {
+    #####: 1736:	case Snull:
+    #####: 1737:	    instring = QT_SINGLE;
+    #####: 1738:	    break;
+        -: 1739:
+    #####: 1740:	case Dnull:
+    #####: 1741:	    instring = QT_DOUBLE;
+    #####: 1742:	    break;
+        -: 1743:
+    #####: 1744:	default:
+    #####: 1745:	    instring = QT_DOLLARS;
+    #####: 1746:	    nsptr++;
+    #####: 1747:	    tsptr++;
+    #####: 1748:	    swb++;
+    #####: 1749:	    break;
+        -: 1750:	}
+        -: 1751:
+    #####: 1752:	inbackt = 0;
+    #####: 1753:	swb++;
+    #####: 1754:	if (nsptr[strlen(nsptr) - 1] == *nsptr && nsptr[1])
+    #####: 1755:	    swe--;
+    #####: 1756:	zsfree(autoq);
+    #####: 1757:	sav = *++tsptr;
+    #####: 1758:	*tsptr = '\0';
+    #####: 1759:	autoq = ztrdup(compqstack[1] ? "" : multiquote(ts, 1));
+    #####: 1760:	*(ts = tsptr) = sav;
+        -: 1761:    } else {
+    #####: 1762:	instring = QT_NONE;
+    #####: 1763:	zsfree(autoq);
+    #####: 1764:	autoq = NULL;
+        -: 1765:    }
+        -: 1766:
+        -: 1767:    /*
+        -: 1768:     * In the following loop we look for parse quotes yet again.
+        -: 1769:     * I don't really have the faintest idea why, but given that
+        -: 1770:     * ns is immediately reassigned from ts afterwards (why? what's
+        -: 1771:     * wrong with it being in ts?) and scs isn't used again, I
+        -: 1772:     * presume it's in aid of getting the indexes for word beginning
+        -: 1773:     * (swb) and start offset (soffs) into s correct.
+        -: 1774:     *
+        -: 1775:     * I think soffs is an index into s, while swb and scs are indexes
+        -: 1776:     * into the full line but with some jiggery pokery for quote removal.
+        -: 1777:     */
+    #####: 1778:    for (p = ns, i = swb; *p; p++, i++) {
+    #####: 1779:	if (inull(*p)) {
+    #####: 1780:	    if (i < scs) {
+    #####: 1781:		if (*p == Bnull) {
+    #####: 1782:                    if (p[1] && remq)
+    #####: 1783:                        swb -= 2;
+    #####: 1784:                    if (odq) {
+    #####: 1785:                        swb--;
+    #####: 1786:                        if (p[1] == '\\')
+    #####: 1787:                            swb--;
+        -: 1788:                    }
+        -: 1789:                }
+        -: 1790:	    }
+    #####: 1791:	    if (p[1] || *p != Bnull) {
+    #####: 1792:		if (*p == Bnull) {
+    #####: 1793:		    if (scs == i + 1)
+    #####: 1794:			scs++, soffs++;
+        -: 1795:		} else {
+    #####: 1796:		    if (scs > i--)
+    #####: 1797:			scs--;
+        -: 1798:		}
+        -: 1799:	    } else {
+    #####: 1800:		if (scs == swe)
+    #####: 1801:		    scs--;
+        -: 1802:	    }
+    #####: 1803:	    chuck(p--);
+        -: 1804:	}
+        -: 1805:    }
+    #####: 1806:    ns = ts;
+        -: 1807:
+    #####: 1808:    if (instring && strchr(compqstack, QT_BACKSLASH)) {
+    #####: 1809:	int rl = strlen(ns), ql = strlen(multiquote(ns, !!compqstack[1]));
+        -: 1810:
+    #####: 1811:	if (ql > rl)
+    #####: 1812:	    swb -= ql - rl;
+        -: 1813:    }
+        -: 1814:    /*
+        -: 1815:     * Using the word beginning and end as an index into the reconstructed
+        -: 1816:     * string s, swb and swe, we can get the strings before and after
+        -: 1817:     * the word we're considering.
+        -: 1818:     *
+        -: 1819:     * Because it would be too easy otherwise, there are random
+        -: 1820:     * additional subtractions to be made.  The 1 might be something
+        -: 1821:     * to do with the space that appeared mysteriously at the start of the
+        -: 1822:     * line when we passed it through the lexer.  The sqq is to do with
+        -: 1823:     * the single quote quoting when we passed it through the lexer.
+        -: 1824:     *
+        -: 1825:     * TODO: I added the "+ dq" because it seemed to improve matters for
+        -: 1826:     * double quoting but the fact it's arrived at in a rather different way
+        -: 1827:     * from sqq may indicate this is wrong.  $'...' may need something, too.
+        -: 1828:     */
+    #####: 1829:    sav = s[(i = swb - 1 - sqq + dq)];
+    #####: 1830:    s[i] = '\0';
+    #####: 1831:    qp = (qttype == QT_SINGLE) ? dupstring(s) : rembslash(s);
+    #####: 1832:    s[i] = sav;
+    #####: 1833:    if (swe < swb)
+    #####: 1834:	swe = swb;
+    #####: 1835:    swe--;
+    #####: 1836:    sl = strlen(s);
+    #####: 1837:    if (swe > sl) {
+    #####: 1838:	swe = sl;
+    #####: 1839:	if ((int)strlen(ns) > swe - swb + 1)
+    #####: 1840:	    ns[swe - swb + 1] = '\0';
+        -: 1841:    }
+    #####: 1842:    qs = (qttype == QT_SINGLE) ? dupstring(s + swe) : rembslash(s + swe);
+    #####: 1843:    sl = strlen(ns);
+    #####: 1844:    if (soffs > sl)
+    #####: 1845:	soffs = sl;
+    #####: 1846:    if (qttype == QT_SINGLE) {
+    #####: 1847:        remsquote(qp);
+    #####: 1848:        remsquote(qs);
+        -: 1849:    }
+        -: 1850:    {
+    #####: 1851:	int set = CP_QUOTE | CP_QUOTING, unset = 0;
+        -: 1852:
+    #####: 1853:	tl = strlen(compqstack);
+    #####: 1854:	p = zalloc(tl + 2);
+    #####: 1855:	*p = (char)(instring == QT_NONE ? QT_BACKSLASH : instring);
+    #####: 1856:	memcpy(p+1, compqstack, tl);
+    #####: 1857:	p[tl+1] = '\0';
+    #####: 1858:	zsfree(compqstack);
+    #####: 1859:	compqstack = p;
+        -: 1860:
+    #####: 1861:	zsfree(compquote);
+    #####: 1862:	zsfree(compquoting);
+    #####: 1863:	switch (instring) {
+    #####: 1864:	case QT_DOUBLE:
+    #####: 1865:	    compquote = "\"";
+    #####: 1866:	    compquoting = "double";
+    #####: 1867:	    break;
+        -: 1868:
+    #####: 1869:	case QT_SINGLE:
+    #####: 1870:	    compquote = "'";
+    #####: 1871:	    compquoting = "single";
+    #####: 1872:	    break;
+        -: 1873:
+    #####: 1874:	case QT_DOLLARS:
+    #####: 1875:	    compquote = "$'";
+    #####: 1876:	    compquoting = "dollars";
+    #####: 1877:	    break;
+        -: 1878:
+    #####: 1879:	default:
+    #####: 1880:	    compquote = compquoting = "";
+    #####: 1881:	    unset = set;
+    #####: 1882:	    set = 0;
+    #####: 1883:	    break;
+        -: 1884:	}
+    #####: 1885:	compquote = ztrdup(compquote);
+    #####: 1886:	compquoting = ztrdup(compquoting);
+    #####: 1887:	comp_setunset(0, 0, set, unset);
+        -: 1888:
+    #####: 1889:	zsfree(compprefix);
+    #####: 1890:	zsfree(compsuffix);
+    #####: 1891:	if (unset(COMPLETEINWORD)) {
+    #####: 1892:	    untokenize(ns);
+    #####: 1893:	    compprefix = ztrdup(ns);
+    #####: 1894:	    compsuffix = ztrdup("");
+        -: 1895:	} else {
+        -: 1896:	    char *ss, sav;
+        -: 1897:	    
+    #####: 1898:	    ss = ns + soffs;
+        -: 1899:
+    #####: 1900:	    sav = *ss;
+    #####: 1901:	    *ss = '\0';
+    #####: 1902:	    untokenize(ns);
+    #####: 1903:	    compprefix = ztrdup(ns);
+    #####: 1904:	    *ss = sav;
+    #####: 1905:	    untokenize(ss);
+    #####: 1906:	    compsuffix = ztrdup(ss);
+        -: 1907:	}
+    #####: 1908:        if ((i = strlen(compprefix)) > 1 && compprefix[i - 1] == '\\' &&
+    #####: 1909:	    compprefix[i - 2] != '\\' && compprefix[i - 2] != Meta)
+    #####: 1910:            compprefix[i - 1] = '\0';
+        -: 1911:        
+    #####: 1912:	tmp = tricat(compqiprefix, compiprefix, multiquote(qp, 1));
+    #####: 1913:	zsfree(compqiprefix);
+    #####: 1914:	compqiprefix = tmp;
+    #####: 1915:	tmp = tricat(multiquote(qs, 1), compisuffix, compqisuffix);
+    #####: 1916:	zsfree(compqisuffix);
+    #####: 1917:	compqisuffix = tmp;
+    #####: 1918:	zsfree(compiprefix);
+    #####: 1919:	compiprefix = ztrdup("");
+    #####: 1920:	zsfree(compisuffix);
+    #####: 1921:	compisuffix = ztrdup("");
+    #####: 1922:	freearray(compwords);
+    #####: 1923:	i = countlinknodes(foo);
+    #####: 1924:	compwords = (char **) zalloc((i + 1) * sizeof(char *));
+    #####: 1925:	for (n = firstnode(foo), i = 0; n; incnode(n), i++) {
+    #####: 1926:	    p = compwords[i] = (char *) getdata(n);
+    #####: 1927:	    untokenize(p);
+        -: 1928:	}
+        -: 1929:	/* The current position shouldn't exceed the new word count */
+    #####: 1930:	if ((compcurrent = cur + 1) > i) {
+        -: 1931:	    DPUTS2(1, "compcurrent=%d > number_of_words=%d", compcurrent, i);
+    #####: 1932:	    compcurrent = i;
+        -: 1933:	}
+    #####: 1934:	compwords[i] = NULL;
+        -: 1935:    }
+    #####: 1936:    instring = ois;
+    #####: 1937:    inbackt = oib;
+        -: 1938:
+    #####: 1939:    return 0;
+        -: 1940:}
+        -: 1941:
+        -: 1942:/* This stores the strings from the list in an array. */
+        -: 1943:
+        -: 1944:/**/
+        -: 1945:mod_export void
+      911: 1946:set_list_array(char *name, LinkList l)
+        -: 1947:{
+      911: 1948:    setaparam(name, zlinklist2array(l, 1));
+      911: 1949:}
+        -: 1950:
+        -: 1951:/* Get the words from a variable or a (list of words). */
+        -: 1952:
+        -: 1953:/**/
+        -: 1954:mod_export char **
+      532: 1955:get_user_var(char *nam)
+        -: 1956:{
+      532: 1957:    if (!nam)
+    #####: 1958:	return NULL;
+      532: 1959:    else if (*nam == '(') {
+        -: 1960:	/* It's a (...) list, not a parameter name. */
+        -: 1961:	char *ptr, *s, **uarr, **aptr;
+    #####: 1962:	int count = 0, notempty = 0, brk = 0;
+    #####: 1963:	LinkList arrlist = newlinklist();
+        -: 1964:
+    #####: 1965:	ptr = dupstring(nam);
+    #####: 1966:	s = ptr + 1;
+    #####: 1967:	while (*++ptr) {
+    #####: 1968:	    if (*ptr == '\\' && ptr[1])
+    #####: 1969:		chuck(ptr), notempty = 1;
+    #####: 1970:	    else if (*ptr == ',' || inblank(*ptr) || *ptr == ')') {
+    #####: 1971:		if (*ptr == ')')
+    #####: 1972:		    brk++;
+    #####: 1973:		if (notempty) {
+    #####: 1974:		    *ptr = '\0';
+    #####: 1975:		    count++;
+    #####: 1976:		    if (*s == '\n')
+    #####: 1977:			s++;
+    #####: 1978:		    addlinknode(arrlist, s);
+        -: 1979:		}
+    #####: 1980:		s = ptr + 1;
+    #####: 1981:		notempty = 0;
+        -: 1982:	    } else {
+    #####: 1983:		notempty = 1;
+    #####: 1984:		if (*ptr == Meta)
+    #####: 1985:		    ptr++;
+        -: 1986:	    }
+    #####: 1987:	    if (brk)
+    #####: 1988:		break;
+        -: 1989:	}
+    #####: 1990:	if (!brk || !count)
+    #####: 1991:	    return NULL;
+    #####: 1992:	*ptr = '\0';
+    #####: 1993:	aptr = uarr = (char **) zhalloc(sizeof(char *) * (count + 1));
+        -: 1994:
+    #####: 1995:	while ((*aptr++ = (char *)ugetnode(arrlist)));
+    #####: 1996:	uarr[count] = NULL;
+    #####: 1997:	return uarr;
+        -: 1998:    } else {
+        -: 1999:	/* Otherwise it should be a parameter name. */
+      532: 2000:	char **arr = NULL, *val;
+        -: 2001:
+      532: 2002:	queue_signals();
+      532: 2003:	if ((arr = getaparam(nam)) || (arr = gethparam(nam)))
+      532: 2004:	    arr = (incompfunc ? arrdup(arr) : arr);
+    #####: 2005:	else if ((val = getsparam(nam))) {
+    #####: 2006:	    arr = (char **) zhalloc(2*sizeof(char *));
+    #####: 2007:	    arr[0] = (incompfunc ? dupstring(val) : val);
+    #####: 2008:	    arr[1] = NULL;
+        -: 2009:	}
+      532: 2010:	unqueue_signals();
+      532: 2011:	return arr;
+        -: 2012:    }
+        -: 2013:}
+        -: 2014:
+        -: 2015:/*
+        -: 2016: * If KEYS, then NAME is an associative array; return its keys.
+        -: 2017: * Else, NAME is a plain array; return its elements.
+        -: 2018: */
+        -: 2019:
+        -: 2020:static char **
+      140: 2021:get_data_arr(char *name, int keys)
+        -: 2022:{
+        -: 2023:    struct value vbuf;
+        -: 2024:    char **ret;
+        -: 2025:    Value v;
+        -: 2026:
+      140: 2027:    queue_signals();
+      140: 2028:    if (!(v = fetchvalue(&vbuf, &name, 1,
+        -: 2029:			 (keys ? SCANPM_WANTKEYS : SCANPM_WANTVALS) |
+        -: 2030:			 SCANPM_MATCHMANY)))
+    #####: 2031:	ret = NULL;
+        -: 2032:    else
+      140: 2033:	ret = getarrvalue(v);
+      140: 2034:    unqueue_signals();
+        -: 2035:
+      140: 2036:    return ret;
+        -: 2037:}
+        -: 2038:
+        -: 2039:static void
+    #####: 2040:addmatch(char *str, int flags, char ***dispp, int line)
+        -: 2041:{
+    #####: 2042:    Cmatch cm = (Cmatch) zhalloc(sizeof(struct cmatch));
+    #####: 2043:    char **disp = *dispp;
+        -: 2044:
+    #####: 2045:    memset(cm, 0, sizeof(struct cmatch));
+    #####: 2046:    cm->str = dupstring(str);
+    #####: 2047:    cm->flags = (flags |
+    #####: 2048:                 (complist ?
+    #####: 2049:                  ((strstr(complist, "packed") ? CMF_PACKED : 0) |
+    #####: 2050:                   (strstr(complist, "rows")   ? CMF_ROWS   : 0)) : 0));
+    #####: 2051:    if (disp) {
+    #####: 2052:        if (!*++disp)
+    #####: 2053:            disp = NULL;
+    #####: 2054:        if (disp)
+    #####: 2055:            cm->disp = dupstring(*disp);
+    #####: 2056:    } else if (line) {
+    #####: 2057:        cm->disp = dupstring("");
+    #####: 2058:        cm->flags |= CMF_DISPLINE;
+        -: 2059:    }
+    #####: 2060:    mnum++;
+    #####: 2061:    ainfo->count++;
+    #####: 2062:    if (curexpl)
+    #####: 2063:        curexpl->count++;
+        -: 2064:
+    #####: 2065:    addlinknode(matches, cm);
+        -: 2066:
+    #####: 2067:    newmatches = 1;
+    #####: 2068:    mgroup->new = 1;
+        -: 2069:
+    #####: 2070:    *dispp = disp;
+    #####: 2071:}
+        -: 2072:
+        -: 2073:/* This is used by compadd to add a couple of matches. The arguments are
+        -: 2074: * the strings given via options. The last argument is the array with
+        -: 2075: * the matches. */
+        -: 2076:
+        -: 2077:/**/
+        -: 2078:int
+      415: 2079:addmatches(Cadata dat, char **argv)
+        -: 2080:{
+        -: 2081:    /* ms: "match string" - string to use as completion.
+        -: 2082:     * Overloaded at one place as a temporary. */
+      415: 2083:    char *s, *ms, *lipre = NULL, *lisuf = NULL, *lpre = NULL, *lsuf = NULL;
+      415: 2084:    char **aign = NULL, **dparr = NULL, *oaq = autoq, *oppre = dat->ppre;
+      415: 2085:    char *oqp = qipre, *oqs = qisuf, qc, **disp = NULL, *ibuf = NULL;
+      415: 2086:    char **arrays = NULL;
+      415: 2087:    int lpl, lsl, bcp = 0, bcs = 0, bpadd = 0, bsadd = 0;
+      415: 2088:    int ppl = 0, psl = 0, ilen = 0;
+      415: 2089:    int llpl = 0, llsl = 0, nm = mnum, gflags = 0, ohp = haspattern;
+      415: 2090:    int isexact, doadd, ois = instring, oib = inbackt;
+      415: 2091:    Cline lc = NULL, pline = NULL, sline = NULL;
+        -: 2092:    struct cmlist mst;
+      415: 2093:    Cmlist oms = mstack;
+      415: 2094:    Patprog cp = NULL, *pign = NULL;
+      415: 2095:    LinkList aparl = NULL, oparl = NULL, dparl = NULL;
+      415: 2096:    Brinfo bp, bpl = brbeg, obpl, bsl = brend, obsl;
+        -: 2097:    Heap oldheap;
+        -: 2098:
+      415: 2099:    SWITCHHEAPS(oldheap, compheap) {
+      415: 2100:        if (dat->dummies >= 0)
+    #####: 2101:            dat->aflags = ((dat->aflags | CAF_NOSORT | CAF_UNIQCON) &
+        -: 2102:                           ~CAF_UNIQALL);
+        -: 2103:
+        -: 2104:        /* Select the group in which to store the matches. */
+     1245: 2105:        gflags = (((dat->aflags & CAF_NOSORT ) ? CGF_NOSORT  : 0) |
+      830: 2106:                  ((dat->aflags & CAF_MATSORT) ? CGF_MATSORT : 0) |
+      830: 2107:                  ((dat->aflags & CAF_NUMSORT) ? CGF_NUMSORT : 0) |
+      830: 2108:                  ((dat->aflags & CAF_REVSORT) ? CGF_REVSORT : 0) |
+      415: 2109:                  ((dat->aflags & CAF_UNIQALL) ? CGF_UNIQALL : 0) |
+      415: 2110:                  ((dat->aflags & CAF_UNIQCON) ? CGF_UNIQCON : 0));
+      415: 2111:        if (dat->group) {
+      381: 2112:            endcmgroup(NULL);
+      381: 2113:            begcmgroup(dat->group, gflags);
+        -: 2114:        } else {
+       34: 2115:            endcmgroup(NULL);
+       34: 2116:            begcmgroup("default", 0);
+        -: 2117:        }
+      415: 2118:        if (dat->mesg || dat->exp) {
+      389: 2119:            curexpl = (Cexpl) zhalloc(sizeof(struct cexpl));
+      389: 2120:            curexpl->always = !!dat->mesg;
+      389: 2121:            curexpl->count = curexpl->fcount = 0;
+      389: 2122:            curexpl->str = dupstring(dat->mesg ? dat->mesg : dat->exp);
+      778: 2123:            if (dat->mesg)
+       29: 2124:                addexpl(1);
+        -: 2125:        } else
+       26: 2126:            curexpl = NULL;
+      415: 2127:    } SWITCHBACKHEAPS(oldheap);
+        -: 2128:
+      415: 2129:    if (!*argv && !dat->dummies && !(dat->aflags & CAF_ALL))
+    #####: 2130:	return 1;
+        -: 2131:
+      415: 2132:    for (bp = brbeg; bp; bp = bp->next)
+    #####: 2133:	bp->curpos = ((dat->aflags & CAF_QUOTE) ? bp->pos : bp->qpos);
+      415: 2134:    for (bp = brend; bp; bp = bp->next)
+    #####: 2135:	bp->curpos = ((dat->aflags & CAF_QUOTE) ? bp->pos : bp->qpos);
+        -: 2136:
+      415: 2137:    if (dat->flags & CMF_ISPAR)
+    #####: 2138:	dat->flags |= parflags;
+      415: 2139:    if (compquote && (qc = *compquote)) {
+    #####: 2140:	if (qc == '`') {
+    #####: 2141:	    instring = QT_NONE;
+        -: 2142:	    /*
+        -: 2143:	     * Yes, inbackt has always been set to zero here.  I'm
+        -: 2144:	     * sure there's a simple explanation.
+        -: 2145:	     */
+    #####: 2146:	    inbackt = 0;
+    #####: 2147:	    autoq = "";
+        -: 2148:	} else {
+    #####: 2149:	    switch (qc) {
+    #####: 2150:	    case '\'':
+    #####: 2151:		instring = QT_SINGLE;
+    #####: 2152:		break;
+        -: 2153:
+    #####: 2154:	    case '"':
+    #####: 2155:		instring = QT_DOUBLE;
+    #####: 2156:		break;
+        -: 2157:
+    #####: 2158:	    case '$':
+    #####: 2159:		instring = QT_DOLLARS;
+    #####: 2160:		break;
+        -: 2161:	    }
+    #####: 2162:	    inbackt = 0;
+    #####: 2163:	    autoq = multiquote(*compquote == '$' ? compquote+1 : compquote, 1);
+        -: 2164:	}
+        -: 2165:    } else {
+      415: 2166:	instring = QT_NONE;
+      415: 2167:	inbackt = 0;
+      415: 2168:	autoq = NULL;
+        -: 2169:    }
+      415: 2170:    qipre = ztrdup(compqiprefix ? compqiprefix : "");
+      415: 2171:    qisuf = ztrdup(compqisuffix ? compqisuffix : "");
+        -: 2172:
+      415: 2173:    useexact = (compexact && !strcmp(compexact, "accept"));
+        -: 2174:
+        -: 2175:    /* Switch back to the heap that was used when the completion widget
+        -: 2176:     * was invoked. */
+      415: 2177:    SWITCHHEAPS(oldheap, compheap) {
+      415: 2178:	if ((doadd = (!dat->apar && !dat->opar && !dat->dpar))) {
+      188: 2179:	    if (dat->aflags & CAF_MATCH)
+      188: 2180:		hasmatched = 1;
+        -: 2181:	    else
+    #####: 2182:		hasunmatched = 1;
+        -: 2183:	}
+      415: 2184:	if (dat->apar)
+    #####: 2185:	    aparl = newlinklist();
+      415: 2186:	if (dat->opar)
+        7: 2187:	    oparl = newlinklist();
+      415: 2188:	if (dat->dpar) {
+      227: 2189:	    if (*(dat->dpar) == '(')
+    #####: 2190:		dparr = NULL;
+      227: 2191:	    else if ((dparr = get_user_var(dat->dpar)) && !*dparr)
+      143: 2192:		dparr = NULL;
+      227: 2193:	    dparl = newlinklist();
+        -: 2194:	}
+        -: 2195:	/* Store the matcher in our stack of matchers. */
+      415: 2196:	if (dat->match) {
+      278: 2197:	    mst.next = mstack;
+      278: 2198:	    mst.matcher = dat->match;
+      278: 2199:	    mstack = &mst;
+        -: 2200:
+      278: 2201:	    add_bmatchers(dat->match);
+        -: 2202:
+      278: 2203:	    addlinknode(matchers, dat->match);
+      278: 2204:	    dat->match->refc++;
+        -: 2205:	}
+      415: 2206:	if (mnum && (mstack || bmatchers))
+        4: 2207:	    update_bmatchers();
+        -: 2208:
+        -: 2209:	/* Get the suffixes to ignore. */
+      415: 2210:	if (dat->ign && (aign = get_user_var(dat->ign))) {
+        -: 2211:	    char **ap, **sp, *tmp;
+        -: 2212:	    Patprog *pp, prog;
+        -: 2213:
+    #####: 2214:	    pign = (Patprog *) zhalloc((arrlen(aign) + 1) * sizeof(Patprog));
+        -: 2215:
+    #####: 2216:	    for (ap = sp = aign, pp = pign; (tmp = *ap); ap++) {
+    #####: 2217:		tokenize(tmp);
+    #####: 2218:		remnulargs(tmp);
+    #####: 2219:		if (((tmp[0] == Quest && tmp[1] == Star) ||
+    #####: 2220:		     (tmp[1] == Quest && tmp[0] == Star)) &&
+    #####: 2221:		    tmp[2] && !haswilds(tmp + 2))
+    #####: 2222:		    untokenize(*sp++ = tmp + 2);
+    #####: 2223:		else if ((prog = patcompile(tmp, 0, NULL)))
+    #####: 2224:		    *pp++ = prog;
+        -: 2225:	    }
+    #####: 2226:	    *sp = NULL;
+    #####: 2227:	    *pp = NULL;
+    #####: 2228:	    if (!*aign)
+    #####: 2229:		aign = NULL;
+    #####: 2230:	    if (!*pign)
+    #####: 2231:		pign = NULL;
+        -: 2232:	}
+        -: 2233:	/* Get the display strings. */
+      415: 2234:	if (dat->disp)
+       73: 2235:	    if ((disp = get_user_var(dat->disp)))
+       73: 2236:		disp--;
+        -: 2237:	/* Get the contents of the completion variables if we have
+        -: 2238:	 * to perform matching. */
+      415: 2239:	if (dat->aflags & CAF_MATCH) {
+      415: 2240:	    lipre = dupstring(compiprefix);
+      415: 2241:	    lisuf = dupstring(compisuffix);
+      415: 2242:	    lpre = dupstring(compprefix);
+      415: 2243:	    lsuf = dupstring(compsuffix);
+      415: 2244:	    llpl = strlen(lpre);
+      415: 2245:	    llsl = strlen(lsuf);
+        -: 2246:
+      415: 2247:	    if (llpl + (int)strlen(compqiprefix) + (int)strlen(lipre) != origlpre
+      410: 2248:	     || llsl + (int)strlen(compqisuffix) + (int)strlen(lisuf) != origlsuf)
+        5: 2249:		lenchanged = 1;
+        -: 2250:
+        -: 2251:	    /* Test if there is an existing -P prefix. */
+      415: 2252:	    if (dat->pre && *dat->pre) {
+    #####: 2253:		int prefix_length = pfxlen(dat->pre, lpre);
+    #####: 2254:		if (dat->pre[prefix_length] == '\0' ||
+    #####: 2255:		    lpre[prefix_length] == '\0') {
+        -: 2256:		    /* $compadd_args[-P] is a prefix of ${PREFIX}, or
+        -: 2257:		     * vice-versa. */
+    #####: 2258:		    llpl -= prefix_length;
+    #####: 2259:		    lpre += prefix_length;
+        -: 2260:		}
+        -: 2261:	    }
+        -: 2262:	}
+        -: 2263:	/* Now duplicate the strings we have from the command line. */
+      415: 2264:	if (dat->ipre)
+    #####: 2265:	    dat->ipre = (lipre ? dyncat(lipre, dat->ipre) :
+    #####: 2266:			 dupstring(dat->ipre));
+      415: 2267:	else if (lipre)
+      415: 2268:	    dat->ipre = lipre;
+      415: 2269:	if (dat->isuf)
+    #####: 2270:	    dat->isuf = (lisuf ? dyncat(lisuf, dat->isuf) :
+    #####: 2271:			 dupstring(dat->isuf));
+      415: 2272:	else if (lisuf)
+      415: 2273:	    dat->isuf = lisuf;
+      415: 2274:	if (dat->ppre) {
+    #####: 2275:	    dat->ppre = ((dat->flags & CMF_FILE) ?
+    #####: 2276:			 tildequote(dat->ppre, !!(dat->aflags & CAF_QUOTE)) :
+    #####: 2277:			 multiquote(dat->ppre, !!(dat->aflags & CAF_QUOTE)));
+    #####: 2278:	    lpl = strlen(dat->ppre);
+        -: 2279:	} else
+      415: 2280:	    lpl = 0;
+      415: 2281:	if (dat->psuf) {
+    #####: 2282:	    dat->psuf = multiquote(dat->psuf, !!(dat->aflags & CAF_QUOTE));
+    #####: 2283:	    lsl = strlen(dat->psuf);
+        -: 2284:	} else
+      415: 2285:	    lsl = 0;
+      415: 2286:	if (dat->aflags & CAF_MATCH) {
+      415: 2287:	    int ml, gfl = 0;
+      415: 2288:	    char *globflag = NULL;
+        -: 2289:
+      415: 2290:	    if (comppatmatch && *comppatmatch &&
+    #####: 2291:		dat->ppre && lpre[0] == '(' && lpre[1] == '#') {
+        -: 2292:		char *p;
+        -: 2293:
+    #####: 2294:		for (p = lpre + 2; *p && *p != ')'; p++);
+        -: 2295:
+    #####: 2296:		if (*p == ')') {
+    #####: 2297:		    char sav = p[1];
+        -: 2298:
+    #####: 2299:		    p[1] = '\0';
+    #####: 2300:		    globflag = dupstring(lpre);
+    #####: 2301:		    gfl = p - lpre + 1;
+    #####: 2302:		    p[1] = sav;
+        -: 2303:
+    #####: 2304:		    lpre = p + 1;
+    #####: 2305:		    llpl -= gfl;
+        -: 2306:		}
+        -: 2307:	    }
+      415: 2308:	    if ((s = dat->ppre)) {
+    #####: 2309:		if ((ml = match_str(lpre, s, &bpl, 0, NULL, 0, 0, 1)) >= 0) {
+    #####: 2310:		    if (matchsubs) {
+    #####: 2311:			Cline tmp = get_cline(NULL, 0, NULL, 0, NULL, 0, 0);
+        -: 2312:
+    #####: 2313:			tmp->prefix = matchsubs;
+    #####: 2314:			if (matchlastpart)
+    #####: 2315:			    matchlastpart->next = tmp;
+        -: 2316:			else
+    #####: 2317:			    matchparts = tmp;
+        -: 2318:		    }
+    #####: 2319:		    pline = matchparts;
+    #####: 2320:		    lpre += ml;
+    #####: 2321:		    llpl -= ml;
+    #####: 2322:		    bcp = ml;
+    #####: 2323:		    bpadd = strlen(s) - ml;
+        -: 2324:		} else {
+    #####: 2325:		    if (llpl <= lpl && strpfx(lpre, s))
+    #####: 2326:			lpre = dupstring("");
+    #####: 2327:		    else if (llpl > lpl && strpfx(s, lpre))
+    #####: 2328:			lpre += lpl;
+        -: 2329:		    else
+    #####: 2330:			*argv = NULL;
+    #####: 2331:		    bcp = lpl;
+        -: 2332:		}
+        -: 2333:	    }
+      415: 2334:	    if ((s = dat->psuf)) {
+    #####: 2335:		if ((ml = match_str(lsuf, s, &bsl, 0, NULL, 1, 0, 1)) >= 0) {
+    #####: 2336:		    if (matchsubs) {
+    #####: 2337:			Cline tmp = get_cline(NULL, 0, NULL, 0, NULL, 0, CLF_SUF);
+        -: 2338:
+    #####: 2339:			tmp->suffix = matchsubs;
+    #####: 2340:			if (matchlastpart)
+    #####: 2341:			    matchlastpart->next = tmp;
+        -: 2342:			else
+    #####: 2343:			    matchparts = tmp;
+        -: 2344:		    }
+    #####: 2345:		    sline = revert_cline(matchparts);
+    #####: 2346:		    lsuf[llsl - ml] = '\0';
+    #####: 2347:		    llsl -= ml;
+    #####: 2348:		    bcs = ml;
+    #####: 2349:		    bsadd = strlen(s) - ml;
+        -: 2350:		} else {
+    #####: 2351:		    if (llsl <= lsl && strsfx(lsuf, s))
+    #####: 2352:			lsuf = dupstring("");
+    #####: 2353:		    else if (llsl > lsl && strsfx(s, lsuf))
+    #####: 2354:			lsuf[llsl - lsl] = '\0';
+        -: 2355:		    else
+    #####: 2356:			*argv = NULL;
+    #####: 2357:		    bcs = lsl;
+        -: 2358:		}
+        -: 2359:	    }
+      415: 2360:	    if (comppatmatch && *comppatmatch) {
+    #####: 2361:		int is = (*comppatmatch == '*');
+    #####: 2362:		char *tmp = (char *) zhalloc(2 + llpl + llsl + gfl);
+        -: 2363:
+    #####: 2364:		if (gfl) {
+    #####: 2365:		    strcpy(tmp, globflag);
+    #####: 2366:		    strcat(tmp, lpre);
+        -: 2367:		} else
+    #####: 2368:		    strcpy(tmp, lpre);
+    #####: 2369:		tmp[llpl + gfl] = 'x';
+    #####: 2370:		strcpy(tmp + llpl + gfl + is, lsuf);
+        -: 2371:
+    #####: 2372:		tokenize(tmp);
+    #####: 2373:		if (haswilds(tmp)) {
+    #####: 2374:		    if (is)
+    #####: 2375:			tmp[llpl + gfl] = Star;
+    #####: 2376:		    remnulargs(tmp);
+    #####: 2377:		    if ((cp = patcompile(tmp, 0, NULL)))
+    #####: 2378:			haspattern = 1;
+        -: 2379:		}
+        -: 2380:	    }
+        -: 2381:	} else {
+        -: 2382:	    /*
+        -: 2383:	     * (This is called a "comment".  Given you've been
+        -: 2384:	     * spending your time reading the completion code, you
+        -: 2385:	     * may have forgotten what one is.  It's used to deconfuse
+        -: 2386:	     * the poor so-and-so who's landed up having to maintain
+        -: 2387:	     * the code.)
+        -: 2388:	     *
+        -: 2389:	     * So what's going on here then?  I'm glad you asked.  To test
+        -: 2390:	     * whether we should start menu completion, we test whether
+        -: 2391:	     * compstate[insert] has been set to "menu", but only if we found
+        -: 2392:	     * patterns in the code.  It's not clear to me from the
+        -: 2393:	     * documentation why the second condition would apply, but sure
+        -: 2394:	     * enough if I remove it the test suite falls over.  (Testing
+        -: 2395:	     * comppatmatch at the later point doesn't work because compstate
+        -: 2396:	     * is likely to have been reset by the point we actually insert
+        -: 2397:	     * the completions, after all functions have exited; this is at
+        -: 2398:	     * least part of the problem.)  In the present case, we are not
+        -: 2399:	     * doing matching on the code because all the clever stuff has
+        -: 2400:	     * been done over our heads and we've simply between told to
+        -: 2401:	     * insert it.  However, we still need to take account of ambiguous
+        -: 2402:	     * completions properly.  To do this, we rely on the caller to
+        -: 2403:	     * pass down the same prefix/suffix with the patterns that we
+        -: 2404:	     * would get if we were doing matching, and test those for
+        -: 2405:	     * patterns.  This gets us out of the hole apparently without
+        -: 2406:	     * breaking anything.  The particular case where this is needed is
+        -: 2407:	     * approximate file completion: this does its own matching but
+        -: 2408:	     * _approximate still sets the prefix to include the pattern.
+        -: 2409:	     */
+    #####: 2410:	    if (comppatmatch && *comppatmatch) {
+    #####: 2411:		int pflen = strlen(compprefix);
+    #####: 2412:		char *tmp = zhalloc(pflen + strlen(compsuffix) + 1);
+    #####: 2413:		strcpy(tmp, compprefix);
+    #####: 2414:		strcpy(tmp + pflen, compsuffix);
+    #####: 2415:		tokenize(tmp);
+    #####: 2416:		remnulargs(tmp);
+    #####: 2417:		if (haswilds(tmp))
+    #####: 2418:		    haspattern = 1;
+        -: 2419:	    }
+        -: 2420:	}
+      415: 2421:	if (*argv) {
+      243: 2422:	    if (dat->pre)
+    #####: 2423:		dat->pre = dupstring(dat->pre);
+      243: 2424:	    if (dat->suf)
+       23: 2425:		dat->suf = dupstring(dat->suf);
+      243: 2426:	    if (!dat->prpre && (dat->prpre = dupstring(oppre))) {
+    #####: 2427:		singsub(&(dat->prpre));
+    #####: 2428:		untokenize(dat->prpre);
+        -: 2429:	    } else
+      243: 2430:		dat->prpre = dupstring(dat->prpre);
+        -: 2431:	    /* Select the set of matches. */
+        -: 2432:
+      243: 2433:	    if (dat->remf) {
+    #####: 2434:		dat->remf = dupstring(dat->remf);
+    #####: 2435:		dat->rems = NULL;
+      243: 2436:	    } else if (dat->rems)
+    #####: 2437:		dat->rems = dupstring(dat->rems);
+        -: 2438:
+      243: 2439:	    if (lpre)
+      574: 2440:		lpre = ((!(dat->aflags & CAF_QUOTE) &&
+      176: 2441:			 (!dat->ppre && (dat->flags & CMF_FILE))) ?
+      243: 2442:			tildequote(lpre, 1) : multiquote(lpre, 1));
+      243: 2443:	    if (lsuf)
+      243: 2444:		lsuf = multiquote(lsuf, 1);
+        -: 2445:	}
+        -: 2446:	/* Walk through the matches given. */
+      415: 2447:	obpl = bpl;
+      415: 2448:	obsl = bsl;
+      415: 2449:	if (dat->aflags & CAF_ARRAYS) {
+        -: 2450:	    Heap oldheap2;
+        -: 2451:
+      140: 2452:	    SWITCHHEAPS(oldheap2, oldheap) {
+      140: 2453:		arrays = argv;
+      140: 2454:		argv = NULL;
+      422: 2455:		while (*arrays &&
+      140: 2456:		       (!(argv = get_data_arr(*arrays,
+      280: 2457:					      (dat->aflags & CAF_KEYS))) ||
+      140: 2458:			!*argv))
+        2: 2459:		    arrays++;
+      140: 2460:		arrays++;
+      140: 2461:		if (!argv) {
+    #####: 2462:		    ms = NULL;
+    #####: 2463:		    argv = &ms;
+        -: 2464:		}
+      140: 2465:	    } SWITCHBACKHEAPS(oldheap2);
+        -: 2466:	}
+      415: 2467:	if (dat->ppre)
+    #####: 2468:	    ppl = strlen(dat->ppre);
+      415: 2469:	if (dat->psuf)
+    #####: 2470:	    psl = strlen(dat->psuf);
+      792: 2471:	for (; (s = *argv); argv++) {
+        -: 2472:	    int sl;
+      377: 2473:	    bpl = obpl;
+      377: 2474:	    bsl = obsl;
+      377: 2475:	    if (disp) {
+      124: 2476:		if (!*++disp)
+    #####: 2477:		    disp = NULL;
+        -: 2478:	    }
+      377: 2479:	    sl = strlen(s);
+      377: 2480:	    if (aign || pign) {
+    #####: 2481:		int il = ppl + sl + psl, addit = 1;
+        -: 2482:
+    #####: 2483:		if (il + 1> ilen)
+    #####: 2484:		    ibuf = (char *) zhalloc((ilen = il) + 2);
+        -: 2485:
+    #####: 2486:		if (ppl)
+    #####: 2487:		    memcpy(ibuf, dat->ppre, ppl);
+    #####: 2488:		strcpy(ibuf + ppl, s);
+    #####: 2489:		if (psl)
+    #####: 2490:		    strcpy(ibuf + ppl + sl, dat->psuf);
+        -: 2491:
+    #####: 2492:		if (aign) {
+        -: 2493:		    /* Do the suffix-test. If the match has one of the
+        -: 2494:		     * suffixes from aign, we put it in the alternate set. */
+    #####: 2495:		    char **pt = aign;
+        -: 2496:		    int filell;
+        -: 2497:
+    #####: 2498:		    for (; addit && *pt; pt++)
+    #####: 2499:			addit = !((filell = strlen(*pt)) < il &&
+    #####: 2500:				  !strcmp(*pt, ibuf + il - filell));
+        -: 2501:		}
+    #####: 2502:		if (addit && pign) {
+    #####: 2503:		    Patprog *pt = pign;
+        -: 2504:
+    #####: 2505:		    for (; addit && *pt; pt++)
+    #####: 2506:			addit = !pattry(*pt, ibuf);
+        -: 2507:		}
+    #####: 2508:		if (!addit) {
+    #####: 2509:		    compignored++;
+    #####: 2510:		    if (dparr && !*++dparr)
+    #####: 2511:			dparr = NULL;
+    #####: 2512:		    goto next_array;
+        -: 2513:		}
+        -: 2514:	    }
+      377: 2515:	    if (!(dat->aflags & CAF_MATCH)) {
+    #####: 2516:		if (dat->aflags & CAF_QUOTE)
+    #####: 2517:		    ms = dupstring(s);
+        -: 2518:		else
+    #####: 2519:		    sl = strlen(ms = multiquote(s, 0));
+    #####: 2520:		lc = bld_parts(ms, sl, -1, NULL, NULL);
+    #####: 2521:		isexact = 0;
+      489: 2522:	    } else if (!(ms = comp_match(lpre, lsuf, s, cp, &lc,
+      377: 2523:					 (!(dat->aflags & CAF_QUOTE) ?
+      224: 2524:					  (dat->ppre ||
+      224: 2525:					   !(dat->flags & CMF_FILE) ? 1 : 2) : 0),
+        -: 2526:					 &bpl, bcp, &bsl, bcs,
+        -: 2527:					 &isexact))) {
+       36: 2528:		if (dparr && !*++dparr)
+       14: 2529:		    dparr = NULL;
+       36: 2530:		goto next_array;
+        -: 2531:	    }
+      341: 2532:	    if (doadd) {
+        -: 2533:		Cmatch cm;
+        -: 2534:		Brinfo bp;
+        -: 2535:
+      215: 2536:		for (bp = obpl; bp; bp = bp->next)
+    #####: 2537:		    bp->curpos += bpadd;
+      215: 2538:		for (bp = obsl; bp; bp = bp->next)
+    #####: 2539:		    bp->curpos += bsadd;
+        -: 2540:
+      215: 2541:		if ((cm = add_match_data(0, ms, s, lc, dat->ipre, NULL,
+        -: 2542:					 dat->isuf, dat->pre, dat->prpre,
+        -: 2543:					 dat->ppre, pline,
+        -: 2544:					 dat->psuf, sline,
+        -: 2545:					 dat->suf, dat->flags, isexact))) {
+      215: 2546:		    cm->rems = dat->rems;
+      215: 2547:		    cm->remf = dat->remf;
+      215: 2548:		    if (disp)
+      124: 2549:			cm->disp = dupstring(*disp);
+        -: 2550:		}
+        -: 2551:	    } else {
+      126: 2552:		if (dat->apar)
+    #####: 2553:		    addlinknode(aparl, ms);
+      126: 2554:		if (dat->opar)
+       11: 2555:		    addlinknode(oparl, s);
+      126: 2556:		if (dat->dpar && dparr) {
+      126: 2557:		    addlinknode(dparl, *dparr);
+      126: 2558:		    if (!*++dparr)
+       70: 2559:			dparr = NULL;
+        -: 2560:		}
+      126: 2561:		free_cline(lc);
+        -: 2562:	    }
+      377: 2563:	next_array:
+      377: 2564:	    if ((dat->aflags & CAF_ARRAYS) && !argv[1]) {
+        -: 2565:		Heap oldheap2;
+        -: 2566:
+      138: 2567:		SWITCHHEAPS(oldheap2, oldheap) {
+      138: 2568:		    argv = NULL;
+      276: 2569:		    while (*arrays &&
+    #####: 2570:			   (!(argv = get_data_arr(*arrays,
+    #####: 2571:						  (dat->aflags & CAF_KEYS))) ||
+    #####: 2572:			    !*argv))
+    #####: 2573:			arrays++;
+      138: 2574:		    arrays++;
+      138: 2575:		    if (!argv) {
+      138: 2576:			ms = NULL;
+      138: 2577:			argv = &ms;
+        -: 2578:		    }
+      138: 2579:		    argv--;
+      138: 2580:		} SWITCHBACKHEAPS(oldheap2);
+        -: 2581:	    }
+        -: 2582:	}
+      415: 2583:	if (dat->apar)
+    #####: 2584:	    set_list_array(dat->apar, aparl);
+      415: 2585:	if (dat->opar)
+        7: 2586:	    set_list_array(dat->opar, oparl);
+      415: 2587:	if (dat->dpar)
+      227: 2588:	    set_list_array(dat->dpar, dparl);
+      415: 2589:	if (dat->exp)
+      360: 2590:	    addexpl(0);
+      415: 2591:	if (!hasallmatch && (dat->aflags & CAF_ALL)) {
+    #####: 2592:            addmatch("<all>", dat->flags | CMF_ALL, &disp, 1);
+    #####: 2593:	    hasallmatch = 1;
+        -: 2594:	}
+      830: 2595:        while (dat->dummies-- > 0)
+    #####: 2596:            addmatch("", dat->flags | CMF_DUMMY, &disp, 0);
+        -: 2597:
+      415: 2598:    } SWITCHBACKHEAPS(oldheap);
+        -: 2599:
+        -: 2600:    /* We switched back to the current heap, now restore the stack of
+        -: 2601:     * matchers. */
+      415: 2602:    mstack = oms;
+        -: 2603:
+      415: 2604:    instring = ois;
+      415: 2605:    inbackt = oib;
+      415: 2606:    autoq = oaq;
+      415: 2607:    zsfree(qipre);
+      415: 2608:    zsfree(qisuf);
+      415: 2609:    qipre = oqp;
+      415: 2610:    qisuf = oqs;
+        -: 2611:
+      415: 2612:    if (mnum == nm)
+      267: 2613:	haspattern = ohp;
+        -: 2614:
+      415: 2615:    return (mnum == nm);
+        -: 2616:}
+        -: 2617:
+        -: 2618:/* This adds all the data we have for a match. */
+        -: 2619:
+        -: 2620:/**/
+        -: 2621:mod_export Cmatch
+      215: 2622:add_match_data(int alt, char *str, char *orig, Cline line,
+        -: 2623:	       char *ipre, char *ripre, char *isuf,
+        -: 2624:	       char *pre, char *prpre,
+        -: 2625:	       char *ppre, Cline pline,
+        -: 2626:	       char *psuf, Cline sline,
+        -: 2627:	       char *suf, int flags, int exact)
+        -: 2628:{
+        -: 2629:#ifdef MULTIBYTE_SUPPORT
+        -: 2630:    mbstate_t mbs;
+      215: 2631:    char curchar, *t, *f, *fs, *fe, *new_str = NULL;
+        -: 2632:    size_t cnt;
+        -: 2633:    wchar_t wc;
+        -: 2634:#endif
+        -: 2635:    Cmatch cm;
+      215: 2636:    Aminfo ai = (alt ? fainfo : ainfo);
+        -: 2637:    int palen, salen, qipl, ipl, pl, ppl, qisl, isl, psl;
+        -: 2638:    int stl, lpl, lsl, ml;
+        -: 2639:
+      215: 2640:    palen = salen = qipl = ipl = pl = ppl = qisl = isl = psl = 0;
+        -: 2641:
+        -: 2642:    DPUTS(!line, "BUG: add_match_data() without cline");
+        -: 2643:
+      215: 2644:    cline_matched(line);
+      215: 2645:    if (pline)
+    #####: 2646:	cline_matched(pline);
+      215: 2647:    if (sline)
+    #####: 2648:	cline_matched(sline);
+        -: 2649:
+        -: 2650:    /* If there is a path suffix, we build a cline list for it and
+        -: 2651:     * append it to the list for the match itself. */
+      215: 2652:    if (!sline && psuf)
+    #####: 2653:	salen = (psl = strlen(psuf));
+      215: 2654:    if (isuf)
+      215: 2655:	salen += (isl = strlen(isuf));
+      215: 2656:    if (qisuf)
+      215: 2657:	salen += (qisl = strlen(qisuf));
+        -: 2658:
+      215: 2659:    if (salen) {
+    #####: 2660:	Cline pp, p, s, sl = NULL;
+        -: 2661:
+    #####: 2662:	for (pp = NULL, p = line; p->next; pp = p, p = p->next);
+        -: 2663:
+    #####: 2664:	if (psl) {
+    #####: 2665:	    s = bld_parts(psuf, psl, psl, &sl, NULL);
+        -: 2666:
+    #####: 2667:	    if (sline) {
+        -: 2668:		Cline sp;
+        -: 2669:
+    #####: 2670:		sline = cp_cline(sline, 1);
+        -: 2671:
+    #####: 2672:		for (sp = sline; sp->next; sp = sp->next);
+    #####: 2673:		sp->next = s;
+    #####: 2674:		s = sline;
+    #####: 2675:		sline = NULL;
+        -: 2676:	    }
+    #####: 2677:	    if (!(p->flags & (CLF_SUF | CLF_MID)) &&
+    #####: 2678:		!p->llen && !p->wlen && !p->olen) {
+    #####: 2679:		if (p->prefix) {
+        -: 2680:		    Cline q;
+        -: 2681:
+    #####: 2682:		    for (q = p->prefix; q->next; q = q->next);
+    #####: 2683:		    q->next = s->prefix;
+    #####: 2684:		    s->prefix = p->prefix;
+    #####: 2685:		    p->prefix = NULL;
+        -: 2686:		}
+    #####: 2687:		s->flags |= (p->flags & CLF_MATCHED) | CLF_MID;
+    #####: 2688:		free_cline(p);
+    #####: 2689:		if (pp)
+    #####: 2690:		    pp->next = s;
+        -: 2691:		else
+    #####: 2692:		    line = s;
+        -: 2693:	    } else
+    #####: 2694:		p->next = s;
+        -: 2695:	}
+    #####: 2696:	if (isl) {
+        -: 2697:	    Cline tsl;
+        -: 2698:
+    #####: 2699:	    s = bld_parts(isuf, isl, isl, &tsl, NULL);
+        -: 2700:
+    #####: 2701:	    if (sl)
+    #####: 2702:		sl->next = s;
+    #####: 2703:	    else if (sline) {
+        -: 2704:		Cline sp;
+        -: 2705:
+    #####: 2706:		sline = cp_cline(sline, 1);
+        -: 2707:
+    #####: 2708:		for (sp = sline; sp->next; sp = sp->next);
+    #####: 2709:		sp->next = s;
+    #####: 2710:		p->next = sline;
+    #####: 2711:		sline = NULL;
+        -: 2712:	    } else
+    #####: 2713:		p->next = s;
+        -: 2714:
+    #####: 2715:	    sl = tsl;
+        -: 2716:	}
+    #####: 2717:	if (qisl) {
+    #####: 2718:	    Cline qsl = bld_parts(dupstring(qisuf), qisl, qisl, NULL, NULL);
+        -: 2719:
+    #####: 2720:	    qsl->flags |= CLF_SUF;
+    #####: 2721:	    qsl->suffix = qsl->prefix;
+    #####: 2722:	    qsl->prefix = NULL;
+    #####: 2723:	    if (sl)
+    #####: 2724:		sl->next = qsl;
+    #####: 2725:	    else if (sline) {
+        -: 2726:		Cline sp;
+        -: 2727:
+    #####: 2728:		sline = cp_cline(sline, 1);
+        -: 2729:
+    #####: 2730:		for (sp = sline; sp->next; sp = sp->next);
+    #####: 2731:		sp->next = qsl;
+    #####: 2732:		p->next = sline;
+        -: 2733:	    } else
+    #####: 2734:		p->next = qsl;
+        -: 2735:	}
+      215: 2736:    } else if (sline) {
+        -: 2737:	Cline p;
+        -: 2738:
+    #####: 2739:	for (p = line; p->next; p = p->next);
+    #####: 2740:	p->next = cp_cline(sline, 1);
+        -: 2741:    }
+        -: 2742:    /* The prefix is handled differently because the completion code
+        -: 2743:     * is much more eager to insert the -P prefix than it is to insert
+        -: 2744:     * the -S suffix. */
+      215: 2745:    if (qipre)
+      215: 2746:	palen = (qipl = strlen(qipre));
+      215: 2747:    if (ipre)
+      215: 2748:	palen += (ipl = strlen(ipre));
+      215: 2749:    if (pre)
+    #####: 2750:	palen += (pl = strlen(pre));
+      215: 2751:    if (!pline && ppre)
+    #####: 2752:	palen += (ppl = strlen(ppre));
+        -: 2753:
+      215: 2754:    if (pl) {
+    #####: 2755:	if (ppl || pline) {
+        -: 2756:	    Cline lp, p;
+        -: 2757:
+    #####: 2758:	    if (pline)
+    #####: 2759:		for (p = cp_cline(pline, 1), lp = p; lp->next; lp = lp->next);
+        -: 2760:	    else
+    #####: 2761:		p = bld_parts(ppre, ppl, ppl, &lp, NULL);
+        -: 2762:
+    #####: 2763:	    if (lp->prefix && !(line->flags & (CLF_SUF | CLF_MID)) &&
+    #####: 2764:		!lp->llen && !lp->wlen && !lp->olen) {
+        -: 2765:		Cline lpp;
+        -: 2766:
+    #####: 2767:		for (lpp = lp->prefix; lpp->next; lpp = lpp->next);
+        -: 2768:
+    #####: 2769:		lpp->next = line->prefix;
+    #####: 2770:		line->prefix = lp->prefix;
+    #####: 2771:		lp->prefix = NULL;
+        -: 2772:
+    #####: 2773:		free_cline(lp);
+        -: 2774:
+    #####: 2775:		if (p != lp) {
+        -: 2776:		    Cline q;
+        -: 2777:
+    #####: 2778:		    for (q = p; q->next != lp; q = q->next);
+        -: 2779:
+    #####: 2780:		    q->next = line;
+    #####: 2781:		    line = p;
+        -: 2782:		}
+        -: 2783:	    } else {
+    #####: 2784:		lp->next = line;
+    #####: 2785:		line = p;
+        -: 2786:	    }
+        -: 2787:	}
+    #####: 2788:	if (pl) {
+    #####: 2789:	    Cline lp, p = bld_parts(pre, pl, pl, &lp, NULL);
+        -: 2790:
+    #####: 2791:	    lp->next = line;
+    #####: 2792:	    line = p;
+        -: 2793:	}
+    #####: 2794:	if (ipl) {
+    #####: 2795:	    Cline lp, p = bld_parts(ipre, ipl, ipl, &lp, NULL);
+        -: 2796:
+    #####: 2797:	    lp->next = line;
+    #####: 2798:	    line = p;
+        -: 2799:	}
+    #####: 2800:	if (qipl) {
+    #####: 2801:	    Cline lp, p = bld_parts(dupstring(qipre), qipl, qipl, &lp, NULL);
+        -: 2802:
+    #####: 2803:	    lp->next = line;
+    #####: 2804:	    line = p;
+        -: 2805:	}
+      215: 2806:    } else if (palen || pline) {
+        -: 2807:	Cline p, lp;
+        -: 2808:
+       16: 2809:	if (palen) {
+       16: 2810:	    char *apre = (char *) zhalloc(palen);
+        -: 2811:
+       16: 2812:	    if (qipl)
+    #####: 2813:		memcpy(apre, qipre, qipl);
+       16: 2814:	    if (ipl)
+       16: 2815:		memcpy(apre + qipl, ipre, ipl);
+       16: 2816:	    if (pl)
+    #####: 2817:		memcpy(apre + qipl + ipl, pre, pl);
+       16: 2818:	    if (ppl)
+    #####: 2819:		memcpy(apre + qipl + ipl + pl, ppre, ppl);
+        -: 2820:
+       16: 2821:	    p = bld_parts(apre, palen, palen, &lp, NULL);
+        -: 2822:
+       16: 2823:	    if (pline)
+    #####: 2824:		for (lp->next = cp_cline(pline, 1); lp->next; lp = lp->next);
+        -: 2825:	} else
+    #####: 2826:	    for (p = lp = cp_cline(pline, 1); lp->next; lp = lp->next);
+        -: 2827:
+       32: 2828:	if (lp->prefix && !(line->flags & CLF_SUF) &&
+       48: 2829:	    !lp->llen && !lp->wlen && !lp->olen) {
+        -: 2830:	    Cline lpp;
+        -: 2831:
+       16: 2832:	    for (lpp = lp->prefix; lpp->next; lpp = lpp->next);
+        -: 2833:
+       16: 2834:	    lpp->next = line->prefix;
+       16: 2835:	    line->prefix = lp->prefix;
+       16: 2836:	    lp->prefix = NULL;
+        -: 2837:
+       16: 2838:	    free_cline(lp);
+        -: 2839:
+       16: 2840:	    if (p != lp) {
+        -: 2841:		Cline q;
+        -: 2842:
+        3: 2843:		for (q = p; q->next != lp; q = q->next);
+        -: 2844:
+        3: 2845:		q->next = line;
+        3: 2846:		line = p;
+        -: 2847:	    }
+        -: 2848:	} else {
+    #####: 2849:	    lp->next = line;
+    #####: 2850:	    line = p;
+        -: 2851:	}
+        -: 2852:    }
+        -: 2853:
+      215: 2854:    stl = strlen(str);
+        -: 2855:#ifdef MULTIBYTE_SUPPORT
+        -: 2856:    /* If "str" contains a character that won't convert into a wide
+        -: 2857:     * character, change it into a $'\123' sequence. */
+      215: 2858:    memset(&mbs, '\0', sizeof mbs);
+     1021: 2859:    for (t = f = fs = str, fe = f + stl; fs < fe; ) {
+      591: 2860:	if ((curchar = *f++) == Meta)
+    #####: 2861:	    curchar = *f++ ^ 32;
+      591: 2862:	cnt = mbrtowc(&wc, &curchar, 1, &mbs);
+      591: 2863:	switch (cnt) {
+    #####: 2864:	case MB_INCOMPLETE:
+    #####: 2865:	    if (f < fe)
+    #####: 2866:		continue;
+        -: 2867:	    /* FALL THROUGH */
+        -: 2868:	case MB_INVALID:
+        -: 2869:	    /* Get mbs out of its undefined state. */
+    #####: 2870:	    memset(&mbs, '\0', sizeof mbs);
+    #####: 2871:	    if (!new_str) {
+        -: 2872:		/* Be very pessimistic about how much space we'll need. */
+    #####: 2873:		new_str = zhalloc((t - str) + (fe - fs)*7 + 1);
+    #####: 2874:		memcpy(new_str, str, t - str);
+    #####: 2875:		t = new_str + (t - str);
+        -: 2876:	    }
+        -: 2877:	    /* Output one byte from the start of this invalid multibyte
+        -: 2878:	     * sequence unless we got MB_INCOMPLETE at the end of the
+        -: 2879:	     * string, in which case we output all the incomplete bytes. */
+        -: 2880:	    do {
+    #####: 2881:		if ((curchar = *fs++) == Meta)
+    #####: 2882:		    curchar = *fs++ ^ 32;
+    #####: 2883:		*t++ = '$';
+    #####: 2884:		*t++ = '\'';
+    #####: 2885:		*t++ = '\\';
+    #####: 2886:		*t++ = '0' + ((STOUC(curchar) >> 6) & 7);
+    #####: 2887:		*t++ = '0' + ((STOUC(curchar) >> 3) & 7);
+    #####: 2888:		*t++ = '0' + (STOUC(curchar) & 7);
+    #####: 2889:		*t++ = '\'';
+    #####: 2890:	    } while (cnt == MB_INCOMPLETE && fs < fe);
+        -: 2891:	    /* Scanning restarts from the spot after the char we skipped. */
+    #####: 2892:	    f = fs;
+    #####: 2893:	    break;
+      591: 2894:	default:
+     1773: 2895:	    while (fs < f)
+      591: 2896:		*t++ = *fs++;
+      591: 2897:	    break;
+        -: 2898:	}
+        -: 2899:    }
+      215: 2900:    if (new_str) {
+    #####: 2901:	*t = '\0';
+    #####: 2902:	str = new_str;
+    #####: 2903:	stl = t - str;
+        -: 2904:    }
+        -: 2905:#endif
+        -: 2906:
+        -: 2907:    /* Allocate and fill the match structure. */
+      215: 2908:    cm = (Cmatch) zhalloc(sizeof(struct cmatch));
+      215: 2909:    cm->str = str;
+      215: 2910:    cm->orig = dupstring(orig);
+      215: 2911:    cm->ppre = (ppre && *ppre ? ppre : NULL);
+      215: 2912:    cm->psuf = (psuf && *psuf ? psuf : NULL);
+      215: 2913:    cm->prpre = ((flags & CMF_FILE) && prpre && *prpre ? prpre : NULL);
+      215: 2914:    if (qipre && *qipre)
+    #####: 2915:	cm->ipre = (ipre && *ipre ? dyncat(qipre, ipre) : dupstring(qipre));
+        -: 2916:    else
+      215: 2917:	cm->ipre = (ipre && *ipre ? ipre : NULL);
+      215: 2918:    cm->ripre = (ripre && *ripre ? ripre : NULL);
+      215: 2919:    if (qisuf && *qisuf)
+    #####: 2920:	cm->isuf = (isuf && *isuf ? dyncat(isuf, qisuf) : dupstring(qisuf));
+        -: 2921:    else
+      215: 2922:	cm->isuf = (isuf && *isuf ? isuf : NULL);
+      215: 2923:    cm->pre = pre;
+      215: 2924:    cm->suf = suf;
+      215: 2925:    cm->flags = (flags |
+      215: 2926:		 (complist ?
+      215: 2927:		  ((strstr(complist, "packed") ? CMF_PACKED : 0) |
+      430: 2928:		   (strstr(complist, "rows")   ? CMF_ROWS   : 0)) : 0));
+      215: 2929:    cm->mode = cm->fmode = 0;
+      215: 2930:    cm->modec = cm->fmodec = '\0';
+      215: 2931:    if ((flags & CMF_FILE) && orig[0] && orig[strlen(orig) - 1] != '/') {
+        -: 2932:        struct stat buf;
+        -: 2933:	char *pb;
+        -: 2934:
+    #####: 2935:        pb = (char *) zhalloc((cm->prpre ? strlen(cm->prpre) : 0) +
+    #####: 2936:                              3 + strlen(orig));
+    #####: 2937:        sprintf(pb, "%s%s", (cm->prpre ? cm->prpre : "./"), orig);
+        -: 2938:
+    #####: 2939:        if (!ztat(pb, &buf, 1)) {
+    #####: 2940:            cm->mode = buf.st_mode;
+    #####: 2941:            if ((cm->modec = file_type(buf.st_mode)) == ' ')
+    #####: 2942:                cm->modec = '\0';
+        -: 2943:        }
+    #####: 2944:        if (!ztat(pb, &buf, 0)) {
+    #####: 2945:            cm->fmode = buf.st_mode;
+    #####: 2946:            if ((cm->fmodec = file_type(buf.st_mode)) == ' ')
+    #####: 2947:                cm->fmodec = '\0';
+        -: 2948:        }
+        -: 2949:    }
+      430: 2950:    if ((*compqstack == QT_BACKSLASH && compqstack[1]) ||
+      215: 2951:	(autoq && *compqstack && compqstack[1] == QT_BACKSLASH))
+    #####: 2952:	cm->flags |= CMF_NOSPACE;
+      215: 2953:    if (nbrbeg) {
+        -: 2954:	int *p;
+        -: 2955:	Brinfo bp;
+        -: 2956:
+    #####: 2957:	cm->brpl = (int *) zhalloc(nbrbeg * sizeof(int));
+        -: 2958:
+    #####: 2959:	for (p = cm->brpl, bp = brbeg; bp; p++, bp = bp->next)
+    #####: 2960:	    *p = bp->curpos;
+        -: 2961:    } else
+      215: 2962:	cm->brpl = NULL;
+      215: 2963:    if (nbrend) {
+        -: 2964:	int *p;
+        -: 2965:	Brinfo bp;
+        -: 2966:
+    #####: 2967:	cm->brsl = (int *) zhalloc(nbrend * sizeof(int));
+        -: 2968:
+    #####: 2969:	for (p = cm->brsl, bp = brend; bp; p++, bp = bp->next)
+    #####: 2970:	    *p = bp->curpos;
+        -: 2971:    } else
+      215: 2972:	cm->brsl = NULL;
+      215: 2973:    cm->qipl = qipl;
+      215: 2974:    cm->qisl = qisl;
+      215: 2975:    cm->autoq = dupstring(autoq ? autoq : (inbackt ? "`" : NULL));
+      215: 2976:    cm->rems = cm->remf = cm->disp = NULL;
+        -: 2977:
+      215: 2978:    if ((lastprebr || lastpostbr) && !hasbrpsfx(cm, lastprebr, lastpostbr))
+    #####: 2979:	return NULL;
+        -: 2980:
+        -: 2981:    /* Then build the unambiguous cline list. */
+      215: 2982:    ai->line = join_clines(ai->line, line);
+        -: 2983:
+      215: 2984:    mnum++;
+      215: 2985:    ai->count++;
+        -: 2986:
+      215: 2987:    addlinknode((alt ? fmatches : matches), cm);
+        -: 2988:
+      215: 2989:    newmatches = 1;
+      215: 2990:    mgroup->new = 1;
+      215: 2991:    if (alt)
+    #####: 2992:	compignored++;
+        -: 2993:
+      215: 2994:    if (!complastprompt || !*complastprompt)
+      215: 2995:	dolastprompt = 0;
+        -: 2996:    /* One more match for this explanation. */
+      215: 2997:    if (curexpl) {
+      184: 2998:	if (alt)
+    #####: 2999:	    curexpl->fcount++;
+        -: 3000:	else
+      184: 3001:	    curexpl->count++;
+        -: 3002:    }
+      215: 3003:    if (!ai->firstm)
+      143: 3004:	ai->firstm = cm;
+        -: 3005:
+      215: 3006:    lpl = (cm->ppre ? strlen(cm->ppre) : 0);
+      215: 3007:    lsl = (cm->psuf ? strlen(cm->psuf) : 0);
+      215: 3008:    ml = stl + lpl + lsl;
+        -: 3009:
+      215: 3010:    if (ml < minmlen)
+      146: 3011:	minmlen = ml;
+      215: 3012:    if (ml > maxmlen)
+      149: 3013:	maxmlen = ml;
+        -: 3014:
+        -: 3015:    /* Do we have an exact match? More than one? */
+      215: 3016:    if (exact) {
+       13: 3017:	if (!ai->exact) {
+       13: 3018:	    ai->exact = useexact;
+       13: 3019:	    if (incompfunc && (!compexactstr || !*compexactstr)) {
+        -: 3020:		/* If a completion widget is active, we make the exact
+        -: 3021:		 * string available in `compstate'. */
+        -: 3022:
+        -: 3023:		char *e;
+        -: 3024:
+       13: 3025:		zsfree(compexactstr);
+       13: 3026:		compexactstr = e = (char *) zalloc(ml + 1);
+       13: 3027:		if (cm->ppre) {
+    #####: 3028:		    strcpy(e, cm->ppre);
+    #####: 3029:		    e += lpl;
+        -: 3030:		}
+       13: 3031:		strcpy(e, str);
+       13: 3032:		e += stl;
+       13: 3033:		if (cm->psuf)
+    #####: 3034:		    strcpy(e, cm->psuf);
+       13: 3035:		comp_setunset(0, 0, CP_EXACTSTR, 0);
+        -: 3036:	    }
+       13: 3037:	    ai->exactm = cm;
+    #####: 3038:	} else if (useexact && (!ai->exactm || !matcheq(cm, ai->exactm))) {
+    #####: 3039:	    ai->exact = 2;
+    #####: 3040:	    ai->exactm = NULL;
+    #####: 3041:	    if (incompfunc)
+    #####: 3042:		comp_setunset(0, 0, 0, CP_EXACTSTR);
+        -: 3043:	}
+        -: 3044:    }
+      215: 3045:    return cm;
+        -: 3046:}
+        -: 3047:
+        -: 3048:/* This begins a new group of matches. */
+        -: 3049:
+        -: 3050:/**/
+        -: 3051:mod_export void
+      583: 3052:begcmgroup(char *n, int flags)
+        -: 3053:{
+      583: 3054:    if (n) {
+        -: 3055:	/* If a group named <n> already exists, reuse it. */
+        -: 3056:	Cmgroup p;
+      940: 3057:	for (p = amatches; p; p = p->next) {
+        -: 3058:#ifdef ZSH_HEAP_DEBUG
+        -: 3059:	    if (memory_validate(p->heap_id)) {
+        -: 3060:		HEAP_ERROR(p->heap_id);
+        -: 3061:	    }
+        -: 3062:#endif
+     1078: 3063:	    if (p->name && flags ==
+      539: 3064:		(p->flags & (CGF_NOSORT|CGF_UNIQALL|CGF_UNIQCON|
+      361: 3065:			     CGF_MATSORT|CGF_NUMSORT|CGF_REVSORT)) &&
+      361: 3066:		!strcmp(n, p->name)) {
+      182: 3067:		mgroup = p;
+        -: 3068:
+      182: 3069:		expls = p->lexpls;
+      182: 3070:		matches = p->lmatches;
+      182: 3071:		fmatches = p->lfmatches;
+      182: 3072:		allccs = p->lallccs;
+        -: 3073:
+      182: 3074:		return;
+        -: 3075:	    }
+        -: 3076:	}
+        -: 3077:    }
+        -: 3078:
+        -: 3079:    /* Create a new group. */
+      401: 3080:    mgroup = (Cmgroup) zhalloc(sizeof(struct cmgroup));
+        -: 3081:#ifdef ZSH_HEAP_DEBUG
+        -: 3082:    mgroup->heap_id = last_heap_id;
+        -: 3083:#endif
+      401: 3084:    mgroup->name = dupstring(n);
+      802: 3085:    mgroup->lcount = mgroup->llcount = mgroup->mcount = mgroup->ecount = 
+      802: 3086:	mgroup->ccount = 0;
+      401: 3087:    mgroup->flags = flags;
+      401: 3088:    mgroup->matches = NULL;
+      401: 3089:    mgroup->ylist = NULL;
+      401: 3090:    mgroup->expls = NULL;
+      401: 3091:    mgroup->perm = NULL;
+      401: 3092:    mgroup->new = mgroup->num = mgroup->nbrbeg = mgroup->nbrend = 0;
+        -: 3093:
+      401: 3094:    mgroup->lexpls = expls = newlinklist();
+      401: 3095:    mgroup->lmatches = matches = newlinklist();
+      401: 3096:    mgroup->lfmatches = fmatches = newlinklist();
+        -: 3097:
+      401: 3098:    mgroup->lallccs = allccs = ((flags & CGF_NOSORT) ? NULL : newlinklist());
+        -: 3099:
+      401: 3100:    if ((mgroup->next = amatches))
+      233: 3101:	amatches->prev = mgroup;
+      401: 3102:    mgroup->prev = NULL;
+      401: 3103:    amatches = mgroup;
+        -: 3104:}
+        -: 3105:
+        -: 3106:/* End the current group for now. */
+        -: 3107:
+        -: 3108:/**/
+        -: 3109:mod_export void
+      583: 3110:endcmgroup(char **ylist)
+        -: 3111:{
+      583: 3112:    mgroup->ylist = ylist;
+      583: 3113:}
+        -: 3114:
+        -: 3115:/* Add an explanation string to the current group, joining duplicates. */
+        -: 3116:
+        -: 3117:/**/
+        -: 3118:mod_export void
+      389: 3119:addexpl(int always)
+        -: 3120:{
+        -: 3121:    LinkNode n;
+        -: 3122:    Cexpl e;
+        -: 3123:
+      389: 3124:    for (n = firstnode(expls); n; incnode(n)) {
+      148: 3125:	e = (Cexpl) getdata(n);
+      148: 3126:	if (!strcmp(curexpl->str, e->str)) {
+      148: 3127:	    e->count += curexpl->count;
+      148: 3128:	    e->fcount += curexpl->fcount;
+      148: 3129:            if (always) {
+    #####: 3130:                e->always = 1;
+    #####: 3131:                nmessages++;
+    #####: 3132:                newmatches = 1;
+    #####: 3133:                mgroup->new = 1;
+        -: 3134:            }
+      148: 3135:	    return;
+        -: 3136:	}
+        -: 3137:    }
+      241: 3138:    addlinknode(expls, curexpl);
+      241: 3139:    newmatches = 1;
+      241: 3140:    if (always) {
+       29: 3141:        mgroup->new = 1;
+       29: 3142:        nmessages++;
+        -: 3143:    }
+        -: 3144:}
+        -: 3145:
+        -: 3146:/* The comparison function for matches (used for sorting). */
+        -: 3147:
+        -: 3148:static int matchorder;
+        -: 3149:
+        -: 3150:/**/
+        -: 3151:static int
+       79: 3152:matchcmp(Cmatch *a, Cmatch *b)
+        -: 3153:{
+        -: 3154:    const char *as, *bs;
+       79: 3155:    int cmp = !!(*b)->disp - !!(*a)->disp;
+       79: 3156:    int sortdir = (matchorder & CGF_REVSORT) ? -1 : 1;
+        -: 3157:
+        -: 3158:    /* if match sorting selected or we have no display strings */
+       79: 3159:    if ((matchorder & CGF_MATSORT) || (!cmp && !(*a)->disp)) {
+       18: 3160:	as = (*a)->str;
+       18: 3161:	bs = (*b)->str;
+        -: 3162:    } else {
+       61: 3163:        if (cmp) /* matches with display strings come first */
+    #####: 3164:	    return cmp;
+        -: 3165:
+       61: 3166:	cmp = ((*b)->flags & CMF_DISPLINE) - ((*a)->flags & CMF_DISPLINE);
+       61: 3167:        if (cmp) /* sort one-per-line display strings first */
+    #####: 3168:	    return cmp;
+        -: 3169:
+       61: 3170:	as = (*a)->disp;
+       61: 3171:	bs = (*b)->disp;
+        -: 3172:    }
+        -: 3173:
+       79: 3174:    return sortdir * zstrcmp(as, bs, SORTIT_IGNORING_BACKSLASHES|
+      158: 3175:	    ((isset(NUMERICGLOBSORT) ||
+       79: 3176:	    matchorder & CGF_NUMSORT) ? SORTIT_NUMERICALLY : 0));
+        -: 3177:}
+        -: 3178:
+        -: 3179:/* This tests whether two matches are equal (would produce the same
+        -: 3180: * strings on the command line). */
+        -: 3181:
+        -: 3182:#define matchstreq(a, b) ((!(a) && !(b)) || ((a) && (b) && !strcmp((a), (b))))
+        -: 3183:
+        -: 3184:/**/
+        -: 3185:static int
+       71: 3186:matcheq(Cmatch a, Cmatch b)
+        -: 3187:{
+      211: 3188:    return matchstreq(a->ipre, b->ipre) &&
+      213: 3189:	matchstreq(a->pre, b->pre) &&
+      213: 3190:	matchstreq(a->ppre, b->ppre) &&
+      213: 3191:	matchstreq(a->psuf, b->psuf) &&
+      279: 3192:	matchstreq(a->suf, b->suf) &&
+       70: 3193:	  matchstreq(a->str, b->str);
+        -: 3194:}
+        -: 3195:
+        -: 3196:/* Make an array from a linked list. The second argument says whether *
+        -: 3197: * the array should be sorted. The third argument is used to return   *
+        -: 3198: * the number of elements in the resulting array. The fourth argument *
+        -: 3199: * is used to return the number of NOLIST elements. */
+        -: 3200:
+        -: 3201:/**/
+        -: 3202:static Cmatch *
+     1158: 3203:makearray(LinkList l, int type, int flags, int *np, int *nlp, int *llp)
+        -: 3204:{
+        -: 3205:    Cmatch *ap, *bp, *cp, *rp;
+        -: 3206:    LinkNode nod;
+     1158: 3207:    int n, nl = 0, ll = 0;
+        -: 3208:
+        -: 3209:    /* Build an array for the matches. */
+     1158: 3210:    rp = ap = (Cmatch *) hcalloc(((n = countlinknodes(l)) + 1) *
+        -: 3211:				 sizeof(Cmatch));
+        -: 3212:
+        -: 3213:    /* And copy them into it. */
+     1635: 3214:    for (nod = firstnode(l); nod; incnode(nod))
+      477: 3215:	*ap++ = (Cmatch) getdata(nod);
+     1158: 3216:    *ap = NULL;
+        -: 3217:
+     1158: 3218:    if (!type) {
+      579: 3219:	if (flags) {
+        -: 3220:	    char **ap, **bp, **cp;
+        -: 3221:
+        -: 3222:	    /* Now sort the array (it contains strings). */
+    #####: 3223:	    strmetasort((char **)rp, SORTIT_IGNORING_BACKSLASHES |
+    #####: 3224:			(isset(NUMERICGLOBSORT) ? SORTIT_NUMERICALLY : 0),
+        -: 3225:			NULL);
+        -: 3226:
+        -: 3227:	    /* And delete the ones that occur more than once. */
+    #####: 3228:	    for (ap = cp = (char **) rp; *ap; ap++) {
+    #####: 3229:		*cp++ = *ap;
+    #####: 3230:		for (bp = ap; bp[1] && !strcmp(*ap, bp[1]); bp++, n--);
+    #####: 3231:		ap = bp;
+        -: 3232:	    }
+    #####: 3233:	    *cp = NULL;
+        -: 3234:	}
+        -: 3235:    } else {
+      579: 3236:	if (!(flags & CGF_NOSORT)) {
+        -: 3237:	    /* Now sort the array (it contains matches). */
+      499: 3238:	    matchorder = flags;
+      499: 3239:	    qsort((void *) rp, n, sizeof(Cmatch),
+        -: 3240:		  (int (*) _((const void *, const void *)))matchcmp);
+        -: 3241:
+      499: 3242:	    if (!(flags & CGF_UNIQCON)) {
+        -: 3243:		int dup;
+        -: 3244:
+        -: 3245:		/* And delete the ones that occur more than once. */
+      713: 3246:		for (ap = cp = rp; *ap; ap++) {
+      214: 3247:		    *cp++ = *ap;
+      214: 3248:		    for (bp = ap; bp[1] && matcheq(*ap, bp[1]); bp++, n--);
+      214: 3249:		    ap = bp;
+        -: 3250:		    /* Mark those, that would show the same string in the list. */
+      443: 3251:		    for (dup = 0; bp[1] && !(*ap)->disp && !(bp[1])->disp &&
+       15: 3252:			     !strcmp((*ap)->str, (bp[1])->str); bp++) {
+    #####: 3253:			(bp[1])->flags |= CMF_MULT;
+    #####: 3254:			dup = 1;
+        -: 3255:		    }
+      214: 3256:		    if (dup)
+    #####: 3257:			(*ap)->flags |= CMF_FMULT;
+        -: 3258:		}
+      499: 3259:		*cp = NULL;
+        -: 3260:	    }
+      713: 3261:	    for (ap = rp; *ap; ap++) {
+      214: 3262:		if ((*ap)->disp && ((*ap)->flags & CMF_DISPLINE))
+        4: 3263:		    ll++;
+      214: 3264:		if ((*ap)->flags & (CMF_NOLIST | CMF_MULT))
+    #####: 3265:		    nl++;
+        -: 3266:	    }
+        -: 3267:	} else {
+       80: 3268:	    if (!(flags & CGF_UNIQALL) && !(flags & CGF_UNIQCON)) {
+        -: 3269:                int dup;
+        -: 3270:
+    #####: 3271:		for (ap = rp; *ap; ap++) {
+    #####: 3272:		    for (bp = cp = ap + 1; *bp; bp++) {
+    #####: 3273:			if (!matcheq(*ap, *bp))
+    #####: 3274:			    *cp++ = *bp;
+        -: 3275:			else
+    #####: 3276:			    n--;
+        -: 3277:		    }
+    #####: 3278:		    *cp = NULL;
+    #####: 3279:                    if (!(*ap)->disp) {
+    #####: 3280:                        for (dup = 0, bp = ap + 1; *bp; bp++)
+    #####: 3281:                            if (!(*bp)->disp &&
+    #####: 3282:                                !((*bp)->flags & CMF_MULT) &&
+    #####: 3283:                                !strcmp((*ap)->str, (*bp)->str)) {
+    #####: 3284:                                (*bp)->flags |= CMF_MULT;
+    #####: 3285:                                dup = 1;
+        -: 3286:                            }
+    #####: 3287:                        if (dup)
+    #####: 3288:                            (*ap)->flags |= CMF_FMULT;
+        -: 3289:                    }
+        -: 3290:		}
+       80: 3291:	    } else if (!(flags & CGF_UNIQCON)) {
+        -: 3292:		int dup;
+        -: 3293:
+    #####: 3294:		for (ap = cp = rp; *ap; ap++) {
+    #####: 3295:		    *cp++ = *ap;
+    #####: 3296:		    for (bp = ap; bp[1] && matcheq(*ap, bp[1]); bp++, n--);
+    #####: 3297:		    ap = bp;
+    #####: 3298:		    for (dup = 0; bp[1] && !(*ap)->disp && !(bp[1])->disp &&
+    #####: 3299:			     !strcmp((*ap)->str, (bp[1])->str); bp++) {
+    #####: 3300:			(bp[1])->flags |= CMF_MULT;
+    #####: 3301:			dup = 1;
+        -: 3302:		    }
+    #####: 3303:		    if (dup)
+    #####: 3304:			(*ap)->flags |= CMF_FMULT;
+        -: 3305:		}
+    #####: 3306:		*cp = NULL;
+        -: 3307:	    }
+       80: 3308:	    for (ap = rp; *ap; ap++) {
+    #####: 3309:		if ((*ap)->disp && ((*ap)->flags & CMF_DISPLINE))
+    #####: 3310:		    ll++;
+    #####: 3311:		if ((*ap)->flags & (CMF_NOLIST | CMF_MULT))
+    #####: 3312:		    nl++;
+        -: 3313:	    }
+        -: 3314:	}
+        -: 3315:    }
+     1158: 3316:    if (np)
+     1158: 3317:	*np = n;
+     1158: 3318:    if (nlp)
+      579: 3319:	*nlp = nl;
+     1158: 3320:    if (llp)
+      579: 3321:	*llp = ll;
+     1158: 3322:    return rp;
+        -: 3323:}
+        -: 3324:
+        -: 3325:/* This duplicates one match. */
+        -: 3326:
+        -: 3327:/**/
+        -: 3328:static Cmatch
+      214: 3329:dupmatch(Cmatch m, int nbeg, int nend)
+        -: 3330:{
+        -: 3331:    Cmatch r;
+        -: 3332:
+      214: 3333:    r = (Cmatch) zshcalloc(sizeof(struct cmatch));
+        -: 3334:
+      214: 3335:    r->str = ztrdup(m->str);
+      214: 3336:    r->orig = ztrdup(m->orig);
+      214: 3337:    r->ipre = ztrdup(m->ipre);
+      214: 3338:    r->ripre = ztrdup(m->ripre);
+      214: 3339:    r->isuf = ztrdup(m->isuf);
+      214: 3340:    r->ppre = ztrdup(m->ppre);
+      214: 3341:    r->psuf = ztrdup(m->psuf);
+      214: 3342:    r->prpre = ztrdup(m->prpre);
+      214: 3343:    r->pre = ztrdup(m->pre);
+      214: 3344:    r->suf = ztrdup(m->suf);
+      214: 3345:    r->flags = m->flags;
+      214: 3346:    if (m->brpl) {
+        -: 3347:	int *p, *q, i;
+        -: 3348:
+    #####: 3349:	r->brpl = (int *) zalloc(nbeg * sizeof(int));
+        -: 3350:
+    #####: 3351:	for (p = r->brpl, q = m->brpl, i = nbeg; i--; p++, q++)
+    #####: 3352:	    *p = *q;
+        -: 3353:    } else
+      214: 3354:	r->brpl = NULL;
+      214: 3355:    if (m->brsl) {
+        -: 3356:	int *p, *q, i;
+        -: 3357:
+    #####: 3358:	r->brsl = (int *) zalloc(nend * sizeof(int));
+        -: 3359:
+    #####: 3360:	for (p = r->brsl, q = m->brsl, i = nend; i--; p++, q++)
+    #####: 3361:	    *p = *q;
+        -: 3362:    } else
+      214: 3363:	r->brsl = NULL;
+      214: 3364:    r->rems = ztrdup(m->rems);
+      214: 3365:    r->remf = ztrdup(m->remf);
+      214: 3366:    r->autoq = ztrdup(m->autoq);
+      214: 3367:    r->qipl = m->qipl;
+      214: 3368:    r->qisl = m->qisl;
+      214: 3369:    r->disp = ztrdup(m->disp);
+      214: 3370:    r->mode = m->mode;
+      214: 3371:    r->modec = m->modec;
+      214: 3372:    r->fmode = m->fmode;
+      214: 3373:    r->fmodec = m->fmodec;
+        -: 3374:
+      214: 3375:    return r;
+        -: 3376:}
+        -: 3377:
+        -: 3378:/* This duplicates all groups of matches. */
+        -: 3379:
+        -: 3380:/**/
+        -: 3381:mod_export int
+     2767: 3382:permmatches(int last)
+        -: 3383:{
+     2767: 3384:    Cmgroup g = amatches, n;
+        -: 3385:    Cmatch *p, *q;
+        -: 3386:    Cexpl *ep, *eq, e, o;
+        -: 3387:    LinkList mlist;
+        -: 3388:    static int fi = 0;
+     2767: 3389:    int nn, nl, ll, gn = 1, mn = 1, rn, ofi = fi;
+        -: 3390:
+     2767: 3391:    if (pmatches && !newmatches) {
+     2406: 3392:	if (last && fi)
+       24: 3393:	    ainfo = fainfo;
+     2406: 3394:	return fi;
+        -: 3395:    }
+      361: 3396:    newmatches = fi = 0;
+        -: 3397:
+      361: 3398:    pmatches = lmatches = NULL;
+      361: 3399:    nmatches = smatches = diffmatches = 0;
+        -: 3400:
+      361: 3401:    if (!ainfo->count) {
+      214: 3402:	if (last)
+    #####: 3403:	    ainfo = fainfo;
+      214: 3404:	fi = 1;
+        -: 3405:    }
+     1346: 3406:    while (g) {
+        -: 3407:#ifdef ZSH_HEAP_DEBUG
+        -: 3408:	if (memory_validate(g->heap_id)) {
+        -: 3409:	    HEAP_ERROR(g->heap_id);
+        -: 3410:	}
+        -: 3411:#endif
+      624: 3412:	if (fi != ofi || !g->perm || g->new) {
+      579: 3413:	    if (fi)
+        -: 3414:		/* We have no matches, try ignoring fignore. */
+      214: 3415:		mlist = g->lfmatches;
+        -: 3416:	    else
+      365: 3417:		mlist = g->lmatches;
+        -: 3418:
+      579: 3419:	    g->matches = makearray(mlist, 1, g->flags, &nn, &nl, &ll);
+      579: 3420:	    g->mcount = nn;
+      579: 3421:	    if ((g->lcount = nn - nl) < 0)
+    #####: 3422:		g->lcount = 0;
+      579: 3423:	    g->llcount = ll;
+      579: 3424:	    if (g->ylist) {
+    #####: 3425:		g->lcount = arrlen(g->ylist);
+    #####: 3426:		smatches = 2;
+        -: 3427:	    }
+      579: 3428:	    g->expls = (Cexpl *) makearray(g->lexpls, 0, 0, &(g->ecount),
+        -: 3429:					   NULL, NULL);
+        -: 3430:
+      579: 3431:	    g->ccount = 0;
+        -: 3432:
+      579: 3433:	    nmatches += g->mcount;
+      579: 3434:	    smatches += g->lcount;
+        -: 3435:
+      579: 3436:	    if (g->mcount > 1)
+       47: 3437:		diffmatches = 1;
+        -: 3438:
+      579: 3439:	    n = (Cmgroup) zshcalloc(sizeof(struct cmgroup));
+        -: 3440:#ifdef ZSH_HEAP_DEBUG
+        -: 3441:	    n->heap_id = HEAPID_PERMANENT;
+        -: 3442:#endif
+        -: 3443:
+      579: 3444:	    if (g->perm) {
+      178: 3445:		g->perm->next = NULL;
+      178: 3446:		freematches(g->perm, 0);
+        -: 3447:	    }
+      579: 3448:	    g->perm = n;
+        -: 3449:
+      579: 3450:	    if (!lmatches)
+      359: 3451:		lmatches = n;
+      579: 3452:	    if (pmatches)
+      220: 3453:		pmatches->prev = n;
+      579: 3454:	    n->next = pmatches;
+      579: 3455:	    pmatches = n;
+      579: 3456:	    n->prev = NULL;
+      579: 3457:	    n->num = gn++;
+      579: 3458:	    n->flags = g->flags;
+      579: 3459:	    n->mcount = g->mcount;
+      579: 3460:	    n->matches = p = (Cmatch *) zshcalloc((n->mcount + 1) * sizeof(Cmatch));
+      579: 3461:	    n->name = ztrdup(g->name);
+      793: 3462:	    for (q = g->matches; *q; q++, p++)
+      214: 3463:		*p = dupmatch(*q, nbrbeg, nbrend);
+      579: 3464:	    *p = NULL;
+        -: 3465:
+      579: 3466:	    n->lcount = g->lcount;
+      579: 3467:	    n->llcount = g->llcount;
+      579: 3468:	    if (g->ylist)
+    #####: 3469:		n->ylist = zarrdup(g->ylist);
+        -: 3470:	    else
+      579: 3471:		n->ylist = NULL;
+        -: 3472:
+      579: 3473:	    if ((n->ecount = g->ecount)) {
+      262: 3474:		n->expls = ep = (Cexpl *) zshcalloc((n->ecount + 1) * sizeof(Cexpl));
+      524: 3475:		for (eq = g->expls; (o = *eq); eq++, ep++) {
+      262: 3476:		    *ep = e = (Cexpl) zshcalloc(sizeof(struct cexpl));
+      262: 3477:		    e->count = (fi ? o->fcount : o->count);
+      262: 3478:                    e->always = o->always;
+      262: 3479:		    e->fcount = 0;
+      262: 3480:		    e->str = ztrdup(o->str);
+        -: 3481:		}
+      262: 3482:		*ep = NULL;
+        -: 3483:	    } else
+      317: 3484:		n->expls = NULL;
+        -: 3485:
+      579: 3486:	    n->widths = NULL;
+        -: 3487:	} else {
+       45: 3488:	    if (!lmatches)
+        2: 3489:		lmatches = g->perm;
+       45: 3490:	    if (pmatches)
+       43: 3491:		pmatches->prev = g->perm;
+       45: 3492:	    g->perm->next = pmatches;
+       45: 3493:	    pmatches = g->perm;
+       45: 3494:	    g->perm->prev = NULL;
+        -: 3495:
+       45: 3496:	    nmatches += g->mcount;
+       45: 3497:	    smatches += g->lcount;
+        -: 3498:
+       45: 3499:	    if (g->mcount > 1)
+        1: 3500:		diffmatches = 1;
+        -: 3501:
+       45: 3502:	    g->num = gn++;
+        -: 3503:	}
+      624: 3504:	g->new = 0;
+      624: 3505:	g = g->next;
+        -: 3506:    }
+      985: 3507:    for (g = pmatches, p = NULL; g; g = g->next) {
+      624: 3508:	g->nbrbeg = nbrbeg;
+      624: 3509:	g->nbrend = nbrend;
+      843: 3510:	for (rn = 1, q = g->matches; *q; q++) {
+      219: 3511:	    (*q)->rnum = rn++;
+      219: 3512:	    (*q)->gnum = mn++;
+        -: 3513:	}
+      624: 3514:	if (!diffmatches && *g->matches) {
+      103: 3515:	    if (p) {
+        3: 3516:		if (!matcheq(*g->matches, *p))
+        3: 3517:		    diffmatches = 1;
+        -: 3518:	    } else
+      100: 3519:		p = g->matches;
+        -: 3520:	}
+        -: 3521:    }
+      361: 3522:    hasperm = 1;
+      361: 3523:    permmnum = mn - 1;
+      361: 3524:    permgnum = gn - 1;
+      361: 3525:    listdat.valid = 0;
+        -: 3526:
+      361: 3527:    return fi;
+        -: 3528:}
+        -: 3529:
+        -: 3530:/* This frees one match. */
+        -: 3531:
+        -: 3532:/**/
+        -: 3533:static void
+      214: 3534:freematch(Cmatch m, int nbeg, int nend)
+        -: 3535:{
+      214: 3536:    if (!m) return;
+        -: 3537:
+      214: 3538:    zsfree(m->str);
+      214: 3539:    zsfree(m->orig);
+      214: 3540:    zsfree(m->ipre);
+      214: 3541:    zsfree(m->ripre);
+      214: 3542:    zsfree(m->isuf);
+      214: 3543:    zsfree(m->ppre);
+      214: 3544:    zsfree(m->psuf);
+      214: 3545:    zsfree(m->pre);
+      214: 3546:    zsfree(m->suf);
+      214: 3547:    zsfree(m->prpre);
+      214: 3548:    zsfree(m->rems);
+      214: 3549:    zsfree(m->remf);
+      214: 3550:    zsfree(m->disp);
+      214: 3551:    zsfree(m->autoq);
+      214: 3552:    if (m->brpl)
+    #####: 3553:	zfree(m->brpl, nbeg * sizeof(int));
+      214: 3554:    if (m->brsl)
+    #####: 3555:	zfree(m->brsl, nend * sizeof(int));
+        -: 3556:
+      214: 3557:    zfree(m, sizeof(*m));
+        -: 3558:}
+        -: 3559:
+        -: 3560:/* This frees the groups of matches. */
+        -: 3561:
+        -: 3562:/**/
+        -: 3563:mod_export void
+      346: 3564:freematches(Cmgroup g, int cm)
+        -: 3565:{
+        -: 3566:    Cmgroup n;
+        -: 3567:    Cmatch *m;
+        -: 3568:    Cexpl *e;
+        -: 3569:
+     1271: 3570:    while (g) {
+      579: 3571:	n = g->next;
+        -: 3572:
+      793: 3573:	for (m = g->matches; *m; m++)
+      214: 3574:	    freematch(*m, g->nbrbeg, g->nbrend);
+      579: 3575:	free(g->matches);
+        -: 3576:
+      579: 3577:	if (g->ylist)
+    #####: 3578:	    freearray(g->ylist);
+        -: 3579:
+      579: 3580:	if ((e = g->expls)) {
+      786: 3581:	    while (*e) {
+      262: 3582:		zsfree((*e)->str);
+      262: 3583:		free(*e);
+      262: 3584:		e++;
+        -: 3585:	    }
+      262: 3586:	    free(g->expls);
+        -: 3587:	}
+      579: 3588:	if (g->widths)
+    #####: 3589:	    free(g->widths);
+      579: 3590:	zsfree(g->name);
+      579: 3591:	free(g);
+        -: 3592:
+      579: 3593:	g = n;
+        -: 3594:    }
+      346: 3595:    if (cm)
+      168: 3596:	minfo.cur = NULL;
+      346: 3597:}

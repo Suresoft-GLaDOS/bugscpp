@@ -1,0 +1,1116 @@
+        -:    0:Source:text.c
+        -:    0:Graph:/home/workspace/Src/text.gcno
+        -:    0:Data:/home/workspace/Src/text.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * text.c - textual representations of syntax trees
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "text.pro"
+        -:   32:
+        -:   33:/*
+        -:   34: * If non-zero, expand syntactically significant leading tabs in text
+        -:   35: * to this number of spaces.
+        -:   36: *
+        -:   37: * If negative, don't output leading whitespace at all.
+        -:   38: */
+        -:   39:
+        -:   40:/**/
+        -:   41:int text_expand_tabs;
+        -:   42:
+        -:   43:/*
+        -:   44: * Binary operators in conditions.
+        -:   45: * There order is tied to the order of the definitions COND_STREQ
+        -:   46: * et seq. in zsh.h.
+        -:   47: */
+        -:   48:static const char *cond_binary_ops[] = {
+        -:   49:    "=", "==", "!=", "<", ">", "-nt", "-ot", "-ef", "-eq",
+        -:   50:    "-ne", "-lt", "-gt", "-le", "-ge", "=~", NULL
+        -:   51:};
+        -:   52:
+        -:   53:static char *tptr, *tbuf, *tlim, *tpending;
+        -:   54:static int tsiz, tindent, tnewlins, tjob;
+        -:   55:
+        -:   56:/**/
+        -:   57:int
+    #####:   58:is_cond_binary_op(const char *str)
+        -:   59:{
+        -:   60:    const char **op;
+    #####:   61:    for (op = cond_binary_ops; *op; op++)
+        -:   62:    {
+    #####:   63:	if (!strcmp(str, *op))
+    #####:   64:	    return 1;
+        -:   65:    }
+    #####:   66:    return 0;
+        -:   67:}
+        -:   68:
+        -:   69:static void
+       30:   70:dec_tindent(void)
+        -:   71:{
+        -:   72:    DPUTS(tindent == 0, "attempting to decrement tindent below zero");
+       30:   73:    if (tindent > 0)
+       30:   74:	tindent--;
+       30:   75:}
+        -:   76:
+        -:   77:/*
+        -:   78: * Add a pair of pending strings and a newline.
+        -:   79: * This is used for here documents.  It will be output when
+        -:   80: * we have a lexically significant newline.
+        -:   81: *
+        -:   82: * This isn't that common and a multiple use on the same line is *very*
+        -:   83: * uncommon; we don't try to optimise it.
+        -:   84: *
+        -:   85: * This is not used for job text; there we bear the inaccuracy
+        -:   86: * of turning this into a here-string.
+        -:   87: */
+        -:   88:static void
+    #####:   89:taddpending(char *str1, char *str2)
+        -:   90:{
+    #####:   91:    int len = strlen(str1) + strlen(str2) + 1;
+        -:   92:
+        -:   93:    /*
+        -:   94:     * We don't strip newlines from here-documents converted
+        -:   95:     * to here-strings, so no munging is required except to
+        -:   96:     * add a newline after the here-document terminator.
+        -:   97:     * However, because the job text doesn't automatically
+        -:   98:     * have a newline right at the end, we handle that
+        -:   99:     * specially.
+        -:  100:     */
+    #####:  101:    if (tpending) {
+    #####:  102:	int oldlen = strlen(tpending);
+    #####:  103:	tpending = zrealloc(tpending, len + oldlen + 1);
+    #####:  104:	sprintf(tpending + oldlen, "\n%s%s", str1, str2);
+        -:  105:    } else {
+    #####:  106:	tpending = (char *)zalloc(len);
+    #####:  107:	sprintf(tpending, "%s%s", str1, str2);
+        -:  108:    }
+    #####:  109:}
+        -:  110:
+        -:  111:/* Output the pending string where appropriate */
+        -:  112:
+        -:  113:static void
+      129:  114:tdopending(void)
+        -:  115:{
+      129:  116:    if (tpending) {
+    #####:  117:	taddchr('\n');
+    #####:  118:	taddstr(tpending);
+    #####:  119:	zsfree(tpending);
+    #####:  120:	tpending = NULL;
+        -:  121:    }
+      129:  122:}
+        -:  123:
+        -:  124:/* add a character to the text buffer */
+        -:  125:
+        -:  126:/**/
+        -:  127:static void
+      535:  128:taddchr(int c)
+        -:  129:{
+      535:  130:    *tptr++ = c;
+      535:  131:    if (tptr == tlim) {
+       60:  132:	if (!tbuf) {
+       60:  133:	    tptr--;
+       60:  134:	    return;
+        -:  135:	}
+    #####:  136:	tbuf = zrealloc(tbuf, tsiz *= 2);
+    #####:  137:	tlim = tbuf + tsiz;
+    #####:  138:	tptr = tbuf + tsiz / 2;
+        -:  139:    }
+        -:  140:}
+        -:  141:
+        -:  142:/* add a string to the text buffer */
+        -:  143:
+        -:  144:/**/
+        -:  145:static void
+      688:  146:taddstr(const char *s)
+        -:  147:{
+      688:  148:    int sl = strlen(s);
+        -:  149:    char c;
+        -:  150:
+     1376:  151:    while (tptr + sl >= tlim) {
+      216:  152:	int x = tptr - tbuf;
+        -:  153:
+      216:  154:	if (!tbuf)
+      216:  155:	    return;
+    #####:  156:	tbuf = zrealloc(tbuf, tsiz *= 2);
+    #####:  157:	tlim = tbuf + tsiz;
+    #####:  158:	tptr = tbuf + x;
+        -:  159:    }
+      472:  160:    if (tnewlins) {
+    #####:  161:	memcpy(tptr, s, sl);
+    #####:  162:	tptr += sl;
+        -:  163:    } else
+     4340:  164:	while ((c = *s++))
+     3396:  165:	    *tptr++ = (c == '\n' ? ' ' : c);
+        -:  166:}
+        -:  167:
+        -:  168:/**/
+        -:  169:static void
+      160:  170:taddlist(Estate state, int num)
+        -:  171:{
+      160:  172:    if (num) {
+      760:  173:	while (num--) {
+      466:  174:	    taddstr(ecgetstr(state, EC_NODUP, NULL));
+      466:  175:	    taddchr(' ');
+        -:  176:	}
+      147:  177:	tptr--;
+        -:  178:    }
+      160:  179:}
+        -:  180:
+        -:  181:/* add an assignment */
+        -:  182:
+        -:  183:static void
+       22:  184:taddassign(wordcode code, Estate state, int typeset)
+        -:  185:{
+        -:  186:    /* name */
+       22:  187:    taddstr(ecgetstr(state, EC_NODUP, NULL));
+        -:  188:    /* value... maybe */
+       22:  189:    if (WC_ASSIGN_TYPE2(code) == WC_ASSIGN_INC) {
+        1:  190:	if (typeset) {
+        -:  191:	    /* dummy assignment --- just var name */
+        1:  192:	    (void)ecgetstr(state, EC_NODUP, NULL);
+        1:  193:	    taddchr(' ');
+        1:  194:	    return;
+        -:  195:	}
+    #####:  196:	taddchr('+');
+        -:  197:    }
+       21:  198:    taddchr('=');
+       21:  199:    if (WC_ASSIGN_TYPE(code) == WC_ASSIGN_ARRAY) {
+        6:  200:	taddchr('(');
+        6:  201:	taddlist(state, WC_ASSIGN_NUM(code));
+        6:  202:	taddstr(") ");
+        -:  203:    } else {
+       15:  204:	taddstr(ecgetstr(state, EC_NODUP, NULL));
+       15:  205:	taddchr(' ');
+        -:  206:    }
+        -:  207:}
+        -:  208:
+        -:  209:/* add a number of assignments from typeset */
+        -:  210:
+        -:  211:/**/
+        -:  212:static void
+        9:  213:taddassignlist(Estate state, wordcode count)
+        -:  214:{
+        9:  215:    if (count)
+        6:  216:	taddchr(' ');
+       27:  217:    while (count--) {
+        9:  218:	wordcode code = *state->pc++;
+        9:  219:	taddassign(code, state, 1);
+        -:  220:    }
+        9:  221:}
+        -:  222:
+        -:  223:/* add a newline, or something equivalent, to the text buffer */
+        -:  224:
+        -:  225:/**/
+        -:  226:static void
+       40:  227:taddnl(int no_semicolon)
+        -:  228:{
+        -:  229:    int t0;
+        -:  230:
+       40:  231:    if (tnewlins) {
+    #####:  232:	tdopending();
+    #####:  233:	taddchr('\n');
+    #####:  234:	for (t0 = 0; t0 != tindent; t0++) {
+    #####:  235:	    if (text_expand_tabs >= 0) {
+    #####:  236:		if (text_expand_tabs) {
+        -:  237:		    int t1;
+    #####:  238:		    for (t1 = 0; t1 < text_expand_tabs; t1++)
+    #####:  239:			taddchr(' ');
+        -:  240:		} else
+    #####:  241:		    taddchr('\t');
+        -:  242:	    }
+        -:  243:	}
+       40:  244:    } else if (no_semicolon) {
+    #####:  245:	taddstr(" ");
+        -:  246:    } else {
+       40:  247:	taddstr("; ");
+        -:  248:    }
+       40:  249:}
+        -:  250:
+        -:  251:/*
+        -:  252: * Output a tab that may be expanded as part of a leading set.
+        -:  253: * Note this is not part of the text framework; it's for
+        -:  254: * code that needs to output its own tabs that are to be
+        -:  255: * consistent with those from getpermtext().
+        -:  256: *
+        -:  257: * Note these tabs are only expected to be useful at the
+        -:  258: * start of the line, so we make no attempt to count columns.
+        -:  259: */
+        -:  260:
+        -:  261:/**/
+        -:  262:void
+    #####:  263:zoutputtab(FILE *outf)
+        -:  264:{
+    #####:  265:    if (text_expand_tabs < 0)
+    #####:  266:	return;
+    #####:  267:    if (text_expand_tabs) {
+        -:  268:	int i;
+    #####:  269:	for (i = 0; i < text_expand_tabs; i++)
+    #####:  270:	    fputc(' ', outf);
+        -:  271:    } else
+    #####:  272:	fputc('\t', outf);
+        -:  273:}
+        -:  274:
+        -:  275:/* get a permanent textual representation of n */
+        -:  276:
+        -:  277:/**/
+        -:  278:mod_export char *
+    #####:  279:getpermtext(Eprog prog, Wordcode c, int start_indent)
+        -:  280:{
+        -:  281:    struct estate s;
+        -:  282:
+    #####:  283:    queue_signals();
+        -:  284:
+    #####:  285:    if (!c)
+    #####:  286:	c = prog->prog;
+        -:  287:
+    #####:  288:    useeprog(prog);		/* mark as used */
+        -:  289:
+    #####:  290:    s.prog = prog;
+    #####:  291:    s.pc = c;
+    #####:  292:    s.strs = prog->strs;
+        -:  293:
+    #####:  294:    tindent = start_indent;
+    #####:  295:    tnewlins = 1;
+    #####:  296:    tbuf = (char *)zalloc(tsiz = 32);
+    #####:  297:    tptr = tbuf;
+    #####:  298:    tlim = tbuf + tsiz;
+    #####:  299:    tjob = 0;
+    #####:  300:    if (prog->len)
+    #####:  301:	gettext2(&s);
+    #####:  302:    *tptr = '\0';
+    #####:  303:    freeeprog(prog);		/* mark as unused */
+    #####:  304:    untokenize(tbuf);
+        -:  305:
+    #####:  306:    unqueue_signals();
+        -:  307:
+    #####:  308:    return tbuf;
+        -:  309:}
+        -:  310:
+        -:  311:/* get a representation of n in a job text buffer */
+        -:  312:
+        -:  313:/**/
+        -:  314:char *
+      129:  315:getjobtext(Eprog prog, Wordcode c)
+        -:  316:{
+        -:  317:    static char jbuf[JOBTEXTSIZE];
+        -:  318:
+        -:  319:    struct estate s;
+        -:  320:
+      129:  321:    queue_signals();
+        -:  322:
+      129:  323:    if (!c)
+    #####:  324:	c = prog->prog;
+        -:  325:
+      129:  326:    useeprog(prog);		/* mark as used */
+      129:  327:    s.prog = prog;
+      129:  328:    s.pc = c;
+      129:  329:    s.strs = prog->strs;
+        -:  330:
+      129:  331:    tindent = 0;
+      129:  332:    tnewlins = 0;
+      129:  333:    tbuf = NULL;
+      129:  334:    tptr = jbuf;
+      129:  335:    tlim = tptr + JOBTEXTSIZE - 1;
+      129:  336:    tjob = 1;
+      129:  337:    gettext2(&s);
+      129:  338:    if (tptr[-1] == Meta)
+    #####:  339:	--tptr;
+      129:  340:    *tptr = '\0';
+      129:  341:    freeeprog(prog);		/* mark as unused */
+      129:  342:    untokenize(jbuf);
+        -:  343:
+      129:  344:    unqueue_signals();
+        -:  345:
+      129:  346:    return jbuf;
+        -:  347:}
+        -:  348:
+        -:  349:/*
+        -:  350: * gettext2() shows one way to walk through the word code without
+        -:  351: * recursion. We start by reading a word code and executing the
+        -:  352: * action for it. Some codes have sub-structures (like, e.g. WC_FOR)
+        -:  353: * and require something to be done after the sub-structure has been
+        -:  354: * handled. For these codes a tstack structure which describes what
+        -:  355: * has to be done is pushed onto a stack. Codes without sub-structures
+        -:  356: * arrange for the next structure being taken from the stack so that
+        -:  357: * the action for it is executed instead of the one for the next
+        -:  358: * word code. If the stack is empty at this point, we have handled
+        -:  359: * the whole structure we were called for.
+        -:  360: */
+        -:  361:
+        -:  362:typedef struct tstack *Tstack;
+        -:  363:
+        -:  364:struct tstack {
+        -:  365:    Tstack prev;
+        -:  366:    wordcode code;
+        -:  367:    int pop;
+        -:  368:    union {
+        -:  369:	struct {
+        -:  370:	    LinkList list;
+        -:  371:	} _redir;
+        -:  372:	struct {
+        -:  373:	    char *strs;
+        -:  374:	    Wordcode end;
+        -:  375:	    int nargs;
+        -:  376:	} _funcdef;
+        -:  377:	struct {
+        -:  378:	    Wordcode end;
+        -:  379:	} _case;
+        -:  380:	struct {
+        -:  381:	    int cond;
+        -:  382:	    Wordcode end;
+        -:  383:	} _if;
+        -:  384:	struct {
+        -:  385:	    int par;
+        -:  386:	} _cond;
+        -:  387:	struct {
+        -:  388:	    Wordcode end;
+        -:  389:	} _subsh;
+        -:  390:    } u;
+        -:  391:};
+        -:  392:
+        -:  393:static Tstack tstack, tfree;
+        -:  394:
+        -:  395:static Tstack
+       99:  396:tpush(wordcode code, int pop)
+        -:  397:{
+        -:  398:    Tstack s;
+        -:  399:
+       99:  400:    if ((s = tfree))
+       83:  401:	tfree = s->prev;
+        -:  402:    else
+       16:  403:	s = (Tstack) zalloc(sizeof(*s));
+        -:  404:
+       99:  405:    s->prev = tstack;
+       99:  406:    tstack = s;
+       99:  407:    s->code = code;
+       99:  408:    s->pop = pop;
+        -:  409:
+       99:  410:    return s;
+        -:  411:}
+        -:  412:
+        -:  413:/**/
+        -:  414:static void
+      129:  415:gettext2(Estate state)
+        -:  416:{
+        -:  417:    Tstack s, n;
+      129:  418:    int stack = 0;
+        -:  419:    wordcode code;
+        -:  420:
+        -:  421:    while (1) {
+      963:  422:	if (stack) {
+      272:  423:	    if (!(s = tstack))
+      129:  424:		break;
+      143:  425:	    if (s->pop) {
+       99:  426:		tstack = s->prev;
+       99:  427:		s->prev = tfree;
+       99:  428:		tfree = s;
+        -:  429:	    }
+      143:  430:	    code = s->code;
+      143:  431:	    stack = 0;
+        -:  432:	} else {
+      274:  433:	    s = NULL;
+      274:  434:	    code = *state->pc++;
+        -:  435:	}
+      417:  436:	switch (wc_code(code)) {
+       73:  437:	case WC_LIST:
+       73:  438:	    if (!s) {
+       29:  439:		s = tpush(code, (WC_LIST_TYPE(code) & Z_END));
+       29:  440:		stack = 0;
+        -:  441:	    } else {
+       44:  442:		if (WC_LIST_TYPE(code) & Z_ASYNC) {
+    #####:  443:		    taddstr(" &");
+    #####:  444:		    if (WC_LIST_TYPE(code) & Z_DISOWN)
+    #####:  445:			taddstr("|");
+        -:  446:		}
+       44:  447:		if (!(stack = (WC_LIST_TYPE(code) & Z_END))) {
+       15:  448:		    if (tnewlins)
+    #####:  449:			taddnl(0);
+        -:  450:		    else
+       15:  451:			taddstr((WC_LIST_TYPE(code) & Z_ASYNC) ? " " : "; ");
+       15:  452:		    s->code = *state->pc++;
+       15:  453:		    s->pop = (WC_LIST_TYPE(s->code) & Z_END);
+        -:  454:		}
+        -:  455:	    }
+       73:  456:	    if (!stack && (WC_LIST_TYPE(s->code) & Z_SIMPLE))
+       19:  457:		state->pc++;
+       73:  458:	    break;
+       54:  459:	case WC_SUBLIST:
+       54:  460:	    if (!s) {
+       48:  461:                if (!(WC_SUBLIST_FLAGS(code) & WC_SUBLIST_SIMPLE) &&
+       23:  462:                    wc_code(*state->pc) != WC_PIPE)
+    #####:  463:                    stack = -1;
+       25:  464:		if (WC_SUBLIST_FLAGS(code) & WC_SUBLIST_NOT)
+        1:  465:		    taddstr(stack ? "!" : "! ");
+       25:  466:		if (WC_SUBLIST_FLAGS(code) & WC_SUBLIST_COPROC)
+    #####:  467:		    taddstr(stack ? "coproc" : "coproc ");
+       25:  468:		s = tpush(code, (WC_SUBLIST_TYPE(code) == WC_SUBLIST_END));
+        -:  469:	    } else {
+       29:  470:		if (!(stack = (WC_SUBLIST_TYPE(code) == WC_SUBLIST_END))) {
+        4:  471:		    taddstr((WC_SUBLIST_TYPE(code) == WC_SUBLIST_OR) ?
+        -:  472:			    " || " : " && ");
+        4:  473:		    s->code = *state->pc++;
+        4:  474:		    s->pop = (WC_SUBLIST_TYPE(s->code) == WC_SUBLIST_END);
+        4:  475:		    if (WC_SUBLIST_FLAGS(s->code) & WC_SUBLIST_NOT) {
+        2:  476:			if (WC_SUBLIST_SKIP(s->code) == 0)
+    #####:  477:			    stack = 1;
+        2:  478:			taddstr((stack || (!(WC_SUBLIST_FLAGS(s->code) &
+        2:  479:			        WC_SUBLIST_SIMPLE) && wc_code(*state->pc) !=
+        -:  480:			        WC_PIPE)) ? "!" : "! ");
+        -:  481:		    }
+        4:  482:		    if (WC_SUBLIST_FLAGS(s->code) & WC_SUBLIST_COPROC)
+    #####:  483:			taddstr("coproc ");
+        -:  484:		}
+        -:  485:	    }
+       54:  486:	    if (stack < 1 && (WC_SUBLIST_FLAGS(s->code) & WC_SUBLIST_SIMPLE))
+        3:  487:		state->pc++;
+       54:  488:	    break;
+       52:  489:	case WC_PIPE:
+       52:  490:	    if (!s) {
+       26:  491:		tpush(code, (WC_PIPE_TYPE(code) == WC_PIPE_END));
+       26:  492:		if (WC_PIPE_TYPE(code) == WC_PIPE_MID)
+    #####:  493:		    state->pc++;
+        -:  494:	    } else {
+       26:  495:		if (!(stack = (WC_PIPE_TYPE(code) == WC_PIPE_END))) {
+    #####:  496:		    taddstr(" | ");
+    #####:  497:		    s->code = *state->pc++;
+    #####:  498:		    if (!(s->pop = (WC_PIPE_TYPE(s->code) == WC_PIPE_END)))
+    #####:  499:			state->pc++;
+        -:  500:		}
+        -:  501:	    }
+       52:  502:	    break;
+        8:  503:	case WC_REDIR:
+        8:  504:	    if (!s) {
+        4:  505:		state->pc--;
+        4:  506:		n = tpush(code, 1);
+        4:  507:		n->u._redir.list = ecgetredirs(state);
+        -:  508:	    } else {
+        4:  509:		getredirs(s->u._redir.list);
+        4:  510:		stack = 1;
+        -:  511:	    }
+        8:  512:	    break;
+       13:  513:	case WC_ASSIGN:
+       13:  514:	    taddassign(code, state, 0);
+       13:  515:	    break;
+      143:  516:	case WC_SIMPLE:
+      143:  517:	    taddlist(state, WC_SIMPLE_ARGC(code));
+      143:  518:	    stack = 1;
+      143:  519:	    break;
+        9:  520:	case WC_TYPESET:
+        9:  521:	    taddlist(state, WC_TYPESET_ARGC(code));
+        9:  522:	    taddassignlist(state, *state->pc++);
+        9:  523:	    stack = 1;
+        9:  524:	    break;
+    #####:  525:	case WC_SUBSH:
+    #####:  526:	    if (!s) {
+    #####:  527:		taddstr("(");
+    #####:  528:		tindent++;
+    #####:  529:		taddnl(1);
+    #####:  530:		n = tpush(code, 1);
+    #####:  531:		n->u._subsh.end = state->pc + WC_SUBSH_SKIP(code);
+        -:  532:		/* skip word only use for try/always */
+    #####:  533:		state->pc++;
+        -:  534:	    } else {
+    #####:  535:		state->pc = s->u._subsh.end;
+    #####:  536:		dec_tindent();
+        -:  537:		/* semicolon is optional here but more standard */
+    #####:  538:		taddnl(0);
+    #####:  539:		taddstr(")");
+    #####:  540:		stack = 1;
+        -:  541:	    }
+    #####:  542:	    break;
+    #####:  543:	case WC_CURSH:
+    #####:  544:	    if (!s) {
+    #####:  545:		taddstr("{");
+    #####:  546:		tindent++;
+    #####:  547:		taddnl(1);
+    #####:  548:		n = tpush(code, 1);
+    #####:  549:		n->u._subsh.end = state->pc + WC_CURSH_SKIP(code);
+        -:  550:		/* skip word only use for try/always */
+    #####:  551:		state->pc++;
+        -:  552:	    } else {
+    #####:  553:		state->pc = s->u._subsh.end;
+    #####:  554:		dec_tindent();
+        -:  555:		/* semicolon is optional here but more standard */
+    #####:  556:		taddnl(0);
+    #####:  557:		taddstr("}");
+    #####:  558:		stack = 1;
+        -:  559:	    }
+    #####:  560:	    break;
+    #####:  561:	case WC_TIMED:
+    #####:  562:	    if (!s) {
+    #####:  563:		taddstr("time");
+    #####:  564:		if (WC_TIMED_TYPE(code) == WC_TIMED_PIPE) {
+    #####:  565:		    taddchr(' ');
+    #####:  566:		    tindent++;
+    #####:  567:		    tpush(code, 1);
+        -:  568:		} else
+    #####:  569:		    stack = 1;
+        -:  570:	    } else {
+    #####:  571:		dec_tindent();
+    #####:  572:		stack = 1;
+        -:  573:	    }
+    #####:  574:	    break;
+    #####:  575:	case WC_FUNCDEF:
+    #####:  576:	    if (!s) {
+    #####:  577:		Wordcode p = state->pc;
+    #####:  578:		Wordcode end = p + WC_FUNCDEF_SKIP(code);
+    #####:  579:		int nargs = *state->pc++;
+        -:  580:
+    #####:  581:		taddlist(state, nargs);
+    #####:  582:		if (nargs)
+    #####:  583:		    taddstr(" ");
+    #####:  584:		if (tjob) {
+    #####:  585:		    taddstr("() { ... }");
+    #####:  586:		    state->pc = end;
+    #####:  587:		    if (!nargs) {
+        -:  588:			/*
+        -:  589:			 * Unnamed function.
+        -:  590:			 * We're not going to pull any arguments off
+        -:  591:			 * later, so skip them now...
+        -:  592:			 */
+    #####:  593:			state->pc += *end;
+        -:  594:		    }
+    #####:  595:		    stack = 1;
+        -:  596:		} else {
+    #####:  597:		    taddstr("() {");
+    #####:  598:		    tindent++;
+    #####:  599:		    taddnl(1);
+    #####:  600:		    n = tpush(code, 1);
+    #####:  601:		    n->u._funcdef.strs = state->strs;
+    #####:  602:		    n->u._funcdef.end = end;
+    #####:  603:		    n->u._funcdef.nargs = nargs;
+    #####:  604:		    state->strs += *state->pc;
+    #####:  605:		    state->pc += 4;
+        -:  606:		}
+        -:  607:	    } else {
+    #####:  608:		state->strs = s->u._funcdef.strs;
+    #####:  609:		state->pc = s->u._funcdef.end;
+    #####:  610:		dec_tindent();
+    #####:  611:		taddnl(0);
+    #####:  612:		taddstr("}");
+    #####:  613:		if (s->u._funcdef.nargs == 0) {
+        -:  614:		    /* Unnamed function with post-arguments */
+        -:  615:		    int nargs;
+    #####:  616:		    s->u._funcdef.end += *state->pc++;
+    #####:  617:		    nargs = *state->pc++;
+    #####:  618:		    if (nargs) {
+    #####:  619:			taddstr(" ");
+    #####:  620:			taddlist(state, nargs);
+        -:  621:		    }
+    #####:  622:		    state->pc = s->u._funcdef.end;
+        -:  623:		}
+    #####:  624:		stack = 1;
+        -:  625:	    }
+    #####:  626:	    break;
+        2:  627:	case WC_FOR:
+        2:  628:	    if (!s) {
+        1:  629:		taddstr("for ");
+        1:  630:		if (WC_FOR_TYPE(code) == WC_FOR_COND) {
+    #####:  631:		    taddstr("((");
+    #####:  632:		    taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  633:		    taddstr("; ");
+    #####:  634:		    taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  635:		    taddstr("; ");
+    #####:  636:		    taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  637:		    taddstr(")) do");
+        -:  638:		} else {
+        1:  639:		    taddlist(state, *state->pc++);
+        1:  640:		    if (WC_FOR_TYPE(code) == WC_FOR_LIST) {
+        1:  641:			taddstr(" in ");
+        1:  642:			taddlist(state, *state->pc++);
+        -:  643:		    }
+        1:  644:		    taddnl(0);
+        1:  645:		    taddstr("do");
+        -:  646:		}
+        1:  647:		tindent++;
+        1:  648:		taddnl(0);
+        1:  649:		tpush(code, 1);
+        -:  650:	    } else {
+        1:  651:		dec_tindent();
+        1:  652:		taddnl(0);
+        1:  653:		taddstr("done");
+        1:  654:		stack = 1;
+        -:  655:	    }
+        2:  656:	    break;
+    #####:  657:	case WC_SELECT:
+    #####:  658:	    if (!s) {
+    #####:  659:		taddstr("select ");
+    #####:  660:		taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  661:		if (WC_SELECT_TYPE(code) == WC_SELECT_LIST) {
+    #####:  662:		    taddstr(" in ");
+    #####:  663:		    taddlist(state, *state->pc++);
+        -:  664:		}
+    #####:  665:		taddnl(0);
+    #####:  666:		taddstr("do");
+    #####:  667:		taddnl(0);
+    #####:  668:		tindent++;
+    #####:  669:		tpush(code, 1);
+        -:  670:	    } else {
+    #####:  671:		dec_tindent();
+    #####:  672:		taddnl(0);
+    #####:  673:		taddstr("done");
+    #####:  674:		stack = 1;
+        -:  675:	    }
+    #####:  676:	    break;
+        6:  677:	case WC_WHILE:
+        6:  678:	    if (!s) {
+        2:  679:		taddstr(WC_WHILE_TYPE(code) == WC_WHILE_UNTIL ?
+        -:  680:			"until " : "while ");
+        2:  681:		tindent++;
+        2:  682:		tpush(code, 0);
+        4:  683:	    } else if (!s->pop) {
+        2:  684:		dec_tindent();
+        2:  685:		taddnl(0);
+        2:  686:		taddstr("do");
+        2:  687:		tindent++;
+        2:  688:		taddnl(0);
+        2:  689:		s->pop = 1;
+        -:  690:	    } else {
+        2:  691:		dec_tindent();
+        2:  692:		taddnl(0);
+        2:  693:		taddstr("done");
+        2:  694:		stack = 1;
+        -:  695:	    }
+        6:  696:	    break;
+    #####:  697:	case WC_REPEAT:
+    #####:  698:	    if (!s) {
+    #####:  699:		taddstr("repeat ");
+    #####:  700:		taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  701:		taddnl(0);
+    #####:  702:		taddstr("do");
+    #####:  703:		tindent++;
+    #####:  704:		taddnl(0);
+    #####:  705:		tpush(code, 1);
+        -:  706:	    } else {
+    #####:  707:		dec_tindent();
+    #####:  708:		taddnl(0);
+    #####:  709:		taddstr("done");
+    #####:  710:		stack = 1;
+        -:  711:	    }
+    #####:  712:	    break;
+        5:  713:	case WC_CASE:
+        5:  714:	    if (!s) {
+        1:  715:		Wordcode end = state->pc + WC_CASE_SKIP(code);
+        -:  716:		wordcode ialts;
+        -:  717:
+        1:  718:		taddstr("case ");
+        1:  719:		taddstr(ecgetstr(state, EC_NODUP, NULL));
+        1:  720:		taddstr(" in");
+        -:  721:
+        1:  722:		if (state->pc >= end) {
+    #####:  723:		    if (tnewlins)
+    #####:  724:			taddnl(0);
+        -:  725:		    else
+    #####:  726:			taddchr(' ');
+    #####:  727:		    taddstr("esac");
+    #####:  728:		    stack = 1;
+        -:  729:		} else {
+        -:  730:		    Wordcode prev_pc;
+        1:  731:		    tindent++;
+        1:  732:		    if (tnewlins)
+    #####:  733:			taddnl(0);
+        -:  734:		    else
+        1:  735:			taddchr(' ');
+        1:  736:		    taddstr("(");
+        1:  737:		    code = *state->pc++;
+        1:  738:		    prev_pc = state->pc++;
+        1:  739:		    ialts = *prev_pc;
+        3:  740:		    while (ialts--) {
+        1:  741:			taddstr(ecgetstr(state, EC_NODUP, NULL));
+        1:  742:			state->pc++;
+        1:  743:			if (ialts)
+    #####:  744:			    taddstr(" | ");
+        -:  745:		    }
+        1:  746:		    taddstr(") ");
+        1:  747:		    tindent++;
+        1:  748:		    n = tpush(code, 0);
+        1:  749:		    n->u._case.end = end;
+        1:  750:		    n->pop = (prev_pc + WC_CASE_SKIP(code) >= end);
+        -:  751:		}
+        4:  752:	    } else if (state->pc < s->u._case.end) {
+        -:  753:		Wordcode prev_pc;
+        -:  754:		wordcode ialts;
+        3:  755:		dec_tindent();
+        3:  756:		switch (WC_CASE_TYPE(code)) {
+        3:  757:		case WC_CASE_OR:
+        3:  758:		    taddstr(" ;;");
+        3:  759:		    break;
+        -:  760:
+    #####:  761:		case WC_CASE_AND:
+    #####:  762:		    taddstr(" ;&");
+    #####:  763:		    break;
+        -:  764:
+    #####:  765:		default:
+    #####:  766:		    taddstr(" ;|");
+    #####:  767:		    break;
+        -:  768:		}
+        3:  769:		if (tnewlins)
+    #####:  770:		    taddnl(0);
+        -:  771:		else
+        3:  772:		    taddchr(' ');
+        3:  773:		taddstr("(");
+        3:  774:		code = *state->pc++;
+        3:  775:		prev_pc = state->pc++;
+        3:  776:		ialts = *prev_pc;
+        9:  777:		while (ialts--) {
+        3:  778:		    taddstr(ecgetstr(state, EC_NODUP, NULL));
+        3:  779:		    state->pc++;
+        3:  780:		    if (ialts)
+    #####:  781:			taddstr(" | ");
+        -:  782:		}
+        3:  783:		taddstr(") ");
+        3:  784:		tindent++;
+        3:  785:		s->code = code;
+        6:  786:		s->pop = (prev_pc + WC_CASE_SKIP(code) >=
+        3:  787:			  s->u._case.end);
+        -:  788:	    } else {
+        1:  789:		dec_tindent();
+        1:  790:		switch (WC_CASE_TYPE(code)) {
+        1:  791:		case WC_CASE_OR:
+        1:  792:		    taddstr(" ;;");
+        1:  793:		    break;
+        -:  794:
+    #####:  795:		case WC_CASE_AND:
+    #####:  796:		    taddstr(" ;&");
+    #####:  797:		    break;
+        -:  798:
+    #####:  799:		default:
+    #####:  800:		    taddstr(" ;|");
+    #####:  801:		    break;
+        -:  802:		}
+        1:  803:		dec_tindent();
+        1:  804:		if (tnewlins)
+    #####:  805:		    taddnl(0);
+        -:  806:		else
+        1:  807:		    taddchr(' ');
+        1:  808:		taddstr("esac");
+        1:  809:		stack = 1;
+        -:  810:	    }
+        5:  811:	    break;
+       34:  812:	case WC_IF:
+       34:  813:	    if (!s) {
+        7:  814:		Wordcode end = state->pc + WC_IF_SKIP(code);
+        -:  815:
+        7:  816:		taddstr("if ");
+        7:  817:		tindent++;
+        7:  818:		state->pc++;
+        -:  819:
+        7:  820:		n = tpush(code, 0);
+        7:  821:		n->u._if.end = end;
+        7:  822:		n->u._if.cond = 1;
+       27:  823:	    } else if (s->pop) {
+        7:  824:		stack = 1;
+       20:  825:	    } else if (s->u._if.cond) {
+        9:  826:		dec_tindent();
+        9:  827:		taddnl(0);
+        9:  828:		taddstr("then");
+        9:  829:		tindent++;
+        9:  830:		taddnl(0);
+        9:  831:		s->u._if.cond = 0;
+       11:  832:	    } else if (state->pc < s->u._if.end) {
+        4:  833:		dec_tindent();
+        4:  834:		taddnl(0);
+        4:  835:		code = *state->pc++;
+        4:  836:		if (WC_IF_TYPE(code) == WC_IF_ELIF) {
+        2:  837:		    taddstr("elif ");
+        2:  838:		    tindent++;
+        2:  839:		    s->u._if.cond = 1;
+        -:  840:		} else {
+        2:  841:		    taddstr("else");
+        2:  842:		    tindent++;
+        2:  843:		    taddnl(0);
+        -:  844:		}
+        -:  845:	    } else {
+        7:  846:		s->pop = 1;
+        7:  847:		dec_tindent();
+        7:  848:		taddnl(0);
+        7:  849:		taddstr("fi");
+        7:  850:		stack = 1;
+        -:  851:	    }
+       34:  852:	    break;
+        8:  853:	case WC_COND:
+        -:  854:	    {
+        -:  855:		int ctype;
+        -:  856:
+        8:  857:		if (!s) {
+        4:  858:		    taddstr("[[ ");
+        4:  859:		    n = tpush(code, 1);
+        4:  860:		    n->u._cond.par = 2;
+        4:  861:		} else if (s->u._cond.par == 2) {
+        4:  862:		    taddstr(" ]]");
+        4:  863:		    stack = 1;
+        4:  864:		    break;
+    #####:  865:		} else if (s->u._cond.par == 1) {
+    #####:  866:		    taddstr(" )");
+    #####:  867:		    stack = 1;
+    #####:  868:		    break;
+    #####:  869:		} else if (WC_COND_TYPE(s->code) == COND_AND) {
+    #####:  870:		    taddstr(" && ");
+    #####:  871:		    code = *state->pc++;
+    #####:  872:		    if (WC_COND_TYPE(code) == COND_OR) {
+    #####:  873:			taddstr("( ");
+    #####:  874:			n = tpush(code, 1);
+    #####:  875:			n->u._cond.par = 1;
+        -:  876:		    }
+    #####:  877:		} else if (WC_COND_TYPE(s->code) == COND_OR) {
+    #####:  878:		    taddstr(" || ");
+    #####:  879:		    code = *state->pc++;
+    #####:  880:		    if (WC_COND_TYPE(code) == COND_AND) {
+    #####:  881:			taddstr("( ");
+    #####:  882:			n = tpush(code, 1);
+    #####:  883:			n->u._cond.par = 1;
+        -:  884:		    }
+        -:  885:		}
+       13:  886:		while (!stack) {
+        5:  887:		    switch ((ctype = WC_COND_TYPE(code))) {
+        1:  888:		    case COND_NOT:
+        1:  889:			taddstr("! ");
+        1:  890:			code = *state->pc++;
+        1:  891:			if (WC_COND_TYPE(code) <= COND_OR) {
+    #####:  892:			    taddstr("( ");
+    #####:  893:			    n = tpush(code, 1);
+    #####:  894:			    n->u._cond.par = 1;
+        -:  895:			}
+        1:  896:			break;
+    #####:  897:		    case COND_AND:
+    #####:  898:			n = tpush(code, 1);
+    #####:  899:			n->u._cond.par = 0;
+    #####:  900:			code = *state->pc++;
+    #####:  901:			if (WC_COND_TYPE(code) == COND_OR) {
+    #####:  902:			    taddstr("( ");
+    #####:  903:			    n = tpush(code, 1);
+    #####:  904:			    n->u._cond.par = 1;
+        -:  905:			}
+    #####:  906:			break;
+    #####:  907:		    case COND_OR:
+    #####:  908:			n = tpush(code, 1);
+    #####:  909:			n->u._cond.par = 0;
+    #####:  910:			code = *state->pc++;
+    #####:  911:			if (WC_COND_TYPE(code) == COND_AND) {
+    #####:  912:			    taddstr("( ");
+    #####:  913:			    n = tpush(code, 1);
+    #####:  914:			    n->u._cond.par = 1;
+        -:  915:			}
+    #####:  916:			break;
+    #####:  917:		    case COND_MOD:
+    #####:  918:			taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  919:			taddchr(' ');
+    #####:  920:			taddlist(state, WC_COND_SKIP(code));
+    #####:  921:			stack = 1;
+    #####:  922:			break;
+    #####:  923:		    case COND_MODI:
+        -:  924:			{
+    #####:  925:			    char *name = ecgetstr(state, EC_NODUP, NULL);
+        -:  926:
+    #####:  927:			    taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  928:			    taddchr(' ');
+    #####:  929:			    taddstr(name);
+    #####:  930:			    taddchr(' ');
+    #####:  931:			    taddstr(ecgetstr(state, EC_NODUP, NULL));
+    #####:  932:			    stack = 1;
+        -:  933:			}
+    #####:  934:			break;
+        4:  935:		    default:
+        4:  936:			if (ctype < COND_MOD) {
+        -:  937:			    /* Binary test: `a = b' etc. */
+        1:  938:			    taddstr(ecgetstr(state, EC_NODUP, NULL));
+        1:  939:			    taddstr(" ");
+        1:  940:			    taddstr(cond_binary_ops[ctype - COND_STREQ]);
+        1:  941:			    taddstr(" ");
+        1:  942:			    taddstr(ecgetstr(state, EC_NODUP, NULL));
+        1:  943:			    if (ctype == COND_STREQ ||
+    #####:  944:				ctype == COND_STRDEQ ||
+        -:  945:				ctype == COND_STRNEQ)
+        1:  946:				state->pc++;
+        -:  947:			} else {
+        -:  948:			    /* Unary test: `-f foo' etc. */ 
+        -:  949:			    char c2[4];
+        -:  950:
+        3:  951:			    c2[0] = '-';
+        3:  952:			    c2[1] = ctype;
+        3:  953:			    c2[2] = ' ';
+        3:  954:			    c2[3] = '\0';
+        3:  955:			    taddstr(c2);
+        3:  956:			    taddstr(ecgetstr(state, EC_NODUP, NULL));
+        -:  957:			}
+        4:  958:			stack = 1;
+        4:  959:			break;
+        -:  960:		    }
+        -:  961:		}
+        -:  962:	    }
+        4:  963:	    break;
+       10:  964:	case WC_ARITH:
+       10:  965:	    taddstr("((");
+       10:  966:	    taddstr(ecgetstr(state, EC_NODUP, NULL));
+       10:  967:	    taddstr("))");
+       10:  968:	    stack = 1;
+       10:  969:	    break;
+    #####:  970:	case WC_AUTOFN:
+    #####:  971:	    taddstr("builtin autoload -X");
+    #####:  972:	    stack = 1;
+    #####:  973:	    break;
+    #####:  974:	case WC_TRY:
+    #####:  975:	    if (!s) {
+    #####:  976:		taddstr("{");
+    #####:  977:		tindent++;
+    #####:  978:		taddnl(0);
+    #####:  979:		n = tpush(code, 0);
+    #####:  980:		state->pc++;
+        -:  981:		/* this is the end of the try block alone */
+    #####:  982:		n->u._subsh.end = state->pc + WC_CURSH_SKIP(state->pc[-1]);
+    #####:  983:	    } else if (!s->pop) {
+    #####:  984:		state->pc = s->u._subsh.end;
+    #####:  985:		dec_tindent();
+    #####:  986:		taddnl(0);
+    #####:  987:		taddstr("} always {");
+    #####:  988:		tindent++;
+    #####:  989:		taddnl(0);
+    #####:  990:		s->pop = 1;
+        -:  991:	    } else {
+    #####:  992:		dec_tindent();
+    #####:  993:		taddnl(0);
+    #####:  994:		taddstr("}");
+    #####:  995:		stack = 1;
+        -:  996:	    }
+    #####:  997:	    break;
+    #####:  998:	case WC_END:
+    #####:  999:	    stack = 1;
+    #####: 1000:	    break;
+    #####: 1001:	default:
+        -: 1002:	    DPUTS(1, "unknown word code in gettext2()");
+    #####: 1003:	    return;
+        -: 1004:	}
+        -: 1005:    }
+      129: 1006:    tdopending();
+        -: 1007:}
+        -: 1008:
+        -: 1009:/**/
+        -: 1010:void
+        4: 1011:getredirs(LinkList redirs)
+        -: 1012:{
+        -: 1013:    LinkNode n;
+        -: 1014:    static char *fstr[] =
+        -: 1015:    {
+        -: 1016:	">", ">|", ">>", ">>|", "&>", "&>|", "&>>", "&>>|", "<>", "<",
+        -: 1017:	"<<", "<<-", "<<<", "<&", ">&", NULL /* >&- */, "<", ">"
+        -: 1018:    };
+        -: 1019:
+        4: 1020:    queue_signals();
+        -: 1021:
+        4: 1022:    taddchr(' ');
+        8: 1023:    for (n = firstnode(redirs); n; incnode(n)) {
+        4: 1024:	Redir f = (Redir) getdata(n);
+        -: 1025:
+        4: 1026:	switch (f->type) {
+        4: 1027:	case REDIR_WRITE:
+        -: 1028:	case REDIR_WRITENOW:
+        -: 1029:	case REDIR_APP:
+        -: 1030:	case REDIR_APPNOW:
+        -: 1031:	case REDIR_ERRWRITE:
+        -: 1032:	case REDIR_ERRWRITENOW:
+        -: 1033:	case REDIR_ERRAPP:
+        -: 1034:	case REDIR_ERRAPPNOW:
+        -: 1035:	case REDIR_READ:
+        -: 1036:	case REDIR_READWRITE:
+        -: 1037:	case REDIR_HERESTR:
+        -: 1038:	case REDIR_MERGEIN:
+        -: 1039:	case REDIR_MERGEOUT:
+        -: 1040:	case REDIR_INPIPE:
+        -: 1041:	case REDIR_OUTPIPE:
+        4: 1042:	    if (f->varid) {
+        2: 1043:		taddchr('{');
+        2: 1044:		taddstr(f->varid);
+        2: 1045:		taddchr('}');
+        2: 1046:	    } else if (f->fd1 != (IS_READFD(f->type) ? 0 : 1))
+        1: 1047:		taddchr('0' + f->fd1);
+        4: 1048:	    if (f->type == REDIR_HERESTR &&
+    #####: 1049:		(f->flags & REDIRF_FROM_HEREDOC)) {
+    #####: 1050:		if (tnewlins) {
+        -: 1051:		    /*
+        -: 1052:		     * Strings that came from here-documents are converted
+        -: 1053:		     * to here strings without quotation, so convert them
+        -: 1054:		     * back.
+        -: 1055:		     */
+    #####: 1056:		    taddstr(fstr[REDIR_HEREDOC]);
+    #####: 1057:		    taddstr(f->here_terminator);
+    #####: 1058:		    taddpending(f->name, f->munged_here_terminator);
+        -: 1059:		} else {
+        -: 1060:		    int fnamelen, sav;
+    #####: 1061:		    taddstr(fstr[REDIR_HERESTR]);
+        -: 1062:		    /*
+        -: 1063:		     * Just a quick and dirty representation.
+        -: 1064:		     * Remove a terminating newline, if any.
+        -: 1065:		     */
+    #####: 1066:		    fnamelen = strlen(f->name);
+    #####: 1067:		    if (fnamelen > 0 && f->name[fnamelen-1] == '\n') {
+    #####: 1068:			sav = 1;
+    #####: 1069:			f->name[fnamelen-1] = '\0';
+        -: 1070:		    } else
+    #####: 1071:			sav = 0;
+        -: 1072:		    /*
+        -: 1073:		     * Strings that came from here-documents are converted
+        -: 1074:		     * to here strings without quotation, so add that
+        -: 1075:		     * now.  If tokens are present we need to do double quoting.
+        -: 1076:		     */
+    #####: 1077:		    if (!has_token(f->name)) {
+    #####: 1078:			taddchr('\'');
+    #####: 1079:			taddstr(quotestring(f->name, QT_SINGLE));
+    #####: 1080:			taddchr('\'');
+        -: 1081:		    } else {
+    #####: 1082:			taddchr('"');
+    #####: 1083:			taddstr(quotestring(f->name, QT_DOUBLE));
+    #####: 1084:			taddchr('"');
+        -: 1085:		    }
+    #####: 1086:		    if (sav)
+    #####: 1087:			f->name[fnamelen-1] = '\n';
+        -: 1088:		}
+        -: 1089:	    } else {
+        4: 1090:		taddstr(fstr[f->type]);
+        4: 1091:		if (f->type != REDIR_MERGEIN && f->type != REDIR_MERGEOUT)
+        2: 1092:		    taddchr(' ');
+        4: 1093:		taddstr(f->name);
+        -: 1094:	    }
+        4: 1095:	    taddchr(' ');
+        4: 1096:	    break;
+        -: 1097:#ifdef DEBUG
+        -: 1098:	case REDIR_CLOSE:
+        -: 1099:	    DPUTS(1, "BUG: CLOSE in getredirs()");
+        -: 1100:	    taddchr(f->fd1 + '0');
+        -: 1101:	    taddstr(">&- ");
+        -: 1102:	    break;
+        -: 1103:	default:
+        -: 1104:	    DPUTS(1, "BUG: unknown redirection in getredirs()");
+        -: 1105:#endif
+        -: 1106:	}
+        -: 1107:    }
+        4: 1108:    tptr--;
+        -: 1109:
+        4: 1110:    unqueue_signals();
+        4: 1111:}

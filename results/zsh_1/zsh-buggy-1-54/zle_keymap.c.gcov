@@ -1,0 +1,1778 @@
+        -:    0:Source:zle_keymap.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_keymap.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_keymap.gcda
+        -:    0:Runs:13
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_keymap.c - keymaps and key bindings
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:
+        -:   32:/*
+        -:   33: * Keymap structures:
+        -:   34: *
+        -:   35: * There is a hash table of keymap names.  Each name just points to a keymap.
+        -:   36: * More than one name may point to the same keymap.
+        -:   37: *
+        -:   38: * Each keymap consists of a table of bindings for each character, and a
+        -:   39: * hash table of multi-character key bindings.  The keymap has no individual
+        -:   40: * name, but maintains a reference count.
+        -:   41: *
+        -:   42: * In a keymap's table of initial bindings, each character is either bound to
+        -:   43: * a thingy, or is a prefix (in which case NULL is stored).  Those prefix
+        -:   44: * entries are matched by more complex entries in the multi-character
+        -:   45: * binding hash table.  Each entry in this hash table (which is indexed by
+        -:   46: * metafied key sequence) either has a normal thingy binding or a string to
+        -:   47: * send (in which case the NULL thingy is used).  Each entry also has a count
+        -:   48: * of other entries for which it is a prefix.
+        -:   49: */
+        -:   50:
+        -:   51:typedef struct keymapname *KeymapName;
+        -:   52:typedef struct key *Key;
+        -:   53:
+        -:   54:struct keymapname {
+        -:   55:    HashNode next;	/* next in the hash chain */
+        -:   56:    char *nam;		/* name of the keymap */
+        -:   57:    int flags;		/* various flags (see below) */
+        -:   58:    Keymap keymap;	/* the keymap itself */
+        -:   59:};
+        -:   60:
+        -:   61:/* Can't be deleted (.safe) */
+        -:   62:#define KMN_IMMORTAL (1<<1)
+        -:   63:
+        -:   64:struct keymap {
+        -:   65:    Thingy first[256];	/* base binding of each character */
+        -:   66:    HashTable multi;	/* multi-character bindings */
+        -:   67:    /*
+        -:   68:     * The "real" name of this keymap.
+        -:   69:     * For an aliased keymap, this is the first name to be defined.
+        -:   70:     * If this is deleted but there are other names we randomly pick another
+        -:   71:     * one, avoiding the name "main".  The principal use
+        -:   72:     * for this is to make it clear what "main" is aliased to.
+        -:   73:     *
+        -:   74:     * If "main" is the only name for this map, this will be NULL.
+        -:   75:     * That's fine, there's no alias.  We'll pick a primary if we
+        -:   76:     * alias "main" again.
+        -:   77:     */
+        -:   78:    KeymapName primary;
+        -:   79:    int flags;		/* various flags (see below) */
+        -:   80:    int rc;		/* reference count */
+        -:   81:};
+        -:   82:
+        -:   83:#define KM_IMMUTABLE (1<<1)
+        -:   84:
+        -:   85:struct key {
+        -:   86:    HashNode next;	/* next in hash chain */
+        -:   87:    char *nam;		/* key sequence (metafied) */
+        -:   88:    Thingy bind;	/* binding of this key sequence */
+        -:   89:    char *str;		/* string for send-string (metafied) */
+        -:   90:    int prefixct;	/* number of sequences for which this is a prefix */
+        -:   91:};
+        -:   92:
+        -:   93:/* This structure is used when listing keymaps. */
+        -:   94:
+        -:   95:struct bindstate {
+        -:   96:    int flags;
+        -:   97:    char *kmname;
+        -:   98:    char *firstseq;
+        -:   99:    char *lastseq;
+        -:  100:    Thingy bind;
+        -:  101:    char *str;
+        -:  102:    char *prefix;
+        -:  103:    int prefixlen;
+        -:  104:};
+        -:  105:
+        -:  106:/* This structure is used when scanning for prefix bindings to remove */
+        -:  107:
+        -:  108:struct remprefstate {
+        -:  109:    Keymap km;
+        -:  110:    char *prefix;
+        -:  111:    int prefixlen;
+        -:  112:};
+        -:  113:
+        -:  114:#define BS_LIST (1<<0)
+        -:  115:#define BS_ALL  (1<<1)
+        -:  116:
+        -:  117:/* local functions */
+        -:  118:
+        -:  119:#include "zle_keymap.pro"
+        -:  120:
+        -:  121:/* currently selected keymap, and its name */
+        -:  122:
+        -:  123:/**/
+        -:  124:Keymap curkeymap, localkeymap;
+        -:  125:/**/
+        -:  126:char *curkeymapname;
+        -:  127:
+        -:  128:/* the hash table of keymap names */
+        -:  129:
+        -:  130:/**/
+        -:  131:mod_export HashTable keymapnamtab;
+        -:  132:
+        -:  133:/* key sequence reading data */
+        -:  134:
+        -:  135:/**/
+        -:  136:char *keybuf;
+        -:  137:
+        -:  138:/**/
+        -:  139:int keybuflen;
+        -:  140:
+        -:  141:static int keybufsz = 20;
+        -:  142:
+        -:  143:/* last command executed with execute-named-command */
+        -:  144:
+        -:  145:static Thingy lastnamed;
+        -:  146:
+        -:  147:/**********************************/
+        -:  148:/* hashtable management functions */
+        -:  149:/**********************************/
+        -:  150:
+        -:  151:/**/
+        -:  152:static void
+    #####:  153:createkeymapnamtab(void)
+        -:  154:{
+    #####:  155:    keymapnamtab = newhashtable(7, "keymapnamtab", NULL);
+        -:  156:
+    #####:  157:    keymapnamtab->hash        = hasher;
+    #####:  158:    keymapnamtab->emptytable  = emptykeymapnamtab;
+    #####:  159:    keymapnamtab->filltable   = NULL;
+    #####:  160:    keymapnamtab->cmpnodes    = strcmp;
+    #####:  161:    keymapnamtab->addnode     = addhashnode;
+    #####:  162:    keymapnamtab->getnode     = gethashnode2;
+    #####:  163:    keymapnamtab->getnode2    = gethashnode2;
+    #####:  164:    keymapnamtab->removenode  = removehashnode;
+    #####:  165:    keymapnamtab->disablenode = NULL;
+    #####:  166:    keymapnamtab->enablenode  = NULL;
+    #####:  167:    keymapnamtab->freenode    = freekeymapnamnode;
+    #####:  168:    keymapnamtab->printnode   = NULL;
+    #####:  169:}
+        -:  170:
+        -:  171:/**/
+        -:  172:static KeymapName
+    #####:  173:makekeymapnamnode(Keymap keymap)
+        -:  174:{
+    #####:  175:    KeymapName kmn = (KeymapName) zshcalloc(sizeof(*kmn));
+        -:  176:
+    #####:  177:    kmn->keymap = keymap;
+    #####:  178:    return kmn;
+        -:  179:}
+        -:  180:
+        -:  181:/**/
+        -:  182:static void
+    #####:  183:emptykeymapnamtab(HashTable ht)
+        -:  184:{
+        -:  185:    struct hashnode *hn, *hp;
+        -:  186:    int i;
+        -:  187:
+    #####:  188:    for (i = 0; i < ht->hsize; i++) {
+    #####:  189:	for (hn = ht->nodes[i]; hn;) {
+    #####:  190:	    KeymapName kmn = (KeymapName) hn;
+    #####:  191:	    hp = hn->next;
+    #####:  192:	    zsfree(kmn->nam);
+    #####:  193:	    unrefkeymap(kmn->keymap);
+    #####:  194:	    zfree(kmn, sizeof(*kmn));
+    #####:  195:	    hn = hp;
+        -:  196:	}
+    #####:  197:	ht->nodes[i] = NULL;
+        -:  198:    }
+    #####:  199:    ht->ct = 0;
+    #####:  200:}
+        -:  201:
+        -:  202:/*
+        -:  203: * Reference a keymap from a keymapname.
+        -:  204: * Used when linking keymaps.  This includes the first link to a
+        -:  205: * newly created keymap.
+        -:  206: */
+        -:  207:
+        -:  208:static void
+    #####:  209:refkeymap_by_name(KeymapName kmn)
+        -:  210:{
+    #####:  211:    refkeymap(kmn->keymap);
+    #####:  212:    if (!kmn->keymap->primary && strcmp(kmn->nam, "main") != 0)
+    #####:  213:	kmn->keymap->primary = kmn;
+    #####:  214:}
+        -:  215:
+        -:  216:/*
+        -:  217: * Communication to keymap scanner when looking for a new primary name.
+        -:  218: */
+        -:  219:static Keymap km_rename_me;
+        -:  220:
+        -:  221:/* Find a new primary name for a keymap.  See below. */
+        -:  222:
+        -:  223:static void
+    #####:  224:scanprimaryname(HashNode hn, int ignored)
+        -:  225:{
+    #####:  226:    KeymapName n = (KeymapName) hn;
+        -:  227:
+        -:  228:    (void)ignored;
+        -:  229:
+        -:  230:    /* Check if we've already found a new primary name. */
+    #####:  231:    if (km_rename_me->primary)
+    #####:  232:	return;
+        -:  233:    /* Don't use "main". */
+    #####:  234:    if (!strcmp(n->nam, "main"))
+    #####:  235:	return;
+    #####:  236:    if (n->keymap == km_rename_me)
+    #####:  237:	km_rename_me->primary = n;
+        -:  238:}
+        -:  239:
+        -:  240:/*
+        -:  241: * Unreference a keymap from a keymapname.
+        -:  242: * Used when unlinking keymaps to ensure there is still a primary
+        -:  243: * name for the keymap, unless it is an unaliased "main".
+        -:  244: */
+        -:  245:static void
+    #####:  246:unrefkeymap_by_name(KeymapName kmname)
+        -:  247:{
+    #####:  248:    Keymap km = kmname->keymap;
+    #####:  249:    if (unrefkeymap(km) && km->primary == kmname) {
+        -:  250:	/*
+        -:  251:	 * The primary name for the keymap has gone,
+        -:  252:	 * but the keymap is still referred to; find a new primary name
+        -:  253:	 * for it.  Sort the keymap to make the result deterministic.
+        -:  254:	 */
+        -:  255:	/* Set the primary name to NULL so we can check if we've found one */
+    #####:  256:	km->primary = NULL;
+    #####:  257:	km_rename_me = km;
+    #####:  258:	scanhashtable(keymapnamtab, 1, 0, 0, scanprimaryname, 0);
+        -:  259:	/* Just for neatness */
+    #####:  260:	km_rename_me = NULL;
+        -:  261:    }
+    #####:  262:}
+        -:  263:
+        -:  264:
+        -:  265:/**/
+        -:  266:static void
+    #####:  267:freekeymapnamnode(HashNode hn)
+        -:  268:{
+    #####:  269:    KeymapName kmn = (KeymapName) hn;
+        -:  270:
+    #####:  271:    zsfree(kmn->nam);
+    #####:  272:    unrefkeymap_by_name(kmn);
+    #####:  273:    zfree(kmn, sizeof(*kmn));
+    #####:  274:}
+        -:  275:
+        -:  276:/**/
+        -:  277:static HashTable
+    #####:  278:newkeytab(char *kmname)
+        -:  279:{
+    #####:  280:    HashTable ht = newhashtable(19,
+        -:  281:	kmname ?  dyncat("keytab:", kmname) : "keytab:", NULL);
+        -:  282:
+    #####:  283:    ht->hash        = hasher;
+    #####:  284:    ht->emptytable  = emptyhashtable;
+    #####:  285:    ht->filltable   = NULL;
+    #####:  286:    ht->cmpnodes    = strcmp;
+    #####:  287:    ht->addnode     = addhashnode;
+    #####:  288:    ht->getnode     = gethashnode2;
+    #####:  289:    ht->getnode2    = gethashnode2;
+    #####:  290:    ht->removenode  = removehashnode;
+    #####:  291:    ht->disablenode = NULL;
+    #####:  292:    ht->enablenode  = NULL;
+    #####:  293:    ht->freenode    = freekeynode;
+    #####:  294:    ht->printnode   = NULL;
+        -:  295:
+    #####:  296:    return ht;
+        -:  297:}
+        -:  298:
+        -:  299:/**/
+        -:  300:static Key
+    #####:  301:makekeynode(Thingy t, char *str)
+        -:  302:{
+    #####:  303:    Key k = (Key) zshcalloc(sizeof(*k));
+        -:  304:
+    #####:  305:    k->bind = t;
+    #####:  306:    k->str = str;
+    #####:  307:    return k;
+        -:  308:}
+        -:  309:
+        -:  310:/**/
+        -:  311:static void
+    #####:  312:freekeynode(HashNode hn)
+        -:  313:{
+    #####:  314:    Key k = (Key) hn;
+        -:  315:
+    #####:  316:    zsfree(k->nam);
+    #####:  317:    unrefthingy(k->bind);
+    #####:  318:    zsfree(k->str);
+    #####:  319:    zfree(k, sizeof(*k));
+    #####:  320:}
+        -:  321:
+        -:  322:/**************************/
+        -:  323:/* main keymap operations */
+        -:  324:/**************************/
+        -:  325:
+        -:  326:static HashTable copyto;
+        -:  327:
+        -:  328:/**/
+        -:  329:mod_export Keymap
+    #####:  330:newkeymap(Keymap tocopy, char *kmname)
+        -:  331:{
+    #####:  332:    Keymap km = zshcalloc(sizeof(*km));
+        -:  333:    int i;
+        -:  334:
+    #####:  335:    km->rc = 0;
+    #####:  336:    km->multi = newkeytab(kmname);
+    #####:  337:    if(tocopy) {
+    #####:  338:	for(i = 256; i--; )
+    #####:  339:	    km->first[i] = refthingy(tocopy->first[i]);
+    #####:  340:	copyto = km->multi;
+    #####:  341:	scanhashtable(tocopy->multi, 0, 0, 0, scancopykeys, 0);
+        -:  342:    } else {
+    #####:  343:	for(i = 256; i--; )
+    #####:  344:	    km->first[i] = refthingy(t_undefinedkey);
+        -:  345:    }
+    #####:  346:    return km;
+        -:  347:}
+        -:  348:
+        -:  349:/**/
+        -:  350:static void
+    #####:  351:scancopykeys(HashNode hn, UNUSED(int flags))
+        -:  352:{
+    #####:  353:    Key k = (Key) hn;
+    #####:  354:    Key kn = zalloc(sizeof(*k));
+        -:  355:
+    #####:  356:    memcpy(kn, k, sizeof(*k));
+    #####:  357:    refthingy(kn->bind);
+    #####:  358:    kn->str = ztrdup(k->str);
+    #####:  359:    copyto->addnode(copyto, ztrdup(k->nam), kn);
+    #####:  360:}
+        -:  361:
+        -:  362:/**/
+        -:  363:void
+    #####:  364:deletekeymap(Keymap km)
+        -:  365:{
+        -:  366:    int i;
+        -:  367:
+    #####:  368:    deletehashtable(km->multi);
+    #####:  369:    for(i = 256; i--; )
+    #####:  370:	unrefthingy(km->first[i]);
+    #####:  371:    zfree(km, sizeof(*km));
+    #####:  372:}
+        -:  373:
+        -:  374:static Keymap skm_km;
+        -:  375:static int skm_last;
+        -:  376:static KeyScanFunc skm_func;
+        -:  377:static void *skm_magic;
+        -:  378:
+        -:  379:/**/
+        -:  380:void
+    #####:  381:scankeymap(Keymap km, int sort, KeyScanFunc func, void *magic)
+        -:  382:{
+        -:  383:    char m[3];
+        -:  384:
+    #####:  385:    skm_km = km;
+    #####:  386:    skm_last = sort ? -1 : 255;
+    #####:  387:    skm_func = func;
+    #####:  388:    skm_magic = magic;
+    #####:  389:    scanhashtable(km->multi, sort, 0, 0, scankeys, 0);
+    #####:  390:    if(!sort)
+    #####:  391:	skm_last = -1;
+    #####:  392:    while(skm_last < 255) {
+    #####:  393:	skm_last++;
+    #####:  394:	if(km->first[skm_last] && km->first[skm_last] != t_undefinedkey) {
+    #####:  395:	    m[0] = skm_last;
+    #####:  396:	    metafy(m, 1, META_NOALLOC);
+    #####:  397:	    func(m, km->first[skm_last], NULL, magic);
+        -:  398:	}
+        -:  399:    }
+    #####:  400:}
+        -:  401:
+        -:  402:/**/
+        -:  403:static void
+    #####:  404:scankeys(HashNode hn, UNUSED(int flags))
+        -:  405:{
+    #####:  406:    Key k = (Key) hn;
+    #####:  407:    int f = k->nam[0] == Meta ? STOUC(k->nam[1])^32 : STOUC(k->nam[0]);
+        -:  408:    char m[3];
+        -:  409:
+    #####:  410:    while(skm_last < f) {
+    #####:  411:	skm_last++;
+    #####:  412:	if(skm_km->first[skm_last] &&
+    #####:  413:	   skm_km->first[skm_last] != t_undefinedkey) {
+    #####:  414:	    m[0] = skm_last;
+    #####:  415:	    metafy(m, 1, META_NOALLOC);
+    #####:  416:	    skm_func(m, skm_km->first[skm_last], NULL, skm_magic);
+        -:  417:	}
+        -:  418:    }
+    #####:  419:    skm_func(k->nam, k->bind, k->str, skm_magic);
+    #####:  420:}
+        -:  421:
+        -:  422:/**************************/
+        -:  423:/* keymap name operations */
+        -:  424:/**************************/
+        -:  425:
+        -:  426:/**/
+        -:  427:mod_export Keymap
+    #####:  428:openkeymap(char *name)
+        -:  429:{
+    #####:  430:    KeymapName n = (KeymapName) keymapnamtab->getnode(keymapnamtab, name);
+    #####:  431:    return n ? n->keymap : NULL;
+        -:  432:}
+        -:  433:
+        -:  434:/**/
+        -:  435:mod_export int
+    #####:  436:unlinkkeymap(char *name, int ignm)
+        -:  437:{
+    #####:  438:    KeymapName n = (KeymapName) keymapnamtab->getnode(keymapnamtab, name);
+    #####:  439:    if(!n)
+    #####:  440:	return 2;
+    #####:  441:    if(!ignm && (n->flags & KMN_IMMORTAL))
+    #####:  442:	return 1;
+    #####:  443:    keymapnamtab->freenode(keymapnamtab->removenode(keymapnamtab, name));
+    #####:  444:    return 0;
+        -:  445:}
+        -:  446:
+        -:  447:/**/
+        -:  448:mod_export int
+    #####:  449:linkkeymap(Keymap km, char *name, int imm)
+        -:  450:{
+    #####:  451:    KeymapName n = (KeymapName) keymapnamtab->getnode(keymapnamtab, name);
+    #####:  452:    if(n) {
+    #####:  453:	if(n->flags & KMN_IMMORTAL)
+    #####:  454:	    return 1;
+    #####:  455:	if(n->keymap == km)
+    #####:  456:	    return 0;
+    #####:  457:	unrefkeymap_by_name(n);
+    #####:  458:	n->keymap = km;
+        -:  459:    } else {
+    #####:  460:	n = makekeymapnamnode(km);
+    #####:  461:	if (imm)
+    #####:  462:	    n->flags |= KMN_IMMORTAL;
+    #####:  463:	keymapnamtab->addnode(keymapnamtab, ztrdup(name), n);
+        -:  464:    }
+    #####:  465:    refkeymap_by_name(n);
+    #####:  466:    return 0;
+        -:  467:}
+        -:  468:
+        -:  469:/**/
+        -:  470:void
+    #####:  471:refkeymap(Keymap km)
+        -:  472:{
+    #####:  473:    km->rc++;
+    #####:  474:}
+        -:  475:
+        -:  476:/* Unreference keymap, returning new reference count, 0 if deleted */
+        -:  477:
+        -:  478:/**/
+        -:  479:int
+    #####:  480:unrefkeymap(Keymap km)
+        -:  481:{
+    #####:  482:    if (!--km->rc) {
+    #####:  483:	deletekeymap(km);
+    #####:  484:	return 0;
+        -:  485:    }
+        -:  486:
+    #####:  487:    return km->rc;
+        -:  488:}
+        -:  489:
+        -:  490:/* Select a keymap as the current ZLE keymap.  Can optionally fall back *
+        -:  491: * on the guaranteed safe keymap if it fails.                           */
+        -:  492:
+        -:  493:/**/
+        -:  494:int
+    #####:  495:selectkeymap(char *name, int fb)
+        -:  496:{
+    #####:  497:    Keymap km = openkeymap(name);
+        -:  498:
+    #####:  499:    if(!km) {
+    #####:  500:	char *nm = nicedup(name, 0);
+    #####:  501:	char *msg = tricat("No such keymap `", nm, "'");
+        -:  502:
+    #####:  503:	zsfree(nm);
+    #####:  504:	showmsg(msg);
+    #####:  505:	zsfree(msg);
+    #####:  506:	if(!fb)
+    #####:  507:	    return 1;
+    #####:  508:	km = openkeymap(name = ".safe");
+        -:  509:    }
+    #####:  510:    if(name != curkeymapname) {
+    #####:  511:	char *oname = curkeymapname;
+        -:  512:
+    #####:  513:	curkeymapname = ztrdup(name);
+        -:  514:
+    #####:  515:	if (oname && zleactive && strcmp(oname, curkeymapname))
+    #####:  516:	    zlecallhook("zle-keymap-select", oname);
+    #####:  517:	zsfree(oname);
+        -:  518:    }
+    #####:  519:    curkeymap = km;
+    #####:  520:    return 0;
+        -:  521:}
+        -:  522:
+        -:  523:/* Select a local key map. */
+        -:  524:
+        -:  525:/**/
+        -:  526:mod_export void
+    #####:  527:selectlocalmap(Keymap m)
+        -:  528:{
+    #####:  529:    Keymap oldm = localkeymap;
+    #####:  530:    localkeymap = m;
+    #####:  531:    if (oldm && !m)
+        -:  532:    {
+        -:  533:	/*
+        -:  534:	 * No local keymap; so we are returning to the global map.  If
+        -:  535:	 * the user ^Ced in the local map, they probably just want to go
+        -:  536:	 * back to normal editing.  So remove the interrupt error
+        -:  537:	 * status.
+        -:  538:	 */
+    #####:  539:	errflag &= ~ERRFLAG_INT;
+        -:  540:    }
+    #####:  541:}
+        -:  542:
+        -:  543:/* Reopen the currently selected keymap, in case it got deleted.  This *
+        -:  544: * should be called after doing anything that might have run an        *
+        -:  545: * arbitrary user-specified command.                                   */
+        -:  546:
+        -:  547:/**/
+        -:  548:void
+    #####:  549:reselectkeymap(void)
+        -:  550:{
+    #####:  551:    selectkeymap(curkeymapname, 1);
+    #####:  552:}
+        -:  553:
+        -:  554:/******************************/
+        -:  555:/* operations on key bindings */
+        -:  556:/******************************/
+        -:  557:
+        -:  558:/* Add/delete/change a keybinding in some keymap.  km is the keymap to be *
+        -:  559: * altered.  seq is the metafied key sequence whose binding is to change. *
+        -:  560: * bind is the thingy to which the key sequence is to be bound.  For      *
+        -:  561: * send-string, bind is NULL and str is the metafied key sequence to push *
+        -:  562: * back onto the input.                                                   */
+        -:  563:
+        -:  564:/**/
+        -:  565:mod_export int
+    #####:  566:bindkey(Keymap km, const char *seq, Thingy bind, char *str)
+        -:  567:{
+        -:  568:    Key k;
+    #####:  569:    int f = seq[0] == Meta ? STOUC(seq[1])^32 : STOUC(seq[0]);
+        -:  570:    char *buf, *ptr;
+        -:  571:
+    #####:  572:    if(km->flags & KM_IMMUTABLE)
+    #####:  573:	return 1;
+    #####:  574:    if(!*seq)
+    #####:  575:	return 2;
+    #####:  576:    if(!bind || ztrlen(seq) > 1) {
+        -:  577:	/* key needs to become a prefix if isn't one already */
+    #####:  578:	if(km->first[f]) {
+        -:  579:	    char fs[3];
+    #####:  580:	    fs[0] = f;
+    #####:  581:	    fs[1] = 0;
+    #####:  582:	    metafy(fs, 1, META_NOALLOC);
+    #####:  583:	    km->multi->addnode(km->multi, ztrdup(fs),
+    #####:  584:		makekeynode(km->first[f], NULL));
+    #####:  585:	    km->first[f] = NULL;
+        -:  586:	}
+    #####:  587:	k = (Key) km->multi->getnode(km->multi, seq);
+        -:  588:    } else {
+        -:  589:	/* If the sequence is a prefix entry only due to being *
+        -:  590:	 * a send-string binding, we can remove that entry.    */
+    #####:  591:	if(!km->first[f]) {
+    #####:  592:	    k = (Key) km->multi->getnode(km->multi, seq);
+    #####:  593:	    if(!k->prefixct)
+    #####:  594:		km->multi->freenode(km->multi->removenode(km->multi, seq));
+        -:  595:	    else
+    #####:  596:		goto domulti;
+        -:  597:	} else
+    #####:  598:	    unrefthingy(km->first[f]);
+        -:  599:	/* Just replace the single-character binding. */
+    #####:  600:	km->first[f] = bind;
+    #####:  601:	return 0;
+        -:  602:    }
+    #####:  603:    domulti:
+    #####:  604:    buf = ztrdup(seq);
+    #####:  605:    ptr = strchr(buf, 0);
+    #####:  606:    if(bind == t_undefinedkey) {
+    #####:  607:	if(k) {
+    #####:  608:	    zsfree(k->str);
+    #####:  609:	    unrefthingy(k->bind);
+    #####:  610:	    k->bind = t_undefinedkey;
+    #####:  611:	    k->str = NULL;
+    #####:  612:	    while(!k->prefixct && k->bind == t_undefinedkey) {
+    #####:  613:		km->multi->freenode(km->multi->removenode(km->multi, buf));
+    #####:  614:		*--ptr = 0;
+    #####:  615:		if(ptr[-1] == Meta)
+    #####:  616:		    *--ptr = 0;
+    #####:  617:		k = (Key) km->multi->getnode(km->multi, buf);
+    #####:  618:		k->prefixct--;
+    #####:  619:		if(!k->prefixct && k->bind &&
+    #####:  620:		    (!buf[1] || (buf[0] == Meta && !buf[2]))) {
+    #####:  621:		    km->first[f] = refthingy(k->bind);
+    #####:  622:		    km->multi->freenode(km->multi->removenode(km->multi, buf));
+    #####:  623:		    break;
+        -:  624:		}
+        -:  625:	    }
+        -:  626:	}
+        -:  627:    } else {
+    #####:  628:	if(!k) {
+        -:  629:	    int added;
+        -:  630:
+    #####:  631:	    km->multi->addnode(km->multi, ztrdup(buf), makekeynode(bind, ztrdup(str)));
+        -:  632:	    do {
+    #####:  633:		*--ptr = 0;
+    #####:  634:		if(ptr > buf && ptr[-1] == Meta)
+    #####:  635:		    *--ptr = 0;
+    #####:  636:		k = (Key) km->multi->getnode(km->multi, buf);
+    #####:  637:		if((added = !k))
+    #####:  638:		    km->multi->addnode(km->multi, ztrdup(buf),
+    #####:  639:			k = makekeynode(refthingy(t_undefinedkey), NULL));
+    #####:  640:		k->prefixct++;
+    #####:  641:	    } while(added);
+        -:  642:	} else {
+    #####:  643:	    unrefthingy(k->bind);
+    #####:  644:	    zsfree(k->str);
+    #####:  645:	    k->bind = bind;
+    #####:  646:	    k->str = bind ? NULL : ztrdup(str);
+        -:  647:	}
+        -:  648:    }
+    #####:  649:    free(buf);
+    #####:  650:    return 0;
+        -:  651:}
+        -:  652:
+        -:  653:/* Look up a key binding.  The binding is returned.  In the case of a  *
+        -:  654: * send-string, NULL is returned and *strp is modified to point to the *
+        -:  655: * metafied string of characters to be pushed back.                    */
+        -:  656:
+        -:  657:/**/
+        -:  658:Thingy
+    #####:  659:keybind(Keymap km, char *seq, char **strp)
+        -:  660:{
+        -:  661:    Key k;
+        -:  662:
+    #####:  663:    if(ztrlen(seq) == 1) {
+    #####:  664:	int f = seq[0] == Meta ? STOUC(seq[1])^32 : STOUC(seq[0]);
+    #####:  665:	Thingy bind = km->first[f];
+        -:  666:
+    #####:  667:	if(bind)
+    #####:  668:	    return bind;
+        -:  669:    }
+    #####:  670:    k = (Key) km->multi->getnode(km->multi, seq);
+    #####:  671:    if(!k)
+    #####:  672:	return t_undefinedkey;
+    #####:  673:    *strp = k->str;
+    #####:  674:    return k->bind;
+        -:  675:}
+        -:  676:
+        -:  677:/* Check whether a key sequence is a prefix of a longer bound sequence. *
+        -:  678: * One oddity: if *nothing* in the keymap is bound, this returns true   *
+        -:  679: * for the empty sequence, even though this is not strictly accurate.   */
+        -:  680:
+        -:  681:/**/
+        -:  682:static int
+    #####:  683:keyisprefix(Keymap km, char *seq)
+        -:  684:{
+        -:  685:    Key k;
+        -:  686:
+    #####:  687:    if(!*seq)
+    #####:  688:	return 1;
+    #####:  689:    if(ztrlen(seq) == 1) {
+    #####:  690:	int f = seq[0] == Meta ? STOUC(seq[1])^32 : STOUC(seq[0]);
+        -:  691:
+    #####:  692:	if(km->first[f])
+    #####:  693:	    return 0;
+        -:  694:    }
+    #####:  695:    k = (Key) km->multi->getnode(km->multi, seq);
+    #####:  696:    return k && k->prefixct;
+        -:  697:}
+        -:  698:
+        -:  699:/*******************/
+        -:  700:/* bindkey builtin */
+        -:  701:/*******************/
+        -:  702:
+        -:  703:/*
+        -:  704: * THE BINDKEY BUILTIN
+        -:  705: *
+        -:  706: * Keymaps can be specified to bindkey in the following ways:
+        -:  707: *
+        -:  708: *   -e   select "emacs", also link it to "main"
+        -:  709: *   -v   select "viins", also link it to "main"
+        -:  710: *   -a   select "vicmd"
+        -:  711: *   -M   first argument gives map name
+        -:  712: *        defaults to "main"
+        -:  713: *
+        -:  714: * These operations cannot have a keymap selected in the normal way:
+        -:  715: *
+        -:  716: *   -l   list all the keymap names
+        -:  717: *   -d   delete all keymaps and reset to the default state (no arguments)
+        -:  718: *   -D   delete named keymaps
+        -:  719: *   -A   link the two named keymaps (2 arguments)
+        -:  720: *   -N   create new empty keymap (1 argument)
+        -:  721: *   -N   create new keymap, copying the second named keymap (2 arguments)
+        -:  722: *
+        -:  723: * Other operations:
+        -:  724: *
+        -:  725: *   -m   add the meta bindings to the selected keymap (no arguments)
+        -:  726: *   -r   unbind each named string in the selected keymap
+        -:  727: *   -s   bind send-strings in the selected keymap (2+ arguments)
+        -:  728: *        bind commands in the selected keymap (2+ arguments)
+        -:  729: *        display one binding in the selected keymap (1 argument)
+        -:  730: *        display the entire selected keymap (no arguments)
+        -:  731: *
+        -:  732: * There is an exception that the entire keymap display will not be performed
+        -:  733: * if the -e or -v options were used.
+        -:  734: *
+        -:  735: * Other options:
+        -:  736: *
+        -:  737: *   -L   do listings in the form of bindkey commands
+        -:  738: *   -R   for the binding operations, accept ranges instead of sequences
+        -:  739: */
+        -:  740:
+        -:  741:/**/
+        -:  742:int
+    #####:  743:bin_bindkey(char *name, char **argv, Options ops, UNUSED(int func))
+        -:  744:{
+        -:  745:    static struct opn {
+        -:  746:	char o;
+        -:  747:	char selp;
+        -:  748:	int (*func) _((char *, char *, Keymap, char **, Options, char));
+        -:  749:	int min, max;
+        -:  750:    } const opns[] = {
+        -:  751:	{ 'l', 0, bin_bindkey_lsmaps, 0,  -1 },
+        -:  752:	{ 'd', 0, bin_bindkey_delall, 0,  0 },
+        -:  753:	{ 'D', 0, bin_bindkey_del,    1, -1 },
+        -:  754:	{ 'A', 0, bin_bindkey_link,   2,  2 },
+        -:  755:	{ 'N', 0, bin_bindkey_new,    1,  2 },
+        -:  756:	{ 'm', 1, bin_bindkey_meta,   0,  0 },
+        -:  757:	{ 'r', 1, bin_bindkey_bind,   1, -1 },
+        -:  758:	{ 's', 1, bin_bindkey_bind,   2, -1 },
+        -:  759:	{ 0,   1, bin_bindkey_bind,   0, -1 },
+        -:  760:    };
+        -:  761:    struct opn const *op, *opp;
+        -:  762:    char *kmname;
+        -:  763:    Keymap km;
+        -:  764:    int n;
+        -:  765:
+        -:  766:    /* select operation and ensure no clashing arguments */
+    #####:  767:    for(op = opns; op->o && !OPT_ISSET(ops,STOUC(op->o)); op++) ;
+    #####:  768:    if(op->o)
+    #####:  769:	for(opp = op; (++opp)->o; )
+    #####:  770:	    if(OPT_ISSET(ops,STOUC(opp->o))) {
+    #####:  771:		zwarnnam(name, "incompatible operation selection options");
+    #####:  772:		return 1;
+        -:  773:	    }
+    #####:  774:    n = OPT_ISSET(ops,'e') + OPT_ISSET(ops,'v') + 
+    #####:  775:	OPT_ISSET(ops,'a') + OPT_ISSET(ops,'M');
+    #####:  776:    if(!op->selp && n) {
+    #####:  777:	zwarnnam(name, "keymap cannot be selected with -%c", op->o);
+    #####:  778:	return 1;
+        -:  779:    }
+    #####:  780:    if(n > 1) {
+    #####:  781:	zwarnnam(name, "incompatible keymap selection options");
+    #####:  782:	return 1;
+        -:  783:    }
+        -:  784:
+        -:  785:    /* keymap selection */
+    #####:  786:    if(op->selp) {
+    #####:  787:	if(OPT_ISSET(ops,'e'))
+    #####:  788:	    kmname = "emacs";
+    #####:  789:	else if(OPT_ISSET(ops,'v'))
+    #####:  790:	    kmname = "viins";
+    #####:  791:	else if(OPT_ISSET(ops,'a'))
+    #####:  792:	    kmname = "vicmd";
+    #####:  793:	else if(OPT_ISSET(ops,'M')) {
+    #####:  794:	    kmname = OPT_ARG(ops,'M');
+        -:  795:	} else
+    #####:  796:	    kmname = "main";
+    #####:  797:	km = openkeymap(kmname);
+    #####:  798:	if(!km) {
+    #####:  799:	    zwarnnam(name, "no such keymap `%s'", kmname);
+    #####:  800:	    return 1;
+        -:  801:	}
+    #####:  802:	if(OPT_ISSET(ops,'e') || OPT_ISSET(ops,'v'))
+    #####:  803:	    linkkeymap(km, "main", 0);
+        -:  804:    } else {
+    #####:  805:	kmname = NULL;
+    #####:  806:	km = NULL;
+        -:  807:    }
+        -:  808:
+        -:  809:    /* listing is a special case */
+    #####:  810:    if(!op->o && (!argv[0] || !argv[1])) {
+    #####:  811:	if(OPT_ISSET(ops,'e') || OPT_ISSET(ops,'v'))
+    #####:  812:	    return 0;
+    #####:  813:	return bin_bindkey_list(name, kmname, km, argv, ops, op->o);
+        -:  814:    }
+        -:  815:
+        -:  816:    /* check number of arguments */
+    #####:  817:    for(n = 0; argv[n]; n++) ;
+    #####:  818:    if(n < op->min) {
+    #####:  819:	zwarnnam(name, "not enough arguments for -%c", op->o);
+    #####:  820:	return 1;
+    #####:  821:    } else if(op->max != -1 && n > op->max) {
+    #####:  822:	zwarnnam(name, "too many arguments for -%c", op->o);
+    #####:  823:	return 1;
+        -:  824:    }
+        -:  825:
+        -:  826:    /* pass on the work to the operation function */
+    #####:  827:    return op->func(name, kmname, km, argv, ops, op->o);
+        -:  828:}
+        -:  829:
+        -:  830:/* list the available keymaps */
+        -:  831:
+        -:  832:/**/
+        -:  833:static int
+    #####:  834:bin_bindkey_lsmaps(char *name, UNUSED(char *kmname), UNUSED(Keymap km), char **argv, Options ops, UNUSED(char func))
+        -:  835:{
+    #####:  836:    int ret = 0;
+    #####:  837:    if (*argv) {
+    #####:  838:	for (; *argv; argv++) {
+    #####:  839:	    KeymapName kmn = (KeymapName)
+    #####:  840:		keymapnamtab->getnode(keymapnamtab, *argv);
+    #####:  841:	    if (!kmn) {
+    #####:  842:		zwarnnam(name, "no such keymap: `%s'", *argv);
+    #####:  843:		ret = 1;
+        -:  844:	    } else {
+    #####:  845:		scanlistmaps((HashNode)kmn, OPT_ISSET(ops,'L'));
+        -:  846:	    }
+        -:  847:	}
+        -:  848:    } else {
+    #####:  849:	scanhashtable(keymapnamtab, 1, 0, 0, scanlistmaps, OPT_ISSET(ops,'L'));
+        -:  850:    }
+    #####:  851:    return ret;
+        -:  852:}
+        -:  853:
+        -:  854:/**/
+        -:  855:static void
+    #####:  856:scanlistmaps(HashNode hn, int list_verbose)
+        -:  857:{
+    #####:  858:    KeymapName n = (KeymapName) hn;
+        -:  859:
+    #####:  860:    if (list_verbose) {
+    #####:  861:	Keymap km = n->keymap;
+        -:  862:	/*
+        -:  863:	 * Don't list ".safe" as a bindkey command; we can't
+        -:  864:	 * actually create it that way.
+        -:  865:	 */
+    #####:  866:	if (!strcmp(n->nam, ".safe"))
+    #####:  867:	    return;
+    #####:  868:	fputs("bindkey -", stdout);
+    #####:  869:	if (km->primary && km->primary != n) {
+    #####:  870:	    KeymapName pn = km->primary;
+    #####:  871:	    fputs("A ", stdout);
+    #####:  872:	    if (pn->nam[0] == '-')
+    #####:  873:		fputs("-- ", stdout);
+    #####:  874:	    quotedzputs(pn->nam, stdout);
+    #####:  875:	    fputc(' ', stdout);
+        -:  876:	} else {
+    #####:  877:	    fputs("N ", stdout);
+    #####:  878:	    if(n->nam[0] == '-')
+    #####:  879:		fputs("-- ", stdout);
+        -:  880:	}
+    #####:  881:	quotedzputs(n->nam, stdout);
+        -:  882:    } else
+    #####:  883:	nicezputs(n->nam, stdout);
+    #####:  884:    putchar('\n');
+        -:  885:}
+        -:  886:
+        -:  887:/* reset all keymaps to the default state */
+        -:  888:
+        -:  889:/**/
+        -:  890:static int
+    #####:  891:bin_bindkey_delall(UNUSED(char *name), UNUSED(char *kmname), UNUSED(Keymap km), UNUSED(char **argv), UNUSED(Options ops), UNUSED(char func))
+        -:  892:{
+    #####:  893:    keymapnamtab->emptytable(keymapnamtab);
+    #####:  894:    default_bindings();
+    #####:  895:    return 0;
+        -:  896:}
+        -:  897:
+        -:  898:/* delete named keymaps */
+        -:  899:
+        -:  900:/**/
+        -:  901:static int
+    #####:  902:bin_bindkey_del(char *name, UNUSED(char *kmname), UNUSED(Keymap km), char **argv, UNUSED(Options ops), UNUSED(char func))
+        -:  903:{
+    #####:  904:    int ret = 0;
+        -:  905:
+        -:  906:    do {
+    #####:  907:	int r = unlinkkeymap(*argv, 0);
+    #####:  908:	if(r == 1)
+    #####:  909:	    zwarnnam(name, "keymap name `%s' is protected", *argv);
+    #####:  910:	else if(r == 2)
+    #####:  911:	    zwarnnam(name, "no such keymap `%s'", *argv);
+    #####:  912:	ret |= !!r;
+    #####:  913:    } while(*++argv);
+    #####:  914:    return ret;
+        -:  915:}
+        -:  916:
+        -:  917:/* link named keymaps */
+        -:  918:
+        -:  919:/**/
+        -:  920:static int
+    #####:  921:bin_bindkey_link(char *name, UNUSED(char *kmname), Keymap km, char **argv, UNUSED(Options ops), UNUSED(char func))
+        -:  922:{
+    #####:  923:    km = openkeymap(argv[0]);
+    #####:  924:    if(!km) {
+    #####:  925:	zwarnnam(name, "no such keymap `%s'", argv[0]);
+    #####:  926:	return 1;
+    #####:  927:    } else if(linkkeymap(km, argv[1], 0)) {
+    #####:  928:	zwarnnam(name, "keymap name `%s' is protected", argv[1]);
+    #####:  929:	return 1;
+        -:  930:    }
+    #####:  931:    return 0;
+        -:  932:}
+        -:  933:
+        -:  934:/* create a new keymap */
+        -:  935:
+        -:  936:/**/
+        -:  937:static int
+    #####:  938:bin_bindkey_new(char *name, UNUSED(char *kmname), Keymap km, char **argv, UNUSED(Options ops), UNUSED(char func))
+        -:  939:{
+    #####:  940:    KeymapName kmn = (KeymapName) keymapnamtab->getnode(keymapnamtab, argv[0]);
+        -:  941:
+    #####:  942:    if(kmn && (kmn -> flags & KMN_IMMORTAL)) {
+    #####:  943:	zwarnnam(name, "keymap name `%s' is protected", argv[0]);
+    #####:  944:	return 1;
+        -:  945:    }
+    #####:  946:    if(argv[1]) {
+    #####:  947:	km = openkeymap(argv[1]);
+    #####:  948:	if(!km) {
+    #####:  949:	    zwarnnam(name, "no such keymap `%s'", argv[1]);
+    #####:  950:	    return 1;
+        -:  951:	}
+        -:  952:    } else
+    #####:  953:	km = NULL;
+    #####:  954:    linkkeymap(newkeymap(km, argv[0]), argv[0], 0);
+    #####:  955:    return 0;
+        -:  956:}
+        -:  957:
+        -:  958:/* Add standard meta bindings to a keymap.  Only sequences currently either *
+        -:  959: * unbound or bound to self-insert are affected.  Note that the use of      *
+        -:  960: * bindkey() is quite necessary: if this function were to go through the    *
+        -:  961: * km->first table itself, it would miss any prefix sequences that should   *
+        -:  962: * be rebound.                                                              */
+        -:  963:
+        -:  964:/**/
+        -:  965:static int
+    #####:  966:bin_bindkey_meta(char *name, char *kmname, Keymap km, UNUSED(char **argv), UNUSED(Options ops), UNUSED(char func))
+        -:  967:{
+        -:  968:    char m[3], *str;
+        -:  969:    int i;
+        -:  970:    Thingy fn;
+        -:  971:
+    #####:  972:    if(km->flags & KM_IMMUTABLE) {
+    #####:  973:	zwarnnam(name, "keymap `%s' is protected", kmname);
+    #####:  974:	return 1;
+        -:  975:    }
+        -:  976:#ifdef MULTIBYTE_SUPPORT
+    #####:  977:    zwarnnam(name, "warning: `bindkey -m' disables multibyte support");
+        -:  978:#endif
+    #####:  979:    for(i = 128; i < 256; i++)
+    #####:  980:	if(metabind[i - 128] != z_undefinedkey) {
+    #####:  981:	    m[0] = i;
+    #####:  982:	    metafy(m, 1, META_NOALLOC);
+    #####:  983:	    fn = keybind(km, m, &str);
+    #####:  984:	    if(IS_THINGY(fn, selfinsert) || fn == t_undefinedkey)
+    #####:  985:		bindkey(km, m, refthingy(Th(metabind[i - 128])), NULL);
+        -:  986:	}
+    #####:  987:    return 0;
+        -:  988:}
+        -:  989:
+        -:  990:/* Change key bindings.  func can be:              *
+        -:  991: *   'r'  bind sequences to undefined-key          *
+        -:  992: *   's'  bind sequneces to specified send-strings *
+        -:  993: *   0    bind sequences to specified functions    *
+        -:  994: * If the -R option is used, bind to key ranges    *
+        -:  995: * instead of single key sequences.                */
+        -:  996:
+        -:  997:/**/
+        -:  998:static int
+    #####:  999:bin_bindkey_bind(char *name, char *kmname, Keymap km, char **argv, Options ops, char func)
+        -: 1000:{
+    #####: 1001:    int ret = 0;
+        -: 1002:
+    #####: 1003:    if(!func || func == 's') {
+        -: 1004:	char **a;
+        -: 1005:
+    #####: 1006:	for(a = argv+2; *a; a++)
+    #####: 1007:	    if(!*++a) {
+    #####: 1008:		zwarnnam(name, "even number of arguments required");
+    #####: 1009:		return 1;
+        -: 1010:	    }
+        -: 1011:    }
+    #####: 1012:    if(km->flags & KM_IMMUTABLE) {
+    #####: 1013:	zwarnnam(name, "keymap `%s' is protected", kmname);
+    #####: 1014:	return 1;
+        -: 1015:    }
+    #####: 1016:    if (func == 'r' && OPT_ISSET(ops,'p')) {
+        -: 1017:	char *useq, *bseq;
+        -: 1018:	int len;
+        -: 1019:	struct remprefstate rps;
+    #####: 1020:	rps.km = km;
+    #####: 1021:	while ((useq = *argv++)) {
+    #####: 1022:	    bseq = getkeystring(useq, &len, GETKEYS_BINDKEY, NULL);
+    #####: 1023:	    rps.prefix = metafy(bseq, len, META_USEHEAP);
+    #####: 1024:	    rps.prefixlen = strlen(rps.prefix);
+    #####: 1025:	    scankeymap(km, 0, scanremoveprefix, &rps);
+        -: 1026:	}
+    #####: 1027:	return 0;
+        -: 1028:    }
+        -: 1029:    do {
+    #####: 1030:	char *useq = *argv, *bseq, *seq, *str;
+        -: 1031:	int len;
+        -: 1032:	Thingy fn;
+        -: 1033:
+    #####: 1034:	if(func == 'r') {
+    #####: 1035:	    fn = refthingy(t_undefinedkey);
+    #####: 1036:	    str = NULL;
+    #####: 1037:	} else if(func == 's') {
+    #####: 1038:	    str = getkeystring(*++argv, &len, GETKEYS_BINDKEY, NULL);
+    #####: 1039:	    fn = NULL;
+    #####: 1040:	    str = metafy(str, len, META_HREALLOC);
+        -: 1041:	} else {
+    #####: 1042:	    fn = rthingy(*++argv);
+    #####: 1043:	    str = NULL;
+        -: 1044:	}
+    #####: 1045:	bseq = getkeystring(useq, &len, GETKEYS_BINDKEY, NULL);
+    #####: 1046:	seq = metafy(bseq, len, META_USEHEAP);
+    #####: 1047:	if(OPT_ISSET(ops,'R')) {
+        -: 1048:	    int first, last;
+        -: 1049:	    char m[3];
+        -: 1050:
+    #####: 1051:	    if(len < 2 || len > 2 + (bseq[1] == '-') ||
+    #####: 1052:	       (first = STOUC(bseq[0])) > (last = STOUC(bseq[len - 1]))) {
+    #####: 1053:		zwarnnam(name, "malformed key range `%s'", useq);
+    #####: 1054:		ret = 1;
+        -: 1055:	    } else {
+    #####: 1056:		for(; first <= last; first++) {
+    #####: 1057:		    m[0] = first;
+    #####: 1058:		    metafy(m, 1, META_NOALLOC);
+    #####: 1059:		    bindkey(km, m, refthingy(fn), str);
+        -: 1060:		}
+        -: 1061:	    }
+    #####: 1062:	    unrefthingy(fn);
+        -: 1063:	} else {
+    #####: 1064:	    if(bindkey(km, seq, fn, str)) {
+    #####: 1065:		zwarnnam(name, "cannot bind to an empty key sequence");
+    #####: 1066:		unrefthingy(fn);
+    #####: 1067:		ret = 1;
+        -: 1068:	    }
+        -: 1069:	}
+    #####: 1070:    } while(*++argv);
+    #####: 1071:    return ret;
+        -: 1072:}
+        -: 1073:
+        -: 1074:/* Remove bindings for key sequences which have the given (proper) prefix. */
+        -: 1075:
+        -: 1076:/**/
+        -: 1077:static void
+    #####: 1078:scanremoveprefix(char *seq, UNUSED(Thingy bind), UNUSED(char *str), void *magic)
+        -: 1079:{
+    #####: 1080:    struct remprefstate *rps = magic;
+        -: 1081:
+    #####: 1082:    if (strncmp(seq, rps->prefix, rps->prefixlen) || !seq[rps->prefixlen])
+    #####: 1083:	return;
+        -: 1084:
+    #####: 1085:    bindkey(rps->km, seq, refthingy(t_undefinedkey), NULL);
+        -: 1086:}
+        -: 1087:
+        -: 1088:/* List key bindings.  If an argument is given, list just that one *
+        -: 1089: * binding, otherwise list the entire keymap.  If the -L option is *
+        -: 1090: * given, list in the form of bindkey commands.                    */
+        -: 1091:
+        -: 1092:/**/
+        -: 1093:static int
+    #####: 1094:bin_bindkey_list(char *name, char *kmname, Keymap km, char **argv, Options ops, UNUSED(char func))
+        -: 1095:{
+        -: 1096:    struct bindstate bs;
+        -: 1097:
+    #####: 1098:    bs.flags = OPT_ISSET(ops,'L') ? BS_LIST : 0;
+    #####: 1099:    bs.kmname = kmname;
+    #####: 1100:    if(argv[0] && !OPT_ISSET(ops,'p')) {
+        -: 1101:	int len;
+        -: 1102:	char *seq;
+        -: 1103:
+    #####: 1104:	seq = getkeystring(argv[0], &len, GETKEYS_BINDKEY, NULL);
+    #####: 1105:	seq = metafy(seq, len, META_HREALLOC);
+    #####: 1106:	bs.flags |= BS_ALL;
+    #####: 1107:	bs.firstseq = bs.lastseq = seq;
+    #####: 1108:	bs.bind = keybind(km, seq, &bs.str);
+    #####: 1109:	bs.prefix = NULL;
+    #####: 1110:	bs.prefixlen = 0;
+    #####: 1111:	bindlistout(&bs);
+        -: 1112:    } else {
+        -: 1113:	/* empty prefix is equivalent to no prefix */
+    #####: 1114:	if (OPT_ISSET(ops,'p') && (!argv[0] || argv[0][0])) {
+    #####: 1115:	    if (!argv[0]) {
+    #####: 1116:		zwarnnam(name, "option -p requires a prefix string");
+    #####: 1117:		return 1;
+        -: 1118:	    }
+    #####: 1119:	    bs.prefix = getkeystring(argv[0], &bs.prefixlen, GETKEYS_BINDKEY,
+        -: 1120:				     NULL);
+    #####: 1121:	    bs.prefix = metafy(bs.prefix, bs.prefixlen, META_HREALLOC);
+    #####: 1122:	    bs.prefixlen = strlen(bs.prefix);
+        -: 1123:	} else {
+    #####: 1124:	    bs.prefix = NULL;
+    #####: 1125:	    bs.prefixlen = 0;
+        -: 1126:	}
+    #####: 1127:	bs.firstseq = ztrdup("");
+    #####: 1128:	bs.lastseq = ztrdup("");
+    #####: 1129:	bs.bind = t_undefinedkey;
+    #####: 1130:	bs.str = NULL;
+    #####: 1131:	scankeymap(km, 1, scanbindlist, &bs);
+    #####: 1132:	bindlistout(&bs);
+    #####: 1133:	zsfree(bs.firstseq);
+    #####: 1134:	zsfree(bs.lastseq);
+        -: 1135:    }
+    #####: 1136:    return 0;
+        -: 1137:}
+        -: 1138:
+        -: 1139:/**/
+        -: 1140:static void
+    #####: 1141:scanbindlist(char *seq, Thingy bind, char *str, void *magic)
+        -: 1142:{
+    #####: 1143:    struct bindstate *bs = magic;
+        -: 1144:
+    #####: 1145:    if (bs->prefixlen &&
+    #####: 1146:	(strncmp(seq, bs->prefix, bs->prefixlen) || !seq[bs->prefixlen]))
+    #####: 1147:	return;
+        -: 1148:
+    #####: 1149:    if(bind == bs->bind && (bind || !strcmp(str, bs->str)) &&
+    #####: 1150:       ztrlen(seq) == 1 && ztrlen(bs->lastseq) == 1) {
+    #####: 1151:	int l = bs->lastseq[1] ?
+    #####: 1152:	    STOUC(bs->lastseq[1]) ^ 32 : STOUC(bs->lastseq[0]);
+    #####: 1153:	int t = seq[1] ? STOUC(seq[1]) ^ 32 : STOUC(seq[0]);
+        -: 1154:
+    #####: 1155:	if(t == l + 1) {
+    #####: 1156:	    zsfree(bs->lastseq);
+    #####: 1157:	    bs->lastseq = ztrdup(seq);
+    #####: 1158:	    return;
+        -: 1159:	}
+        -: 1160:    }
+    #####: 1161:    bindlistout(bs);
+    #####: 1162:    zsfree(bs->firstseq);
+    #####: 1163:    bs->firstseq = ztrdup(seq);
+    #####: 1164:    zsfree(bs->lastseq);
+    #####: 1165:    bs->lastseq = ztrdup(seq);
+    #####: 1166:    bs->bind = bind;
+    #####: 1167:    bs->str = str;
+        -: 1168:}
+        -: 1169:
+        -: 1170:/**/
+        -: 1171:static void
+    #####: 1172:bindlistout(struct bindstate *bs)
+        -: 1173:{
+        -: 1174:    int range;
+        -: 1175:
+    #####: 1176:    if(bs->bind == t_undefinedkey && !(bs->flags & BS_ALL))
+    #####: 1177:	return;
+    #####: 1178:    range = strcmp(bs->firstseq, bs->lastseq);
+    #####: 1179:    if(bs->flags & BS_LIST) {
+    #####: 1180:	int nodash = 1;
+        -: 1181:
+    #####: 1182:	fputs("bindkey ", stdout);
+    #####: 1183:	if(range)
+    #####: 1184:	    fputs("-R ", stdout);
+    #####: 1185:	if(!bs->bind)
+    #####: 1186:	    fputs("-s ", stdout);
+    #####: 1187:	if(!strcmp(bs->kmname, "main"))
+        -: 1188:	    ;
+    #####: 1189:	else if(!strcmp(bs->kmname, "vicmd"))
+    #####: 1190:	    fputs("-a ", stdout);
+        -: 1191:	else {
+    #####: 1192:	    fputs("-M ", stdout);
+    #####: 1193:	    quotedzputs(bs->kmname, stdout);
+    #####: 1194:	    putchar(' ');
+    #####: 1195:	    nodash = 0;
+        -: 1196:	}
+    #####: 1197:	if(nodash && bs->firstseq[0] == '-')
+    #####: 1198:	    fputs("-- ", stdout);
+        -: 1199:    }
+    #####: 1200:    printbind(bs->firstseq, stdout);
+    #####: 1201:    if(range) {
+    #####: 1202:	putchar('-');
+    #####: 1203:	printbind(bs->lastseq, stdout);
+        -: 1204:    }
+    #####: 1205:    putchar(' ');
+    #####: 1206:    if(bs->bind) {
+    #####: 1207:	if (bs->flags & BS_LIST)
+    #####: 1208:	    quotedzputs(bs->bind->nam, stdout);
+        -: 1209:	else
+    #####: 1210:	    nicezputs(bs->bind->nam, stdout);
+        -: 1211:    } else
+    #####: 1212:	printbind(bs->str, stdout);
+    #####: 1213:    putchar('\n');
+        -: 1214:}
+        -: 1215:
+        -: 1216:/****************************/
+        -: 1217:/* initialisation functions */
+        -: 1218:/****************************/
+        -: 1219:
+        -: 1220:/* main initialisation entry point */
+        -: 1221:
+        -: 1222:/**/
+        -: 1223:void
+    #####: 1224:init_keymaps(void)
+        -: 1225:{
+    #####: 1226:    createkeymapnamtab();
+    #####: 1227:    default_bindings();
+    #####: 1228:    keybuf = (char *)zshcalloc(keybufsz);
+    #####: 1229:    lastnamed = refthingy(t_undefinedkey);
+    #####: 1230:}
+        -: 1231:
+        -: 1232:/* cleanup entry point (for unloading the zle module) */
+        -: 1233:
+        -: 1234:/**/
+        -: 1235:void
+    #####: 1236:cleanup_keymaps(void)
+        -: 1237:{
+    #####: 1238:    unrefthingy(lastnamed);
+    #####: 1239:    deletehashtable(keymapnamtab);
+    #####: 1240:    zfree(keybuf, keybufsz);
+    #####: 1241:}
+        -: 1242:
+        -: 1243:static char *cursorptr;
+        -: 1244:
+        -: 1245:/* utility function for termcap output routine to add to string */
+        -: 1246:
+        -: 1247:static int 
+    #####: 1248:add_cursor_char(int c)
+        -: 1249:{
+    #####: 1250:    *cursorptr++ = c;
+    #####: 1251:    return 0;
+        -: 1252:}
+        -: 1253:
+        -: 1254:/* interrogate termcap for cursor keys and add bindings to keymap */
+        -: 1255:
+        -: 1256:/**/
+        -: 1257:static void
+    #####: 1258:add_cursor_key(Keymap km, int tccode, Thingy thingy, int defchar)
+        -: 1259:{
+        -: 1260:    char buf[2048];
+    #####: 1261:    int ok = 0;
+        -: 1262:
+        -: 1263:    /*
+        -: 1264:     * Be careful not to try too hard with bindings for dubious or
+        -: 1265:     * dysfunctional terminals.
+        -: 1266:     */
+    #####: 1267:    if (tccan(tccode) && !(termflags & (TERM_NOUP|TERM_BAD|TERM_UNKNOWN))) {
+        -: 1268:	/*
+        -: 1269:	 * We can use the real termcap sequence.  We need to
+        -: 1270:	 * persuade termcap to output `move cursor 1 char' and capture it.
+        -: 1271:	 */
+    #####: 1272:	cursorptr = buf;
+    #####: 1273:	tputs(tcstr[tccode], 1, add_cursor_char);
+    #####: 1274:	*cursorptr = '\0';
+        -: 1275:
+        -: 1276:	/*
+        -: 1277:	 * Sanity checking.  If the cursor key is zero-length (unlikely,
+        -: 1278:	 * but this is termcap we're talking about), or it's a single
+        -: 1279:	 * character, then we don't bind it.
+        -: 1280:	 */
+    #####: 1281:	if (buf[0] && buf[1] && (buf[0] != Meta || buf[2]))
+    #####: 1282:	    ok = 1;
+        -: 1283:    }
+    #####: 1284:    if (!ok) {
+        -: 1285:	/* Assume the normal VT100-like values. */
+    #####: 1286:	sprintf(buf, "\33[%c", defchar);
+        -: 1287:    }
+    #####: 1288:    bindkey(km, buf, refthingy(thingy), NULL);
+        -: 1289:
+        -: 1290:    /*
+        -: 1291:     * If the string looked like \e[? or \eO?, bind the other one, too.
+        -: 1292:     * This is necessary to make cursor keys work on many xterms with
+        -: 1293:     * both normal and application modes.
+        -: 1294:     */
+    #####: 1295:    if (buf[0] == '\33' && (buf[1] == '[' || buf[1] == 'O') && 
+    #####: 1296:	buf[2] && !buf[3])
+        -: 1297:    {
+    #####: 1298:	buf[1] = (buf[1] == '[') ? 'O' : '[';
+    #####: 1299:	bindkey(km, buf, refthingy(thingy), NULL);
+        -: 1300:    }
+    #####: 1301:}
+        -: 1302:
+        -: 1303:/* Create the default keymaps.  For efficiency reasons, this function   *
+        -: 1304: * assigns directly to the km->first array.  It knows that there are no *
+        -: 1305: * prefix bindings in the way, and that it is using a simple keymap.    */
+        -: 1306:
+        -: 1307:/**/
+        -: 1308:static void
+    #####: 1309:default_bindings(void)
+        -: 1310:{
+    #####: 1311:    Keymap vmap = newkeymap(NULL, "viins");
+    #####: 1312:    Keymap emap = newkeymap(NULL, "emacs");
+    #####: 1313:    Keymap amap = newkeymap(NULL, "vicmd");
+    #####: 1314:    Keymap oppmap = newkeymap(NULL, "viopp");
+    #####: 1315:    Keymap vismap = newkeymap(NULL, "visual");
+    #####: 1316:    Keymap smap = newkeymap(NULL, ".safe");
+        -: 1317:    Keymap vimaps[2], vilmaps[2], kptr;
+        -: 1318:    char buf[3], *ed;
+        -: 1319:    int i;
+        -: 1320:
+        -: 1321:    /* vi insert mode and emacs mode:  *
+        -: 1322:     *   0-31   taken from the tables  *
+        -: 1323:     *  32-126  self-insert            *
+        -: 1324:     * 127      same as entry[8]       *
+        -: 1325:     * 128-255  self-insert            */
+    #####: 1326:    for (i = 0; i < 32; i++) {
+    #####: 1327:	vmap->first[i] = refthingy(Th(viinsbind[i]));
+    #####: 1328:	emap->first[i] = refthingy(Th(emacsbind[i]));
+        -: 1329:    }
+    #####: 1330:    for (i = 32; i < 256; i++) {
+    #####: 1331:	vmap->first[i] = refthingy(t_selfinsert);
+    #####: 1332:	emap->first[i] = refthingy(t_selfinsert);
+        -: 1333:    }
+    #####: 1334:    unrefthingy(t_selfinsert);
+    #####: 1335:    unrefthingy(t_selfinsert);
+    #####: 1336:    vmap->first[127] = refthingy(vmap->first[8]);
+    #####: 1337:    emap->first[127] = refthingy(emap->first[8]);
+        -: 1338:
+        -: 1339:    /* vi command mode:              *
+        -: 1340:     *   0-127  taken from the table *
+        -: 1341:     * 128-255  undefined-key        */
+    #####: 1342:    for (i = 0; i < 128; i++)
+    #####: 1343:	amap->first[i] = refthingy(Th(vicmdbind[i]));
+    #####: 1344:    for (i = 128; i < 256; i++)
+    #####: 1345:	amap->first[i] = refthingy(t_undefinedkey);
+        -: 1346:
+        -: 1347:    /* safe fallback keymap:
+        -: 1348:     *   0-255  .self-insert, except: *
+        -: 1349:     *    '\n'  .accept-line          *
+        -: 1350:     *    '\r'  .accept-line          */
+    #####: 1351:    for (i = 0; i < 256; i++)
+    #####: 1352:	smap->first[i] = refthingy(t_Dselfinsert);
+    #####: 1353:    unrefthingy(t_Dselfinsert);
+    #####: 1354:    unrefthingy(t_Dselfinsert);
+    #####: 1355:    smap->first['\n'] = refthingy(t_Dacceptline);
+    #####: 1356:    smap->first['\r'] = refthingy(t_Dacceptline);
+        -: 1357:
+        -: 1358:    /* vt100 arrow keys are bound by default, for historical reasons. *
+        -: 1359:     * Both standard and keypad modes are supported.                  */
+        -: 1360:
+    #####: 1361:    vimaps[0] = vmap;
+    #####: 1362:    vimaps[1] = amap;
+    #####: 1363:    for (i = 0; i < 2; i++) {
+    #####: 1364:	kptr = vimaps[i];
+        -: 1365:	/* vi command and insert modes: arrow keys */
+    #####: 1366:	add_cursor_key(kptr, TCUPCURSOR, t_uplineorhistory, 'A');
+    #####: 1367:	add_cursor_key(kptr, TCDOWNCURSOR, t_downlineorhistory, 'B');
+    #####: 1368:	add_cursor_key(kptr, TCLEFTCURSOR, t_vibackwardchar, 'D');
+    #####: 1369:	add_cursor_key(kptr, TCRIGHTCURSOR, t_viforwardchar, 'C');
+        -: 1370:    }
+    #####: 1371:    vilmaps[0] = oppmap;
+    #####: 1372:    vilmaps[1] = vismap;
+    #####: 1373:    for (i = 0; i < 2; i++) {
+        -: 1374:	/* vi visual selection and operator pending local maps */
+    #####: 1375:	kptr = vilmaps[i];
+    #####: 1376:	add_cursor_key(kptr, TCUPCURSOR, t_upline, 'A');
+    #####: 1377:	add_cursor_key(kptr, TCDOWNCURSOR, t_downline, 'B');
+    #####: 1378:	bindkey(kptr, "k", refthingy(t_upline), NULL);
+    #####: 1379:	bindkey(kptr, "j", refthingy(t_downline), NULL);
+    #####: 1380:	bindkey(kptr, "aa", refthingy(t_selectashellword), NULL);
+    #####: 1381:	bindkey(kptr, "ia", refthingy(t_selectinshellword), NULL);
+    #####: 1382:	bindkey(kptr, "aw", refthingy(t_selectaword), NULL);
+    #####: 1383:	bindkey(kptr, "iw", refthingy(t_selectinword), NULL);
+    #####: 1384:	bindkey(kptr, "aW", refthingy(t_selectablankword), NULL);
+    #####: 1385:	bindkey(kptr, "iW", refthingy(t_selectinblankword), NULL);
+        -: 1386:    }
+        -: 1387:    /* escape in operator pending cancels the operation */
+    #####: 1388:    bindkey(oppmap, "\33", refthingy(t_vicmdmode), NULL);
+    #####: 1389:    bindkey(vismap, "\33", refthingy(t_deactivateregion), NULL);
+    #####: 1390:    bindkey(vismap, "o", refthingy(t_exchangepointandmark), NULL);
+    #####: 1391:    bindkey(vismap, "p", refthingy(t_putreplaceselection), NULL);
+    #####: 1392:    bindkey(vismap, "u", refthingy(t_vidowncase), NULL);
+    #####: 1393:    bindkey(vismap, "U", refthingy(t_viupcase), NULL);
+    #####: 1394:    bindkey(vismap, "x", refthingy(t_videlete), NULL);
+    #####: 1395:    bindkey(vismap, "~", refthingy(t_vioperswapcase), NULL);
+        -: 1396:
+        -: 1397:    /* vi mode: some common vim bindings */
+    #####: 1398:    bindkey(amap, "ga", refthingy(t_whatcursorposition), NULL);
+    #####: 1399:    bindkey(amap, "ge", refthingy(t_vibackwardwordend), NULL);
+    #####: 1400:    bindkey(amap, "gE", refthingy(t_vibackwardblankwordend), NULL);
+    #####: 1401:    bindkey(amap, "gg", refthingy(t_beginningofbufferorhistory), NULL);
+    #####: 1402:    bindkey(amap, "gu", refthingy(t_vidowncase), NULL);
+    #####: 1403:    bindkey(amap, "gU", refthingy(t_viupcase), NULL);
+    #####: 1404:    bindkey(amap, "g~", refthingy(t_vioperswapcase), NULL);
+    #####: 1405:    bindkey(amap, "g~~", NULL, "g~g~");
+    #####: 1406:    bindkey(amap, "guu", NULL, "gugu");
+    #####: 1407:    bindkey(amap, "gUU", NULL, "gUgU");
+        -: 1408:
+        -: 1409:    /* emacs mode: arrow keys */ 
+    #####: 1410:    add_cursor_key(emap, TCUPCURSOR, t_uplineorhistory, 'A');
+    #####: 1411:    add_cursor_key(emap, TCDOWNCURSOR, t_downlineorhistory, 'B');
+    #####: 1412:    add_cursor_key(emap, TCLEFTCURSOR, t_backwardchar, 'D');
+    #####: 1413:    add_cursor_key(emap, TCRIGHTCURSOR, t_forwardchar, 'C');
+        -: 1414:   
+        -: 1415:    /* emacs mode: ^X sequences */
+    #####: 1416:    bindkey(emap, "\30*",   refthingy(t_expandword), NULL);
+    #####: 1417:    bindkey(emap, "\30g",   refthingy(t_listexpand), NULL);
+    #####: 1418:    bindkey(emap, "\30G",   refthingy(t_listexpand), NULL);
+    #####: 1419:    bindkey(emap, "\30\16", refthingy(t_infernexthistory), NULL);
+    #####: 1420:    bindkey(emap, "\30\13", refthingy(t_killbuffer), NULL);
+    #####: 1421:    bindkey(emap, "\30\6",  refthingy(t_vifindnextchar), NULL);
+    #####: 1422:    bindkey(emap, "\30\17", refthingy(t_overwritemode), NULL);
+    #####: 1423:    bindkey(emap, "\30\25", refthingy(t_undo), NULL);
+    #####: 1424:    bindkey(emap, "\30\26", refthingy(t_vicmdmode), NULL);
+    #####: 1425:    bindkey(emap, "\30\12", refthingy(t_vijoin), NULL);
+    #####: 1426:    bindkey(emap, "\30\2",  refthingy(t_vimatchbracket), NULL);
+    #####: 1427:    bindkey(emap, "\30s",   refthingy(t_historyincrementalsearchforward), NULL);
+    #####: 1428:    bindkey(emap, "\30r",   refthingy(t_historyincrementalsearchbackward), NULL);
+    #####: 1429:    bindkey(emap, "\30u",   refthingy(t_undo), NULL);
+    #####: 1430:    bindkey(emap, "\30\30", refthingy(t_exchangepointandmark), NULL);
+    #####: 1431:    bindkey(emap, "\30=",   refthingy(t_whatcursorposition), NULL);
+        -: 1432:
+        -: 1433:    /* bracketed paste applicable to all keymaps */
+    #####: 1434:    bindkey(emap, "\33[200~", refthingy(t_bracketedpaste), NULL);
+    #####: 1435:    bindkey(vmap, "\33[200~", refthingy(t_bracketedpaste), NULL);
+    #####: 1436:    bindkey(amap, "\33[200~", refthingy(t_bracketedpaste), NULL);
+        -: 1437:
+        -: 1438:    /* emacs mode: ESC sequences, all taken from the meta binding table */
+    #####: 1439:    buf[0] = '\33';
+    #####: 1440:    buf[2] = 0;
+    #####: 1441:    for (i = 0; i < 128; i++)
+    #####: 1442:	if (metabind[i] != z_undefinedkey) {
+    #####: 1443:	    buf[1] = i;
+    #####: 1444:	    bindkey(emap, buf, refthingy(Th(metabind[i])), NULL);
+        -: 1445:	}
+        -: 1446:
+        -: 1447:    /* Put the keymaps in the right namespace.  The "main" keymap  *
+        -: 1448:     * will be linked to the "emacs" keymap, except that if VISUAL *
+        -: 1449:     * or EDITOR contain the string "vi" then it will be linked to *
+        -: 1450:     * the "viins" keymap.                                         */
+    #####: 1451:    linkkeymap(vmap, "viins", 0);
+    #####: 1452:    linkkeymap(emap, "emacs", 0);
+    #####: 1453:    linkkeymap(amap, "vicmd", 0);
+    #####: 1454:    linkkeymap(oppmap, "viopp", 0);
+    #####: 1455:    linkkeymap(vismap, "visual", 0);
+    #####: 1456:    linkkeymap(smap, ".safe", 1);
+    #####: 1457:    if (((ed = zgetenv("VISUAL")) && strstr(ed, "vi")) ||
+    #####: 1458:	((ed = zgetenv("EDITOR")) && strstr(ed, "vi")))
+    #####: 1459:	linkkeymap(vmap, "main", 0);
+        -: 1460:    else
+    #####: 1461:	linkkeymap(emap, "main", 0);
+        -: 1462:
+        -: 1463:    /* the .safe map cannot be modified or deleted */
+    #####: 1464:    smap->flags |= KM_IMMUTABLE;
+        -: 1465:
+        -: 1466:    /* isearch keymap: initially empty */
+    #####: 1467:    isearch_keymap = newkeymap(NULL, "isearch");
+    #####: 1468:    linkkeymap(isearch_keymap, "isearch", 0);
+        -: 1469:
+        -: 1470:    /* command keymap: make sure accept-line and send-break are bound */
+    #####: 1471:    command_keymap = newkeymap(NULL, "command");
+    #####: 1472:    command_keymap->first['\n'] = refthingy(t_acceptline);
+    #####: 1473:    command_keymap->first['\r'] = refthingy(t_acceptline);
+    #####: 1474:    command_keymap->first['G'&0x1F] = refthingy(t_sendbreak);
+    #####: 1475:    linkkeymap(command_keymap, "command", 0);
+    #####: 1476:}
+        -: 1477:
+        -: 1478:/*************************/
+        -: 1479:/* reading key sequences */
+        -: 1480:/*************************/
+        -: 1481:/**/
+        -: 1482:#ifdef MULTIBYTE_SUPPORT
+        -: 1483:/*
+        -: 1484: * Get the remainder of a character if we support multibyte
+        -: 1485: * input strings.  It may not require any more input, but
+        -: 1486: * we haven't yet checked.  What's read in so far is available
+        -: 1487: * in keybuf; if we read more we will top keybuf up.
+        -: 1488: *
+        -: 1489: * This version is used when we are still resolving the input key stream
+        -: 1490: * into bindings.  Once that has been done this function shouldn't be
+        -: 1491: * used: instead, see getrestchar() in zle_main.c.
+        -: 1492: *
+        -: 1493: * This supports a self-insert binding at any stage of a key sequence.
+        -: 1494: * Typically we handle 8-bit characters by having only the first byte
+        -: 1495: * bound to self insert; then we immediately get here and read in as
+        -: 1496: * many further bytes as necessary.  However, it's possible that any set
+        -: 1497: * of bytes up to full character is bound to self-insert; then we get
+        -: 1498: * here later and read as much as possible, which could be a complete
+        -: 1499: * character, from keybuf before attempting further input.
+        -: 1500: *
+        -: 1501: * At the end of the process, the full multibyte character is available
+        -: 1502: * in keybuf, so the return value may be superfluous.
+        -: 1503: */
+        -: 1504:
+        -: 1505:/**/
+        -: 1506:mod_export ZLE_INT_T
+    #####: 1507:getrestchar_keybuf(void)
+        -: 1508:{
+        -: 1509:    char c;
+        -: 1510:    wchar_t outchar;
+    #####: 1511:    int inchar, timeout, bufind = 0, buflen = keybuflen;
+        -: 1512:    static mbstate_t mbs;
+        -: 1513:    size_t cnt;
+        -: 1514:
+        -: 1515:    /*
+        -: 1516:     * We are guaranteed to set a valid wide last character,
+        -: 1517:     * although it may be WEOF (which is technically not
+        -: 1518:     * a wide character at all...)
+        -: 1519:     */
+    #####: 1520:    lastchar_wide_valid = 1;
+    #####: 1521:    memset(&mbs, 0, sizeof mbs);
+        -: 1522:
+        -: 1523:    /*
+        -: 1524:     * Return may be zero if we have a NULL; handle this like
+        -: 1525:     * any other character.
+        -: 1526:     */
+        -: 1527:    while (1) {
+    #####: 1528:	if (bufind < buflen) {
+    #####: 1529:	    c = STOUC(keybuf[bufind++]);
+    #####: 1530:	    if (c == Meta) {
+        -: 1531:		DPUTS(bufind == buflen, "Meta at end of keybuf");
+    #####: 1532:		c = STOUC(keybuf[bufind++]) ^ 32;
+        -: 1533:	    }
+        -: 1534:	} else {
+        -: 1535:	    /*
+        -: 1536:	     * Always apply KEYTIMEOUT to the remains of the input
+        -: 1537:	     * character.  The parts of a multibyte character should
+        -: 1538:	     * arrive together.  If we don't do this the input can
+        -: 1539:	     * get stuck if an invalid byte sequence arrives.
+        -: 1540:	     */
+    #####: 1541:	    inchar = getbyte(1L, &timeout, 1);
+        -: 1542:	    /* getbyte deliberately resets lastchar_wide_valid */
+    #####: 1543:	    lastchar_wide_valid = 1;
+    #####: 1544:	    if (inchar == EOF) {
+    #####: 1545:		memset(&mbs, 0, sizeof mbs);
+    #####: 1546:		if (timeout)
+        -: 1547:		{
+        -: 1548:		    /*
+        -: 1549:		     * This case means that we got a valid initial byte
+        -: 1550:		     * (since we tested for EOF above), but the followup
+        -: 1551:		     * timed out.  This probably indicates a duff character.
+        -: 1552:		     * Return a '?'.
+        -: 1553:		     */
+    #####: 1554:		    lastchar = '?';
+    #####: 1555:		    return lastchar_wide = L'?';
+        -: 1556:		}
+        -: 1557:		else
+    #####: 1558:		    return lastchar_wide = WEOF;
+        -: 1559:	    }
+    #####: 1560:	    c = inchar;
+    #####: 1561:	    addkeybuf(inchar);
+        -: 1562:	}
+        -: 1563:
+    #####: 1564:	cnt = mbrtowc(&outchar, &c, 1, &mbs);
+    #####: 1565:	if (cnt == MB_INVALID) {
+        -: 1566:	    /*
+        -: 1567:	     * Invalid input.  Hmm, what's the right thing to do here?
+        -: 1568:	     */
+    #####: 1569:	    memset(&mbs, 0, sizeof mbs);
+    #####: 1570:	    return lastchar_wide = WEOF;
+        -: 1571:	}
+    #####: 1572:	if (cnt != MB_INCOMPLETE)
+    #####: 1573:	    break;
+        -: 1574:    }
+    #####: 1575:    return lastchar_wide = (ZLE_INT_T)outchar;
+        -: 1576:}
+        -: 1577:/**/
+        -: 1578:#endif
+        -: 1579:
+        -: 1580:/* read a sequence of keys that is bound to some command in a keymap */
+        -: 1581:
+        -: 1582:/**/
+        -: 1583:char *
+    #####: 1584:getkeymapcmd(Keymap km, Thingy *funcp, char **strp)
+        -: 1585:{
+    #####: 1586:    Thingy func = t_undefinedkey;
+    #####: 1587:    char *str = NULL;
+    #####: 1588:    int lastlen = 0, lastc = lastchar;
+    #####: 1589:    int timeout = 0;
+        -: 1590:
+    #####: 1591:    keybuflen = 0;
+    #####: 1592:    keybuf[0] = 0;
+        -: 1593:    /*
+        -: 1594:     * getkeybuf returns multibyte strings, which may not
+        -: 1595:     * yet correspond to complete wide characters, regardless
+        -: 1596:     * of the locale.  This is because we can't be sure whether
+        -: 1597:     * the key bindings and keyboard input always return such
+        -: 1598:     * characters.  So we always look up bindings for each
+        -: 1599:     * chunk of string.  Intelligence within self-insert tries
+        -: 1600:     * to fix up insertion of real wide characters properly.
+        -: 1601:     *
+        -: 1602:     * Note that this does not stop the user binding wide characters to
+        -: 1603:     * arbitrary functions, just so long as the string used in the
+        -: 1604:     * argument to bindkey is in the correct form for the locale.
+        -: 1605:     * That's beyond our control.
+        -: 1606:     */
+    #####: 1607:    while(getkeybuf(timeout) != EOF) {
+        -: 1608:	char *s;
+        -: 1609:	Thingy f;
+    #####: 1610:	int loc = !!localkeymap;
+    #####: 1611:	int ispfx = 0;
+        -: 1612:
+    #####: 1613:	if (loc) {
+    #####: 1614:	    loc = ((f = keybind(localkeymap, keybuf, &s)) != t_undefinedkey);
+    #####: 1615:	    ispfx = keyisprefix(localkeymap, keybuf);
+        -: 1616:	}
+    #####: 1617:	if (!loc && !ispfx)
+    #####: 1618:	    f = keybind(km, keybuf, &s);
+    #####: 1619:	ispfx |= keyisprefix(km, keybuf);
+        -: 1620:
+    #####: 1621:	if (f != t_undefinedkey) {
+    #####: 1622:	    lastlen = keybuflen;
+    #####: 1623:	    func = f;
+    #####: 1624:	    str = s;
+    #####: 1625:	    lastc = lastchar;
+        -: 1626:
+        -: 1627:	    /* can be patient with vi commands that need a motion operator: *
+        -: 1628:	     * they wait till a key is pressed for the movement anyway      */
+    #####: 1629:	    timeout = !(!virangeflag && !region_active && f && f->widget &&
+    #####: 1630:		    f->widget->flags & ZLE_VIOPER);
+        -: 1631:#ifdef MULTIBYTE_SUPPORT
+    #####: 1632:	    if ((f == Th(z_selfinsert) || f == Th(z_selfinsertunmeta)) &&
+    #####: 1633:		!lastchar_wide_valid && !ispfx) {
+    #####: 1634:		(void)getrestchar_keybuf();
+    #####: 1635:		lastlen = keybuflen;
+        -: 1636:	    }
+        -: 1637:#endif
+        -: 1638:	}
+    #####: 1639:	if (!ispfx)
+    #####: 1640:	    break;
+        -: 1641:    }
+    #####: 1642:    if(!lastlen && keybuflen)
+    #####: 1643:	lastlen = keybuflen;
+        -: 1644:    else
+    #####: 1645:	lastchar = lastc;
+    #####: 1646:    if(lastlen != keybuflen) {
+        -: 1647:	/*
+        -: 1648:	 * We want to keep only the first lastlen bytes of the key
+        -: 1649:	 * buffer in the key buffer that were marked as used by the key
+        -: 1650:	 * binding above, and make the rest available for input again.
+        -: 1651:	 * That rest (but not what we are keeping) needs to be
+        -: 1652:	 * unmetafied.
+        -: 1653:	 */
+    #####: 1654:	unmetafy(keybuf + lastlen, &keybuflen);
+    #####: 1655:	ungetbytes(keybuf+lastlen, keybuflen);
+    #####: 1656:	if(vichgflag)
+    #####: 1657:	    curvichg.bufptr -= keybuflen;
+    #####: 1658:	keybuf[keybuflen = lastlen] = 0;
+        -: 1659:    }
+    #####: 1660:    *funcp = func;
+    #####: 1661:    *strp = str;
+    #####: 1662:    return keybuf;
+        -: 1663:}
+        -: 1664:
+        -: 1665:/**/
+        -: 1666:static void
+    #####: 1667:addkeybuf(int c)
+        -: 1668:{
+    #####: 1669:    if(keybuflen + 3 > keybufsz)
+    #####: 1670:	keybuf = realloc(keybuf, keybufsz *= 2);
+    #####: 1671:    if(imeta(c)) {
+    #####: 1672:	keybuf[keybuflen++] = Meta;
+    #####: 1673:	keybuf[keybuflen++] = c ^ 32;
+        -: 1674:    } else
+    #####: 1675:	keybuf[keybuflen++] = c;
+    #####: 1676:    keybuf[keybuflen] = 0;
+    #####: 1677:}
+        -: 1678:
+        -: 1679:/*
+        -: 1680: * Add a (possibly metafied) byte to the key input so far.
+        -: 1681: * This handles individual bytes of a multibyte string separately;
+        -: 1682: * see note in getkeymapcmd.  Hence there is no wide character
+        -: 1683: * support at this level.
+        -: 1684: *
+        -: 1685: * TODO: Need to be careful about whether we return EOF in the
+        -: 1686: * middle of a wide character.  However, I think we're OK since
+        -: 1687: * EOF and 0xff are distinct and we're reading bytes from the
+        -: 1688: * lower level, so EOF really does mean something went wrong.  Even so,
+        -: 1689: * I'm worried enough to leave this note here for now.
+        -: 1690: */
+        -: 1691:
+        -: 1692:/**/
+        -: 1693:static int
+    #####: 1694:getkeybuf(int w)
+        -: 1695:{
+    #####: 1696:    int c = getbyte((long)w, NULL, 1);
+        -: 1697:
+    #####: 1698:    if(c < 0)
+    #####: 1699:	return EOF;
+    #####: 1700:    addkeybuf(c);
+    #####: 1701:    return c;
+        -: 1702:}
+        -: 1703:
+        -: 1704:/* Push back the last command sequence read by getkeymapcmd(). *
+        -: 1705: * Must be executed at most once after each getkeymapcmd().    */
+        -: 1706:
+        -: 1707:/**/
+        -: 1708:mod_export void
+    #####: 1709:ungetkeycmd(void)
+        -: 1710:{
+    #####: 1711:    ungetbytes_unmeta(keybuf, keybuflen);
+    #####: 1712:}
+        -: 1713:
+        -: 1714:/* read a command from the current keymap, with widgets */
+        -: 1715:
+        -: 1716:/**/
+        -: 1717:mod_export Thingy
+    #####: 1718:getkeycmd(void)
+        -: 1719:{
+        -: 1720:    Thingy func;
+    #####: 1721:    int hops = 0;
+        -: 1722:    char *seq, *str;
+        -: 1723:
+    #####: 1724:    sentstring:
+    #####: 1725:    seq = getkeymapcmd(curkeymap, &func, &str);
+    #####: 1726:    if(!*seq)
+    #####: 1727:	return NULL;
+    #####: 1728:    if(!func) {
+    #####: 1729:	if (++hops == 20) {
+    #####: 1730:	    zerr("string inserting another one too many times");
+    #####: 1731:	    hops = 0;
+    #####: 1732:	    return NULL;
+        -: 1733:	}
+    #####: 1734:	ungetbytes_unmeta(str, strlen(str));
+    #####: 1735:	goto sentstring;
+        -: 1736:    }
+    #####: 1737:    if (func == Th(z_executenamedcmd) && !statusline) {
+    #####: 1738:	while(func == Th(z_executenamedcmd))
+    #####: 1739:	    func = executenamedcommand("execute: ");
+    #####: 1740:	if(!func)
+    #####: 1741:	    func = t_undefinedkey;
+    #####: 1742:	else if(func != Th(z_executelastnamedcmd)) {
+    #####: 1743:	    unrefthingy(lastnamed);
+    #####: 1744:	    lastnamed = refthingy(func);
+        -: 1745:	}
+        -: 1746:    }
+    #####: 1747:    if (func == Th(z_executelastnamedcmd))
+    #####: 1748:	func = lastnamed;
+    #####: 1749:    return func;
+        -: 1750:}
+        -: 1751:
+        -: 1752:/**/
+        -: 1753:mod_export void
+    #####: 1754:zlesetkeymap(int mode)
+        -: 1755:{
+    #####: 1756:    Keymap km = openkeymap((mode == VIMODE) ? "viins" : "emacs");
+    #####: 1757:    if (!km)
+    #####: 1758:	return;
+    #####: 1759:    linkkeymap(km, "main", 0);
+        -: 1760:}
+        -: 1761:
+        -: 1762:/**/
+        -: 1763:mod_export int
+    #####: 1764:readcommand(UNUSED(char **args))
+        -: 1765:{
+    #####: 1766:    Thingy thingy = getkeycmd();
+        -: 1767:
+    #####: 1768:    if (!thingy)
+    #####: 1769:	return 1;
+        -: 1770:
+    #####: 1771:    setsparam("REPLY", ztrdup(thingy->nam));
+    #####: 1772:    return 0;
+        -: 1773:}

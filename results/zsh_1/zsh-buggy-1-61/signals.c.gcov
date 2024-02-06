@@ -1,0 +1,1500 @@
+        -:    0:Source:signals.c
+        -:    0:Graph:/home/workspace/Src/signals.gcno
+        -:    0:Data:/home/workspace/Src/signals.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * signals.c - signals handling code
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "signals.pro"
+        -:   32: 
+        -:   33:/* Array describing the state of each signal: an element contains *
+        -:   34: * 0 for the default action or some ZSIG_* flags ored together.   */
+        -:   35:
+        -:   36:/**/
+        -:   37:mod_export int sigtrapped[VSIGCOUNT];
+        -:   38:
+        -:   39:/*
+        -:   40: * Trap programme lists for each signal.
+        -:   41: *
+        -:   42: * If (sigtrapped[sig] & ZSIG_FUNC) is set, this isn't used.
+        -:   43: * The corresponding shell function is used instead.
+        -:   44: *
+        -:   45: * Otherwise, if sigtrapped[sig] is not zero, this is NULL when a signal
+        -:   46: * is to be ignored, and if not NULL contains the programme list to be
+        -:   47: * eval'd.
+        -:   48: */
+        -:   49:
+        -:   50:/**/
+        -:   51:mod_export Eprog siglists[VSIGCOUNT];
+        -:   52:
+        -:   53:/* Total count of trapped signals */
+        -:   54:
+        -:   55:/**/
+        -:   56:mod_export volatile int nsigtrapped;
+        -:   57:
+        -:   58:/* Running an exit trap? */
+        -:   59:
+        -:   60:/**/
+        -:   61:int in_exit_trap;
+        -:   62:
+        -:   63:/*
+        -:   64: * Flag that exit trap has been set in POSIX mode.
+        -:   65: * The setter's expectation is therefore that it is run
+        -:   66: * on programme exit, not function exit.
+        -:   67: */
+        -:   68:
+        -:   69:/**/
+        -:   70:static int exit_trap_posix;
+        -:   71:
+        -:   72:/* Variables used by signal queueing */
+        -:   73:
+        -:   74:/**/
+        -:   75:mod_export volatile int queueing_enabled, queue_front, queue_rear;
+        -:   76:/**/
+        -:   77:mod_export int signal_queue[MAX_QUEUE_SIZE];
+        -:   78:/**/
+        -:   79:mod_export sigset_t signal_mask_queue[MAX_QUEUE_SIZE];
+        -:   80:#ifdef DEBUG
+        -:   81:/**/
+        -:   82:mod_export volatile int queue_in;
+        -:   83:#endif
+        -:   84:
+        -:   85:/* Variables used by trap queueing */
+        -:   86:
+        -:   87:/**/
+        -:   88:mod_export volatile int trap_queueing_enabled, trap_queue_front, trap_queue_rear;
+        -:   89:/**/
+        -:   90:mod_export int trap_queue[MAX_QUEUE_SIZE];
+        -:   91:
+        -:   92:/* This is only used on machines that don't understand signal sets.  *
+        -:   93: * On SYSV machines this will represent the signals that are blocked *
+        -:   94: * (held) using sighold.  On machines which can't block signals at   *
+        -:   95: * all, we will simulate this by ignoring them and remembering them  *
+        -:   96: * in this variable.                                                 */
+        -:   97:#if !defined(POSIX_SIGNALS) && !defined(BSD_SIGNALS)
+        -:   98:static sigset_t blocked_set;
+        -:   99:#endif
+        -:  100:
+        -:  101:#ifdef POSIX_SIGNALS
+        -:  102:# define signal_jmp_buf       sigjmp_buf
+        -:  103:# define signal_setjmp(b)     sigsetjmp((b),1)
+        -:  104:# define signal_longjmp(b,n)  siglongjmp((b),(n))
+        -:  105:#else
+        -:  106:# define signal_jmp_buf       jmp_buf
+        -:  107:# define signal_setjmp(b)     setjmp(b)
+        -:  108:# define signal_longjmp(b,n)  longjmp((b),(n))
+        -:  109:#endif
+        -:  110: 
+        -:  111:#ifdef NO_SIGNAL_BLOCKING
+        -:  112:# define signal_process(sig)  signal_ignore(sig)
+        -:  113:# define signal_reset(sig)    install_handler(sig)
+        -:  114:#else
+        -:  115:# define signal_process(sig)  ;
+        -:  116:# define signal_reset(sig)    ;
+        -:  117:#endif
+        -:  118:
+        -:  119:/* Install signal handler for given signal.           *
+        -:  120: * If possible, we want to make sure that interrupted *
+        -:  121: * system calls are not restarted.                    */
+        -:  122:
+        -:  123:/**/
+        -:  124:mod_export void
+       16:  125:install_handler(int sig)
+        -:  126:{
+        -:  127:#ifdef POSIX_SIGNALS
+        -:  128:    struct sigaction act;
+        -:  129: 
+       16:  130:    act.sa_handler = (SIGNAL_HANDTYPE) zhandler;
+       16:  131:    sigemptyset(&act.sa_mask);        /* only block sig while in handler */
+       16:  132:    act.sa_flags = 0;
+        -:  133:# ifdef SA_INTERRUPT                  /* SunOS 4.x */
+       16:  134:    if (interact)
+    #####:  135:        act.sa_flags |= SA_INTERRUPT; /* make sure system calls are not restarted */
+        -:  136:# endif
+       16:  137:    sigaction(sig, &act, (struct sigaction *)NULL);
+        -:  138:#else
+        -:  139:# ifdef BSD_SIGNALS
+        -:  140:    struct sigvec vec;
+        -:  141: 
+        -:  142:    vec.sv_handler = (SIGNAL_HANDTYPE) zhandler;
+        -:  143:    vec.sv_mask = sigmask(sig);    /* mask out this signal while in handler    */
+        -:  144:#  ifdef SV_INTERRUPT
+        -:  145:    vec.sv_flags = SV_INTERRUPT;   /* make sure system calls are not restarted */
+        -:  146:#  endif
+        -:  147:    sigvec(sig, &vec, (struct sigvec *)NULL);
+        -:  148:# else
+        -:  149:#  ifdef SYSV_SIGNALS
+        -:  150:    /* we want sigset rather than signal because it will   *
+        -:  151:     * block sig while in handler.  signal usually doesn't */
+        -:  152:    sigset(sig, zhandler);
+        -:  153:#  else  /* NO_SIGNAL_BLOCKING (bummer) */
+        -:  154:    signal(sig, zhandler);
+        -:  155:
+        -:  156:#  endif /* SYSV_SIGNALS  */
+        -:  157:# endif  /* BSD_SIGNALS   */
+        -:  158:#endif   /* POSIX_SIGNALS */
+       16:  159:}
+        -:  160:
+        -:  161:/* enable ^C interrupts */
+        -:  162: 
+        -:  163:/**/
+        -:  164:mod_export void
+      178:  165:intr(void)
+        -:  166:{
+      178:  167:    if (interact)
+    #####:  168:        install_handler(SIGINT);
+      178:  169:}
+        -:  170:
+        -:  171:/* disable ^C interrupts */
+        -:  172: 
+        -:  173:#if 0 /**/
+        -:  174:void
+        -:  175:nointr(void)
+        -:  176:{
+        -:  177:    if (interact)
+        -:  178:        signal_ignore(SIGINT);
+        -:  179:}
+        -:  180:#endif
+        -:  181: 
+        -:  182:/* temporarily block ^C interrupts */
+        -:  183: 
+        -:  184:/**/
+        -:  185:mod_export void
+    #####:  186:holdintr(void)
+        -:  187:{
+    #####:  188:    if (interact)
+    #####:  189:        signal_block(signal_mask(SIGINT));
+    #####:  190:}
+        -:  191:
+        -:  192:/* release ^C interrupts */
+        -:  193: 
+        -:  194:/**/
+        -:  195:mod_export void
+    #####:  196:noholdintr(void)
+        -:  197:{
+    #####:  198:    if (interact)
+    #####:  199:        signal_unblock(signal_mask(SIGINT));
+    #####:  200:}
+        -:  201: 
+        -:  202:/* create a signal mask containing *
+        -:  203: * only the given signal           */
+        -:  204: 
+        -:  205:/**/
+        -:  206:mod_export sigset_t
+     1296:  207:signal_mask(int sig)
+        -:  208:{
+        -:  209:    sigset_t set;
+        -:  210: 
+     1296:  211:    sigemptyset(&set);
+     1296:  212:    if (sig)
+     1296:  213:        sigaddset(&set, sig);
+     1296:  214:    return set;
+        -:  215:}
+        -:  216:
+        -:  217:/* Block the signals in the given signal *
+        -:  218: * set. Return the old signal set.       */
+        -:  219:
+        -:  220:/**/
+        -:  221:#ifndef BSD_SIGNALS
+        -:  222:
+        -:  223:/**/
+        -:  224:mod_export sigset_t
+     3274:  225:signal_block(sigset_t set)
+        -:  226:{
+        -:  227:    sigset_t oset;
+        -:  228: 
+        -:  229:#ifdef POSIX_SIGNALS
+     3274:  230:    sigprocmask(SIG_BLOCK, &set, &oset);
+        -:  231:
+        -:  232:#else
+        -:  233:# ifdef SYSV_SIGNALS
+        -:  234:    int i;
+        -:  235: 
+        -:  236:    oset = blocked_set;
+        -:  237:    for (i = 1; i <= NSIG; ++i) {
+        -:  238:        if (sigismember(&set, i) && !sigismember(&blocked_set, i)) {
+        -:  239:            sigaddset(&blocked_set, i);
+        -:  240:            sighold(i);
+        -:  241:        }
+        -:  242:    }
+        -:  243:# else  /* NO_SIGNAL_BLOCKING */
+        -:  244:/* We will just ignore signals if the system doesn't have *
+        -:  245: * the ability to block them.                             */
+        -:  246:    int i;
+        -:  247:
+        -:  248:    oset = blocked_set;
+        -:  249:    for (i = 1; i <= NSIG; ++i) {
+        -:  250:        if (sigismember(&set, i) && !sigismember(&blocked_set, i)) {
+        -:  251:            sigaddset(&blocked_set, i);
+        -:  252:            signal_ignore(i);
+        -:  253:        }
+        -:  254:   }
+        -:  255:# endif /* SYSV_SIGNALS */
+        -:  256:#endif /* POSIX_SIGNALS */
+        -:  257: 
+     3274:  258:    return oset;
+        -:  259:}
+        -:  260:
+        -:  261:/**/
+        -:  262:#endif /* BSD_SIGNALS */
+        -:  263:
+        -:  264:/* Unblock the signals in the given signal *
+        -:  265: * set. Return the old signal set.         */
+        -:  266:
+        -:  267:/**/
+        -:  268:mod_export sigset_t
+     1957:  269:signal_unblock(sigset_t set)
+        -:  270:{
+        -:  271:    sigset_t oset;
+        -:  272:
+        -:  273:#ifdef POSIX_SIGNALS
+     1957:  274:    sigprocmask(SIG_UNBLOCK, &set, &oset);
+        -:  275:#else
+        -:  276:# ifdef BSD_SIGNALS
+        -:  277:    sigfillset(&oset);
+        -:  278:    oset = sigsetmask(oset);
+        -:  279:    sigsetmask(oset & ~set);
+        -:  280:# else
+        -:  281:#  ifdef SYSV_SIGNALS
+        -:  282:    int i;
+        -:  283: 
+        -:  284:    oset = blocked_set;
+        -:  285:    for (i = 1; i <= NSIG; ++i) {
+        -:  286:        if (sigismember(&set, i) && sigismember(&blocked_set, i)) {
+        -:  287:            sigdelset(&blocked_set, i);
+        -:  288:            sigrelse(i);
+        -:  289:        }
+        -:  290:    }
+        -:  291:#  else  /* NO_SIGNAL_BLOCKING */
+        -:  292:/* On systems that can't block signals, we are just ignoring them.  So *
+        -:  293: * to unblock signals, we just reenable the signal handler for them.   */
+        -:  294:    int i;
+        -:  295:
+        -:  296:    oset = blocked_set;
+        -:  297:    for (i = 1; i <= NSIG; ++i) {
+        -:  298:        if (sigismember(&set, i) && sigismember(&blocked_set, i)) {
+        -:  299:            sigdelset(&blocked_set, i);
+        -:  300:            install_handler(i);
+        -:  301:        }
+        -:  302:   }
+        -:  303:#  endif /* SYSV_SIGNALS  */
+        -:  304:# endif  /* BSD_SIGNALS   */
+        -:  305:#endif   /* POSIX_SIGNALS */
+        -:  306: 
+     1957:  307:    return oset;
+        -:  308:}
+        -:  309:
+        -:  310:/* set the process signal mask to *
+        -:  311: * be the given signal mask       */
+        -:  312:
+        -:  313:/**/
+        -:  314:mod_export sigset_t
+       94:  315:signal_setmask(sigset_t set)
+        -:  316:{
+        -:  317:    sigset_t oset;
+        -:  318: 
+        -:  319:#ifdef POSIX_SIGNALS
+       94:  320:    sigprocmask(SIG_SETMASK, &set, &oset);
+        -:  321:#else
+        -:  322:# ifdef BSD_SIGNALS
+        -:  323:    oset = sigsetmask(set);
+        -:  324:# else
+        -:  325:#  ifdef SYSV_SIGNALS
+        -:  326:    int i;
+        -:  327: 
+        -:  328:    oset = blocked_set;
+        -:  329:    for (i = 1; i <= NSIG; ++i) {
+        -:  330:        if (sigismember(&set, i) && !sigismember(&blocked_set, i)) {
+        -:  331:            sigaddset(&blocked_set, i);
+        -:  332:            sighold(i);
+        -:  333:        } else if (!sigismember(&set, i) && sigismember(&blocked_set, i)) {
+        -:  334:            sigdelset(&blocked_set, i);
+        -:  335:            sigrelse(i);
+        -:  336:        }
+        -:  337:    }
+        -:  338:#  else  /* NO_SIGNAL_BLOCKING */
+        -:  339:    int i;
+        -:  340:
+        -:  341:    oset = blocked_set;
+        -:  342:    for (i = 1; i < NSIG; ++i) {
+        -:  343:        if (sigismember(&set, i) && !sigismember(&blocked_set, i)) {
+        -:  344:            sigaddset(&blocked_set, i);
+        -:  345:            signal_ignore(i);
+        -:  346:        } else if (!sigismember(&set, i) && sigismember(&blocked_set, i)) {
+        -:  347:            sigdelset(&blocked_set, i);
+        -:  348:            install_handler(i);
+        -:  349:        }
+        -:  350:    }
+        -:  351:#  endif /* SYSV_SIGNALS  */
+        -:  352:# endif  /* BSD_SIGNALS   */
+        -:  353:#endif   /* POSIX_SIGNALS */
+        -:  354: 
+       94:  355:    return oset;
+        -:  356:}
+        -:  357:
+        -:  358:#if defined(NO_SIGNAL_BLOCKING)
+        -:  359:static int suspend_longjmp = 0;
+        -:  360:static signal_jmp_buf suspend_jmp_buf;
+        -:  361:#endif
+        -:  362:
+        -:  363:/**/
+        -:  364:int
+       33:  365:signal_suspend(UNUSED(int sig), int wait_cmd)
+        -:  366:{
+        -:  367:    int ret;
+        -:  368:
+        -:  369:#if defined(POSIX_SIGNALS) || defined(BSD_SIGNALS)
+        -:  370:    sigset_t set;
+        -:  371:# if defined(POSIX_SIGNALS) && defined(BROKEN_POSIX_SIGSUSPEND)
+        -:  372:    sigset_t oset;
+        -:  373:# endif
+        -:  374:
+       33:  375:    sigemptyset(&set);
+        -:  376:
+        -:  377:    /* SIGINT from the terminal driver needs to interrupt "wait"
+        -:  378:     * and to cause traps to fire, but otherwise should not be
+        -:  379:     * handled by the shell until after any foreground job has
+        -:  380:     * a chance to decide whether to exit on that signal.
+        -:  381:     */
+       66:  382:    if (!(wait_cmd || isset(TRAPSASYNC) ||
+       33:  383:	  (sigtrapped[SIGINT] & ~ZSIG_IGNORED)))
+       33:  384:	sigaddset(&set, SIGINT);
+        -:  385:#endif /* POSIX_SIGNALS || BSD_SIGNALS */
+        -:  386:
+        -:  387:#ifdef POSIX_SIGNALS
+        -:  388:# ifdef BROKEN_POSIX_SIGSUSPEND
+        -:  389:    sigprocmask(SIG_SETMASK, &set, &oset);
+        -:  390:    ret = pause();
+        -:  391:    sigprocmask(SIG_SETMASK, &oset, NULL);
+        -:  392:# else /* not BROKEN_POSIX_SIGSUSPEND */
+       33:  393:    ret = sigsuspend(&set);
+        -:  394:# endif /* BROKEN_POSIX_SIGSUSPEND */
+        -:  395:#else /* not POSIX_SIGNALS */
+        -:  396:# ifdef BSD_SIGNALS
+        -:  397:    ret = sigpause(set);
+        -:  398:# else
+        -:  399:#  ifdef SYSV_SIGNALS
+        -:  400:    ret = sigpause(sig);
+        -:  401:
+        -:  402:#  else  /* NO_SIGNAL_BLOCKING */
+        -:  403:    /* need to use signal_longjmp to make this race-free *
+        -:  404:     * between the child_unblock() and pause()           */
+        -:  405:    if (signal_setjmp(suspend_jmp_buf) == 0) {
+        -:  406:        suspend_longjmp = 1;   /* we want to signal_longjmp after catching signal */
+        -:  407:        child_unblock();       /* do we need to do wait_cmd stuff as well?             */
+        -:  408:        ret = pause();
+        -:  409:    }
+        -:  410:    suspend_longjmp = 0;       /* turn off using signal_longjmp since we are past *
+        -:  411:                                * the pause() function.                           */
+        -:  412:#  endif /* SYSV_SIGNALS  */
+        -:  413:# endif  /* BSD_SIGNALS   */
+        -:  414:#endif   /* POSIX_SIGNALS */
+        -:  415:
+       33:  416:    return ret;
+        -:  417:}
+        -:  418:
+        -:  419:/* last signal we handled: race prone, or what? */
+        -:  420:/**/
+        -:  421:int last_signal;
+        -:  422:
+        -:  423:/*
+        -:  424: * Wait for any processes that have changed state.
+        -:  425: *
+        -:  426: * The main use for this is in the SIGCHLD handler.  However,
+        -:  427: * we also use it to pick up status changes of jobs when
+        -:  428: * updating jobs.
+        -:  429: */
+        -:  430:/**/
+        -:  431:void
+       66:  432:wait_for_processes(void)
+        -:  433:{
+        -:  434:    /* keep WAITING until no more child processes to reap */
+       33:  435:    for (;;) {
+        -:  436:	/* save the errno, since WAIT may change it */
+       66:  437:	int old_errno = errno;
+        -:  438:	int status;
+        -:  439:	Job jn;
+        -:  440:	Process pn;
+        -:  441:	pid_t pid;
+       66:  442:	pid_t *procsubpid = &cmdoutpid;
+       66:  443:	int *procsubval = &cmdoutval;
+       66:  444:	int cont = 0;
+       66:  445:	struct execstack *es = exstack;
+        -:  446:
+        -:  447:	/*
+        -:  448:	 * Reap the child process.
+        -:  449:	 * If we want usage information, we need to use wait3.
+        -:  450:	 */
+        -:  451:#if defined(HAVE_WAIT3) || defined(HAVE_WAITPID)
+        -:  452:# ifdef WCONTINUED
+        -:  453:# define WAITFLAGS (WNOHANG|WUNTRACED|WCONTINUED)
+        -:  454:# else
+        -:  455:# define WAITFLAGS (WNOHANG|WUNTRACED)
+        -:  456:# endif
+        -:  457:#endif
+        -:  458:#ifdef HAVE_WAIT3
+        -:  459:# ifdef HAVE_GETRUSAGE
+        -:  460:	struct rusage ru;
+        -:  461:
+       66:  462:	pid = wait3((void *)&status, WAITFLAGS, &ru);
+        -:  463:# else
+        -:  464:	pid = wait3((void *)&status, WAITFLAGS, NULL);
+        -:  465:# endif
+        -:  466:#else
+        -:  467:# ifdef HAVE_WAITPID
+        -:  468:	pid = waitpid(-1, &status, WAITFLAGS);
+        -:  469:# else
+        -:  470:	pid = wait(&status);
+        -:  471:# endif
+        -:  472:#endif
+        -:  473:
+       66:  474:	if (!pid)  /* no more children to reap */
+       33:  475:	    break;
+        -:  476:
+        -:  477:	/* check if child returned was from process substitution */
+        -:  478:	for (;;) {
+       66:  479:	    if (pid == *procsubpid) {
+       10:  480:		*procsubpid = 0;
+       10:  481:		if (WIFSIGNALED(status))
+    #####:  482:		    *procsubval = (0200 | WTERMSIG(status));
+        -:  483:		else
+       10:  484:		    *procsubval = WEXITSTATUS(status);
+       10:  485:		use_cmdoutval = 1;
+       10:  486:		get_usage();
+       10:  487:		cont = 1;
+       10:  488:		break;
+        -:  489:	    }
+       56:  490:	    if (!es)
+       56:  491:		break;
+    #####:  492:	    procsubpid = &es->cmdoutpid;
+    #####:  493:	    procsubval = &es->cmdoutval;
+    #####:  494:	    es = es->next;
+        -:  495:	}
+       66:  496:	if (cont)
+       10:  497:	    continue;
+        -:  498:
+        -:  499:	/* check for WAIT error */
+       56:  500:	if (pid == -1) {
+       33:  501:	    if (errno != ECHILD)
+    #####:  502:		zerr("wait failed: %e", errno);
+        -:  503:	    /* WAIT changed errno, so restore the original */
+       33:  504:	    errno = old_errno;
+       33:  505:	    break;
+        -:  506:	}
+        -:  507:
+        -:  508:	/* This is necessary to be sure queueing_enabled > 0 when
+        -:  509:	 * we enter printjob() from update_job(), so that we don't
+        -:  510:	 * decrement to zero in should_report_time() and improperly
+        -:  511:	 * run other handlers in the middle of processing this one */
+       23:  512:	queue_signals();
+        -:  513:
+        -:  514:	/*
+        -:  515:	 * Find the process and job containing this pid and
+        -:  516:	 * update it.
+        -:  517:	 */
+       23:  518:	if (findproc(pid, &jn, &pn, 0)) {
+       46:  519:	    if (((jn->stat & STAT_BUILTIN) ||
+       23:  520:		 (list_pipe &&
+    #####:  521:		  (thisjob == -1 ||
+    #####:  522:		   (jobtab[thisjob].stat & STAT_BUILTIN)))) &&
+    #####:  523:		WIFSTOPPED(status) && WSTOPSIG(status) == SIGTSTP) {
+    #####:  524:		killjb(jn, SIGCONT);
+    #####:  525:		zwarn("job can't be suspended");
+        -:  526:	    } else {
+        -:  527:#if defined(HAVE_WAIT3) && defined(HAVE_GETRUSAGE)
+        -:  528:		struct timezone dummy_tz;
+       23:  529:		gettimeofday(&pn->endtime, &dummy_tz);
+        -:  530:#ifdef WIFCONTINUED
+       23:  531:		if (WIFCONTINUED(status))
+    #####:  532:		    pn->status = SP_RUNNING;
+        -:  533:		else
+        -:  534:#endif
+       23:  535:		pn->status = status;
+       23:  536:		pn->ti = ru;
+        -:  537:#else
+        -:  538:		update_process(pn, status);
+        -:  539:#endif
+       46:  540:		if (WIFEXITED(status) &&
+       46:  541:		    pn->pid == jn->gleader &&
+       46:  542:		    killpg(pn->pid, 0) == -1  &&
+       23:  543:		    errno == ESRCH) {
+       23:  544:		    if (last_attached_pgrp == jn->gleader &&
+    #####:  545:			!(jn->stat & STAT_NOSTTY)) {
+        -:  546:			/*
+        -:  547:			 * This PID was in control of the terminal;
+        -:  548:			 * reclaim terminal now it has exited.
+        -:  549:			 * It's still possible some future forked
+        -:  550:			 * process of this job will become group
+        -:  551:			 * leader, however.
+        -:  552:			 */
+    #####:  553:			attachtty(mypgrp);
+    #####:  554:			adjustwinsize(0);
+        -:  555:		    }
+       23:  556:		    jn->gleader = 0;
+        -:  557:		}
+        -:  558:	    }
+       23:  559:	    update_job(jn);
+    #####:  560:	} else if (findproc(pid, &jn, &pn, 1)) {
+    #####:  561:	    pn->status = status;
+    #####:  562:	    update_job(jn);
+        -:  563:	} else {
+        -:  564:	    /* If not found, update the shell record of time spent by
+        -:  565:	     * children in sub processes anyway:  otherwise, this
+        -:  566:	     * will get added on to the next found process that
+        -:  567:	     * terminates.
+        -:  568:	     */
+    #####:  569:	    get_usage();
+        -:  570:	}
+        -:  571:	/*
+        -:  572:	 * Accumulate a list of older jobs.  We only do this for
+        -:  573:	 * background jobs, which is something in the job table
+        -:  574:	 * that's not marked as in the current shell or as shell builtin
+        -:  575:	 * and is not equal to the current foreground job.
+        -:  576:	 */
+       46:  577:	if (jn && !(jn->stat & (STAT_CURSH|STAT_BUILTIN)) &&
+       23:  578:	    jn - jobtab != thisjob) {
+    #####:  579:	    int val = (WIFSIGNALED(status) ?
+    #####:  580:		   0200 | WTERMSIG(status) :
+    #####:  581:		   (WIFSTOPPED(status) ?
+    #####:  582:		    0200 | WEXITSTATUS(status) :
+    #####:  583:		    WEXITSTATUS(status)));
+    #####:  584:	    addbgstatus(pid, val);
+        -:  585:	}
+        -:  586:
+       23:  587:	unqueue_signals();
+        -:  588:    }
+       33:  589:}
+        -:  590:
+        -:  591:/* the signal handler */
+        -:  592: 
+        -:  593:/**/
+        -:  594:mod_export void
+       33:  595:zhandler(int sig)
+        -:  596:{
+        -:  597:    sigset_t newmask, oldmask;
+        -:  598:
+        -:  599:#if defined(NO_SIGNAL_BLOCKING)
+        -:  600:    int do_jump;
+        -:  601:    signal_jmp_buf jump_to;
+        -:  602:#endif
+        -:  603: 
+       33:  604:    last_signal = sig;
+        -:  605:    signal_process(sig);
+        -:  606: 
+       33:  607:    sigfillset(&newmask);
+        -:  608:    /* Block all signals temporarily           */
+       33:  609:    oldmask = signal_block(newmask);
+        -:  610: 
+        -:  611:#if defined(NO_SIGNAL_BLOCKING)
+        -:  612:    /* do we need to longjmp to signal_suspend */
+        -:  613:    do_jump = suspend_longjmp;
+        -:  614:    /* In case a SIGCHLD somehow arrives       */
+        -:  615:    suspend_longjmp = 0;
+        -:  616:
+        -:  617:    /* Traps can cause nested signal_suspend()  */
+        -:  618:    if (sig == SIGCHLD) {
+        -:  619:        if (do_jump) {
+        -:  620:	    /* Copy suspend_jmp_buf                    */
+        -:  621:            jump_to = suspend_jmp_buf;
+        -:  622:	}
+        -:  623:    }
+        -:  624:#endif
+        -:  625:
+        -:  626:    /* Are we queueing signals now?      */
+       33:  627:    if (queueing_enabled) {
+    #####:  628:        int temp_rear = ++queue_rear % MAX_QUEUE_SIZE;
+        -:  629:
+        -:  630:	DPUTS(temp_rear == queue_front, "BUG: signal queue full");
+        -:  631:	/* Make sure it's not full (extremely unlikely) */
+    #####:  632:        if (temp_rear != queue_front) {
+        -:  633:	    /* ok, not full, so add to queue   */
+    #####:  634:            queue_rear = temp_rear;
+        -:  635:	    /* save signal caught              */
+    #####:  636:            signal_queue[queue_rear] = sig;
+        -:  637:	    /* save current signal mask        */
+    #####:  638:            signal_mask_queue[queue_rear] = oldmask;
+        -:  639:        }
+        -:  640:        signal_reset(sig);
+    #####:  641:        return;
+        -:  642:    }
+        -:  643: 
+        -:  644:    /* Reset signal mask, signal traps ok now */
+       33:  645:    signal_setmask(oldmask);
+        -:  646: 
+       33:  647:    switch (sig) {
+       33:  648:    case SIGCHLD:
+       33:  649:	wait_for_processes();
+       33:  650:        break;
+        -:  651: 
+    #####:  652:    case SIGPIPE:
+    #####:  653:	if (!handletrap(SIGPIPE)) {
+    #####:  654:	    if (!interact)
+    #####:  655:		_exit(SIGPIPE);
+    #####:  656:	    else if (!isatty(SHTTY)) {
+    #####:  657:		stopmsg = 1;
+    #####:  658:		zexit(SIGPIPE, ZEXIT_SIGNAL);
+        -:  659:	    }
+        -:  660:	}
+    #####:  661:	break;
+        -:  662:
+    #####:  663:    case SIGHUP:
+    #####:  664:        if (!handletrap(SIGHUP)) {
+    #####:  665:            stopmsg = 1;
+    #####:  666:            zexit(SIGHUP, ZEXIT_SIGNAL);
+        -:  667:        }
+    #####:  668:        break;
+        -:  669: 
+    #####:  670:    case SIGINT:
+    #####:  671:        if (!handletrap(SIGINT)) {
+    #####:  672:	    if ((isset(PRIVILEGED) || isset(RESTRICTED)) &&
+    #####:  673:		isset(INTERACTIVE) && (noerrexit & NOERREXIT_SIGNAL))
+    #####:  674:		zexit(SIGINT, ZEXIT_SIGNAL);
+    #####:  675:            errflag |= ERRFLAG_INT;
+    #####:  676:            if (list_pipe || chline || simple_pline) {
+    #####:  677:                breaks = loops;
+    #####:  678:		inerrflush();
+    #####:  679:		check_cursh_sig(SIGINT);
+        -:  680:            }
+    #####:  681:	    lastval = 128 + SIGINT;
+        -:  682:        }
+    #####:  683:        break;
+        -:  684:
+        -:  685:#ifdef SIGWINCH
+    #####:  686:    case SIGWINCH:
+    #####:  687:        adjustwinsize(1);  /* check window size and adjust */
+    #####:  688:	(void) handletrap(SIGWINCH);
+    #####:  689:        break;
+        -:  690:#endif
+        -:  691:
+    #####:  692:    case SIGALRM:
+    #####:  693:        if (!handletrap(SIGALRM)) {
+    #####:  694:	    int idle = ttyidlegetfn(NULL);
+    #####:  695:	    int tmout = getiparam("TMOUT");
+    #####:  696:	    if (idle >= 0 && idle < tmout)
+    #####:  697:		alarm(tmout - idle);
+        -:  698:	    else {
+        -:  699:		/*
+        -:  700:		 * We want to exit now.
+        -:  701:		 * Cancel all errors, including a user interrupt
+        -:  702:		 * which is now redundant.
+        -:  703:		 */
+    #####:  704:		errflag = noerrs = 0;
+    #####:  705:		zwarn("timeout");
+    #####:  706:		stopmsg = 1;
+    #####:  707:		zexit(SIGALRM, ZEXIT_SIGNAL);
+        -:  708:	    }
+        -:  709:        }
+    #####:  710:        break;
+        -:  711: 
+    #####:  712:    default:
+    #####:  713:        (void) handletrap(sig);
+    #####:  714:        break;
+        -:  715:    }   /* end of switch(sig) */
+        -:  716: 
+        -:  717:    signal_reset(sig);
+        -:  718:
+        -:  719:/* This is used to make signal_suspend() race-free */
+        -:  720:#if defined(NO_SIGNAL_BLOCKING)
+        -:  721:    if (do_jump)
+        -:  722:        signal_longjmp(jump_to, 1);
+        -:  723:#endif
+        -:  724:
+        -:  725:} /* handler */
+        -:  726:
+        -:  727: 
+        -:  728:/* SIGHUP any jobs left running */
+        -:  729: 
+        -:  730:/**/
+        -:  731:void
+    #####:  732:killrunjobs(int from_signal)
+        -:  733:{
+    #####:  734:    int i, killed = 0;
+        -:  735: 
+    #####:  736:    if (unset(HUP))
+    #####:  737:        return;
+    #####:  738:    for (i = 1; i <= maxjob; i++)
+    #####:  739:        if ((from_signal || i != thisjob) && (jobtab[i].stat & STAT_LOCKED) &&
+    #####:  740:            !(jobtab[i].stat & STAT_NOPRINT) &&
+    #####:  741:            !(jobtab[i].stat & STAT_STOPPED)) {
+    #####:  742:            if (jobtab[i].gleader != getpid() &&
+    #####:  743:		killpg(jobtab[i].gleader, SIGHUP) != -1)
+    #####:  744:                killed++;
+        -:  745:        }
+    #####:  746:    if (killed)
+    #####:  747:        zwarn("warning: %d jobs SIGHUPed", killed);
+        -:  748:}
+        -:  749:
+        -:  750:
+        -:  751:/* send a signal to a job (simply involves kill if monitoring is on) */
+        -:  752: 
+        -:  753:/**/
+        -:  754:int
+    #####:  755:killjb(Job jn, int sig)
+        -:  756:{
+        -:  757:    Process pn;
+    #####:  758:    int err = 0;
+        -:  759:
+    #####:  760:    if (jobbing) {
+    #####:  761:        if (jn->stat & STAT_SUPERJOB) {
+    #####:  762:            if (sig == SIGCONT) {
+    #####:  763:                for (pn = jobtab[jn->other].procs; pn; pn = pn->next)
+    #####:  764:                    if (killpg(pn->pid, sig) == -1)
+    #####:  765:			if (kill(pn->pid, sig) == -1 && errno != ESRCH)
+    #####:  766:			    err = -1;
+        -:  767:
+        -:  768:		/*
+        -:  769:		 * Note this does not kill the last process,
+        -:  770:		 * which is assumed to be the one controlling the
+        -:  771:		 * subjob, i.e. the forked zsh that was originally
+        -:  772:		 * list_pipe_pid...
+        -:  773:		 */
+    #####:  774:                for (pn = jn->procs; pn->next; pn = pn->next)
+    #####:  775:                    if (kill(pn->pid, sig) == -1 && errno != ESRCH)
+    #####:  776:			err = -1;
+        -:  777:
+        -:  778:		/*
+        -:  779:		 * ...we only continue that once the external processes
+        -:  780:		 * currently associated with the subjob are finished.
+        -:  781:		 */
+    #####:  782:		if (!jobtab[jn->other].procs && pn)
+    #####:  783:		    if (kill(pn->pid, sig) == -1 && errno != ESRCH)
+    #####:  784:			err = -1;
+        -:  785:
+        -:  786:		/*
+        -:  787:		 * The following marks both the superjob and subjob
+        -:  788:		 * as running, as done elsewhere.
+        -:  789:		 *
+        -:  790:		 * It's not entirely clear to me what the right way
+        -:  791:		 * to flag the status of a still-pausd final process,
+        -:  792:		 * as handled above, but we should be cnsistent about
+        -:  793:		 * this inside makerunning() rather than doing anything
+        -:  794:		 * special here.
+        -:  795:		 */
+    #####:  796:		if (err != -1)
+    #####:  797:		    makerunning(jn);
+        -:  798:
+    #####:  799:		return err;
+        -:  800:            }
+    #####:  801:            if (killpg(jobtab[jn->other].gleader, sig) == -1 && errno != ESRCH)
+    #####:  802:		err = -1;
+        -:  803:
+    #####:  804:	    if (killpg(jn->gleader, sig) == -1 && errno != ESRCH)
+    #####:  805:		err = -1;
+        -:  806:
+    #####:  807:	    return err;
+        -:  808:        }
+        -:  809:        else {
+    #####:  810:	    err = killpg(jn->gleader, sig);
+    #####:  811:	    if (sig == SIGCONT && err != -1)
+    #####:  812:		makerunning(jn);
+    #####:  813:	    return err;
+        -:  814:	}
+        -:  815:    }
+    #####:  816:    for (pn = jn->procs; pn; pn = pn->next) {
+        -:  817:	/*
+        -:  818:	 * Do not kill this job's process if it's already dead as its
+        -:  819:	 * pid could have been reused by the system.
+        -:  820:	 * As the PID doesn't exist don't return an error.
+        -:  821:	 */
+    #####:  822:	if (pn->status == SP_RUNNING || WIFSTOPPED(pn->status)) {
+        -:  823:	    /*
+        -:  824:	     * kill -0 on a job is pointless. We still call kill() for each process
+        -:  825:	     * in case the user cares about it but we ignore its outcome.
+        -:  826:	     */
+    #####:  827:	    if ((err = kill(pn->pid, sig)) == -1 && errno != ESRCH && sig != 0)
+    #####:  828:		return -1;
+        -:  829:	}
+        -:  830:    }
+    #####:  831:    return err;
+        -:  832:}
+        -:  833:
+        -:  834:/*
+        -:  835: * List for saving traps.  We don't usually have that many traps
+        -:  836: * at once, so just use a linked list.
+        -:  837: */
+        -:  838:struct savetrap {
+        -:  839:    int sig, flags, local, posix;
+        -:  840:    void *list;
+        -:  841:};
+        -:  842:
+        -:  843:static LinkList savetraps;
+        -:  844:static int dontsavetrap;
+        -:  845:
+        -:  846:/*
+        -:  847: * Save the current trap by copying it.  This does nothing to
+        -:  848: * the existing value of sigtrapped or siglists.
+        -:  849: */
+        -:  850:
+        -:  851:static void
+      310:  852:dosavetrap(int sig, int level)
+        -:  853:{
+        -:  854:    struct savetrap *st;
+      310:  855:    st = (struct savetrap *)zalloc(sizeof(*st));
+      310:  856:    st->sig = sig;
+      310:  857:    st->local = level;
+      310:  858:    st->posix = (sig == SIGEXIT) ? exit_trap_posix : 0;
+      310:  859:    if ((st->flags = sigtrapped[sig]) & ZSIG_FUNC) {
+        -:  860:	/*
+        -:  861:	 * Get the old function: this assumes we haven't added
+        -:  862:	 * the new one yet.
+        -:  863:	 */
+    #####:  864:	Shfunc shf, newshf = NULL;
+    #####:  865:	if ((shf = (Shfunc)gettrapnode(sig, 1))) {
+        -:  866:	    /* Copy the node for saving */
+    #####:  867:	    newshf = (Shfunc) zshcalloc(sizeof(*newshf));
+    #####:  868:	    newshf->node.nam = ztrdup(shf->node.nam);
+    #####:  869:	    newshf->node.flags = shf->node.flags;
+    #####:  870:	    newshf->funcdef = dupeprog(shf->funcdef, 0);
+    #####:  871:	    if (shf->node.flags & PM_LOADDIR) {
+    #####:  872:		dircache_set(&newshf->filename, shf->filename);
+        -:  873:	    } else {
+    #####:  874:		newshf->filename = ztrdup(shf->filename);
+        -:  875:	    }
+    #####:  876:	    if (shf->sticky) {
+    #####:  877:		newshf->sticky = sticky_emulation_dup(shf->sticky, 0);
+        -:  878:	    } else
+    #####:  879:		newshf->sticky = 0;
+    #####:  880:	    if (shf->node.flags & PM_UNDEFINED)
+    #####:  881:		newshf->funcdef->shf = newshf;
+        -:  882:	}
+        -:  883:#ifdef DEBUG
+        -:  884:	else dputs("BUG: no function present with function trap flag set.");
+        -:  885:#endif
+        -:  886:	DPUTS(siglists[sig], "BUG: function signal has eval list, too.");
+    #####:  887:	st->list = newshf;
+      310:  888:    } else if (sigtrapped[sig]) {
+    #####:  889:	st->list = siglists[sig] ? dupeprog(siglists[sig], 0) : NULL;
+        -:  890:    } else {
+        -:  891:	DPUTS(siglists[sig], "BUG: siglists not null for untrapped signal");
+      310:  892:	st->list = NULL;
+        -:  893:    }
+      310:  894:    if (!savetraps)
+       10:  895:	savetraps = znewlinklist();
+        -:  896:    /*
+        -:  897:     * Put this at the front of the list
+        -:  898:     */
+      310:  899:    zinsertlinknode(savetraps, (LinkNode)savetraps, st);
+      310:  900:}
+        -:  901:
+        -:  902:
+        -:  903:/*
+        -:  904: * Set a trap:  note this does not handle manipulation of
+        -:  905: * the function table for TRAPNAL functions.
+        -:  906: *
+        -:  907: * sig is the signal number.
+        -:  908: *
+        -:  909: * l is the list to be eval'd for a trap defined with the "trap"
+        -:  910: * builtin and should be NULL for a function trap.
+        -:  911: *
+        -:  912: * flags includes any additional flags to be or'd into sigtrapped[sig],
+        -:  913: * in particular ZSIG_FUNC; the basic flags will be assigned within
+        -:  914: * settrap.
+        -:  915: */
+        -:  916:
+        -:  917:/**/
+        -:  918:mod_export int
+    #####:  919:settrap(int sig, Eprog l, int flags)
+        -:  920:{
+    #####:  921:    if (sig == -1)
+    #####:  922:        return 1;
+    #####:  923:    if (jobbing && (sig == SIGTTOU || sig == SIGTSTP || sig == SIGTTIN)) {
+    #####:  924:        zerr("can't trap SIG%s in interactive shells", sigs[sig]);
+    #####:  925:        return 1;
+        -:  926:    }
+        -:  927:
+        -:  928:    /*
+        -:  929:     * Call unsettrap() unconditionally, to make sure trap is saved
+        -:  930:     * if necessary.
+        -:  931:     */
+    #####:  932:    queue_signals();
+    #####:  933:    unsettrap(sig);
+        -:  934:
+        -:  935:    DPUTS((flags & ZSIG_FUNC) && l,
+        -:  936:	  "BUG: trap function has passed eval list, too");
+    #####:  937:    siglists[sig] = l;
+    #####:  938:    if (!(flags & ZSIG_FUNC) && empty_eprog(l)) {
+    #####:  939:	sigtrapped[sig] = ZSIG_IGNORED;
+    #####:  940:        if (sig && sig <= SIGCOUNT &&
+        -:  941:#ifdef SIGWINCH
+    #####:  942:            sig != SIGWINCH &&
+        -:  943:#endif
+        -:  944:            sig != SIGCHLD)
+    #####:  945:            signal_ignore(sig);
+        -:  946:    } else {
+    #####:  947:	nsigtrapped++;
+    #####:  948:        sigtrapped[sig] = ZSIG_TRAPPED;
+    #####:  949:        if (sig && sig <= SIGCOUNT &&
+        -:  950:#ifdef SIGWINCH
+    #####:  951:            sig != SIGWINCH &&
+        -:  952:#endif
+        -:  953:            sig != SIGCHLD)
+    #####:  954:            install_handler(sig);
+        -:  955:    }
+    #####:  956:    sigtrapped[sig] |= flags;
+        -:  957:    /*
+        -:  958:     * Note that introducing the locallevel does not affect whether
+        -:  959:     * sigtrapped[sig] is zero or not, i.e. a test without a mask
+        -:  960:     * works just the same.
+        -:  961:     */
+    #####:  962:    if (sig == SIGEXIT) {
+        -:  963:	/* Make POSIX behaviour of EXIT trap sticky */
+    #####:  964:	exit_trap_posix = isset(POSIXTRAPS);
+        -:  965:	/* POSIX exit traps are not local. */
+    #####:  966:	if (!exit_trap_posix)
+    #####:  967:	    sigtrapped[sig] |= (locallevel << ZSIG_SHIFT);
+        -:  968:    }
+        -:  969:    else
+    #####:  970:	sigtrapped[sig] |= (locallevel << ZSIG_SHIFT);
+    #####:  971:    unqueue_signals();
+    #####:  972:    return 0;
+        -:  973:}
+        -:  974:
+        -:  975:/**/
+        -:  976:void
+      310:  977:unsettrap(int sig)
+        -:  978:{
+        -:  979:    HashNode hn;
+        -:  980:
+      310:  981:    queue_signals();
+      310:  982:    hn = removetrap(sig);
+      310:  983:    if (hn)
+    #####:  984:	shfunctab->freenode(hn);
+      310:  985:    unqueue_signals();
+      310:  986:}
+        -:  987:
+        -:  988:/**/
+        -:  989:HashNode
+      310:  990:removetrap(int sig)
+        -:  991:{
+        -:  992:    int trapped;
+        -:  993:
+      620:  994:    if (sig == -1 ||
+      310:  995:	(jobbing && (sig == SIGTTOU || sig == SIGTSTP || sig == SIGTTIN)))
+    #####:  996:	return NULL;
+        -:  997:
+      310:  998:    queue_signals();
+      310:  999:    trapped = sigtrapped[sig];
+        -: 1000:    /*
+        -: 1001:     * Note that we save the trap here even if there isn't an existing
+        -: 1002:     * one, to aid in removing this one.  However, if there's
+        -: 1003:     * already one at the current locallevel we just overwrite it.
+        -: 1004:     *
+        -: 1005:     * Note we save EXIT traps based on the *current* setting of
+        -: 1006:     * POSIXTRAPS --- so if there is POSIX EXIT trap set but
+        -: 1007:     * we are in native mode it can be saved, replaced by a function
+        -: 1008:     * trap, and then restored.
+        -: 1009:     */
+      620: 1010:    if (!dontsavetrap &&
+      620: 1011:	(sig == SIGEXIT ? !isset(POSIXTRAPS) : isset(LOCALTRAPS)) &&
+      310: 1012:	locallevel &&
+    #####: 1013:	(!trapped || locallevel > (sigtrapped[sig] >> ZSIG_SHIFT)))
+      310: 1014:	dosavetrap(sig, locallevel);
+        -: 1015:
+      310: 1016:    if (sigtrapped[sig] & ZSIG_TRAPPED)
+    #####: 1017:	nsigtrapped--;
+      310: 1018:    sigtrapped[sig] = 0;
+      310: 1019:    if (sig == SIGINT && interact) {
+        -: 1020:	/* PWS 1995/05/16:  added test for interactive, also noholdintr() *
+        -: 1021:	 * as subshells ignoring SIGINT have it blocked from delivery     */
+    #####: 1022:        intr();
+    #####: 1023:	noholdintr();
+      310: 1024:    } else if (sig == SIGHUP)
+       10: 1025:        install_handler(sig);
+      300: 1026:    else if (sig == SIGPIPE && interact && !forklevel)
+    #####: 1027:        install_handler(sig);
+      300: 1028:    else if (sig && sig <= SIGCOUNT &&
+        -: 1029:#ifdef SIGWINCH
+      280: 1030:             sig != SIGWINCH &&
+        -: 1031:#endif
+        -: 1032:             sig != SIGCHLD)
+      270: 1033:        signal_default(sig);
+      310: 1034:    if (sig == SIGEXIT)
+       10: 1035:	exit_trap_posix = 0;
+        -: 1036:
+        -: 1037:    /*
+        -: 1038:     * At this point we free the appropriate structs.  If we don't
+        -: 1039:     * want that to happen then either the function should already have been
+        -: 1040:     * removed from shfunctab, or the entry in siglists should have been set
+        -: 1041:     * to NULL.  This is no longer necessary for saving traps as that
+        -: 1042:     * copies the structures, so here we are remove the originals.
+        -: 1043:     * That causes a little inefficiency, but a good deal more reliability.
+        -: 1044:     */
+      310: 1045:    if (trapped & ZSIG_FUNC) {
+    #####: 1046:	HashNode node = gettrapnode(sig, 1);
+        -: 1047:
+        -: 1048:	/*
+        -: 1049:	 * As in dosavetrap(), don't call removeshfuncnode() because
+        -: 1050:	 * that calls back into unsettrap();
+        -: 1051:	 */
+    #####: 1052:	if (node)
+    #####: 1053:	    removehashnode(shfunctab, node->nam);
+    #####: 1054:	unqueue_signals();
+        -: 1055:
+    #####: 1056:	return node;
+      310: 1057:    } else if (siglists[sig]) {
+    #####: 1058:	freeeprog(siglists[sig]);
+    #####: 1059:	siglists[sig] = NULL;
+        -: 1060:    }
+      310: 1061:    unqueue_signals();
+        -: 1062:
+      310: 1063:    return NULL;
+        -: 1064:}
+        -: 1065:
+        -: 1066:/**/
+        -: 1067:void
+      218: 1068:starttrapscope(void)
+        -: 1069:{
+        -: 1070:    /* No special SIGEXIT behaviour inside another trap. */
+      218: 1071:    if (intrap)
+    #####: 1072:	return;
+        -: 1073:
+        -: 1074:    /*
+        -: 1075:     * SIGEXIT needs to be restored at the current locallevel,
+        -: 1076:     * so give it the next higher one. dosavetrap() is called
+        -: 1077:     * automatically where necessary.
+        -: 1078:     */
+      218: 1079:    if (sigtrapped[SIGEXIT] && !exit_trap_posix) {
+    #####: 1080:	locallevel++;
+    #####: 1081:	unsettrap(SIGEXIT);
+    #####: 1082:	locallevel--;
+        -: 1083:    }
+        -: 1084:}
+        -: 1085:
+        -: 1086:/*
+        -: 1087: * Reset traps after the end of a function: must be called after
+        -: 1088: * endparamscope() so that the locallevel has been decremented.
+        -: 1089: */
+        -: 1090:
+        -: 1091:/**/
+        -: 1092:void
+      218: 1093:endtrapscope(void)
+        -: 1094:{
+        -: 1095:    LinkNode ln;
+        -: 1096:    struct savetrap *st;
+      218: 1097:    int exittr = 0;
+      218: 1098:    void *exitfn = NULL;
+        -: 1099:
+        -: 1100:    /*
+        -: 1101:     * Remember the exit trap, but don't run it until
+        -: 1102:     * after all the other traps have been put back.
+        -: 1103:     * Don't do this inside another trap.
+        -: 1104:     */
+      436: 1105:    if (!intrap &&
+      436: 1106:	!exit_trap_posix && (exittr = sigtrapped[SIGEXIT])) {
+    #####: 1107:	if (exittr & ZSIG_FUNC) {
+    #####: 1108:	    exitfn = removehashnode(shfunctab, "TRAPEXIT");
+        -: 1109:	} else {
+    #####: 1110:	    exitfn = siglists[SIGEXIT];
+    #####: 1111:	    siglists[SIGEXIT] = NULL;
+        -: 1112:	}
+    #####: 1113:	if (sigtrapped[SIGEXIT] & ZSIG_TRAPPED)
+    #####: 1114:	    nsigtrapped--;
+    #####: 1115:	sigtrapped[SIGEXIT] = 0;
+        -: 1116:    }
+        -: 1117:
+      218: 1118:    if (savetraps) {
+    #####: 1119:	while ((ln = firstnode(savetraps)) &&
+    #####: 1120:	       (st = (struct savetrap *) ln->dat) &&
+    #####: 1121:	       st->local > locallevel) {
+    #####: 1122:	    int sig = st->sig;
+        -: 1123:
+    #####: 1124:	    remnode(savetraps, ln);
+        -: 1125:
+    #####: 1126:	    if (st->flags && (st->list != NULL)) {
+        -: 1127:		/* prevent settrap from saving this */
+    #####: 1128:		dontsavetrap++;
+    #####: 1129:		if (st->flags & ZSIG_FUNC)
+    #####: 1130:		    settrap(sig, NULL, ZSIG_FUNC);
+        -: 1131:		else
+    #####: 1132:			settrap(sig, (Eprog) st->list, 0);
+    #####: 1133:		if (sig == SIGEXIT)
+    #####: 1134:		    exit_trap_posix = st->posix;
+    #####: 1135:		dontsavetrap--;
+        -: 1136:		/*
+        -: 1137:		 * counting of nsigtrapped should presumably be handled
+        -: 1138:		 * in settrap...
+        -: 1139:		 */
+        -: 1140:		DPUTS((sigtrapped[sig] ^ st->flags) & ZSIG_TRAPPED,
+        -: 1141:		      "BUG: settrap didn't restore correct ZSIG_TRAPPED");
+    #####: 1142:		if ((sigtrapped[sig] = st->flags) & ZSIG_FUNC)
+    #####: 1143:		    shfunctab->addnode(shfunctab, ((Shfunc)st->list)->node.nam,
+        -: 1144:				       (Shfunc) st->list);
+    #####: 1145:	    } else if (sigtrapped[sig]) {
+        -: 1146:		/*
+        -: 1147:		 * Don't restore the old state if someone has set a
+        -: 1148:		 * POSIX-style exit trap --- allow this to propagate.
+        -: 1149:		 */
+    #####: 1150:		if (sig != SIGEXIT || !exit_trap_posix)
+    #####: 1151:		    unsettrap(sig);
+        -: 1152:	    }
+        -: 1153:
+    #####: 1154:	    zfree(st, sizeof(*st));
+        -: 1155:	}
+        -: 1156:    }
+        -: 1157:
+      218: 1158:    if (exittr) {
+        -: 1159:	/*
+        -: 1160:	 * We already made sure this wasn't set as a POSIX exit trap.
+        -: 1161:	 * We respect the user's intention when the trap in question
+        -: 1162:	 * was set.
+        -: 1163:	 */
+    #####: 1164:	dotrapargs(SIGEXIT, &exittr, exitfn);
+    #####: 1165:	if (exittr & ZSIG_FUNC)
+    #####: 1166:	    shfunctab->freenode((HashNode)exitfn);
+        -: 1167:	else
+    #####: 1168:	    freeeprog(exitfn);
+        -: 1169:    }
+        -: 1170:    DPUTS(!locallevel && savetraps && firstnode(savetraps),
+        -: 1171:	  "BUG: still saved traps outside all function scope");
+      218: 1172:}
+        -: 1173:
+        -: 1174:
+        -: 1175:/*
+        -: 1176: * Decide whether a trap needs handling.
+        -: 1177: * If so, see if the trap should be run now or queued.
+        -: 1178: * Return 1 if the trap has been or will be handled.
+        -: 1179: * This only needs to be called in place of dotrap() in the
+        -: 1180: * signal handler, since it's only while waiting for children
+        -: 1181: * to exit that we queue traps.
+        -: 1182: */
+        -: 1183:/**/
+        -: 1184:static int
+    #####: 1185:handletrap(int sig)
+        -: 1186:{
+    #####: 1187:    if (!sigtrapped[sig])
+    #####: 1188:	return 0;
+        -: 1189:
+    #####: 1190:    if (trap_queueing_enabled)
+        -: 1191:    {
+        -: 1192:	/* Code borrowed from signal queueing */
+    #####: 1193:	int temp_rear = ++trap_queue_rear % MAX_QUEUE_SIZE;
+        -: 1194:
+        -: 1195:	DPUTS(temp_rear == trap_queue_front, "BUG: trap queue full");
+        -: 1196:	/* If queue is not full... */
+    #####: 1197:	if (temp_rear != trap_queue_front) {
+    #####: 1198:	    trap_queue_rear = temp_rear;
+    #####: 1199:	    trap_queue[trap_queue_rear] = sig;
+        -: 1200:	}
+    #####: 1201:	return 1;
+        -: 1202:    }
+        -: 1203:
+    #####: 1204:    dotrap(sig);
+        -: 1205:
+    #####: 1206:    if (sig == SIGALRM)
+        -: 1207:    {
+        -: 1208:	int tmout;
+        -: 1209:	/*
+        -: 1210:	 * Reset the alarm.
+        -: 1211:	 * It seems slightly more natural to do this when the
+        -: 1212:	 * trap is run, rather than when it's queued, since
+        -: 1213:	 * the user doesn't see the latter.
+        -: 1214:	 */
+    #####: 1215:	if ((tmout = getiparam("TMOUT")))
+    #####: 1216:	    alarm(tmout);
+        -: 1217:    }
+        -: 1218:
+    #####: 1219:    return 1;
+        -: 1220:}
+        -: 1221:
+        -: 1222:
+        -: 1223:/*
+        -: 1224: * Queue traps if they shouldn't be run asynchronously, i.e.
+        -: 1225: * we're not in the wait builtin and TRAPSASYNC isn't set, when
+        -: 1226: * waiting for children to exit.
+        -: 1227: *
+        -: 1228: * Note that unlike signal queuing this should only be called
+        -: 1229: * in single matching pairs and can't be nested.  It is
+        -: 1230: * only needed when waiting for a job or process to finish.
+        -: 1231: *
+        -: 1232: * There is presumably a race setting this up: we shouldn't be running
+        -: 1233: * traps between forking a foreground process and this point, either.
+        -: 1234: */
+        -: 1235:/**/
+        -: 1236:void
+       33: 1237:queue_traps(int wait_cmd)
+        -: 1238:{
+       33: 1239:    if (!isset(TRAPSASYNC) && !wait_cmd) {
+        -: 1240:	/*
+        -: 1241:	 * Traps need to be handled synchronously, so
+        -: 1242:	 * enable queueing.
+        -: 1243:	 */
+       33: 1244:	trap_queueing_enabled = 1;
+        -: 1245:    }
+       33: 1246:}
+        -: 1247:
+        -: 1248:
+        -: 1249:/*
+        -: 1250: * Disable trap queuing and run the traps.
+        -: 1251: */
+        -: 1252:/**/
+        -: 1253:void
+       33: 1254:unqueue_traps(void)
+        -: 1255:{
+       33: 1256:    trap_queueing_enabled = 0;
+       66: 1257:    while (trap_queue_front != trap_queue_rear) {
+    #####: 1258:	trap_queue_front = (trap_queue_front + 1) % MAX_QUEUE_SIZE;
+    #####: 1259:	(void) handletrap(trap_queue[trap_queue_front]);
+        -: 1260:    }
+       33: 1261:}
+        -: 1262:
+        -: 1263:
+        -: 1264:/* Execute a trap function for a given signal, possibly
+        -: 1265: * with non-standard sigtrapped & siglists values
+        -: 1266: */
+        -: 1267:
+        -: 1268:/* Are we already executing a trap? */
+        -: 1269:/**/
+        -: 1270:volatile int intrap;
+        -: 1271:
+        -: 1272:/* Is the current trap a function? */
+        -: 1273:
+        -: 1274:/**/
+        -: 1275:volatile int trapisfunc;
+        -: 1276:
+        -: 1277:/*
+        -: 1278: * If the current trap is not a function, at what function depth
+        -: 1279: * did the trap get called?
+        -: 1280: */
+        -: 1281:/**/
+        -: 1282:volatile int traplocallevel;
+        -: 1283:
+        -: 1284:/*
+        -: 1285: * sig is the signal number.
+        -: 1286: * *sigtr is the value to be taken as the field in sigtrapped (since
+        -: 1287: *   that may have changed by this point if we are exiting).
+        -: 1288: * sigfn is an Eprog with a non-function eval list, or a Shfunc
+        -: 1289: *   with a function trap.  It may be NULL with an ignored signal.
+        -: 1290: */
+        -: 1291:
+        -: 1292:/**/
+        -: 1293:static void
+    #####: 1294:dotrapargs(int sig, int *sigtr, void *sigfn)
+        -: 1295:{
+        -: 1296:    LinkList args;
+        -: 1297:    char *name, num[4];
+    #####: 1298:    int obreaks = breaks;
+    #####: 1299:    int oretflag = retflag;
+    #####: 1300:    int olastval = lastval;
+        -: 1301:    int isfunc;
+        -: 1302:    int traperr, new_trap_state, new_trap_return;
+        -: 1303:
+        -: 1304:    /* if signal is being ignored or the trap function		      *
+        -: 1305:     * is NULL, then return					      *
+        -: 1306:     *								      *
+        -: 1307:     * Also return if errflag is set.  In fact, the code in the       *
+        -: 1308:     * function will test for this, but this way we keep status flags *
+        -: 1309:     * intact without working too hard.  Special cases (e.g. calling  *
+        -: 1310:     * a trap for SIGINT after the error flag was set) are handled    *
+        -: 1311:     * by the calling code.  (PWS 1995/06/08).			      *
+        -: 1312:     *                                                                *
+        -: 1313:     * This test is now replicated in dotrap().                       */
+    #####: 1314:    if ((*sigtr & ZSIG_IGNORED) || !sigfn || errflag)
+    #####: 1315:        return;
+        -: 1316:
+        -: 1317:    /*
+        -: 1318:     * Never execute special (synchronous) traps inside other traps.
+        -: 1319:     * This can cause unexpected code execution when more than one
+        -: 1320:     * of these is set.
+        -: 1321:     *
+        -: 1322:     * The down side is that it's harder to debug traps.  I don't think
+        -: 1323:     * that's a big issue.
+        -: 1324:     */
+    #####: 1325:    if (intrap) {
+    #####: 1326:	switch (sig) {
+    #####: 1327:	case SIGEXIT:
+        -: 1328:	case SIGDEBUG:
+        -: 1329:	case SIGZERR:
+    #####: 1330:	    return;
+        -: 1331:	}
+        -: 1332:    }
+        -: 1333:
+    #####: 1334:    queue_signals();	/* Any time we manage memory or global state */
+        -: 1335:
+    #####: 1336:    intrap++;
+    #####: 1337:    *sigtr |= ZSIG_IGNORED;
+        -: 1338:
+    #####: 1339:    zcontext_save();
+        -: 1340:    /* execsave will save the old trap_return and trap_state */
+    #####: 1341:    execsave();
+    #####: 1342:    breaks = retflag = 0;
+    #####: 1343:    traplocallevel = locallevel;
+    #####: 1344:    runhookdef(BEFORETRAPHOOK, NULL);
+    #####: 1345:    if (*sigtr & ZSIG_FUNC) {
+    #####: 1346:	int osc = sfcontext, old_incompfunc = incompfunc;
+    #####: 1347:	HashNode hn = gettrapnode(sig, 0);
+        -: 1348:
+    #####: 1349:	args = znewlinklist();
+        -: 1350:	/*
+        -: 1351:	 * In case of multiple names, try to get
+        -: 1352:	 * a hint of the name in use from the function table.
+        -: 1353:	 * In special cases, e.g. EXIT traps, the function
+        -: 1354:	 * has already been removed.  Then it's OK to
+        -: 1355:	 * use the standard name.
+        -: 1356:	 */
+    #####: 1357:	if (hn) {
+    #####: 1358:	    name = ztrdup(hn->nam);
+        -: 1359:	} else {
+    #####: 1360:	    name = (char *) zalloc(5 + strlen(sigs[sig]));
+    #####: 1361:	    sprintf(name, "TRAP%s", sigs[sig]);
+        -: 1362:	}
+    #####: 1363:	zaddlinknode(args, name);
+    #####: 1364:	sprintf(num, "%d", sig);
+    #####: 1365:	zaddlinknode(args, num);
+        -: 1366:
+    #####: 1367:	trap_return = -1;	/* incremented by doshfunc */
+    #####: 1368:	trap_state = TRAP_STATE_PRIMED;
+    #####: 1369:	trapisfunc = isfunc = 1;
+        -: 1370:
+    #####: 1371:	sfcontext = SFC_SIGNAL;
+    #####: 1372:	incompfunc = 0;
+    #####: 1373:	doshfunc((Shfunc)sigfn, args, 1);	/* manages signal queueing */
+    #####: 1374:	sfcontext = osc;
+    #####: 1375:	incompfunc= old_incompfunc;
+    #####: 1376:	freelinklist(args, (FreeFunc) NULL);
+    #####: 1377:	zsfree(name);
+        -: 1378:    } else {
+    #####: 1379:	trap_return = -2;	/* not incremented, used at current level */
+    #####: 1380:	trap_state = TRAP_STATE_PRIMED;
+    #####: 1381:	trapisfunc = isfunc = 0;
+        -: 1382:
+    #####: 1383:	execode((Eprog)sigfn, 1, 0, "trap");	/* manages signal queueing */
+        -: 1384:    }
+    #####: 1385:    runhookdef(AFTERTRAPHOOK, NULL);
+        -: 1386:
+    #####: 1387:    traperr = errflag;
+        -: 1388:
+        -: 1389:    /* Grab values before they are restored */
+    #####: 1390:    new_trap_state = trap_state;
+    #####: 1391:    new_trap_return = trap_return;
+        -: 1392:
+    #####: 1393:    execrestore();
+    #####: 1394:    zcontext_restore();
+        -: 1395:
+    #####: 1396:    if (new_trap_state == TRAP_STATE_FORCE_RETURN &&
+        -: 1397:	/* zero return from function isn't special */
+    #####: 1398:	!(isfunc && new_trap_return == 0)) {
+    #####: 1399:	if (isfunc) {
+    #####: 1400:	    breaks = loops;
+        -: 1401:	    /*
+        -: 1402:	     * For SIGINT we behave the same as the default behaviour
+        -: 1403:	     * i.e. we set the error bit indicating an interrupt.
+        -: 1404:	     * We do this with SIGQUIT, too, even though we don't
+        -: 1405:	     * handle SIGQUIT by default.  That's to try to make
+        -: 1406:	     * it behave a bit more like its normal behaviour when
+        -: 1407:	     * the trap handler has told us that's what it wants.
+        -: 1408:	     */
+    #####: 1409:	    if (sig == SIGINT || sig == SIGQUIT)
+    #####: 1410:		errflag |= ERRFLAG_INT;
+        -: 1411:	    else
+    #####: 1412:		errflag |= ERRFLAG_ERROR;
+        -: 1413:	}
+    #####: 1414:	lastval = new_trap_return;
+        -: 1415:	/* return triggered */
+    #####: 1416:	retflag = 1;
+        -: 1417:    } else {
+    #####: 1418:	if (traperr && !EMULATION(EMULATE_SH))
+    #####: 1419:	    lastval = 1;
+        -: 1420:	else {
+        -: 1421:	    /*
+        -: 1422:	     * With no explicit forced return, we keep the
+        -: 1423:	     * lastval from before the trap ran.
+        -: 1424:	     */
+    #####: 1425:	    lastval = olastval;
+        -: 1426:	}
+    #####: 1427:	if (try_tryflag) {
+    #####: 1428:	    if (traperr)
+    #####: 1429:		errflag |= ERRFLAG_ERROR;
+        -: 1430:	    else
+    #####: 1431:		errflag &= ~ERRFLAG_ERROR;
+        -: 1432:	}
+    #####: 1433:	breaks += obreaks;
+        -: 1434:	/* return not triggered: restore old flag */
+    #####: 1435:	retflag = oretflag;
+    #####: 1436:	if (breaks > loops)
+    #####: 1437:	    breaks = loops;
+        -: 1438:    }
+        -: 1439:
+        -: 1440:    /*
+        -: 1441:     * If zle was running while the trap was executed, see if we
+        -: 1442:     * need to restore the display.
+        -: 1443:     */
+    #####: 1444:    if (zleactive && resetneeded)
+    #####: 1445:	zleentry(ZLE_CMD_REFRESH);
+        -: 1446:
+    #####: 1447:    if (*sigtr != ZSIG_IGNORED)
+    #####: 1448:	*sigtr &= ~ZSIG_IGNORED;
+    #####: 1449:    intrap--;
+        -: 1450:
+    #####: 1451:    unqueue_signals();
+        -: 1452:}
+        -: 1453:
+        -: 1454:/* Standard call to execute a trap for a given signal. */
+        -: 1455:
+        -: 1456:/**/
+        -: 1457:void
+    #####: 1458:dotrap(int sig)
+        -: 1459:{
+        -: 1460:    void *funcprog;
+    #####: 1461:    int q = queue_signal_level();
+        -: 1462:
+    #####: 1463:    if (sigtrapped[sig] & ZSIG_FUNC) {
+    #####: 1464:	HashNode hn = gettrapnode(sig, 0);
+    #####: 1465:	if (hn)
+    #####: 1466:	    funcprog = hn;
+        -: 1467:	else {
+        -: 1468:#ifdef DEBUG
+        -: 1469:	    dputs("BUG: running function trap which has escaped.");
+        -: 1470:#endif
+    #####: 1471:	    funcprog = NULL;
+        -: 1472:	}
+        -: 1473:    } else
+    #####: 1474:	funcprog = siglists[sig];
+        -: 1475:
+        -: 1476:    /*
+        -: 1477:     * Copied from dotrapargs().
+        -: 1478:     * (In fact, the gain from duplicating this appears to be virtually
+        -: 1479:     * zero.  Not sure why it's here.)
+        -: 1480:     */
+    #####: 1481:    if ((sigtrapped[sig] & ZSIG_IGNORED) || !funcprog || errflag)
+    #####: 1482:	return;
+        -: 1483:
+    #####: 1484:    dont_queue_signals();
+        -: 1485:
+    #####: 1486:    if (sig == SIGEXIT)
+    #####: 1487:	++in_exit_trap;
+        -: 1488:
+    #####: 1489:    dotrapargs(sig, sigtrapped+sig, funcprog);
+        -: 1490:
+    #####: 1491:    if (sig == SIGEXIT)
+    #####: 1492:	--in_exit_trap;
+        -: 1493:
+    #####: 1494:    restore_queue_signals(q);
+        -: 1495:}

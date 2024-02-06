@@ -1,0 +1,192 @@
+        -:    0:Source:/home/workspace/lint/peglint.cc
+        -:    0:Programs:4
+        -:    1://
+        -:    2://  peglint.cc
+        -:    3://
+        -:    4://  Copyright (c) 2015 Yuji Hirose. All rights reserved.
+        -:    5://  MIT License
+        -:    6://
+        -:    7:
+        -:    8:#include <fstream>
+        -:    9:#include <peglib.h>
+        -:   10:#include <sstream>
+        -:   11:
+        -:   12:using namespace std;
+        -:   13:
+    #####:   14:inline bool read_file(const char *path, vector<char> &buff) {
+    #####:   15:  ifstream ifs(path, ios::in | ios::binary);
+    #####:   16:  if (ifs.fail()) { return false; }
+        -:   17:
+    #####:   18:  buff.resize(static_cast<unsigned int>(ifs.seekg(0, ios::end).tellg()));
+    #####:   19:  if (!buff.empty()) {
+    #####:   20:    ifs.seekg(0, ios::beg).read(&buff[0], static_cast<streamsize>(buff.size()));
+        -:   21:  }
+    #####:   22:  return true;
+        -:   23:}
+        -:   24:
+    #####:   25:inline vector<string> split(const string &s, char delim) {
+    #####:   26:  vector<string> elems;
+    #####:   27:  stringstream ss(s);
+    #####:   28:  string elem;
+    #####:   29:  while (getline(ss, elem, delim)) {
+    #####:   30:    elems.push_back(elem);
+        -:   31:  }
+    #####:   32:  return elems;
+        -:   33:}
+        -:   34:
+    #####:   35:int main(int argc, const char **argv) {
+    #####:   36:  auto opt_ast = false;
+    #####:   37:  auto opt_optimize = false;
+    #####:   38:  auto opt_mode = true;
+    #####:   39:  vector<string> opt_rules;
+    #####:   40:  auto opt_help = false;
+    #####:   41:  auto opt_source = false;
+    #####:   42:  vector<char> source;
+    #####:   43:  auto opt_trace = false;
+    #####:   44:  vector<const char *> path_list;
+        -:   45:
+    #####:   46:  auto argi = 1;
+    #####:   47:  while (argi < argc) {
+    #####:   48:    auto arg = argv[argi++];
+    #####:   49:    if (string("--help") == arg) {
+    #####:   50:      opt_help = true;
+    #####:   51:    } else if (string("--ast") == arg) {
+    #####:   52:      opt_ast = true;
+    #####:   53:    } else if (string("--opt") == arg || string("--opt-all") == arg) {
+    #####:   54:      opt_optimize = true;
+    #####:   55:      opt_mode = true;
+    #####:   56:    } else if (string("--opt-only") == arg) {
+    #####:   57:      opt_optimize = true;
+    #####:   58:      opt_mode = false;
+    #####:   59:    } else if (string("--opt-rules") == arg) {
+    #####:   60:      if (argi < argc) {
+    #####:   61:        std::string s = argv[argi++];
+    #####:   62:        opt_rules = split(s, ',');
+        -:   63:      }
+    #####:   64:    } else if (string("--source") == arg) {
+    #####:   65:      opt_source = true;
+    #####:   66:      if (argi < argc) {
+    #####:   67:        std::string text = argv[argi++];
+    #####:   68:        source.assign(text.begin(), text.end());
+        -:   69:      }
+    #####:   70:    } else if (string("--trace") == arg) {
+    #####:   71:      opt_trace = true;
+        -:   72:    } else {
+    #####:   73:      path_list.push_back(arg);
+        -:   74:    }
+        -:   75:  }
+        -:   76:
+    #####:   77:  if (path_list.empty() || opt_help) {
+    #####:   78:    cerr << "usage: grammar_file_path [source_file_path]" << endl
+    #####:   79:         << endl
+    #####:   80:         << "  options:" << endl
+    #####:   81:         << "    --source: source text" << endl
+    #####:   82:         << "    --ast: show AST tree" << endl
+        -:   83:         << "    --opt, --opt-all: optimaze all AST nodes except nodes "
+        -:   84:            "selected with "
+    #####:   85:            "--opt-rules"
+    #####:   86:         << endl
+    #####:   87:         << "    --opt-only: optimaze only AST nodes selected with --opt-rules"
+    #####:   88:         << endl
+        -:   89:         << "    --opt-rules rules: CSV definition rules to adjust AST "
+    #####:   90:            "optimazation"
+    #####:   91:         << endl
+    #####:   92:         << "    --trace: show trace messages" << endl;
+    #####:   93:    return 1;
+        -:   94:  }
+        -:   95:
+        -:   96:  // Check PEG grammar
+    #####:   97:  auto syntax_path = path_list[0];
+        -:   98:
+    #####:   99:  vector<char> syntax;
+    #####:  100:  if (!read_file(syntax_path, syntax)) {
+    #####:  101:    cerr << "can't open the grammar file." << endl;
+    #####:  102:    return -1;
+        -:  103:  }
+        -:  104:
+    #####:  105:  peg::parser parser;
+        -:  106:
+    #####:  107:  parser.log = [&](size_t ln, size_t col, const string &msg) {
+    #####:  108:    cerr << syntax_path << ":" << ln << ":" << col << ": " << msg << endl;
+    #####:  109:  };
+        -:  110:
+    #####:  111:  if (!parser.load_grammar(syntax.data(), syntax.size())) { return -1; }
+        -:  112:
+    #####:  113:  if (path_list.size() < 2 && !opt_source) { return 0; }
+        -:  114:
+        -:  115:  // Check source
+    #####:  116:  std::string source_path = "[commandline]";
+    #####:  117:  if (path_list.size() >= 2) {
+    #####:  118:    if (!read_file(path_list[1], source)) {
+    #####:  119:      cerr << "can't open the code file." << endl;
+    #####:  120:      return -1;
+        -:  121:    }
+    #####:  122:    source_path = path_list[1];
+        -:  123:  }
+        -:  124:
+    #####:  125:  parser.log = [&](size_t ln, size_t col, const string &msg) {
+    #####:  126:    cerr << source_path << ":" << ln << ":" << col << ": " << msg << endl;
+    #####:  127:  };
+        -:  128:
+    #####:  129:  if (opt_trace) {
+    #####:  130:    size_t prev_pos = 0;
+    #####:  131:    parser.enable_trace(
+        -:  132:        [&](const char *name, const char *s, size_t /*n*/,
+        -:  133:            const peg::SemanticValues & /*sv*/, const peg::Context &c,
+    #####:  134:            const peg::any & /*dt*/) {
+    #####:  135:          auto pos = static_cast<size_t>(s - c.s);
+    #####:  136:          auto backtrack = (pos < prev_pos ? "*" : "");
+    #####:  137:          string indent;
+    #####:  138:          auto level = c.trace_ids.size() - 1;
+    #####:  139:          while (level--) {
+    #####:  140:            indent += "│";
+        -:  141:          }
+    #####:  142:          std::cout << "E " << pos << backtrack << "\t" << indent << "┌" << name
+    #####:  143:                    << " #" << c.trace_ids.back() << std::endl;
+    #####:  144:          prev_pos = static_cast<size_t>(pos);
+    #####:  145:        },
+        -:  146:        [&](const char *name, const char *s, size_t /*n*/,
+        -:  147:            const peg::SemanticValues &sv, const peg::Context &c,
+    #####:  148:            const peg::any & /*dt*/, size_t len) {
+    #####:  149:          auto pos = static_cast<size_t>(s - c.s);
+    #####:  150:          if (len != static_cast<size_t>(-1)) { pos += len; }
+    #####:  151:          string indent;
+    #####:  152:          auto level = c.trace_ids.size() - 1;
+    #####:  153:          while (level--) {
+    #####:  154:            indent += "│";
+        -:  155:          }
+    #####:  156:          auto ret = len != static_cast<size_t>(-1) ? "└o " : "└x ";
+    #####:  157:          std::stringstream choice;
+    #####:  158:          if (sv.choice_count() > 0) {
+    #####:  159:            choice << " " << sv.choice() << "/" << sv.choice_count();
+        -:  160:          }
+    #####:  161:          std::string token;
+    #####:  162:          if (!sv.tokens.empty()) {
+    #####:  163:            const auto &tok = sv.tokens[0];
+    #####:  164:            token += " '" + std::string(tok.first, tok.second) + "'";
+        -:  165:          }
+    #####:  166:          std::cout << "L " << pos << "\t" << indent << ret << name << " #"
+    #####:  167:                    << c.trace_ids.back() << choice.str() << token << std::endl;
+    #####:  168:        });
+        -:  169:  }
+        -:  170:
+    #####:  171:  if (opt_ast) {
+    #####:  172:    parser.enable_ast();
+        -:  173:
+    #####:  174:    std::shared_ptr<peg::Ast> ast;
+    #####:  175:    if (!parser.parse_n(source.data(), source.size(), ast)) { return -1; }
+        -:  176:
+    #####:  177:    if (opt_optimize) {
+    #####:  178:      ast = peg::AstOptimizer(opt_mode, opt_rules).optimize(ast);
+        -:  179:    }
+        -:  180:
+    #####:  181:    std::cout << peg::ast_to_s(ast);
+        -:  182:
+        -:  183:  } else {
+    #####:  184:    if (!parser.parse_n(source.data(), source.size())) { return -1; }
+        -:  185:  }
+        -:  186:
+    #####:  187:  return 0;
+    #####:  188:}
+        -:  189:
+        -:  190:// vim: et ts=4 sw=4 cin cino={1s ff=unix

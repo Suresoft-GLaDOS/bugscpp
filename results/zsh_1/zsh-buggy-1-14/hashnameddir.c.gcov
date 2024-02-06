@@ -1,0 +1,309 @@
+        -:    0:Source:hashnameddir.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * hashtable.c - hash tables
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "../config.h"
+        -:   31:
+        -:   32:/*
+        -:   33: * On Solaris 8 there's a clash between "bool" in curses and RPC.
+        -:   34: * We don't need curses here, so ensure it doesn't get included.
+        -:   35: */
+        -:   36:#define ZSH_NO_TERM_HANDLING
+        -:   37:
+        -:   38:#include "zsh.mdh"
+        -:   39:#include "hashnameddir.pro"
+        -:   40:
+        -:   41:/****************************************/
+        -:   42:/* Named Directory Hash Table Functions */
+        -:   43:/****************************************/
+        -:   44:
+        -:   45:#ifdef HAVE_NIS_PLUS
+        -:   46:# include <rpcsvc/nis.h>
+        -:   47:#else
+        -:   48:# ifdef HAVE_NIS
+        -:   49:#  include	<rpc/types.h>
+        -:   50:#  include	<rpc/rpc.h>
+        -:   51:#  include	<rpcsvc/ypclnt.h>
+        -:   52:#  include	<rpcsvc/yp_prot.h>
+        -:   53:# endif
+        -:   54:#endif
+        -:   55:
+        -:   56:/* hash table containing named directories */
+        -:   57:
+        -:   58:/**/
+        -:   59:mod_export HashTable nameddirtab;
+        -:   60:
+        -:   61:/* != 0 if all the usernames have already been *
+        -:   62: * added to the named directory hash table.    */
+        -:   63:
+        -:   64:static int allusersadded;
+        -:   65:
+        -:   66:/* Create new hash table for named directories */
+        -:   67:
+        -:   68:/**/
+        -:   69:void
+        7:   70:createnameddirtable(void)
+        -:   71:{
+        7:   72:    nameddirtab = newhashtable(201, "nameddirtab", NULL);
+        -:   73:
+        7:   74:    nameddirtab->hash        = hasher;
+        7:   75:    nameddirtab->emptytable  = emptynameddirtable;
+        7:   76:    nameddirtab->filltable   = fillnameddirtable;
+        7:   77:    nameddirtab->cmpnodes    = strcmp;
+        7:   78:    nameddirtab->addnode     = addnameddirnode;
+        7:   79:    nameddirtab->getnode     = gethashnode;
+        7:   80:    nameddirtab->getnode2    = gethashnode2;
+        7:   81:    nameddirtab->removenode  = removenameddirnode;
+        7:   82:    nameddirtab->disablenode = NULL;
+        7:   83:    nameddirtab->enablenode  = NULL;
+        7:   84:    nameddirtab->freenode    = freenameddirnode;
+        7:   85:    nameddirtab->printnode   = printnameddirnode;
+        -:   86:
+        7:   87:    allusersadded = 0;
+        7:   88:    finddir(NULL);		/* clear the finddir cache */
+        7:   89:}
+        -:   90:
+        -:   91:/* Empty the named directories table */
+        -:   92:
+        -:   93:/**/
+        -:   94:static void
+    #####:   95:emptynameddirtable(HashTable ht)
+        -:   96:{
+    #####:   97:    emptyhashtable(ht);
+    #####:   98:    allusersadded = 0;
+    #####:   99:    finddir(NULL);		/* clear the finddir cache */
+    #####:  100:}
+        -:  101:
+        -:  102:/* Add all the usernames in the password file/database *
+        -:  103: * to the named directories table.                     */
+        -:  104:
+        -:  105:#ifdef HAVE_NIS_PLUS
+        -:  106:static int
+        -:  107:add_userdir(nis_name table, nis_object *object, void *userdata)
+        -:  108:{
+        -:  109:    if (object->zo_data.objdata_u.en_data.en_cols.en_cols_len >= 6) {
+        -:  110:	static char name[40], dir[PATH_MAX + 1];
+        -:  111:	register entry_col *ec =
+        -:  112:	    object->zo_data.objdata_u.en_data.en_cols.en_cols_val;
+        -:  113:	register int nl = minimum(ec[0].ec_value.ec_value_len, 39);
+        -:  114:	register int dl = minimum(ec[5].ec_value.ec_value_len, PATH_MAX);
+        -:  115:
+        -:  116:	memcpy(name, ec[0].ec_value.ec_value_val, nl);
+        -:  117:	name[nl] = '\0';
+        -:  118:	memcpy(dir, ec[5].ec_value.ec_value_val, dl);
+        -:  119:	dir[dl] = '\0';
+        -:  120:
+        -:  121:	adduserdir(name, dir, ND_USERNAME, 1);
+        -:  122:    }
+        -:  123:    return 0;
+        -:  124:}
+        -:  125:#else
+        -:  126:# ifdef HAVE_NIS
+        -:  127:static int
+        -:  128:add_userdir(int status, char *key, int keylen, char *val, int vallen, char *dummy)
+        -:  129:{
+        -:  130:    char *p, *d, *de;
+        -:  131:
+        -:  132:    if (status != YP_TRUE)
+        -:  133:	return 1;
+        -:  134:
+        -:  135:    if (vallen > keylen && *(p = val + keylen) == ':') {
+        -:  136:	*p++ = '\0';
+        -:  137:	for (de = val + vallen - 1; *de != ':' && de > val; de--);
+        -:  138:	if (de > val) {
+        -:  139:	    *de = '\0';
+        -:  140:	    if ((d = strrchr(p, ':'))) {
+        -:  141:		if (*++d && val[0])
+        -:  142:		    adduserdir(val, d, ND_USERNAME, 1);
+        -:  143:	    }
+        -:  144:	}
+        -:  145:    }
+        -:  146:    return 0;
+        -:  147:}
+        -:  148:# endif /* HAVE_NIS */
+        -:  149:#endif  /* HAVE_NIS_PLUS */
+        -:  150:
+        -:  151:/**/
+        -:  152:static void
+    #####:  153:fillnameddirtable(UNUSED(HashTable ht))
+        -:  154:{
+    #####:  155:    if (!allusersadded) {
+        -:  156:#if defined(HAVE_NIS) || defined(HAVE_NIS_PLUS)
+        -:  157:	FILE *pwf;
+        -:  158:	char buf[BUFSIZ], *p, *d, *de;
+        -:  159:	int skipping, oldct = nameddirtab->ct, usepwf = 1;
+        -:  160:
+        -:  161:# ifndef HAVE_NIS_PLUS
+        -:  162:	char domain[YPMAXDOMAIN];
+        -:  163:	struct ypall_callback cb;
+        -:  164:
+        -:  165:	/* Get potential matches from NIS and cull those without local accounts */
+        -:  166:	if (getdomainname(domain, YPMAXDOMAIN) == 0) {
+        -:  167:	    cb.foreach = (int (*)()) add_userdir;
+        -:  168:	    cb.data = NULL;
+        -:  169:	    yp_all(domain, PASSWD_MAP, &cb);
+        -:  170:    }
+        -:  171:# else  /* HAVE_NIS_PLUS */
+        -:  172:	/* Maybe we should turn this string into a #define'd constant...? */
+        -:  173:
+        -:  174:	nis_list("passwd.org_dir", EXPAND_NAME|ALL_RESULTS|FOLLOW_LINKS|FOLLOW_PATH,
+        -:  175:		 add_userdir, 0);
+        -:  176:# endif
+        -:  177:	if (nameddirtab->ct == oldct) {
+        -:  178:	    /* Using NIS or NIS+ didn't add any user directories. This seems
+        -:  179:	     * fishy, so we fall back to using getpwent(). If we don't have
+        -:  180:	     * that, we only use the passwd file. */
+        -:  181:#ifdef HAVE_GETPWENT
+        -:  182:	    struct passwd *pw;
+        -:  183:
+        -:  184:	    setpwent();
+        -:  185:
+        -:  186:	    /* loop through the password file/database *
+        -:  187:	     * and add all entries returned.           */
+        -:  188:	    while ((pw = getpwent()) && !errflag)
+        -:  189:		adduserdir(pw->pw_name, pw->pw_dir, ND_USERNAME, 1);
+        -:  190:
+        -:  191:	    endpwent();
+        -:  192:	    usepwf = 0;
+        -:  193:#endif /* HAVE_GETPWENT */
+        -:  194:	}
+        -:  195:	if (usepwf) {
+        -:  196:	    /* Don't forget the non-NIS matches from the flat passwd file */
+        -:  197:	    if ((pwf = fopen(PASSWD_FILE, "r")) != NULL) {
+        -:  198:		skipping = 0;
+        -:  199:		while (fgets(buf, BUFSIZ, pwf) != NULL) {
+        -:  200:		    if (strchr(buf, '\n') != NULL) {
+        -:  201:			if (!skipping) {
+        -:  202:			    if ((p = strchr(buf, ':')) != NULL) {
+        -:  203:				*p++ = '\0';
+        -:  204:				if ((de = strrchr(p, ':'))) {
+        -:  205:				    *de = '\0';
+        -:  206:				    if ((d = strrchr(p, ':'))) {
+        -:  207:					if (*++d && buf[0])
+        -:  208:					    adduserdir(buf, d, ND_USERNAME, 1);
+        -:  209:				    }
+        -:  210:				}
+        -:  211:			    }
+        -:  212:			} else
+        -:  213:			    skipping = 0;
+        -:  214:		    } else
+        -:  215:			skipping = 1;
+        -:  216:		}
+        -:  217:		fclose(pwf);
+        -:  218:	    }
+        -:  219:	}
+        -:  220:#else  /* no NIS or NIS_PLUS */
+        -:  221:#ifdef USE_GETPWENT
+        -:  222:	struct passwd *pw;
+        -:  223:
+    #####:  224:	setpwent();
+        -:  225:
+        -:  226:	/* loop through the password file/database *
+        -:  227:	 * and add all entries returned.           */
+    #####:  228:	while ((pw = getpwent()) && !errflag)
+    #####:  229:	    adduserdir(pw->pw_name, pw->pw_dir, ND_USERNAME, 1);
+        -:  230:
+    #####:  231:	endpwent();
+        -:  232:#endif /* HAVE_GETPWENT */
+        -:  233:#endif
+    #####:  234:	allusersadded = 1;
+        -:  235:    }
+    #####:  236:}
+        -:  237:
+        -:  238:/* Add an entry to the named directory hash *
+        -:  239: * table, clearing the finddir() cache and  *
+        -:  240: * initialising the `diff' member.          */
+        -:  241:
+        -:  242:/**/
+        -:  243:static void
+    #####:  244:addnameddirnode(HashTable ht, char *nam, void *nodeptr)
+        -:  245:{
+    #####:  246:    Nameddir nd = (Nameddir) nodeptr;
+        -:  247:
+    #####:  248:    nd->diff = strlen(nd->dir) - strlen(nam);
+    #####:  249:    finddir(NULL);		/* clear the finddir cache */
+    #####:  250:    addhashnode(ht, nam, nodeptr);
+    #####:  251:}
+        -:  252:
+        -:  253:/* Remove an entry from the named directory  *
+        -:  254: * hash table, clearing the finddir() cache. */
+        -:  255:
+        -:  256:/**/
+        -:  257:static HashNode
+    #####:  258:removenameddirnode(HashTable ht, const char *nam)
+        -:  259:{
+    #####:  260:    HashNode hn = removehashnode(ht, nam);
+        -:  261:
+    #####:  262:    if(hn)
+    #####:  263:	finddir(NULL);		/* clear the finddir cache */
+    #####:  264:    return hn;
+        -:  265:}
+        -:  266:
+        -:  267:/* Free up the memory used by a named directory hash node. */
+        -:  268:
+        -:  269:/**/
+        -:  270:static void
+    #####:  271:freenameddirnode(HashNode hn)
+        -:  272:{
+    #####:  273:    Nameddir nd = (Nameddir) hn;
+        -:  274:
+    #####:  275:    zsfree(nd->node.nam);
+    #####:  276:    zsfree(nd->dir);
+    #####:  277:    zfree(nd, sizeof(struct nameddir));
+    #####:  278:}
+        -:  279:
+        -:  280:/* Print a named directory */
+        -:  281:
+        -:  282:/**/
+        -:  283:static void
+    #####:  284:printnameddirnode(HashNode hn, int printflags)
+        -:  285:{
+    #####:  286:    Nameddir nd = (Nameddir) hn;
+        -:  287:
+    #####:  288:    if (printflags & PRINT_NAMEONLY) {
+    #####:  289:	zputs(nd->node.nam, stdout);
+    #####:  290:	putchar('\n');
+    #####:  291:	return;
+        -:  292:    }
+        -:  293:
+    #####:  294:    if (printflags & PRINT_LIST) {
+    #####:  295:      printf("hash -d ");
+        -:  296:
+    #####:  297:      if(nd->node.nam[0] == '-')
+    #####:  298:	    printf("-- ");
+        -:  299:    }
+        -:  300:
+    #####:  301:    quotedzputs(nd->node.nam, stdout);
+    #####:  302:    putchar('=');
+    #####:  303:    quotedzputs(nd->dir, stdout);
+    #####:  304:    putchar('\n');
+        -:  305:}
+        -:  306:
+        -:  307:#include "../config.h"

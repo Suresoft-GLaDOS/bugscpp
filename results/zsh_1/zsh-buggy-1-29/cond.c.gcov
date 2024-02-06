@@ -1,0 +1,579 @@
+        -:    0:Source:cond.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * cond.c - evaluate conditional expressions
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "cond.pro"
+        -:   32:
+        -:   33:/**/
+        -:   34:int tracingcond;    /* updated by execcond() in exec.c */
+        -:   35:
+        -:   36:static char *condstr[COND_MOD] = {
+        -:   37:    "!", "&&", "||", "=", "==", "!=", "<", ">", "-nt", "-ot", "-ef", "-eq",
+        -:   38:    "-ne", "-lt", "-gt", "-le", "-ge", "=~"
+        -:   39:};
+        -:   40:
+    18296:   41:static void cond_subst(char **strp, int glob_ok)
+        -:   42:{
+    36592:   43:    if (glob_ok &&
+    18296:   44:	checkglobqual(*strp, strlen(*strp), 1, NULL)) {
+    #####:   45:	LinkList args = newlinklist();
+    #####:   46:	addlinknode(args, *strp);
+    #####:   47:	prefork(args, 0, NULL);
+    #####:   48:	while (!errflag && args && nonempty(args) &&
+    #####:   49:	       has_token((char *)peekfirst(args)))
+    #####:   50:	    zglob(args, firstnode(args), 0);
+    #####:   51:	*strp = sepjoin(hlinklist2array(args, 0), NULL, 1);
+        -:   52:    } else
+    18296:   53:	singsub(strp);
+    18296:   54:}
+        -:   55:
+        -:   56:/*
+        -:   57: * Evaluate a conditional expression given the arguments.
+        -:   58: * If fromtest is set, the caller is the test or [ builtin;
+        -:   59: * with the pointer giving the name of the command.
+        -:   60: * for POSIX conformance this supports a more limited range
+        -:   61: * of functionality.
+        -:   62: *
+        -:   63: * Return status is the final shell status, i.e. 0 for true,
+        -:   64: * 1 for false, 2 for syntax error, 3 for "option in tested in
+        -:   65: * -o does not exist".
+        -:   66: */
+        -:   67:
+        -:   68:/**/
+        -:   69:int
+    16254:   70:evalcond(Estate state, char *fromtest)
+        -:   71:{
+        -:   72:    struct stat *st;
+        -:   73:    char *left, *right, *overridename, overridebuf[13];
+        -:   74:    Wordcode pcode;
+        -:   75:    wordcode code;
+    16254:   76:    int ctype, htok = 0, ret;
+        -:   77:
+    19649:   78: rec:
+        -:   79:
+    19649:   80:    left = right = overridename = NULL;
+    19649:   81:    pcode = state->pc++;
+    19649:   82:    code = *pcode;
+    19649:   83:    ctype = WC_COND_TYPE(code);
+        -:   84:
+    19649:   85:    switch (ctype) {
+        1:   86:    case COND_NOT:
+        1:   87:	if (tracingcond)
+    #####:   88:	    fprintf(xtrerr, " %s", condstr[ctype]);
+        1:   89:	ret = evalcond(state, fromtest);
+        1:   90:	if (ret == 0 || ret == 1)
+        1:   91:	    return !ret;
+        -:   92:	else
+    #####:   93:	    return ret;
+     4070:   94:    case COND_AND:
+     4070:   95:	if (!(ret = evalcond(state, fromtest))) {
+     3395:   96:	    if (tracingcond)
+    #####:   97:		fprintf(xtrerr, " %s", condstr[ctype]);
+     3395:   98:	    goto rec;
+        -:   99:	} else {
+      675:  100:	    state->pc = pcode + (WC_COND_SKIP(code) + 1);
+      675:  101:	    return ret;
+        -:  102:	}
+    #####:  103:    case COND_OR:
+    #####:  104:	ret = evalcond(state, fromtest);
+    #####:  105:	if (ret == 1 || ret == 3) {
+    #####:  106:	    if (tracingcond)
+    #####:  107:		fprintf(xtrerr, " %s", condstr[ctype]);
+    #####:  108:	    goto rec;
+        -:  109:	} else {
+    #####:  110:	    state->pc = pcode + (WC_COND_SKIP(code) + 1);
+    #####:  111:	    return ret;
+        -:  112:	}
+    #####:  113:    case COND_REGEX:
+        -:  114:	{
+    #####:  115:	    char *modname = isset(REMATCHPCRE) ? "zsh/pcre" : "zsh/regex";
+    #####:  116:	    sprintf(overridename = overridebuf, "-%s-match", modname+4);
+    #####:  117:	    (void)ensurefeature(modname, "C:", overridename+1);
+    #####:  118:	    ctype = COND_MODI;
+        -:  119:	}
+        -:  120:	/*FALLTHROUGH*/
+    #####:  121:    case COND_MOD:
+        -:  122:    case COND_MODI:
+        -:  123:	{
+        -:  124:	    Conddef cd;
+    #####:  125:	    char *name = overridename, *errname;
+        -:  126:	    char **strs;
+    #####:  127:	    int l = WC_COND_SKIP(code);
+        -:  128:
+    #####:  129:	    if (name == NULL)
+    #####:  130:		name = ecgetstr(state, EC_NODUP, NULL);
+    #####:  131:	    if (ctype == COND_MOD)
+    #####:  132:		strs = ecgetarr(state, l, EC_DUP, NULL);
+        -:  133:	    else {
+        -:  134:		char *sbuf[3];
+        -:  135:
+    #####:  136:		sbuf[0] = ecgetstr(state, EC_NODUP, NULL);
+    #####:  137:		sbuf[1] = ecgetstr(state, EC_NODUP, NULL);
+    #####:  138:		sbuf[2] = NULL;
+        -:  139:
+    #####:  140:		strs = arrdup(sbuf);
+    #####:  141:		l = 2;
+        -:  142:	    }
+    #####:  143:	    if (name && IS_DASH(name[0]))
+    #####:  144:		untokenize(errname = dupstring(name));
+    #####:  145:	    else if (strs[0] && IS_DASH(*strs[0]))
+    #####:  146:		untokenize(errname = strs[0]);
+        -:  147:	    else
+    #####:  148:		errname = "<null>";
+    #####:  149:	    if (name && IS_DASH(name[0]) &&
+    #####:  150:		(cd = getconddef((ctype == COND_MODI), name + 1, 1))) {
+    #####:  151:		if (ctype == COND_MOD &&
+    #####:  152:		    (l < cd->min || (cd->max >= 0 && l > cd->max))) {
+    #####:  153:		    zwarnnam(fromtest, "unknown condition: %s", name);
+    #####:  154:		    return 2;
+        -:  155:		}
+    #####:  156:		if (tracingcond)
+    #####:  157:		    tracemodcond(name, strs, ctype == COND_MODI);
+    #####:  158:		return !cd->handler(strs, cd->condid);
+        -:  159:	    }
+        -:  160:	    else {
+    #####:  161:		char *s = strs[0];
+        -:  162:
+    #####:  163:		if (overridename) {
+        -:  164:		    /*
+        -:  165:		     * Standard regex function not available: this
+        -:  166:		     * is a hard error.
+        -:  167:		     */
+    #####:  168:		    zerrnam(fromtest, "%s not available for regex",
+        -:  169:			     overridename);
+    #####:  170:		    return 2;
+        -:  171:		}
+        -:  172:
+    #####:  173:		strs[0] = dupstring(name);
+    #####:  174:		name = s;
+        -:  175:
+    #####:  176:		if (name && IS_DASH(name[0]) &&
+    #####:  177:		    (cd = getconddef(0, name + 1, 1))) {
+    #####:  178:		    if (l < cd->min || (cd->max >= 0 && l > cd->max)) {
+    #####:  179:			zwarnnam(fromtest, "unknown condition: %s",
+        -:  180:				 errname);
+    #####:  181:			return 2;
+        -:  182:		    }
+    #####:  183:		    if (tracingcond)
+    #####:  184:			tracemodcond(name, strs, ctype == COND_MODI);
+    #####:  185:		    return !cd->handler(strs, cd->condid);
+        -:  186:		} else {
+    #####:  187:		    zwarnnam(fromtest,
+        -:  188:			     "unknown condition: %s",
+        -:  189:			     errname);
+        -:  190:		}
+        -:  191:	    }
+        -:  192:	    /* module not found, error */
+    #####:  193:	    return 2;
+        -:  194:	}
+        -:  195:    }
+    15578:  196:    left = ecgetstr(state, EC_DUPTOK, &htok);
+    15578:  197:    if (htok) {
+    15352:  198:	cond_subst(&left, !fromtest);
+    15352:  199:	untokenize(left);
+        -:  200:    }
+    15578:  201:    if (ctype <= COND_GE && ctype != COND_STREQ && ctype != COND_STRDEQ &&
+        -:  202:	ctype != COND_STRNEQ) {
+     3170:  203:	right = ecgetstr(state, EC_DUPTOK, &htok);
+     3170:  204:	if (htok) {
+     2944:  205:	    cond_subst(&right, !fromtest);
+     2944:  206:	    untokenize(right);
+        -:  207:	}
+        -:  208:    }
+    15578:  209:    if (tracingcond) {
+    #####:  210:	if (ctype < COND_MOD) {
+    #####:  211:	    fputc(' ',xtrerr);
+    #####:  212:	    quotedzputs(left, xtrerr);
+    #####:  213:	    fprintf(xtrerr, " %s ", condstr[ctype]);
+    #####:  214:	    if (ctype == COND_STREQ || ctype == COND_STRDEQ ||
+    #####:  215:		ctype == COND_STRNEQ) {
+    #####:  216:		char *rt = dupstring(ecrawstr(state->prog, state->pc, NULL));
+    #####:  217:		cond_subst(&rt, !fromtest);
+    #####:  218:		quote_tokenized_output(rt, xtrerr);
+        -:  219:	    }
+        -:  220:	    else
+    #####:  221:		quotedzputs((char *)right, xtrerr);
+        -:  222:	} else {
+    #####:  223:	    fprintf(xtrerr, " -%c ", ctype);
+    #####:  224:	    quotedzputs(left, xtrerr);
+        -:  225:	}
+        -:  226:    }
+        -:  227:
+    15578:  228:    if (ctype >= COND_EQ && ctype <= COND_GE) {
+        -:  229:	mnumber mn1, mn2;
+     3170:  230:	if (fromtest) {
+        -:  231:	    /*
+        -:  232:	     * For test and [, the expressions must be base 10 integers,
+        -:  233:	     * not integer expressions.
+        -:  234:	     */
+        -:  235:	    char *eptr, *err;
+        -:  236:
+    #####:  237:	    mn1.u.l = zstrtol(left, &eptr, 10);
+    #####:  238:	    if (!*eptr)
+        -:  239:	    {
+    #####:  240:		mn2.u.l = zstrtol(right, &eptr, 10);
+    #####:  241:		err = right;
+        -:  242:	    }
+        -:  243:	    else
+    #####:  244:		err = left;
+        -:  245:
+    #####:  246:	    if (*eptr)
+        -:  247:	    {
+    #####:  248:		zwarnnam(fromtest, "integer expression expected: %s", err);
+    #####:  249:		return 2;
+        -:  250:	    }
+        -:  251:
+    #####:  252:	    mn1.type = mn2.type = MN_INTEGER;
+        -:  253:	} else {
+     3170:  254:	    mn1 = matheval(left);
+     3170:  255:	    mn2 = matheval(right);
+        -:  256:	}
+        -:  257:
+     3170:  258:	if (((mn1.type|mn2.type) & (MN_INTEGER|MN_FLOAT)) ==
+        -:  259:	    (MN_INTEGER|MN_FLOAT)) {
+        -:  260:	    /* promote to float */
+    #####:  261:	    if (mn1.type & MN_INTEGER) {
+    #####:  262:		mn1.type = MN_FLOAT;
+    #####:  263:		mn1.u.d = (double)mn1.u.l;
+        -:  264:	    }
+    #####:  265:	    if (mn2.type & MN_INTEGER) {
+    #####:  266:		mn2.type = MN_FLOAT;
+    #####:  267:		mn2.u.d = (double)mn2.u.l;
+        -:  268:	    }
+        -:  269:	}
+     3170:  270:	switch(ctype) {
+        1:  271:	case COND_EQ:
+        2:  272:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d == mn2.u.d) :
+        1:  273:		     (mn1.u.l == mn2.u.l));
+    #####:  274:	case COND_NE:
+    #####:  275:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d != mn2.u.d) :
+    #####:  276:		     (mn1.u.l != mn2.u.l));
+    #####:  277:	case COND_LT:
+    #####:  278:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d < mn2.u.d) :
+    #####:  279:		     (mn1.u.l < mn2.u.l));
+    #####:  280:	case COND_GT:
+    #####:  281:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d > mn2.u.d) :
+    #####:  282:		     (mn1.u.l > mn2.u.l));
+      225:  283:	case COND_LE:
+      450:  284:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d <= mn2.u.d) :
+      225:  285:		     (mn1.u.l <= mn2.u.l));
+     2944:  286:	case COND_GE:
+     5888:  287:	    return !((mn1.type & MN_FLOAT) ? (mn1.u.d >= mn2.u.d) :
+     2944:  288:		     (mn1.u.l >= mn2.u.l));
+        -:  289:	}
+        -:  290:    }
+        -:  291:
+    12408:  292:    switch (ctype) {
+     8324:  293:    case COND_STREQ:
+        -:  294:    case COND_STRDEQ:
+        -:  295:    case COND_STRNEQ:
+        -:  296:	{
+     8324:  297:	    int test, npat = state->pc[1];
+     8324:  298:	    Patprog pprog = state->prog->pats[npat];
+        -:  299:
+     8324:  300:	    queue_signals();
+        -:  301:
+     8324:  302:	    if (pprog == dummy_patprog1 || pprog == dummy_patprog2) {
+        -:  303:		char *opat;
+        -:  304:		int save;
+        -:  305:
+     4484:  306:		right = dupstring(opat = ecrawstr(state->prog, state->pc,
+        -:  307:						  &htok));
+     4484:  308:		singsub(&right);
+    13432:  309:		save = (!(state->prog->flags & EF_HEAP) &&
+     4496:  310:			!strcmp(opat, right) && pprog != dummy_patprog2);
+        -:  311:
+     4484:  312:		if (!(pprog = patcompile(right, (save ? PAT_ZDUP : PAT_STATIC),
+        -:  313:					 NULL))) {
+    #####:  314:		    zwarnnam(fromtest, "bad pattern: %s", right);
+    #####:  315:		    unqueue_signals();
+    #####:  316:		    return 2;
+        -:  317:		}
+     4484:  318:		else if (save)
+       12:  319:		    state->prog->pats[npat] = pprog;
+        -:  320:	    }
+     8324:  321:	    state->pc += 2;
+     8324:  322:	    test = (pprog && pattry(pprog, left));
+        -:  323:
+     8324:  324:	    unqueue_signals();
+        -:  325:
+     8324:  326:	    return !(ctype == COND_STRNEQ ? !test : test);
+        -:  327:	}
+    #####:  328:    case COND_STRLT:
+    #####:  329:	return !(strcmp(left, right) < 0);
+    #####:  330:    case COND_STRGTR:
+    #####:  331:	return !(strcmp(left, right) > 0);
+    #####:  332:    case 'e':
+        -:  333:    case 'a':
+    #####:  334:	return (!doaccess(left, F_OK));
+    #####:  335:    case 'b':
+    #####:  336:	return (!S_ISBLK(dostat(left)));
+    #####:  337:    case 'c':
+    #####:  338:	return (!S_ISCHR(dostat(left)));
+        1:  339:    case 'd':
+        1:  340:	return (!S_ISDIR(dostat(left)));
+    #####:  341:    case 'f':
+    #####:  342:	return (!S_ISREG(dostat(left)));
+    #####:  343:    case 'g':
+    #####:  344:	return (!(dostat(left) & S_ISGID));
+    #####:  345:    case 'k':
+    #####:  346:	return (!(dostat(left) & S_ISVTX));
+     3854:  347:    case 'n':
+     3854:  348:	return (!strlen(left));
+    #####:  349:    case 'o':
+    #####:  350:	return (optison(fromtest, left));
+    #####:  351:    case 'p':
+    #####:  352:	return (!S_ISFIFO(dostat(left)));
+        1:  353:    case 'r':
+        1:  354:	return (!doaccess(left, R_OK));
+    #####:  355:    case 's':
+    #####:  356:	return !((st = getstat(left)) && !!(st->st_size));
+    #####:  357:    case 'S':
+    #####:  358:	return (!S_ISSOCK(dostat(left)));
+    #####:  359:    case 'u':
+    #####:  360:	return (!(dostat(left) & S_ISUID));
+    #####:  361:    case 'v':
+    #####:  362:	return (!issetvar(left));
+    #####:  363:    case 'w':
+    #####:  364:	return (!doaccess(left, W_OK));
+    #####:  365:    case 'x':
+    #####:  366:	if (privasserted()) {
+    #####:  367:	    mode_t mode = dostat(left);
+    #####:  368:	    return !((mode & S_IXUGO) || S_ISDIR(mode));
+        -:  369:	}
+    #####:  370:	return !doaccess(left, X_OK);
+        3:  371:    case 'z':
+        3:  372:	return !!(strlen(left));
+    #####:  373:    case 'h':
+        -:  374:    case 'L':
+    #####:  375:	return (!S_ISLNK(dolstat(left)));
+    #####:  376:    case 'O':
+    #####:  377:	return !((st = getstat(left)) && st->st_uid == geteuid());
+    #####:  378:    case 'G':
+    #####:  379:	return !((st = getstat(left)) && st->st_gid == getegid());
+    #####:  380:    case 'N':
+        -:  381:#if defined(GET_ST_MTIME_NSEC) && defined(GET_ST_ATIME_NSEC)
+    #####:  382:	if (!(st = getstat(left)))
+    #####:  383:	    return 1;
+    #####:  384:        return (st->st_atime == st->st_mtime) ?
+    #####:  385:        	GET_ST_ATIME_NSEC(*st) > GET_ST_MTIME_NSEC(*st) :
+    #####:  386:        	st->st_atime > st->st_mtime;
+        -:  387:#else
+        -:  388:	return !((st = getstat(left)) && st->st_atime <= st->st_mtime);
+        -:  389:#endif
+      225:  390:    case 't':
+      225:  391:	return !isatty(mathevali(left));
+    #####:  392:    case COND_NT:
+        -:  393:    case COND_OT:
+        -:  394:	{
+        -:  395:	    time_t a;
+        -:  396:#ifdef GET_ST_MTIME_NSEC
+        -:  397:	    long nsecs;
+        -:  398:#endif
+        -:  399:
+    #####:  400:	    if (!(st = getstat(left)))
+    #####:  401:		return 1;
+    #####:  402:	    a = st->st_mtime;
+        -:  403:#ifdef GET_ST_MTIME_NSEC
+    #####:  404:	    nsecs = GET_ST_MTIME_NSEC(*st);
+        -:  405:#endif
+    #####:  406:	    if (!(st = getstat(right)))
+    #####:  407:		return 1;
+        -:  408:#ifdef GET_ST_MTIME_NSEC
+    #####:  409:	    if (a == st->st_mtime) {
+    #####:  410:                return !((ctype == COND_NT) ? nsecs > GET_ST_MTIME_NSEC(*st) :
+    #####:  411:                        nsecs < GET_ST_MTIME_NSEC(*st));
+        -:  412:	    }
+        -:  413:#endif
+    #####:  414:	    return !((ctype == COND_NT) ? a > st->st_mtime : a < st->st_mtime);
+        -:  415:	}
+    #####:  416:    case COND_EF:
+        -:  417:	{
+        -:  418:	    dev_t d;
+        -:  419:	    ino_t i;
+        -:  420:
+    #####:  421:	    if (!(st = getstat(left)))
+    #####:  422:		return 1;
+    #####:  423:	    d = st->st_dev;
+    #####:  424:	    i = st->st_ino;
+    #####:  425:	    if (!(st = getstat(right)))
+    #####:  426:		return 1;
+    #####:  427:	    return !(d == st->st_dev && i == st->st_ino);
+        -:  428:	}
+    #####:  429:    default:
+    #####:  430:	zwarnnam(fromtest, "bad cond code");
+    #####:  431:	return 2;
+        -:  432:    }
+        -:  433:}
+        -:  434:
+        -:  435:
+        -:  436:/**/
+        -:  437:static int
+        1:  438:doaccess(char *s, int c)
+        -:  439:{
+        -:  440:#ifdef HAVE_FACCESSX
+        -:  441:    if (!strncmp(s, "/dev/fd/", 8))
+        -:  442:	return !faccessx(atoi(s + 8), c, ACC_SELF);
+        -:  443:#endif
+        1:  444:    return !access(unmeta(s), c);
+        -:  445:}
+        -:  446:
+        -:  447:
+        -:  448:static struct stat st;
+        -:  449:
+        -:  450:/**/
+        -:  451:static struct stat *
+        1:  452:getstat(char *s)
+        -:  453:{
+        -:  454:    char *us;
+        -:  455:
+        -:  456:/* /dev/fd/n refers to the open file descriptor n.  We always use fstat *
+        -:  457: * in this case since on Solaris /dev/fd/n is a device special file     */
+        1:  458:    if (!strncmp(s, "/dev/fd/", 8)) {
+    #####:  459:	if (fstat(atoi(s + 8), &st))
+    #####:  460:	    return NULL;
+    #####:  461:        return &st;
+        -:  462:    }
+        -:  463:
+        1:  464:    if (!(us = unmeta(s)))
+    #####:  465:        return NULL;
+        1:  466:    if (stat(us, &st))
+        1:  467:	return NULL;
+    #####:  468:    return &st;
+        -:  469:}
+        -:  470:
+        -:  471:
+        -:  472:/**/
+        -:  473:static mode_t
+        1:  474:dostat(char *s)
+        -:  475:{
+        -:  476:    struct stat *statp;
+        -:  477:
+        1:  478:    if (!(statp = getstat(s)))
+        1:  479:	return 0;
+    #####:  480:    return statp->st_mode;
+        -:  481:}
+        -:  482:
+        -:  483:
+        -:  484:/* pem@aaii.oz; needed since dostat now uses "stat" */
+        -:  485:
+        -:  486:/**/
+        -:  487:static mode_t
+    #####:  488:dolstat(char *s)
+        -:  489:{
+    #####:  490:    if (lstat(unmeta(s), &st) < 0)
+    #####:  491:	return 0;
+    #####:  492:    return st.st_mode;
+        -:  493:}
+        -:  494:
+        -:  495:
+        -:  496:/*
+        -:  497: * optison returns evalcond-friendly statuses (true, false, error).
+        -:  498: */
+        -:  499:
+        -:  500:/**/
+        -:  501:static int
+    #####:  502:optison(char *name, char *s)
+        -:  503:{
+        -:  504:    int i;
+        -:  505:
+    #####:  506:    if (strlen(s) == 1)
+    #####:  507:	i = optlookupc(*s);
+        -:  508:    else
+    #####:  509:	i = optlookup(s);
+    #####:  510:    if (!i) {
+    #####:  511:	if (isset(POSIXBUILTINS))
+    #####:  512:	    return 1;
+        -:  513:	else {
+    #####:  514:	    zwarnnam(name, "no such option: %s", s);
+    #####:  515:	    return 3;
+        -:  516:	}
+    #####:  517:    } else if(i < 0)
+    #####:  518:	return !unset(-i);
+        -:  519:    else
+    #####:  520:	return !isset(i);
+        -:  521:}
+        -:  522:
+        -:  523:/**/
+        -:  524:mod_export char *
+    #####:  525:cond_str(char **args, int num, int raw)
+        -:  526:{
+    #####:  527:    char *s = args[num];
+        -:  528:
+    #####:  529:    if (has_token(s)) {
+    #####:  530:	singsub(&s);
+    #####:  531:	if (!raw)
+    #####:  532:	    untokenize(s);
+        -:  533:    }
+    #####:  534:    return s;
+        -:  535:}
+        -:  536:
+        -:  537:/**/
+        -:  538:mod_export zlong
+    #####:  539:cond_val(char **args, int num)
+        -:  540:{
+    #####:  541:    char *s = args[num];
+        -:  542:
+    #####:  543:    if (has_token(s)) {
+    #####:  544:	singsub(&s);
+    #####:  545:	untokenize(s);
+        -:  546:    }
+    #####:  547:    return mathevali(s);
+        -:  548:}
+        -:  549:
+        -:  550:/**/
+        -:  551:mod_export int
+    #####:  552:cond_match(char **args, int num, char *str)
+        -:  553:{
+    #####:  554:    char *s = args[num];
+        -:  555:
+    #####:  556:    singsub(&s);
+        -:  557:
+    #####:  558:    return matchpat(str, s);
+        -:  559:}
+        -:  560:
+        -:  561:/**/
+        -:  562:static void
+    #####:  563:tracemodcond(char *name, char **args, int inf)
+        -:  564:{
+        -:  565:    char **aptr;
+        -:  566:
+    #####:  567:    args = arrdup(args);
+    #####:  568:    for (aptr = args; *aptr; aptr++)
+    #####:  569:	untokenize(*aptr);
+    #####:  570:    if (inf) {
+    #####:  571:	fprintf(xtrerr, " %s %s %s", args[0], name, args[1]);
+        -:  572:    } else {
+    #####:  573:	fprintf(xtrerr, " %s", name);
+    #####:  574:	while (*args)
+    #####:  575:	    fprintf(xtrerr, " %s", *args++);
+        -:  576:    }
+    #####:  577:}

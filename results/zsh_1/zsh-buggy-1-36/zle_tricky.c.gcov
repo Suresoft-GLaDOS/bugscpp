@@ -1,0 +1,3071 @@
+        -:    0:Source:zle_tricky.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_tricky.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_tricky.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_tricky.c - expansion and completion
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_tricky.pro"
+        -:   32:
+        -:   33:/*
+        -:   34: * The main part of ZLE maintains the line being edited as binary data,
+        -:   35: * but here, where we interface with the lexer and other bits of zsh, we
+        -:   36: * need the line metafied and, if necessary, converted from wide
+        -:   37: * characters into multibyte strings.  On entry to the
+        -:   38: * expansion/completion system, we metafy the line from zleline into
+        -:   39: * zlemetaline, with zlell and zlecs adjusted into zlemetall zlemetacs
+        -:   40: * to match.  zlemetall and zlemetacs refer to raw character positions,
+        -:   41: * in other words a metafied character contributes 2 to each.  All
+        -:   42: * completion and expansion is done on the metafied line.  Immediately
+        -:   43: * before returning, the line is unmetafied again, so that zleline,
+        -:   44: * zlell and zlecs are once again valid.  (zlell and zlecs might have
+        -:   45: * changed during completion, so they can't be merely saved and
+        -:   46: * restored.)  The various indexes into the line that are used in this
+        -:   47: * file only are not translated: they remain indexes into the metafied
+        -:   48: * line.
+        -:   49: *
+        -:   50: * zlemetaline is always NULL when not in use and non-NULL when in use.
+        -:   51: * This can be used to test if the line is metafied.  It would be
+        -:   52: * possible to use zlecs and zlell directly, updated as appropriate when
+        -:   53: * metafying and unmetafying, instead of zlemetacs and zlemetall,
+        -:   54: * however the current system seems clearer.
+        -:   55: */
+        -:   56:
+        -:   57:#define inststr(X) inststrlen((X),1,-1)
+        -:   58:
+        -:   59:/*
+        -:   60: * The state of the line being edited between metafy_line()
+        -:   61: * unmetafy_line().
+        -:   62: *
+        -:   63: * zlemetacs and zlemetall are defined in lex.c.
+        -:   64: */
+        -:   65:/**/
+        -:   66:mod_export char *zlemetaline;
+        -:   67:/**/
+        -:   68:mod_export int metalinesz;
+        -:   69:
+        -:   70:/* The line before completion was tried. */
+        -:   71:
+        -:   72:/**/
+        -:   73:mod_export char *origline;
+        -:   74:/**/
+        -:   75:mod_export int origcs, origll;
+        -:   76:
+        -:   77:/* Words on the command line, for use in completion */
+        -:   78: 
+        -:   79:/**/
+        -:   80:mod_export int clwsize, clwnum, clwpos;
+        -:   81:/**/
+        -:   82:mod_export char **clwords;
+        -:   83:
+        -:   84:/* offs is the cursor position within the tokenized *
+        -:   85: * current word after removing nulargs.             */
+        -:   86:
+        -:   87:/**/
+        -:   88:mod_export int offs;
+        -:   89:
+        -:   90:/* These control the type of completion that will be done.  They are       *
+        -:   91: * affected by the choice of ZLE command and by relevant shell options.    *
+        -:   92: * usemenu is set to 2 if we have to start automenu and 3 if we have to    *
+        -:   93: * insert a match as if for menucompletion but without really starting it. */
+        -:   94:
+        -:   95:/**/
+        -:   96:mod_export int usemenu, useglob;
+        -:   97:
+        -:   98:/* != 0 if we would insert a TAB if we weren't calling a completion widget. */
+        -:   99:
+        -:  100:/**/
+        -:  101:mod_export int wouldinstab;
+        -:  102:
+        -:  103:/* != 0 if we are in the middle of a menu completion. */
+        -:  104:
+        -:  105:/**/
+        -:  106:mod_export int menucmp;
+        -:  107:
+        -:  108:/* Lists of brace-infos before/after cursor (first and last for each). */
+        -:  109:
+        -:  110:/**/
+        -:  111:mod_export Brinfo brbeg, lastbrbeg, brend, lastbrend;
+        -:  112:
+        -:  113:/**/
+        -:  114:mod_export int nbrbeg, nbrend;
+        -:  115:
+        -:  116:/**/
+        -:  117:mod_export char *lastprebr, *lastpostbr;
+        -:  118:
+        -:  119:/* !=0 if we have a valid completion list. */
+        -:  120:
+        -:  121:/**/
+        -:  122:mod_export int validlist;
+        -:  123:
+        -:  124:/* Non-zero if we have to redisplay the list of matches. */
+        -:  125:
+        -:  126:/**/
+        -:  127:mod_export int showagain = 0;
+        -:  128:
+        -:  129:/* This holds the word we are working on without braces removed. */
+        -:  130:
+        -:  131:static char *origword;
+        -:  132:
+        -:  133:/* The quoted prefix/suffix and a flag saying if we want to add the
+        -:  134: * closing quote. */
+        -:  135:
+        -:  136:/**/
+        -:  137:mod_export char *qipre, *qisuf, *autoq;
+        -:  138:
+        -:  139:/* This contains the name of the function to call if this is for a new  *
+        -:  140: * style completion. */
+        -:  141:
+        -:  142:/**/
+        -:  143:mod_export char *compfunc = NULL;
+        -:  144:
+        -:  145:/* Non-zero if the last completion done was ambiguous (used to find   *
+        -:  146: * out if AUTOMENU should start).  More precisely, it's nonzero after *
+        -:  147: * successfully doing any completion, unless the completion was       *
+        -:  148: * unambiguous and did not cause the display of a completion list.    *
+        -:  149: * From the other point of view, it's nonzero iff AUTOMENU (if set)   *
+        -:  150: * should kick in on another completion.                              *
+        -:  151: *                                                                    *
+        -:  152: * If both AUTOMENU and BASHAUTOLIST are set, then we get a listing   *
+        -:  153: * on the second tab, a` la bash, and then automenu kicks in when     *
+        -:  154: * lastambig == 2.                                                    */
+        -:  155:
+        -:  156:/**/
+        -:  157:mod_export int lastambig, bashlistfirst;
+        -:  158:
+        -:  159:/* Arguments for and return value of completion widget. */
+        -:  160:
+        -:  161:/**/
+        -:  162:mod_export char **cfargs;
+        -:  163:/**/
+        -:  164:mod_export int cfret;
+        -:  165:
+        -:  166:/* != 0 if recursive calls to completion are (temporarily) allowed */
+        -:  167:
+        -:  168:/**/
+        -:  169:mod_export int comprecursive;
+        -:  170:
+        -:  171:/* != 0 if there are any defined completion widgets. */
+        -:  172:
+        -:  173:/**/
+        -:  174:int hascompwidgets;
+        -:  175:
+        -:  176:/*
+        -:  177: * Find out if we have to insert a tab (instead of trying to complete).
+        -:  178: * The line is not metafied here.
+        -:  179: */
+        -:  180:
+        -:  181:/**/
+        -:  182:static int
+    #####:  183:usetab(void)
+        -:  184:{
+    #####:  185:    ZLE_STRING_T s = zleline + zlecs - 1;
+        -:  186:
+    #####:  187:    if (keybuf[0] != '\t' || keybuf[1])
+    #####:  188:	return 0;
+    #####:  189:    for (; s >= zleline && *s != ZWC('\n'); s--)
+    #####:  190:	if (*s != ZWC('\t') && *s != ZWC(' '))
+    #####:  191:	    return 0;
+    #####:  192:    if (compfunc) {
+    #####:  193:	wouldinstab = 1;
+        -:  194:
+    #####:  195:	return 0;
+        -:  196:    }
+    #####:  197:    return 1;
+        -:  198:}
+        -:  199:
+        -:  200:/**/
+        -:  201:int
+    #####:  202:completecall(char **args)
+        -:  203:{
+    #####:  204:    cfargs = args;
+    #####:  205:    cfret = 0;
+    #####:  206:    compfunc = compwidget->u.comp.func;
+    #####:  207:    if (compwidget->u.comp.fn(zlenoargs) && !cfret)
+    #####:  208:	cfret = 1;
+    #####:  209:    compfunc = NULL;
+        -:  210:
+    #####:  211:    return cfret;
+        -:  212:}
+        -:  213:
+        -:  214:/**/
+        -:  215:int
+    #####:  216:completeword(char **args)
+        -:  217:{
+    #####:  218:    usemenu = !!isset(MENUCOMPLETE);
+    #####:  219:    useglob = isset(GLOBCOMPLETE);
+    #####:  220:    wouldinstab = 0;
+    #####:  221:    if (lastchar == '\t' && usetab())
+    #####:  222:	return selfinsert(args);
+        -:  223:    else {
+        -:  224:	int ret;
+    #####:  225:	if (lastambig == 1 && isset(BASHAUTOLIST) && !usemenu && !menucmp) {
+    #####:  226:	    bashlistfirst = 1;
+    #####:  227:	    ret = docomplete(COMP_LIST_COMPLETE);
+    #####:  228:	    bashlistfirst = 0;
+    #####:  229:	    lastambig = 2;
+        -:  230:	} else
+    #####:  231:	    ret = docomplete(COMP_COMPLETE);
+    #####:  232:	return ret;
+        -:  233:    }
+        -:  234:}
+        -:  235:
+        -:  236:/**/
+        -:  237:mod_export int
+    #####:  238:menucomplete(char **args)
+        -:  239:{
+    #####:  240:    usemenu = 1;
+    #####:  241:    useglob = isset(GLOBCOMPLETE);
+    #####:  242:    wouldinstab = 0;
+    #####:  243:    if (lastchar == '\t' && usetab())
+    #####:  244:	return selfinsert(args);
+        -:  245:    else
+    #####:  246:	return docomplete(COMP_COMPLETE);
+        -:  247:}
+        -:  248:
+        -:  249:/**/
+        -:  250:int
+    #####:  251:listchoices(UNUSED(char **args))
+        -:  252:{
+    #####:  253:    usemenu = !!isset(MENUCOMPLETE);
+    #####:  254:    useglob = isset(GLOBCOMPLETE);
+    #####:  255:    wouldinstab = 0;
+    #####:  256:    return docomplete(COMP_LIST_COMPLETE);
+        -:  257:}
+        -:  258:
+        -:  259:/**/
+        -:  260:int
+    #####:  261:spellword(UNUSED(char **args))
+        -:  262:{
+    #####:  263:    usemenu = useglob = 0;
+    #####:  264:    wouldinstab = 0;
+    #####:  265:    return docomplete(COMP_SPELL);
+        -:  266:}
+        -:  267:
+        -:  268:/**/
+        -:  269:int
+    #####:  270:deletecharorlist(char **args)
+        -:  271:{
+    #####:  272:    usemenu = !!isset(MENUCOMPLETE);
+    #####:  273:    useglob = isset(GLOBCOMPLETE);
+    #####:  274:    wouldinstab = 0;
+        -:  275:
+        -:  276:    /* Line not yet metafied */
+    #####:  277:    if (zlecs != zlell) {
+    #####:  278:	fixsuffix();
+    #####:  279:	invalidatelist();
+    #####:  280:	return deletechar(args);
+        -:  281:    }
+    #####:  282:    return docomplete(COMP_LIST_COMPLETE);
+        -:  283:}
+        -:  284:
+        -:  285:/**/
+        -:  286:int
+    #####:  287:expandword(char **args)
+        -:  288:{
+    #####:  289:    usemenu = useglob = 0;
+    #####:  290:    wouldinstab = 0;
+    #####:  291:    if (lastchar == '\t' && usetab())
+    #####:  292:	return selfinsert(args);
+        -:  293:    else
+    #####:  294:	return docomplete(COMP_EXPAND);
+        -:  295:}
+        -:  296:
+        -:  297:/**/
+        -:  298:int
+    #####:  299:expandorcomplete(char **args)
+        -:  300:{
+    #####:  301:    usemenu = !!isset(MENUCOMPLETE);
+    #####:  302:    useglob = isset(GLOBCOMPLETE);
+    #####:  303:    wouldinstab = 0;
+    #####:  304:    if (lastchar == '\t' && usetab())
+    #####:  305:	return selfinsert(args);
+        -:  306:    else {
+        -:  307:	int ret;
+    #####:  308:	if (lastambig == 1 && isset(BASHAUTOLIST) && !usemenu && !menucmp) {
+    #####:  309:	    bashlistfirst = 1;
+    #####:  310:	    ret = docomplete(COMP_LIST_COMPLETE);
+    #####:  311:	    bashlistfirst = 0;
+    #####:  312:	    lastambig = 2;
+        -:  313:	} else
+    #####:  314:	    ret = docomplete(COMP_EXPAND_COMPLETE);
+    #####:  315:	return ret;
+        -:  316:    }
+        -:  317:}
+        -:  318:
+        -:  319:/**/
+        -:  320:int
+    #####:  321:menuexpandorcomplete(char **args)
+        -:  322:{
+    #####:  323:    usemenu = 1;
+    #####:  324:    useglob = isset(GLOBCOMPLETE);
+    #####:  325:    wouldinstab = 0;
+    #####:  326:    if (lastchar == '\t' && usetab())
+    #####:  327:	return selfinsert(args);
+        -:  328:    else
+    #####:  329:	return docomplete(COMP_EXPAND_COMPLETE);
+        -:  330:}
+        -:  331:
+        -:  332:/**/
+        -:  333:int
+    #####:  334:listexpand(UNUSED(char **args))
+        -:  335:{
+    #####:  336:    usemenu = !!isset(MENUCOMPLETE);
+    #####:  337:    useglob = isset(GLOBCOMPLETE);
+    #####:  338:    wouldinstab = 0;
+    #####:  339:    return docomplete(COMP_LIST_EXPAND);
+        -:  340:}
+        -:  341:
+        -:  342:/**/
+        -:  343:mod_export int
+    #####:  344:reversemenucomplete(char **args)
+        -:  345:{
+    #####:  346:    wouldinstab = 0;
+    #####:  347:    zmult = -zmult;
+    #####:  348:    return menucomplete(args);
+        -:  349:}
+        -:  350:
+        -:  351:/**/
+        -:  352:int
+    #####:  353:acceptandmenucomplete(char **args)
+        -:  354:{
+    #####:  355:    wouldinstab = 0;
+    #####:  356:    if (!menucmp)
+    #####:  357:	return 1;
+    #####:  358:    runhookdef(ACCEPTCOMPHOOK, NULL);
+    #####:  359:    return menucomplete(args);
+        -:  360:}
+        -:  361:
+        -:  362:/* These are flags saying if we are completing in the command *
+        -:  363: * position, in a redirection, or in a parameter expansion.   */
+        -:  364:
+        -:  365:/**/
+        -:  366:mod_export int lincmd, linredir, linarr;
+        -:  367:
+        -:  368:/* The string for the redirection operator. */
+        -:  369:
+        -:  370:/**/
+        -:  371:mod_export char *rdstr;
+        -:  372:
+        -:  373:static char rdstrbuf[20];
+        -:  374:
+        -:  375:/* The list of redirections on the line. */
+        -:  376:
+        -:  377:/**/
+        -:  378:mod_export LinkList rdstrs;
+        -:  379:
+        -:  380:/* This holds the name of the current command (used to find the right *
+        -:  381: * compctl).                                                          */
+        -:  382:
+        -:  383:/**/
+        -:  384:mod_export char *cmdstr;
+        -:  385:
+        -:  386:/* This hold the name of the variable we are working on. */
+        -:  387:
+        -:  388:/**/
+        -:  389:mod_export char *varname;
+        -:  390:
+        -:  391:/*
+        -:  392: * != 0 if we are in a subscript.
+        -:  393: * Of course, this being the completion code, you're expected to guess
+        -:  394: * what the different numbers actually mean, but here's a cheat:
+        -:  395: * 1: Key of an ordinary array
+        -:  396: * 2: Key of a hash
+        -:  397: * 3: Ummm.... this appears to be a special case of 2.  After a lot
+        -:  398: *    of uncommented code looking for groups of brackets, we suddenly
+        -:  399: *    decide to set it to 2.  The only upshot seems to be that compctl
+        -:  400: *    then doesn't add a matching ']' at the end, so I think it means
+        -:  401: *    there's one there already.
+        -:  402: */
+        -:  403:
+        -:  404:/**/
+        -:  405:mod_export int insubscr;
+        -:  406:
+        -:  407:/* Parameter pointer for completing keys of an assoc array. */
+        -:  408:
+        -:  409:/**/
+        -:  410:mod_export Param keypm;
+        -:  411:
+        -:  412:/*
+        -:  413: * instring takes one of the QT_* values defined in zsh.h.
+        -:  414: * It's never QT_TICK, instead we use inbackt.
+        -:  415: * TODO: can we combine the two?
+        -:  416: */
+        -:  417:
+        -:  418:/**/
+        -:  419:mod_export int instring, inbackt;
+        -:  420:
+        -:  421:/*
+        -:  422: * Convenience macro for calling quotestring (formerly bslashquote() (formerly
+        -:  423: * quotename())).
+        -:  424: * This uses the instring variable above.
+        -:  425: */
+        -:  426:
+        -:  427:#define quotename(s) \
+        -:  428:quotestring(s, instring == QT_NONE ? QT_BACKSLASH : instring)
+        -:  429:
+        -:  430:/* Check if the given string is the name of a parameter and if this *
+        -:  431: * parameter is one worth expanding.                                */
+        -:  432:
+        -:  433:/**/
+        -:  434:static int
+    #####:  435:checkparams(char *p)
+        -:  436:{
+    #####:  437:    int t0, n, l = strlen(p), e = 0;
+        -:  438:    struct hashnode *hn;
+        -:  439:
+    #####:  440:    for (t0 = paramtab->hsize - 1, n = 0; n < 2 && t0 >= 0; t0--)
+    #####:  441:	for (hn = paramtab->nodes[t0]; n < 2 && hn; hn = hn->next)
+    #####:  442:	    if (pfxlen(p, hn->nam) == l) {
+    #####:  443:		n++;
+    #####:  444:		if ((int)strlen(hn->nam) == l)
+    #####:  445:		    e = 1;
+        -:  446:	    }
+    #####:  447:    return (n == 1) ? (getsparam(p) != NULL) :
+    #####:  448:	(!menucmp && e && (!hascompmod || isset(RECEXACT)));
+        -:  449:}
+        -:  450:
+        -:  451:/* Check if the given string has wildcards.  The difficulty is that we *
+        -:  452: * have to treat things like job specifications (%...) and parameter   *
+        -:  453: * expressions correctly.                                              */
+        -:  454:
+        -:  455:/**/
+        -:  456:static int
+    #####:  457:cmphaswilds(char *str)
+        -:  458:{
+        -:  459:    char *ptr;
+    #####:  460:    if ((*str == Inbrack || *str == Outbrack) && !str[1])
+    #####:  461:	return 0;
+        -:  462:
+        -:  463:    /* If a leading % is immediately followed by ?, then don't *
+        -:  464:     * treat that ? as a wildcard.  This is so you don't have  *
+        -:  465:     * to escape job references such as %?foo.                 */
+    #####:  466:    if (str[0] == '%' && str[1] ==Quest)
+    #####:  467:	str += 2;
+        -:  468:
+        -:  469:    /*
+        -:  470:     * In ~[foo], the square brackets are not wild cards.
+        -:  471:     * This test matches the master one in filesubstr().
+        -:  472:     */
+    #####:  473:    if (*str == Tilde && str[1] == Inbrack &&
+    #####:  474:	(ptr = strchr(str+2, Outbrack)))
+    #####:  475:	str = ptr + 1;
+        -:  476:
+    #####:  477:    for (; *str;) {
+    #####:  478:	if (*str == String || *str == Qstring) {
+        -:  479:	    /* A parameter expression. */
+        -:  480:
+    #####:  481:	    if (*++str == Inbrace)
+    #####:  482:		skipparens(Inbrace, Outbrace, &str);
+    #####:  483:	    else if (*str == String || *str == Qstring)
+    #####:  484:		str++;
+        -:  485:	    else {
+        -:  486:		/* Skip all the things a parameter expression might start *
+        -:  487:		 * with (before we come to the parameter name).           */
+    #####:  488:		for (; *str; str++)
+    #####:  489:		    if (*str != '^' && *str != Hat &&
+    #####:  490:			*str != '=' && *str != Equals &&
+    #####:  491:			*str != '~' && *str != Tilde)
+    #####:  492:			break;
+    #####:  493:		if (*str == '#' || *str == Pound)
+    #####:  494:		    str++;
+        -:  495:		/* Star and Quest are parameter names here, not wildcards */
+    #####:  496:		if (*str == Star || *str == Quest)
+    #####:  497:		    str++;
+        -:  498:	    }
+        -:  499:	} else {
+        -:  500:	    /* Not a parameter expression so we check for wildcards */
+    #####:  501:	    if (((*str == Pound || *str == Hat) && isset(EXTENDEDGLOB)) ||
+    #####:  502:		*str == Star || *str == Bar || *str == Quest ||
+    #####:  503:		!skipparens(Inbrack, Outbrack, &str) ||
+    #####:  504:		!skipparens(Inang,   Outang,   &str) ||
+    #####:  505:		(unset(IGNOREBRACES) &&
+    #####:  506:		 !skipparens(Inbrace, Outbrace, &str)) ||
+    #####:  507:		(*str == Inpar && str[1] == ':' &&
+    #####:  508:		 !skipparens(Inpar, Outpar, &str)))
+    #####:  509:		return 1;
+    #####:  510:	    if (*str)
+    #####:  511:		str++;
+        -:  512:	}
+        -:  513:    }
+    #####:  514:    return 0;
+        -:  515:}
+        -:  516:
+        -:  517:/* Check if we have to complete a parameter name. */
+        -:  518:
+        -:  519:/**/
+        -:  520:char *
+    #####:  521:parambeg(char *s)
+        -:  522:{
+        -:  523:    char *p;
+        -:  524:
+        -:  525:    /* Try to find a `$'. */
+    #####:  526:    for (p = s + offs; p > s && *p != String && *p != Qstring; p--);
+    #####:  527:    if (*p == String || *p == Qstring) {
+        -:  528:	/* Handle $$'s */
+    #####:  529:	while (p > s && (p[-1] == String || p[-1] == Qstring))
+    #####:  530:	    p--;
+    #####:  531:	while ((p[1] == String || p[1] == Qstring) &&
+    #####:  532:	       (p[2] == String || p[2] == Qstring))
+    #####:  533:	    p += 2;
+        -:  534:    }
+    #####:  535:    if ((*p == String || *p == Qstring) &&
+    #####:  536:	p[1] != Inpar && p[1] != Inbrack && p[1] != '\'') {
+        -:  537:	/*
+        -:  538:	 * This is really a parameter expression (not $(...) or $[...]
+        -:  539:	 * or $'...').
+        -:  540:	 */
+    #####:  541:	char *b = p + 1, *e = b;
+    #####:  542:	int n = 0, br = 1;
+        -:  543:
+    #####:  544:	if (*b == Inbrace) {
+    #####:  545:	    char *tb = b;
+        -:  546:
+        -:  547:	    /* If this is a ${...}, see if we are before the '}'. */
+    #####:  548:	    if (!skipparens(Inbrace, Outbrace, &tb))
+    #####:  549:		return NULL;
+        -:  550:
+        -:  551:	    /* Ignore the possible (...) flags. */
+    #####:  552:	    b++, br++;
+    #####:  553:	    n = skipparens(Inpar, Outpar, &b);
+        -:  554:	}
+        -:  555:
+        -:  556:	/* Ignore the stuff before the parameter name. */
+    #####:  557:	for (; *b; b++)
+    #####:  558:	    if (*b != '^' && *b != Hat &&
+    #####:  559:		*b != '=' && *b != Equals &&
+    #####:  560:		*b != '~' && *b != Tilde)
+    #####:  561:		break;
+    #####:  562:	if (*b == '#' || *b == Pound || *b == '+')
+    #####:  563:	    b++;
+        -:  564:
+    #####:  565:	e = b;
+    #####:  566:	if (br) {
+    #####:  567:	    while (*e == Dnull)
+    #####:  568:		e++;
+        -:  569:	}
+        -:  570:	/* Find the end of the name. */
+    #####:  571:	if (*e == Quest || *e == Star || *e == String || *e == Qstring ||
+    #####:  572:	    *e == '?'   || *e == '*'  || *e == '$'    ||
+    #####:  573:	    *e == '-'   || *e == '!'  || *e == '@')
+    #####:  574:	    e++;
+    #####:  575:	else if (idigit(*e))
+    #####:  576:	    while (idigit(*e))
+    #####:  577:		e++;
+        -:  578:	else
+    #####:  579:	    e = itype_end(e, IIDENT, 0);
+        -:  580:
+        -:  581:	/* Now make sure that the cursor is inside the name. */
+    #####:  582:	if (offs <= e - s && offs >= b - s && n <= 0) {
+    #####:  583:	    if (br) {
+    #####:  584:		p = e;
+    #####:  585:		while (*p == Dnull)
+    #####:  586:		    p++;
+        -:  587:	    }
+        -:  588:	    /* It is. */
+    #####:  589:	    return b;
+        -:  590:	}
+        -:  591:    }
+    #####:  592:    return NULL;
+        -:  593:}
+        -:  594:
+        -:  595:/* The main entry point for completion. */
+        -:  596:
+        -:  597:/**/
+        -:  598:static int
+    #####:  599:docomplete(int lst)
+        -:  600:{
+        -:  601:    static int active = 0;
+        -:  602:
+        -:  603:    char *s, *ol;
+    #####:  604:    int olst = lst, chl = 0, ne = noerrs, ocs, ret = 0, dat[2];
+        -:  605:
+    #####:  606:    if (active && !comprecursive) {
+    #####:  607:	zwarn("completion cannot be used recursively (yet)");
+    #####:  608:	return 1;
+        -:  609:    }
+    #####:  610:    active = 1;
+    #####:  611:    comprecursive = 0;
+    #####:  612:    makecommaspecial(0);
+        -:  613:
+        -:  614:    /* From the C-code's point of view, we can only use compctl as a default
+        -:  615:     * type of completion. Load it if it hasn't been loaded already and
+        -:  616:     * no completion widgets are defined. */
+        -:  617:
+    #####:  618:    if (!module_loaded("zsh/compctl") && !hascompwidgets)
+    #####:  619:	(void)load_module("zsh/compctl", NULL, 0);
+        -:  620:
+    #####:  621:    if (runhookdef(BEFORECOMPLETEHOOK, (void *) &lst)) {
+    #####:  622:	active = 0;
+    #####:  623:	return 0;
+        -:  624:    }
+        -:  625:    /* Expand history references before starting completion.  If anything *
+        -:  626:     * changed, do no more.                                               */
+        -:  627:
+    #####:  628:    if (doexpandhist()) {
+    #####:  629:	active = 0;
+    #####:  630:	return 0;
+        -:  631:    }
+        -:  632:
+    #####:  633:    metafy_line();
+        -:  634:
+    #####:  635:    ocs = zlemetacs;
+    #####:  636:    zsfree(origline);
+    #####:  637:    origline = ztrdup(zlemetaline);
+    #####:  638:    origcs = zlemetacs;
+    #####:  639:    origll = zlemetall;
+    #####:  640:    if (!isfirstln && (chline != NULL || zle_chline != NULL)) {
+    #####:  641:	ol = dupstring(zlemetaline);
+        -:  642:	/*
+        -:  643:	 * Make sure that chline is zero-terminated.
+        -:  644:	 * zle_chline always is and hptr doesn't point into it anyway.
+        -:  645:	 */
+    #####:  646:	if (!zle_chline)
+    #####:  647:	    *hptr = '\0';
+    #####:  648:	zlemetacs = 0;
+    #####:  649:	inststr(zle_chline ? zle_chline : chline);
+    #####:  650:	chl = zlemetacs;
+    #####:  651:	zlemetacs += ocs;
+        -:  652:    } else
+    #####:  653:	ol = NULL;
+    #####:  654:    inwhat = IN_NOTHING;
+    #####:  655:    zsfree(qipre);
+    #####:  656:    qipre = ztrdup("");
+    #####:  657:    zsfree(qisuf);
+    #####:  658:    qisuf = ztrdup("");
+    #####:  659:    zsfree(autoq);
+    #####:  660:    autoq = NULL;
+        -:  661:    /* Get the word to complete.
+        -:  662:     * NOTE: get_comp_string() calls pushheap(), but not popheap(). */
+    #####:  663:    noerrs = 1;
+    #####:  664:    s = get_comp_string();
+        -:  665:    DPUTS3(wb < 0 || zlemetacs < wb || zlemetacs > we,
+        -:  666:	  "BUG: 0 <= wb (%d) <= zlemetacs (%d) <= we (%d) is not true!",
+        -:  667:	   wb, zlemetacs, we);
+    #####:  668:    noerrs = ne;
+        -:  669:    /* For vi mode, reset the start-of-insertion pointer to the beginning *
+        -:  670:     * of the word being completed, if it is currently later.  Vi itself  *
+        -:  671:     * would never change the pointer in the middle of an insertion, but  *
+        -:  672:     * then vi doesn't have completion.  More to the point, this is only  *
+        -:  673:     * an emulation.                                                      */
+    #####:  674:    if (viinsbegin > ztrsub(zlemetaline + wb, zlemetaline))
+    #####:  675:	viinsbegin = ztrsub(zlemetaline + wb, zlemetaline);
+        -:  676:    /* If we added chline to the line buffer, reset the original contents. */
+    #####:  677:    if (ol) {
+    #####:  678:	zlemetacs -= chl;
+    #####:  679:	wb -= chl;
+    #####:  680:	we -= chl;
+    #####:  681:	if (wb < 0) {
+    #####:  682:	    strcpy(zlemetaline, ol);
+    #####:  683:	    zlemetall = strlen(zlemetaline);
+    #####:  684:	    zlemetacs = ocs;
+    #####:  685:	    popheap();
+    #####:  686:	    unmetafy_line();
+    #####:  687:	    zsfree(s);
+    #####:  688:	    active = 0;
+    #####:  689:	    makecommaspecial(0);
+    #####:  690:	    return 1;
+        -:  691:	}
+    #####:  692:	ocs = zlemetacs;
+    #####:  693:	zlemetacs = 0;
+    #####:  694:	foredel(chl, CUT_RAW);
+    #####:  695:	zlemetacs = ocs;
+        -:  696:    }
+    #####:  697:    freeheap();
+        -:  698:    /* Save the lexer state, in case the completion code uses the lexer *
+        -:  699:     * somewhere (e.g. when processing a compctl -s flag).              */
+    #####:  700:    zcontext_save();
+    #####:  701:    if (inwhat == IN_ENV)
+    #####:  702:	lincmd = 0;
+    #####:  703:    if (s) {
+    #####:  704:	if (lst == COMP_EXPAND_COMPLETE) {
+        -:  705:	    /* Check if we have to do expansion or completion. */
+    #####:  706:	    char *q = s;
+        -:  707:
+    #####:  708:	    if (*q == Equals) {
+        -:  709:		/* The word starts with `=', see if we can expand it. */
+    #####:  710:		q = s + 1;
+    #####:  711:		if (cmdnamtab->getnode(cmdnamtab, q) || hashcmd(q, pathchecked)) {
+    #####:  712:		    if (!hascompmod || isset(RECEXACT))
+    #####:  713:			lst = COMP_EXPAND;
+        -:  714:		    else {
+    #####:  715:			int t0, n = 0;
+        -:  716:			struct hashnode *hn;
+        -:  717:
+    #####:  718:			for (t0 = cmdnamtab->hsize - 1; t0 >= 0; t0--)
+    #####:  719:			    for (hn = cmdnamtab->nodes[t0]; hn;
+    #####:  720:				 hn = hn->next) {
+    #####:  721:				if (strpfx(q, hn->nam) &&
+    #####:  722:				    findcmd(hn->nam, 0, 0))
+    #####:  723:				    n++;
+    #####:  724:				if (n == 2)
+    #####:  725:				    break;
+        -:  726:			    }
+        -:  727:
+    #####:  728:			if (n == 1)
+    #####:  729:			    lst = COMP_EXPAND;
+        -:  730:		    }
+        -:  731:		}
+        -:  732:	    }
+    #####:  733:	    if (lst == COMP_EXPAND_COMPLETE) {
+        -:  734:		do {
+        -:  735:		    /* Check if there is a parameter expression. */
+    #####:  736:		    for (; *q && *q != String; q++);
+    #####:  737:		    if (*q == String && q[1] != Inpar && q[1] != Inparmath &&
+    #####:  738:			q[1] != Inbrack) {
+    #####:  739:			if (*++q == Inbrace) {
+    #####:  740:			    if (! skipparens(Inbrace, Outbrace, &q) &&
+    #####:  741:				q == s + zlemetacs - wb)
+    #####:  742:				lst = COMP_EXPAND;
+        -:  743:			} else {
+        -:  744:			    char *t, sav, sav2;
+        -:  745:
+        -:  746:			    /* Skip the things parameter expressions might *
+        -:  747:			     * start with (the things before the parameter *
+        -:  748:			     * name).                                      */
+    #####:  749:			    for (; *q; q++)
+    #####:  750:				if (*q != '^' && *q != Hat &&
+    #####:  751:				    *q != '=' && *q != Equals &&
+    #####:  752:				    *q != '~' && *q != Tilde)
+    #####:  753:				    break;
+    #####:  754:			    if ((*q == '#' || *q == Pound || *q == '+') &&
+    #####:  755:				q[1] != String)
+    #####:  756:				q++;
+        -:  757:
+    #####:  758:			    sav2 = *(t = q);
+    #####:  759:			    if (*q == Quest || *q == Star || *q == String ||
+    #####:  760:				*q == Qstring)
+    #####:  761:				*q = ztokens[*q - Pound], ++q;
+    #####:  762:			    else if (*q == '?' || *q == '*' || *q == '$' ||
+    #####:  763:				     *q == '-' || *q == '!' || *q == '@')
+    #####:  764:				q++;
+    #####:  765:			    else if (idigit(*q))
+    #####:  766:				do q++; while (idigit(*q));
+        -:  767:			    else
+    #####:  768:				q = itype_end(q, IIDENT, 0);
+    #####:  769:			    sav = *q;
+    #####:  770:			    *q = '\0';
+    #####:  771:			    if (zlemetacs - wb == q - s &&
+    #####:  772:				(idigit(sav2) || checkparams(t)))
+    #####:  773:				lst = COMP_EXPAND;
+    #####:  774:			    *q = sav;
+    #####:  775:			    *t = sav2;
+        -:  776:			}
+    #####:  777:			if (lst != COMP_EXPAND)
+    #####:  778:			    lst = COMP_COMPLETE;
+        -:  779:		    } else
+        -:  780:			break;
+    #####:  781:		} while (q < s + zlemetacs - wb);
+        -:  782:	    }
+    #####:  783:	    if (lst == COMP_EXPAND_COMPLETE) {
+        -:  784:		/* If it is still not clear if we should use expansion or   *
+        -:  785:		 * completion and there is a `$' or a backtick in the word, *
+        -:  786:		 * than do expansion.                                       */
+    #####:  787:		for (q = s; *q; q++)
+    #####:  788:		    if (*q == Tick || *q == Qtick ||
+    #####:  789:			*q == String || *q == Qstring)
+        -:  790:			break;
+    #####:  791:		lst = *q ? COMP_EXPAND : COMP_COMPLETE;
+        -:  792:	    }
+        -:  793:	    /* And do expansion if there are wildcards and globcomplete is *
+        -:  794:	     * not used.                                                   */
+    #####:  795:	    if (unset(GLOBCOMPLETE) && cmphaswilds(s))
+    #####:  796:		lst = COMP_EXPAND;
+        -:  797:	}
+    #####:  798:	if (lincmd && (inwhat == IN_NOTHING))
+    #####:  799:	    inwhat = IN_CMD;
+        -:  800:
+    #####:  801:	if (lst == COMP_SPELL) {
+    #####:  802:	    char *w = dupstring(origword), *x, *q, *ox;
+        -:  803:
+    #####:  804:	    for (q = w; *q; q++)
+    #####:  805:		if (inull(*q))
+    #####:  806:		    *q = Nularg;
+    #####:  807:	    zlemetacs = wb;
+    #####:  808:	    foredel(we - wb, CUT_RAW);
+        -:  809:
+    #####:  810:	    untokenize(x = ox = dupstring(w));
+    #####:  811:	    if (*w == Tilde || *w == Equals || *w == String)
+    #####:  812:		*x = *w;
+    #####:  813:	    spckword(&x, 0, lincmd, 0);
+    #####:  814:	    ret = !strcmp(x, ox);
+        -:  815:
+    #####:  816:	    untokenize(x);
+    #####:  817:	    inststr(x);
+    #####:  818:	} else if (COMP_ISEXPAND(lst)) {
+        -:  819:	    /* Do expansion. */
+    #####:  820:	    char *ol = (olst == COMP_EXPAND ||
+        -:  821:                        olst == COMP_EXPAND_COMPLETE) ?
+    #####:  822:		dupstring(zlemetaline) : zlemetaline;
+    #####:  823:	    int ocs = zlemetacs, ne = noerrs;
+        -:  824:
+    #####:  825:	    noerrs = 1;
+    #####:  826:	    ret = doexpansion(origword, lst, olst, lincmd);
+    #####:  827:	    lastambig = 0;
+    #####:  828:	    noerrs = ne;
+        -:  829:
+        -:  830:	    /* If expandorcomplete was invoked and the expansion didn't *
+        -:  831:	     * change the command line, do completion.                  */
+    #####:  832:	    if (olst == COMP_EXPAND_COMPLETE &&
+    #####:  833:		!strcmp(ol, zlemetaline)) {
+    #####:  834:		zlemetacs = ocs;
+    #####:  835:		errflag &= ~ERRFLAG_ERROR;
+        -:  836:
+    #####:  837:		if (!compfunc) {
+        -:  838:		    char *p;
+        -:  839:
+    #####:  840:		    p = s;
+    #####:  841:		    if (*p == Tilde || *p == Equals)
+    #####:  842:			p++;
+    #####:  843:		    for (; *p; p++)
+    #####:  844:			if (itok(*p)) {
+    #####:  845:			    if (*p != String && *p != Qstring)
+    #####:  846:				*p = ztokens[*p - Pound];
+    #####:  847:			    else if (p[1] == Inbrace)
+    #####:  848:				p++, skipparens(Inbrace, Outbrace, &p);
+        -:  849:			}
+        -:  850:		}
+    #####:  851:		ret = docompletion(s, lst, lincmd);
+        -:  852:            } else {
+    #####:  853:                if (ret)
+    #####:  854:                    clearlist = 1;
+    #####:  855:                if (!strcmp(ol, zlemetaline)) {
+        -:  856:                    /* We may have removed some quotes. For completion, other
+        -:  857:                     * parts of the code re-install them, but for expansion
+        -:  858:                     * we have to do it here. */
+    #####:  859:                    zlemetacs = 0;
+    #####:  860:                    foredel(zlemetall, CUT_RAW);
+    #####:  861:                    spaceinline(origll);
+    #####:  862:                    memcpy(zlemetaline, origline, origll);
+    #####:  863:                    zlemetacs = origcs;
+        -:  864:                }
+        -:  865:            }
+        -:  866:	} else
+        -:  867:	    /* Just do completion. */
+    #####:  868:	    ret = docompletion(s, lst, lincmd);
+    #####:  869:	zsfree(s);
+        -:  870:    } else
+    #####:  871:	ret = 1;
+        -:  872:    /* Reset the lexer state, pop the heap. */
+    #####:  873:    zcontext_restore();
+    #####:  874:    popheap();
+        -:  875:
+    #####:  876:    dat[0] = lst;
+    #####:  877:    dat[1] = ret;
+    #####:  878:    runhookdef(AFTERCOMPLETEHOOK, (void *) dat);
+    #####:  879:    unmetafy_line();
+        -:  880:
+    #####:  881:    active = 0;
+    #####:  882:    makecommaspecial(0);
+        -:  883:
+        -:  884:    /*
+        -:  885:     * As a special case, we reset user interrupts here.
+        -:  886:     * That's because completion is an intensive piece of
+        -:  887:     * computation that the user might want to interrupt separately
+        -:  888:     * from anything else going on.  If they do, they probably
+        -:  889:     * want to keep the line edit buffer intact.
+        -:  890:     *
+        -:  891:     * There's a race here that the user might hit ^C just
+        -:  892:     * after completion exited anyway, but that's inevitable.
+        -:  893:     */
+    #####:  894:    errflag &= ~ERRFLAG_INT;
+        -:  895:
+    #####:  896:    return dat[1];
+        -:  897:}
+        -:  898:
+        -:  899:/* 1 if we are completing the prefix */
+        -:  900:static int comppref;
+        -:  901:
+        -:  902:/* This function inserts an `x' in the command line at the cursor position. *
+        -:  903: *                                                                          *
+        -:  904: * Oh, you want to know why?  Well, if completion is tried somewhere on an  *
+        -:  905: * empty part of the command line, the lexer code would normally not be     *
+        -:  906: * able to give us the `word' we want to complete, since there is no word.  *
+        -:  907: * But we need to call the lexer to find out where we are (and for which    *
+        -:  908: * command we are completing and such things).  So we temporarily add a `x' *
+        -:  909: * (any character without special meaning would do the job) at the cursor   *
+        -:  910: * position, than the lexer gives us the word `x' and its beginning and end *
+        -:  911: * positions and we can remove the `x'.                                     *
+        -:  912: *									    *
+        -:  913: * If we are just completing the prefix (comppref set), we also insert a    *
+        -:  914: * space after the x to end the word.  We never need to remove the space:   *
+        -:  915: * anywhere we are able to retrieve a word for completion it will be	    *
+        -:  916: * discarded as whitespace.  It has the effect of making any suffix	    *
+        -:  917: * referrable to as the next word on the command line when indexing	    *
+        -:  918: * from a completion function.                                              */
+        -:  919:
+        -:  920:/**/
+        -:  921:static void
+    #####:  922:addx(char **ptmp)
+        -:  923:{
+    #####:  924:    int addspace = 0;
+        -:  925:
+    #####:  926:    if (!zlemetaline[zlemetacs] || zlemetaline[zlemetacs] == '\n' ||
+    #####:  927:	(iblank(zlemetaline[zlemetacs]) &&
+    #####:  928:	 (!zlemetacs || zlemetaline[zlemetacs-1] != '\\')) ||
+    #####:  929:	zlemetaline[zlemetacs] == ')' || zlemetaline[zlemetacs] == '`' ||
+    #####:  930:	zlemetaline[zlemetacs] == '}' ||
+    #####:  931:	zlemetaline[zlemetacs] == ';' || zlemetaline[zlemetacs] == '|' ||
+    #####:  932:	zlemetaline[zlemetacs] == '&' ||
+    #####:  933:	zlemetaline[zlemetacs] == '>' || zlemetaline[zlemetacs] == '<' ||
+    #####:  934:	(instring != QT_NONE && (zlemetaline[zlemetacs] == '"' ||
+    #####:  935:		      zlemetaline[zlemetacs] == '\'')) ||
+    #####:  936:	(addspace = (comppref && !iblank(zlemetaline[zlemetacs])))) {
+    #####:  937:	*ptmp = zlemetaline;
+    #####:  938:	zlemetaline = zhalloc(strlen(zlemetaline) + 3 + addspace);
+    #####:  939:	memcpy(zlemetaline, *ptmp, zlemetacs);
+    #####:  940:	zlemetaline[zlemetacs] = 'x';
+    #####:  941:	if (addspace)
+    #####:  942:	    zlemetaline[zlemetacs+1] = ' ';
+    #####:  943:	strcpy(zlemetaline + zlemetacs + 1 + addspace, (*ptmp) + zlemetacs);
+    #####:  944:	addedx = 1 + addspace;
+        -:  945:    } else {
+    #####:  946:	addedx = 0;
+    #####:  947:	*ptmp = NULL;
+        -:  948:    }
+    #####:  949:}
+        -:  950:
+        -:  951:/* Like dupstring, but add an extra space at the end of the string. */
+        -:  952:
+        -:  953:/**/
+        -:  954:mod_export char *
+    #####:  955:dupstrspace(const char *str)
+        -:  956:{
+    #####:  957:    int len = strlen(str);
+    #####:  958:    char *t = (char *) hcalloc(len + 2);
+    #####:  959:    strcpy(t, str);
+    #####:  960:    strcpy(t+len, " ");
+    #####:  961:    return t;
+        -:  962:}
+        -:  963:
+        -:  964:/*
+        -:  965: * These functions metafy and unmetafy the ZLE buffer, as described at
+        -:  966: * the top of this file.  They *must* be called in matching pairs,
+        -:  967: * around all the expansion/completion code.
+        -:  968: *
+        -:  969: * The variables zleline, zlell and zlecs are metafied into
+        -:  970: * zlemetaline, zlemetall and zlemetacs.  Only the latter variables
+        -:  971: * should be referred to from above zle (i.e. in the main shell),
+        -:  972: * or when using the completion API (if that's not too strong a
+        -:  973: * way of referring to it).
+        -:  974: */
+        -:  975:
+        -:  976:/**/
+        -:  977:mod_export void
+    #####:  978:metafy_line(void)
+        -:  979:{
+        -:  980:    UNMETACHECK();
+        -:  981:
+    #####:  982:    zlemetaline = zlelineasstring(zleline, zlell, zlecs,
+        -:  983:				  &zlemetall, &zlemetacs, 0);
+    #####:  984:    metalinesz = zlemetall;
+        -:  985:
+        -:  986:    /*
+        -:  987:     * We will always allocate a new zleline based on zlemetaline.
+        -:  988:     */
+    #####:  989:    free(zleline);
+    #####:  990:    zleline = NULL;
+    #####:  991:}
+        -:  992:
+        -:  993:/**/
+        -:  994:mod_export void
+    #####:  995:unmetafy_line(void)
+        -:  996:{
+        -:  997:    METACHECK();
+        -:  998:
+        -:  999:    /* paranoia */
+    #####: 1000:    zlemetaline[zlemetall] = '\0';
+    #####: 1001:    zleline = stringaszleline(zlemetaline, zlemetacs, &zlell, &linesz, &zlecs);
+        -: 1002:
+    #####: 1003:    free(zlemetaline);
+    #####: 1004:    zlemetaline = NULL;
+        -: 1005:    /*
+        -: 1006:     * If we inserted combining characters under the cursor we
+        -: 1007:     * won't have tested the effect yet.  So fix it up now.
+        -: 1008:     */
+    #####: 1009:    CCRIGHT();
+    #####: 1010:}
+        -: 1011:
+        -: 1012:/* Free a brinfo list. */
+        -: 1013:
+        -: 1014:/**/
+        -: 1015:mod_export void
+    #####: 1016:freebrinfo(Brinfo p)
+        -: 1017:{
+        -: 1018:    Brinfo n;
+        -: 1019:
+    #####: 1020:    while (p) {
+    #####: 1021:	n = p->next;
+    #####: 1022:	zsfree(p->str);
+    #####: 1023:	zfree(p, sizeof(*p));
+        -: 1024:
+    #####: 1025:	p = n;
+        -: 1026:    }
+    #####: 1027:}
+        -: 1028:
+        -: 1029:/* Duplicate a brinfo list. */
+        -: 1030:
+        -: 1031:/**/
+        -: 1032:mod_export Brinfo
+    #####: 1033:dupbrinfo(Brinfo p, Brinfo *last, int heap)
+        -: 1034:{
+    #####: 1035:    Brinfo ret = NULL, *q = &ret, n = NULL;
+        -: 1036:
+    #####: 1037:    while (p) {
+    #####: 1038:	n = *q = (heap ? (Brinfo) zhalloc(sizeof(*n)) :
+        -: 1039:		  (Brinfo) zalloc(sizeof(*n)));
+    #####: 1040:	q = &(n->next);
+        -: 1041:
+    #####: 1042:	n->next = NULL;
+    #####: 1043:	n->str = (heap ? dupstring(p->str) : ztrdup(p->str));
+    #####: 1044:	n->pos = p->pos;
+    #####: 1045:	n->qpos = p->qpos;
+    #####: 1046:	n->curpos = p->curpos;
+        -: 1047:
+    #####: 1048:	p = p->next;
+        -: 1049:    }
+    #####: 1050:    if (last)
+    #####: 1051:	*last = n;
+        -: 1052:
+    #####: 1053:    return ret;
+        -: 1054:}
+        -: 1055:
+        -: 1056:/* This is a bit like has_token(), but ignores nulls. */
+        -: 1057:
+        -: 1058:static int
+    #####: 1059:has_real_token(const char *s)
+        -: 1060:{
+    #####: 1061:    while (*s) {
+        -: 1062:	/*
+        -: 1063:	 * Special action required for $' strings, which
+        -: 1064:	 * need to be treated like nulls.
+        -: 1065:	 */
+    #####: 1066:	if ((*s == Qstring && s[1] == '\'') ||
+    #####: 1067:	    (*s == String && s[1] == Snull))
+        -: 1068:	{
+    #####: 1069:	    s += 2;
+    #####: 1070:	    continue;
+        -: 1071:	}
+    #####: 1072:	if (itok(*s) && !inull(*s))
+    #####: 1073:	    return 1;
+    #####: 1074:	s++;
+        -: 1075:    }
+    #####: 1076:    return 0;
+        -: 1077:}
+        -: 1078:
+        -: 1079:
+        -: 1080:/* Lasciate ogni speranza.                                                  *
+        -: 1081: * This function is a nightmare.  It works, but I'm sure that nobody really *
+        -: 1082: * understands why.  The problem is: to make it cleaner we would need       *
+        -: 1083: * changes in the lexer code (and then in the parser, and then...).         */
+        -: 1084:
+        -: 1085:/**/
+        -: 1086:static char *
+    #####: 1087:get_comp_string(void)
+        -: 1088:{
+        -: 1089:    enum lextok t0, tt0, cmdtok;
+    #####: 1090:    int i, j, k, cp, rd, sl, ocs, ins, oins, ia, parct, varq = 0;
+    #####: 1091:    int ona = noaliases;
+        -: 1092:    /*
+        -: 1093:     * Index of word being considered
+        -: 1094:     */
+        -: 1095:    int wordpos;
+        -: 1096:    /*
+        -: 1097:     * qsub fixes up the offset into the current completion word
+        -: 1098:     * for changes made by the lexer.  That currently means the
+        -: 1099:     * effect of RCQUOTES on embedded pairs of single quotes.
+        -: 1100:     * zlemetacs_qsub takes account of the effect of this offset
+        -: 1101:     * on the cursor position; it's only needed when using the
+        -: 1102:     * word we got from the lexer, which we only do sometimes because
+        -: 1103:     * otherwise it would be too easy.  If looking at zlemetaline we
+        -: 1104:     * still use zlemetacs.
+        -: 1105:     */
+    #####: 1106:    int qsub, zlemetacs_qsub = 0;
+        -: 1107:    /*
+        -: 1108:     * redirpos is used to record string arguments for redirection
+        -: 1109:     * when they occur at the start of the line.  In this case
+        -: 1110:     * the command word is not at index zero in the array.
+        -: 1111:     */
+        -: 1112:    int redirpos;
+        -: 1113:    int noword;
+    #####: 1114:    char *s = NULL, *tmp, *p, *tt = NULL, rdop[20];
+        -: 1115:    char *linptr, *u;
+        -: 1116:
+        -: 1117:    METACHECK();
+        -: 1118:
+    #####: 1119:    freebrinfo(brbeg);
+    #####: 1120:    freebrinfo(brend);
+    #####: 1121:    brbeg = lastbrbeg = brend = lastbrend = NULL;
+    #####: 1122:    nbrbeg = nbrend = 0;
+    #####: 1123:    zsfree(lastprebr);
+    #####: 1124:    zsfree(lastpostbr);
+    #####: 1125:    lastprebr = lastpostbr = NULL;
+    #####: 1126:    if (rdstrs)
+    #####: 1127:        freelinklist(rdstrs, freestr);
+    #####: 1128:    rdstrs = znewlinklist();
+    #####: 1129:    rdop[0] = '\0';
+    #####: 1130:    rdstr = NULL;
+        -: 1131:
+        -: 1132:    /* This global flag is used to signal the lexer code if it should *
+        -: 1133:     * expand aliases or not.                                         */
+    #####: 1134:    noaliases = isset(COMPLETEALIASES);
+        -: 1135:
+        -: 1136:    /* Find out if we are somewhere in a `string', i.e. inside '...', *
+        -: 1137:     * "...", `...`, or ((...)). Nowadays this is only used to find   *
+        -: 1138:     * out if we are inside `...`.                                    */
+        -: 1139:
+    #####: 1140:    for (i = j = k = 0, u = zlemetaline; u < zlemetaline + zlemetacs; u++) {
+    #####: 1141:	if (*u == '`' && !(k & 1))
+    #####: 1142:	    i++;
+    #####: 1143:	else if (*u == '\"' && !(k & 1) && !(i & 1))
+    #####: 1144:	    j++;
+    #####: 1145:	else if (*u == '\'' && !(j & 1))
+    #####: 1146:	    k++;
+    #####: 1147:	else if (*u == '\\' && u[1] && !(k & 1))
+    #####: 1148:	    u++;
+        -: 1149:    }
+    #####: 1150:    inbackt = (i & 1);
+    #####: 1151:    instring = QT_NONE;
+    #####: 1152:    addx(&tmp);
+    #####: 1153:    linptr = zlemetaline;
+    #####: 1154:    pushheap();
+        -: 1155:
+    #####: 1156: start:
+    #####: 1157:    inwhat = IN_NOTHING;
+        -: 1158:    /* Now set up the lexer and start it. */
+    #####: 1159:    parbegin = parend = -1;
+    #####: 1160:    lincmd = incmdpos;
+    #####: 1161:    linredir = inredir;
+    #####: 1162:    zsfree(cmdstr);
+    #####: 1163:    cmdstr = NULL;
+    #####: 1164:    cmdtok = NULLTOK;
+    #####: 1165:    zsfree(varname);
+    #####: 1166:    varname = NULL;
+    #####: 1167:    insubscr = 0;
+    #####: 1168:    clwpos = -1;
+    #####: 1169:    zcontext_save();
+    #####: 1170:    lexflags = LEXFLAGS_ZLE;
+    #####: 1171:    inpush(dupstrspace(linptr), 0, NULL);
+    #####: 1172:    strinbeg(0);
+    #####: 1173:    wordpos = cp = rd = ins = oins = linarr = parct = ia = redirpos = 0;
+    #####: 1174:    we = wb = zlemetacs;
+    #####: 1175:    tt0 = NULLTOK;
+        -: 1176:
+        -: 1177:    /* This loop is possibly the wrong way to do this.  It goes through *
+        -: 1178:     * the previously massaged command line using the lexer.  It stores *
+        -: 1179:     * each token in each command (commands being regarded, roughly, as *
+        -: 1180:     * being separated by tokens | & &! |& || &&).  The loop stops when *
+        -: 1181:     * the end of the command containing the cursor is reached.  What   *
+        -: 1182:     * makes this messy is checking for things like redirections, loops *
+        -: 1183:     * and whatnot. */
+        -: 1184:
+        -: 1185:    do {
+    #####: 1186:        qsub = noword = 0;
+        -: 1187:
+        -: 1188:	/*
+        -: 1189:	 * pws: added cmdtok == NULLTOK test as fallback for detecting
+        -: 1190:	 * we haven't had a command yet.  This is a cop out: it's needed
+        -: 1191:	 * after SEPER because of bizarre and incomprehensible dance
+        -: 1192:	 * that we otherwise do involving the "ins" flag when you might
+        -: 1193:	 * have thought we'd just reset everything because we're now
+        -: 1194:	 * considering a new command.  Consequently, although this looks
+        -: 1195:	 * relatively harmless by itself, it's probably incomplete.
+        -: 1196:	 */
+    #####: 1197:	linredir = (inredir && !ins);
+    #####: 1198:	lincmd = !inredir &&
+    #####: 1199:	    ((incmdpos && !ins && !incond) ||
+    #####: 1200:	     (oins == 2 && wordpos == 2) ||
+    #####: 1201:	     (ins == 3 && wordpos == 1) ||
+    #####: 1202:	     (cmdtok == NULLTOK && !incond));
+    #####: 1203:	oins = ins;
+        -: 1204:	/* Get the next token. */
+    #####: 1205:	if (linarr)
+    #####: 1206:	    incmdpos = 0;
+        -: 1207:	/*
+        -: 1208:	 * Arrange to parse assignments after typeset etc...
+        -: 1209:	 * but not if we're already in an array.
+        -: 1210:	 */
+    #####: 1211:	if (cmdtok == TYPESET)
+    #####: 1212:	    intypeset = !linarr;
+    #####: 1213:	ctxtlex();
+        -: 1214:
+    #####: 1215:	if (tok == LEXERR) {
+    #####: 1216:	    if (!tokstr)
+    #####: 1217:		break;
+    #####: 1218:	    for (j = 0, p = tokstr; *p; p++)
+    #####: 1219:		if (*p == Snull || *p == Dnull)
+    #####: 1220:		    j++;
+    #####: 1221:	    if (j & 1) {
+    #####: 1222:		if (lincmd && strchr(tokstr, '=')) {
+    #####: 1223:		    varq = 1;
+    #####: 1224:		    tok = ENVSTRING;
+        -: 1225:		} else
+    #####: 1226:		    tok = STRING;
+        -: 1227:	    }
+    #####: 1228:	} else if (tok == ENVSTRING)
+    #####: 1229:	    varq = 0;
+    #####: 1230:	if (tok == ENVARRAY) {
+    #####: 1231:	    linarr = 1;
+    #####: 1232:	    zsfree(varname);
+    #####: 1233:	    varname = ztrdup(tokstr);
+    #####: 1234:	} else if (tok == INPAR)
+    #####: 1235:	    parct++;
+    #####: 1236:	else if (tok == OUTPAR) {
+    #####: 1237:	    if (parct)
+    #####: 1238:		parct--;
+    #####: 1239:	    else if (linarr) {
+    #####: 1240:		linarr = 0;
+    #####: 1241:		incmdpos = 1;
+        -: 1242:	    }
+        -: 1243:	}
+    #####: 1244:	if (inredir && IS_REDIROP(tok)) {
+    #####: 1245:            rdstr = rdstrbuf;
+    #####: 1246:            if (tokfd >= 0)
+    #####: 1247:                sprintf(rdop, "%d%s", tokfd, tokstrings[tok]);
+        -: 1248:            else
+    #####: 1249:                strcpy(rdop, tokstrings[tok]);
+    #####: 1250:            strcpy(rdstr, rdop);
+        -: 1251:	    /* Record if we haven't had the command word yet */
+    #####: 1252:	    if (wordpos == redirpos)
+    #####: 1253:		redirpos++;
+    #####: 1254:	    if (zlemetacs < (zlemetall - inbufct) &&
+    #####: 1255:		zlemetacs >= wordbeg && wb == we) {
+        -: 1256:		/* Cursor is in the middle of a redirection, treat as a word */
+    #####: 1257:		we = zlemetall - (inbufct + addedx);
+    #####: 1258:		if (addedx && we > wb) {
+        -: 1259:		    /* Assume we are in {param}> form, wb points at "{" */
+    #####: 1260:		    wb++;
+        -: 1261:		    /* Should complete parameter names here */
+        -: 1262:		} else {
+        -: 1263:		    /* In "2>" form, zlemetacs points at "2" */
+    #####: 1264:		    wb = zlemetacs;
+        -: 1265:		    /* Should insert a space under cursor here */
+        -: 1266:		}
+        -: 1267:	    }
+        -: 1268:        }
+    #####: 1269:	if (tok == DINPAR)
+    #####: 1270:	    tokstr = NULL;
+        -: 1271:
+        -: 1272:	/* We reached the end. */
+    #####: 1273:	if (tok == ENDINPUT)
+    #####: 1274:	    break;
+    #####: 1275:	if ((ins && (tok == DOLOOP || tok == SEPER)) ||
+    #####: 1276:	    (ins == 2 && wordpos == 2) || (ins == 3 && wordpos == 3) ||
+    #####: 1277:	    tok == BAR    || tok == AMPER     ||
+    #####: 1278:	    tok == BARAMP || tok == AMPERBANG ||
+    #####: 1279:	    ((tok == DBAR || tok == DAMPER) && !incond) ||
+        -: 1280:	    /*
+        -: 1281:	     * Special case: we might reach a new command (incmdpos set)
+        -: 1282:	     * if we've already found the string we're completing (tt set)
+        -: 1283:	     * without hitting one of the above if we're using one of
+        -: 1284:	     * the special zsh forms of delimiting for conditions and
+        -: 1285:	     * loops that I really loathe having to support.
+        -: 1286:	     */
+    #####: 1287:	    (tt && incmdpos)) {
+        -: 1288:	    /* This is one of the things that separate commands.  If we  *
+        -: 1289:	     * already have the things we need (e.g. the token strings), *
+        -: 1290:	     * leave the loop.                                           */
+    #####: 1291:	    if (tt)
+    #####: 1292:		break;
+    #####: 1293:	    if (ins < 2) {
+        -: 1294:		/*
+        -: 1295:		 * Don't add this as a word, because we're about to start
+        -: 1296:		 * a new command line: pretend there's no string here.
+        -: 1297:		 * We don't dare do this if we're using one of the
+        -: 1298:		 * *really* gross hacks with ins to get later words
+        -: 1299:		 * to look like command words, because we don't
+        -: 1300:		 * understand how they work.  Quite possibly we
+        -: 1301:		 * should be using a mechanism like the one here rather
+        -: 1302:		 * than the ins thing.
+        -: 1303:		 */
+    #####: 1304:		noword = 1;
+        -: 1305:	    }
+        -: 1306:	    /* Otherwise reset the variables we are collecting data in. */
+    #####: 1307:	    wordpos = cp = rd = ins = redirpos = 0;
+    #####: 1308:	    tt0 = NULLTOK;
+        -: 1309:	}
+    #####: 1310:	if (lincmd && (tok == STRING || tok == FOR || tok == FOREACH ||
+    #####: 1311:		       tok == SELECT || tok == REPEAT || tok == CASE ||
+    #####: 1312:		       tok == TYPESET)) {
+        -: 1313:	    /* The lexer says, this token is in command position, so *
+        -: 1314:	     * store the token string (to find the right compctl).   */
+    #####: 1315:	    ins = (tok == REPEAT ? 2 : (tok != STRING && tok != TYPESET));
+    #####: 1316:	    zsfree(cmdstr);
+    #####: 1317:	    cmdstr = ztrdup(tokstr);
+    #####: 1318:	    cmdtok = tok;
+        -: 1319:	    /*
+        -: 1320:	     * If everything before is a redirection, or anything
+        -: 1321:	     * complicated enough that we've seen the word the
+        -: 1322:	     * cursor is on, don't reset the index.
+        -: 1323:	     */
+    #####: 1324:	    if (wordpos != redirpos && clwpos == -1)
+    #####: 1325:		wordpos = redirpos = 0;
+    #####: 1326:	} else if (tok == SEPER) {
+        -: 1327:	    /*
+        -: 1328:	     * A following DOLOOP should cause us to reset to the start
+        -: 1329:	     * of the command line.  For some reason we only recognise
+        -: 1330:	     * DOLOOP for this purpose (above) if ins is set.  Why?  To
+        -: 1331:	     * handle completing multiple SEPER-ated command positions on
+        -: 1332:	     * the same command line, e.g., pipelines.
+        -: 1333:	     */
+    #####: 1334:	    ins = (cmdtok != STRING && cmdtok != TYPESET);
+        -: 1335:	}
+    #####: 1336:	if (!lexflags && tt0 == NULLTOK) {
+        -: 1337:	    /* This is done when the lexer reached the word the cursor is on. */
+    #####: 1338:	    tt = tokstr ? dupstring(tokstr) : NULL;
+        -: 1339:
+        -: 1340:	    /*
+        -: 1341:	     * If there was a proper interface between this
+        -: 1342:	     * function and the lexical analyser, we wouldn't
+        -: 1343:	     * have to fix things up.
+        -: 1344:	     *
+        -: 1345:	     * Fix up backslash-newline pairs in zlemetaline
+        -: 1346:	     * that the lexer will have removed.  As we're
+        -: 1347:	     * looking back at the zlemetaline version it's
+        -: 1348:	     * still using untokenized quotes.
+        -: 1349:	     */
+    #####: 1350:	    for (i = j = k = 0, u = zlemetaline + wb;
+    #####: 1351:		 u < zlemetaline + we; u++) {
+    #####: 1352:		if (*u == '`' && !(k & 1))
+    #####: 1353:		    i++;
+    #####: 1354:		else if (*u == '\"' && !(k & 1) && !(i & 1))
+    #####: 1355:		    j++;
+    #####: 1356:		else if (*u == '\'' && !(j & 1))
+    #####: 1357:		    k++;
+    #####: 1358:		else if (*u == '\\' && u[1] && !(k & 1))
+        -: 1359:		{
+    #####: 1360:		    if (u[1] == '\n') {
+        -: 1361:			/* Removed by lexer in tt */
+    #####: 1362:			qsub += 2;
+        -: 1363:		    }
+    #####: 1364:		    u++;
+        -: 1365:		}
+        -: 1366:	    }
+        -: 1367:	    /*
+        -: 1368:	     * Fix up RCQUOTES quotes that the
+        -: 1369:	     * the lexer will also have removed.
+        -: 1370:	     */
+    #####: 1371:            if (isset(RCQUOTES) && tt) {
+    #####: 1372:		char *tt1, *e = tt + zlemetacs - wb - qsub;
+    #####: 1373:		for (tt1 = tt; *tt1; tt1++) {
+    #####: 1374:		    if (*tt1 == Snull) {
+        -: 1375:			char *p;
+    #####: 1376:			for (p = tt1; *p && p < e; p++)
+    #####: 1377:			    if (*p == '\'')
+    #####: 1378:				qsub++;
+        -: 1379:		    }
+        -: 1380:		}
+        -: 1381:            }
+        -: 1382:	    /* If we added a `x', remove it. */
+    #####: 1383:	    if (addedx && tt)
+    #####: 1384:		chuck(tt + zlemetacs - wb - qsub);
+    #####: 1385:	    tt0 = tok;
+        -: 1386:	    /* Store the number of this word. */
+    #####: 1387:	    clwpos = wordpos;
+    #####: 1388:	    cp = lincmd;
+    #####: 1389:	    rd = linredir;
+    #####: 1390:	    ia = linarr;
+    #####: 1391:	    if (inwhat == IN_NOTHING && incond)
+    #####: 1392:		inwhat = IN_COND;
+    #####: 1393:	} else if (linredir) {
+    #####: 1394:            if (rdop[0] && tokstr)
+    #####: 1395:                zaddlinknode(rdstrs, tricat(rdop, ":", tokstr));
+    #####: 1396:	    continue;
+        -: 1397:        }
+    #####: 1398:	if (incond) {
+    #####: 1399:	    if (tok == DBAR)
+    #####: 1400:		tokstr = "||";
+    #####: 1401:	    else if (tok == DAMPER)
+    #####: 1402:		tokstr = "&&";
+        -: 1403:	}
+    #####: 1404:	if (!tokstr || noword)
+    #####: 1405:	    continue;
+        -: 1406:	/* Hack to allow completion after `repeat n do'. */
+    #####: 1407:	if (oins == 2 && !wordpos && !strcmp(tokstr, "do"))
+    #####: 1408:	    ins = 3;
+        -: 1409:	/* We need to store the token strings of all words (for some of *
+        -: 1410:	 * the more complicated compctl -x things).  They are stored in *
+        -: 1411:	 * the clwords array.  Make this array big enough.              */
+    #####: 1412:	if (wordpos + 1 == clwsize) {
+        -: 1413:	    int n;
+    #####: 1414:	    clwords = (char **)realloc(clwords,
+    #####: 1415:				       (clwsize *= 2) * sizeof(char *));
+    #####: 1416:	    for(n = clwsize; --n > wordpos; )
+    #####: 1417:		clwords[n] = NULL;
+        -: 1418:	}
+    #####: 1419:	zsfree(clwords[wordpos]);
+        -: 1420:	/* And store the current token string. */
+    #####: 1421:	clwords[wordpos] = ztrdup(tokstr);
+    #####: 1422:	sl = strlen(tokstr);
+        -: 1423:	/* Sometimes the lexer gives us token strings ending with *
+        -: 1424:	 * spaces we delete the spaces.                           */
+    #####: 1425:	while (sl && clwords[wordpos][sl - 1] == ' ' &&
+    #####: 1426:	       (sl < 2 || (clwords[wordpos][sl - 2] != Bnull &&
+    #####: 1427:			   clwords[wordpos][sl - 2] != Meta)))
+    #####: 1428:	    clwords[wordpos][--sl] = '\0';
+        -: 1429:	/* If this is the word the cursor is in and we added a `x', *
+        -: 1430:	 * remove it.                                               */
+    #####: 1431:	if (clwpos == wordpos++ && addedx) {
+        -: 1432:	    int chuck_at, word_diff;
+    #####: 1433:	    zlemetacs_qsub = zlemetacs - qsub;
+    #####: 1434:	    word_diff = zlemetacs_qsub - wb;
+        -: 1435:	    /* Ensure we chuck within the word... */
+    #####: 1436:	    if (word_diff >= sl)
+    #####: 1437:		chuck_at = sl -1;
+    #####: 1438:	    else if (word_diff < 0)
+    #####: 1439:		chuck_at = 0;
+        -: 1440:	    else
+    #####: 1441:		chuck_at = word_diff;
+    #####: 1442:	    chuck(&clwords[wordpos - 1][chuck_at]);
+        -: 1443:	}
+    #####: 1444:    } while (tok != LEXERR && tok != ENDINPUT &&
+    #####: 1445:	     (tok != SEPER || (lexflags && tt0 == NULLTOK)));
+        -: 1446:    /* Calculate the number of words stored in the clwords array. */
+    #####: 1447:    clwnum = (tt || !wordpos) ? wordpos : wordpos - 1;
+    #####: 1448:    zsfree(clwords[clwnum]);
+    #####: 1449:    clwords[clwnum] = NULL;
+    #####: 1450:    t0 = tt0;
+    #####: 1451:    if (ia) {
+    #####: 1452:	lincmd = linredir = 0;
+    #####: 1453:	inwhat = IN_ENV;
+        -: 1454:    } else {
+    #####: 1455:	lincmd = cp;
+    #####: 1456:	linredir = rd;
+        -: 1457:    }
+    #####: 1458:    strinend();
+    #####: 1459:    inpop();
+    #####: 1460:    lexflags = 0;
+    #####: 1461:    errflag &= ~ERRFLAG_ERROR;
+    #####: 1462:    if (parbegin != -1) {
+        -: 1463:	/* We are in command or process substitution if we are not in
+        -: 1464:	 * a $((...)). */
+    #####: 1465:	if (parend >= 0 && !tmp)
+    #####: 1466:	    zlemetaline = dupstring(tmp = zlemetaline);
+    #####: 1467:	linptr = zlemetaline + zlemetall + addedx - parbegin + 1;
+    #####: 1468:	if ((linptr - zlemetaline) < 3 || *linptr != '(' ||
+    #####: 1469:	    linptr[-1] != '(' || linptr[-2] != '$') {
+    #####: 1470:	    if (parend >= 0) {
+    #####: 1471:		zlemetall -= parend;
+    #####: 1472:		zlemetaline[zlemetall + addedx] = '\0';
+        -: 1473:	    }
+    #####: 1474:	    zcontext_restore();
+    #####: 1475:	    tt = NULL;
+    #####: 1476:	    goto start;
+        -: 1477:	}
+        -: 1478:    }
+        -: 1479:
+    #####: 1480:    if (inwhat == IN_MATH)
+    #####: 1481:	s = NULL;
+    #####: 1482:    else if (t0 == NULLTOK || t0 == ENDINPUT) {
+        -: 1483:	/* There was no word (empty line). */
+    #####: 1484:	s = ztrdup("");
+    #####: 1485:	we = wb = zlemetacs;
+    #####: 1486:	clwpos = clwnum;
+    #####: 1487:	t0 = STRING;
+    #####: 1488:    } else if (t0 == STRING || t0 == TYPESET) {
+        -: 1489:	/* We found a simple string. */
+    #####: 1490:	s = clwords[clwpos];
+        -: 1491:	DPUTS(!s, "Completion word has disappeared!");
+    #####: 1492:	s = ztrdup(s ? s : "");
+    #####: 1493:    } else if (t0 == ENVSTRING) {
+        -: 1494:	char sav;
+        -: 1495:	/* The cursor was inside a parameter assignment. */
+        -: 1496:
+    #####: 1497:	if (varq)
+    #####: 1498:	    tt = clwords[clwpos];
+        -: 1499:
+    #####: 1500:	s = itype_end(tt, IIDENT, 0);
+    #####: 1501:	sav = *s;
+    #####: 1502:	*s = '\0';
+    #####: 1503:	zsfree(varname);
+    #####: 1504:	varname = ztrdup(tt);
+    #####: 1505:	*s = sav;
+    #####: 1506:        if (*s == '+')
+    #####: 1507:            s++;
+    #####: 1508:	if (skipparens(Inbrack, Outbrack, &s) > 0 || s > tt +
+    #####: 1509:	    zlemetacs_qsub - wb) {
+    #####: 1510:	    s = NULL;
+    #####: 1511:	    inwhat = IN_MATH;
+    #####: 1512:	    if ((keypm = (Param) paramtab->getnode(paramtab, varname)) &&
+    #####: 1513:		(keypm->node.flags & PM_HASHED))
+    #####: 1514:		insubscr = 2;
+        -: 1515:	    else
+    #####: 1516:		insubscr = 1;
+    #####: 1517:	} else if (*s == '=') {
+    #####: 1518:            if (zlemetacs_qsub > wb + (s - tt)) {
+    #####: 1519:                s++;
+    #####: 1520:                wb += s - tt;
+    #####: 1521:                s = ztrdup(s);
+    #####: 1522:                inwhat = IN_ENV;
+        -: 1523:            } else {
+    #####: 1524:                char *p = s;
+        -: 1525:
+    #####: 1526:                if (p[-1] == '+')
+    #####: 1527:                    p--;
+    #####: 1528:                sav = *p;
+    #####: 1529:                *p = '\0';
+    #####: 1530:                inwhat = IN_PAR;
+    #####: 1531:                s = ztrdup(tt);
+    #####: 1532:                *p = sav;
+    #####: 1533:                we = wb + p - tt;
+        -: 1534:            }
+    #####: 1535:            t0 = STRING;
+        -: 1536:	}
+    #####: 1537:	lincmd = 1;
+        -: 1538:    }
+    #####: 1539:    if (we > zlemetall)
+    #####: 1540:	we = zlemetall;
+    #####: 1541:    tt = zlemetaline;
+    #####: 1542:    if (tmp) {
+    #####: 1543:	zlemetaline = tmp;
+    #####: 1544:	zlemetall = strlen(zlemetaline);
+        -: 1545:    }
+    #####: 1546:    if (t0 != STRING && t0 != TYPESET && inwhat != IN_MATH) {
+    #####: 1547:	if (tmp) {
+    #####: 1548:	    tmp = NULL;
+    #####: 1549:	    linptr = zlemetaline;
+    #####: 1550:	    zcontext_restore();
+    #####: 1551:	    addedx = 0;
+    #####: 1552:	    goto start;
+        -: 1553:	}
+    #####: 1554:	noaliases = ona;
+    #####: 1555:	zcontext_restore();
+    #####: 1556:	return NULL;
+        -: 1557:    }
+        -: 1558:
+    #####: 1559:    noaliases = ona;
+        -: 1560:
+        -: 1561:    /* Check if we are in an array subscript.  We simply assume that  *
+        -: 1562:     * we are in a subscript if we are in brackets.  Correct solution *
+        -: 1563:     * is very difficult.  This is quite close, but gets things like  *
+        -: 1564:     * foo[_ wrong (note no $).  If we are in a subscript, treat it   *
+        -: 1565:     * as being in math.                                              */
+    #####: 1566:    if (inwhat != IN_MATH) {
+    #####: 1567:	char *nnb, *nb = NULL, *ne = NULL;
+        -: 1568:
+    #####: 1569:	i = 0;
+    #####: 1570:	MB_METACHARINIT();
+    #####: 1571:	if (itype_end(s, IIDENT, 1) == s)
+    #####: 1572:	    nnb = s + MB_METACHARLEN(s);
+        -: 1573:	else
+    #####: 1574:	    nnb = s;
+    #####: 1575:	tt = s;
+    #####: 1576:	if (lincmd)
+        -: 1577:	{
+        -: 1578:	    /*
+        -: 1579:	     * Ignore '['s at the start of a command as they're not
+        -: 1580:	     * matched by closing brackets.
+        -: 1581:	     */
+    #####: 1582:	    while (*tt == Inbrack && tt < s + zlemetacs_qsub - wb)
+    #####: 1583:		tt++;
+        -: 1584:	}
+    #####: 1585:	while (tt < s + zlemetacs_qsub - wb) {
+    #####: 1586:	    if (*tt == Inbrack) {
+    #####: 1587:		i++;
+    #####: 1588:		nb = nnb;
+    #####: 1589:		ne = tt;
+    #####: 1590:		tt++;
+    #####: 1591:	    } else if (i && *tt == Outbrack) {
+    #####: 1592:		i--;
+    #####: 1593:		tt++;
+        -: 1594:	    } else {
+    #####: 1595:		int nclen = MB_METACHARLEN(tt);
+    #####: 1596:		if (itype_end(tt, IIDENT, 1) == tt)
+    #####: 1597:		    nnb = tt + nclen;
+    #####: 1598:		tt += nclen;
+        -: 1599:	    }
+        -: 1600:	}
+    #####: 1601:	if (i) {
+    #####: 1602:	    inwhat = IN_MATH;
+    #####: 1603:	    insubscr = 1;
+    #####: 1604:	    if (nb < ne) {
+    #####: 1605:		char sav = *ne;
+    #####: 1606:		*ne = '\0';
+    #####: 1607:		zsfree(varname);
+    #####: 1608:		varname = ztrdup(nb);
+    #####: 1609:		*ne = sav;
+    #####: 1610:		if ((keypm = (Param) paramtab->getnode(paramtab, varname)) &&
+    #####: 1611:		    (keypm->node.flags & PM_HASHED))
+    #####: 1612:		    insubscr = 2;
+        -: 1613:	    }
+        -: 1614:	}
+        -: 1615:    }
+    #####: 1616:    if (inwhat == IN_MATH) {
+    #####: 1617:	if (compfunc || insubscr == 2) {
+        -: 1618:	    int lev;
+        -: 1619:	    char *p;
+        -: 1620:
+    #####: 1621:	    for (wb = zlemetacs - 1, lev = 0; wb > 0; wb--)
+    #####: 1622:		if (zlemetaline[wb] == ']' || zlemetaline[wb] == ')')
+    #####: 1623:		    lev++;
+    #####: 1624:		else if (zlemetaline[wb] == '[') {
+    #####: 1625:		    if (!lev--)
+    #####: 1626:			break;
+    #####: 1627:		} else if (zlemetaline[wb] == '(') {
+    #####: 1628:		    if (!lev && zlemetaline[wb - 1] == '(')
+    #####: 1629:			break;
+    #####: 1630:		    if (lev)
+    #####: 1631:			lev--;
+        -: 1632:		}
+    #####: 1633:	    p = zlemetaline + wb;
+    #####: 1634:	    wb++;
+    #####: 1635:	    if (wb && (*p == '[' || *p == '(') &&
+    #####: 1636:		!skipparens(*p, (*p == '[' ? ']' : ')'), &p)) {
+    #####: 1637:		we = (p - zlemetaline) - 1;
+    #####: 1638:		if (insubscr == 2)
+    #####: 1639:		    insubscr = 3;
+        -: 1640:	    }
+        -: 1641:	} else {
+        -: 1642:	    /* In mathematical expression, we complete parameter names  *
+        -: 1643:	     * (even if they don't have a `$' in front of them).  So we *
+        -: 1644:	     * have to find that name.                                  */
+    #####: 1645:	    char *cspos = zlemetaline + zlemetacs, *wptr, *cptr;
+    #####: 1646:	    we = itype_end(cspos, IIDENT, 0) - zlemetaline;
+        -: 1647:
+        -: 1648:	    /*
+        -: 1649:	     * With multibyte characters we need to go forwards,
+        -: 1650:	     * so start at the beginning of the line and continue
+        -: 1651:	     * until cspos.
+        -: 1652:	     */
+    #####: 1653:	    wptr = cptr = zlemetaline;
+        -: 1654:	    for (;;) {
+    #####: 1655:		cptr = itype_end(wptr, IIDENT, 0);
+    #####: 1656:		if (cptr == wptr) {
+        -: 1657:		    /* not an ident character */
+    #####: 1658:		    wptr = (cptr += MB_METACHARLEN(cptr));
+        -: 1659:		}
+    #####: 1660:		if (cptr >= cspos) {
+    #####: 1661:		    wb = wptr - zlemetaline;
+    #####: 1662:		    break;
+        -: 1663:		}
+    #####: 1664:		wptr = cptr;
+        -: 1665:	    }
+        -: 1666:	}
+    #####: 1667:	zsfree(s);
+    #####: 1668:	s = zalloc(we - wb + 1);
+    #####: 1669:	strncpy(s, zlemetaline + wb, we - wb);
+    #####: 1670:	s[we - wb] = '\0';
+        -: 1671:
+    #####: 1672:	if (wb > 2 && zlemetaline[wb - 1] == '[') {
+    #####: 1673:	    char *sqbr = zlemetaline + wb - 1, *cptr, *wptr;
+        -: 1674:
+        -: 1675:	    /* Need to search forward for word characters */
+    #####: 1676:	    cptr = wptr = zlemetaline;
+        -: 1677:	    for (;;) {
+    #####: 1678:		cptr = itype_end(wptr, IIDENT, 0);
+    #####: 1679:		if (cptr == wptr) {
+        -: 1680:		    /* not an ident character */
+    #####: 1681:		    wptr = (cptr += MB_METACHARLEN(cptr));
+        -: 1682:		}
+    #####: 1683:		if (cptr >= sqbr)
+    #####: 1684:		    break;
+    #####: 1685:		wptr = cptr;
+        -: 1686:	    }
+        -: 1687:
+    #####: 1688:	    if (wptr < sqbr) {
+    #####: 1689:		zsfree(varname);
+    #####: 1690:		varname = ztrduppfx(wptr, sqbr - wptr);
+    #####: 1691:		if ((keypm = (Param) paramtab->getnode(paramtab, varname)) &&
+    #####: 1692:		    (keypm->node.flags & PM_HASHED)) {
+    #####: 1693:		    if (insubscr != 3)
+    #####: 1694:			insubscr = 2;
+        -: 1695:		} else
+    #####: 1696:		    insubscr = 1;
+        -: 1697:	    }
+        -: 1698:	}
+        -: 1699:
+    #####: 1700:	parse_subst_string(s);
+        -: 1701:    }
+        -: 1702:    /* This variable will hold the current word in quoted form. */
+    #####: 1703:    offs = zlemetacs - wb;
+    #####: 1704:    if ((p = parambeg(s))) {
+    #####: 1705:	for (p = s; *p; p++)
+    #####: 1706:	    if (*p == Dnull)
+    #####: 1707:		*p = '"';
+    #####: 1708:	    else if (*p == Snull)
+    #####: 1709:		*p = '\'';
+        -: 1710:    } else {
+    #####: 1711:        int level = 0;
+        -: 1712:
+    #####: 1713:        for (p = s; *p; p++) {
+    #####: 1714:            if (level && *p == Snull)
+    #####: 1715:                *p = '\'';
+    #####: 1716:            else if (level && *p == Dnull)
+    #####: 1717:                *p = '"';
+    #####: 1718:            else if ((*p == String || *p == Qstring) && p[1] == Inbrace)
+    #####: 1719:                level++;
+    #####: 1720:            else if (*p == Outbrace)
+    #####: 1721:                level--;
+        -: 1722:        }
+        -: 1723:    }
+    #####: 1724:    if ((*s == Snull || *s == Dnull ||
+    #####: 1725:	((*s == String || *s == Qstring) && s[1] == Snull))
+    #####: 1726:	&& !has_real_token(s + 1)) {
+    #####: 1727:	int sl = strlen(s);
+    #####: 1728:	char *q, *qtptr = s, *n;
+        -: 1729:
+    #####: 1730:	switch (*s) {
+    #####: 1731:	case Snull:
+    #####: 1732:	    q = "'";
+    #####: 1733:	    instring = QT_SINGLE;
+    #####: 1734:	    break;
+        -: 1735:
+    #####: 1736:	case Dnull:
+    #####: 1737:	    q = "\"";
+    #####: 1738:	    instring = QT_DOUBLE;
+    #####: 1739:	    break;
+        -: 1740:
+    #####: 1741:	default:
+    #####: 1742:	    q = "$'";
+    #####: 1743:	    instring = QT_DOLLARS;
+    #####: 1744:	    qtptr++;
+    #####: 1745:	    sl--;
+    #####: 1746:	    break;
+        -: 1747:	}
+        -: 1748:
+    #####: 1749:	n = tricat(qipre, q, "");
+    #####: 1750:	zsfree(qipre);
+    #####: 1751:	qipre = n;
+        -: 1752:	/*
+        -: 1753:	 * TODO: it's certainly the case that the suffix for
+        -: 1754:	 * $' is ', but exactly what does that affect?
+        -: 1755:	 */
+    #####: 1756:	if (*q == '$')
+    #####: 1757:	    q++;
+    #####: 1758:	if (sl > 1 && qtptr[sl - 1] == *qtptr) {
+    #####: 1759:	    n = tricat(q, qisuf, "");
+    #####: 1760:	    zsfree(qisuf);
+    #####: 1761:	    qisuf = n;
+        -: 1762:	}
+    #####: 1763:	autoq = ztrdup(q);
+        -: 1764:
+        -: 1765:	/*
+        -: 1766:	 * \! in double quotes is extracted by the history code before normal
+        -: 1767:	 * parsing, so sanitize it here, too.
+        -: 1768:	 */
+    #####: 1769:        if (instring == QT_DOUBLE) {
+    #####: 1770:            for (q = s; *q; q++)
+    #####: 1771:                if (*q == '\\' && q[1] == '!')
+    #####: 1772:                    *q = Bnull;
+        -: 1773:        }
+        -: 1774:    }
+        -: 1775:    /*
+        -: 1776:     * Leading "=" gets tokenized in case the EQUALS options
+        -: 1777:     * changes afterwards.  It's too late for that now, so restore it
+        -: 1778:     * to a plain "=" if the option is unset.
+        -: 1779:     */
+    #####: 1780:    if (*s == Equals && !isset(EQUALS))
+    #####: 1781:	*s = '=';
+        -: 1782:    /* While building the quoted form, we also clean up the command line. */
+    #####: 1783:    for (p = s, i = wb, j = 0; *p; p++, i++) {
+        -: 1784:	int skipchars;
+    #####: 1785:	if (*p == String && p[1] == Snull) {
+        -: 1786:	    char *pe;
+    #####: 1787:	    for (pe = p + 2; *pe && *pe != Snull && i + (pe - p) < zlemetacs;
+    #####: 1788:		 pe++)
+        -: 1789:		;
+    #####: 1790:	    if (*pe != Snull) {
+        -: 1791:		/* no terminating Snull, can't substitute */
+    #####: 1792:		skipchars = 2;
+    #####: 1793:		if (*pe)
+    #####: 1794:		    j = 1;
+        -: 1795:	    } else {
+        -: 1796:		/*
+        -: 1797:		 * Try and substitute the $'...' expression.
+        -: 1798:		 */
+        -: 1799:		int len, tlen;
+    #####: 1800:		char *t = getkeystring(p + 2, &len, GETKEYS_DOLLARS_QUOTE,
+        -: 1801:				       NULL);
+    #####: 1802:		len += 2;
+    #####: 1803:		tlen = strlen(t);
+    #####: 1804:		skipchars = len - tlen;
+        -: 1805:		/*
+        -: 1806:		 * If this makes the line longer, we don't attempt
+        -: 1807:		 * to substitute it.  This is because "we" don't
+        -: 1808:		 * really understand what the heck is going on anyway
+        -: 1809:		 * and have blindly copied the code here from
+        -: 1810:		 * the sections below.
+        -: 1811:		 */
+    #####: 1812:		if (skipchars >= 0) {
+        -: 1813:		    /* Update the completion string */
+    #####: 1814:		    memcpy(p, t, tlen);
+        -: 1815:		    /* Update the version of the line we are operating on */
+    #####: 1816:		    ocs = zlemetacs;
+    #####: 1817:		    zlemetacs = i;
+    #####: 1818:		    if (skipchars > 0) {
+        -: 1819:			/* Move the tail of the completion string up. */
+    #####: 1820:			char *dptr = p + tlen;
+    #####: 1821:			char *sptr = p + len;
+    #####: 1822:			while ((*dptr++ = *sptr++))
+        -: 1823:			    ;
+        -: 1824:			/*
+        -: 1825:			 * If the character is before the cursor, we need to
+        -: 1826:			 * update the offset into the completion string to the
+        -: 1827:			 * cursor position, too.  (Use ocs since we've hacked
+        -: 1828:			 * zlemetacs at this point.)
+        -: 1829:			 */
+    #####: 1830:			if (i < ocs)
+    #####: 1831:			    offs -= skipchars;
+        -: 1832:			/* Move the tail of the line up */
+    #####: 1833:			foredel(skipchars, CUT_RAW);
+        -: 1834:			/*
+        -: 1835:			 * Update the offset into the command line to the
+        -: 1836:			 * cursor position if that's after the current position.
+        -: 1837:			 */
+    #####: 1838:			if ((zlemetacs = ocs) > i)
+    #####: 1839:			    zlemetacs -= skipchars;
+        -: 1840:			/* Always update the word end. */
+    #####: 1841:			we -= skipchars;
+        -: 1842:		    }
+        -: 1843:		    /*
+        -: 1844:		     * Copy the unquoted string into place, which
+        -: 1845:		     * now has the correct size.
+        -: 1846:		     */
+    #####: 1847:		    memcpy(zlemetaline + i, t, tlen);
+        -: 1848:
+        -: 1849:		    /*
+        -: 1850:		     * Move both the completion string pointer
+        -: 1851:		     * and the command line offset to the end of
+        -: 1852:		     * the chunk we've copied in (minus 1 for
+        -: 1853:		     * the end of loop increment).  The line
+        -: 1854:		     * and completion string chunks are now the
+        -: 1855:		     * same length.
+        -: 1856:		     */
+    #####: 1857:		    p += tlen - 1;
+    #####: 1858:		    i += tlen - 1;
+    #####: 1859:		    continue;
+        -: 1860:		} else {
+        -: 1861:		    /*
+        -: 1862:		     * We give up if the expansion is longer the original
+        -: 1863:		     * string.  That's because "we" don't really have the
+        -: 1864:		     * first clue how the completion system actually works.
+        -: 1865:		     */
+    #####: 1866:		    skipchars = 2;
+        -: 1867:		    /*
+        -: 1868:		     * Also pretend we're in single quotes.
+        -: 1869:		     */
+    #####: 1870:		    j = 1;
+        -: 1871:		}
+        -: 1872:	    }
+        -: 1873:	}
+    #####: 1874:	else if (*p == Qstring && p[1] == Snull)
+    #####: 1875:	    skipchars = 2;
+    #####: 1876:	else if (inull(*p))
+    #####: 1877:	    skipchars = 1;
+        -: 1878:	else
+    #####: 1879:	    skipchars = 0;
+    #####: 1880:	if (skipchars) {
+    #####: 1881:	    if (i < zlemetacs)
+    #####: 1882:		offs -= skipchars;
+    #####: 1883:	    if (*p == Snull && isset(RCQUOTES))
+    #####: 1884:		j = 1-j;
+    #####: 1885:	    if (p[1] || *p != Bnull) {
+    #####: 1886:		if (*p == Bnull) {
+    #####: 1887:		    if (zlemetacs == i + 1)
+    #####: 1888:			zlemetacs++, offs++;
+        -: 1889:		} else {
+    #####: 1890:		    ocs = zlemetacs;
+    #####: 1891:		    zlemetacs = i;
+    #####: 1892:		    foredel(skipchars, CUT_RAW);
+    #####: 1893:		    if ((zlemetacs = ocs) > --i) {
+    #####: 1894:			zlemetacs -= skipchars;
+        -: 1895:			/* do not skip past the beginning of the word */
+    #####: 1896:			if (wb > zlemetacs)
+    #####: 1897:			    zlemetacs = wb;
+        -: 1898:		    }
+    #####: 1899:		    we -= skipchars;
+        -: 1900:		}
+        -: 1901:	    } else {
+    #####: 1902:		ocs = zlemetacs;
+    #####: 1903:		zlemetacs = we;
+    #####: 1904:		backdel(skipchars, CUT_RAW);
+    #####: 1905:		if (ocs == we)
+    #####: 1906:		    zlemetacs = we - skipchars;
+        -: 1907:		else
+    #####: 1908:		    zlemetacs = ocs;
+        -: 1909:		/* do not skip past the beginning of the word */
+    #####: 1910:		if (wb > zlemetacs)
+    #####: 1911:		    zlemetacs = wb;
+    #####: 1912:		we -= skipchars;
+        -: 1913:	    }
+        -: 1914:	    /* we need to get rid of all the quotation bits... */
+    #####: 1915:	    while (skipchars--)
+    #####: 1916:		chuck(p);
+        -: 1917:	    /* but we only decrement once to confuse the loop increment. */
+    #####: 1918:	    p--;
+    #####: 1919:	} else if (j && *p == '\'' && i < zlemetacs)
+    #####: 1920:	    offs--;
+        -: 1921:    }
+        -: 1922:
+    #####: 1923:    zsfree(origword);
+    #####: 1924:    origword = ztrdup(s);
+        -: 1925:
+    #####: 1926:    if (!isset(IGNOREBRACES)) {
+        -: 1927:	/* Try and deal with foo{xxx etc. */
+        -: 1928:	/*}*/
+    #####: 1929:	char *curs = s + (isset(COMPLETEINWORD) ? offs : (int)strlen(s));
+    #####: 1930:	char *predup = dupstring(s), *dp = predup;
+    #####: 1931:	char *bbeg = NULL, *bend = NULL, *dbeg = NULL;
+    #####: 1932:	char *lastp = NULL, *firsts = NULL;
+    #####: 1933:	int cant = 0, begi = 0, boffs = offs, hascom = 0;
+        -: 1934:
+    #####: 1935:	for (i = 0, p = s; *p; p++, dp++, i++) {
+        -: 1936:	    /* careful, ${... is not a brace expansion...
+        -: 1937:	     * we try to get braces after a parameter expansion right,
+        -: 1938:	     * but this may fail sometimes. sorry.
+        -: 1939:	     */
+        -: 1940:	    /*}*/
+    #####: 1941:	    if (*p == String || *p == Qstring) {
+    #####: 1942:		if (p[1] == Inbrace || p[1] == Inpar || p[1] == Inbrack) {
+    #####: 1943:		    char *tp = p + 1;
+        -: 1944:
+    #####: 1945:		    if (skipparens(*tp, (*tp == Inbrace ? Outbrace :
+    #####: 1946:					 (*tp == Inpar ? Outpar : Outbrack)),
+        -: 1947:				   &tp)) {
+    #####: 1948:			tt = NULL;
+    #####: 1949:			break;
+        -: 1950:		    }
+    #####: 1951:		    i += tp - p;
+    #####: 1952:		    dp += tp - p;
+    #####: 1953:		    p = tp;
+    #####: 1954:		} else if (p[1] != Snull /* paranoia: should be gone now */) {
+    #####: 1955:		    char *tp = p + 1;
+        -: 1956:
+    #####: 1957:		    for (; *tp == '^' || *tp == Hat ||
+    #####: 1958:			     *tp == '=' || *tp == Equals ||
+    #####: 1959:			     *tp == '~' || *tp == Tilde ||
+    #####: 1960:			     *tp == '#' || *tp == Pound || *tp == '+';
+    #####: 1961:			 tp++);
+    #####: 1962:		    if (*tp == Quest || *tp == Star || *tp == String ||
+    #####: 1963:			*tp == Qstring || *tp == '?' || *tp == '*' ||
+    #####: 1964:			*tp == '$' || *tp == '-' || *tp == '!' ||
+    #####: 1965:			*tp == '@')
+    #####: 1966:			p++, i++;
+        -: 1967:		    else {
+        -: 1968:			char *ie;
+    #####: 1969:			if (idigit(*tp))
+    #####: 1970:			    while (idigit(*tp))
+    #####: 1971:				tp++;
+    #####: 1972:			else if ((ie = itype_end(tp, IIDENT, 0)) != tp)
+    #####: 1973:			    tp = ie;
+        -: 1974:			else {
+    #####: 1975:			    tt = NULL;
+    #####: 1976:			    break;
+        -: 1977:			}
+    #####: 1978:			if (*tp == Inbrace) {
+    #####: 1979:			    cant = 1;
+    #####: 1980:			    break;
+        -: 1981:			}
+    #####: 1982:			tp--;
+    #####: 1983:			i += tp - p;
+    #####: 1984:			dp += tp - p;
+    #####: 1985:			p = tp;
+        -: 1986:		    }
+        -: 1987:		}
+    #####: 1988:	    } else if (p < curs) {
+    #####: 1989:		if (*p == Outbrace) {
+        -: 1990:		    /*
+        -: 1991:		     * HERE: strip and remember code from last
+        -: 1992:		     * comma to here.
+        -: 1993:		     */
+    #####: 1994:		    cant = 1;
+    #####: 1995:		    break;
+        -: 1996:		}
+    #####: 1997:		if (*p == Inbrace) {
+    #####: 1998:		    char *tp = p;
+        -: 1999:
+    #####: 2000:		    if (!skipparens(Inbrace, Outbrace, &tp)) {
+        -: 2001:			/*
+        -: 2002:			 * Balanced brace: skip.
+        -: 2003:			 * We only deal with unfinished braces, so
+        -: 2004:			 *  something{foo<x>bar,morestuff}else
+        -: 2005:			 * doesn't work
+        -: 2006:			 *
+        -: 2007:			 * HERE: instead, continue, look for a comma.
+        -: 2008:			 * Stack tp and brace for popping when we
+        -: 2009:			 * find a comma at each level.
+        -: 2010:			 */
+    #####: 2011:			i += tp - p - 1;
+    #####: 2012:			dp += tp - p - 1;
+    #####: 2013:			p = tp - 1;
+    #####: 2014:			continue;
+        -: 2015:		    }
+    #####: 2016:		    makecommaspecial(1);
+    #####: 2017:		    if (bbeg) {
+        -: 2018:			Brinfo new;
+    #####: 2019:			int len = bend - bbeg;
+        -: 2020:
+    #####: 2021:			new = (Brinfo) zalloc(sizeof(*new));
+    #####: 2022:			nbrbeg++;
+        -: 2023:
+    #####: 2024:			new->next = NULL;
+    #####: 2025:			if (lastbrbeg)
+    #####: 2026:			    lastbrbeg->next = new;
+        -: 2027:			else
+    #####: 2028:			    brbeg = new;
+    #####: 2029:			lastbrbeg = new;
+        -: 2030:
+    #####: 2031:			new->next = NULL;
+    #####: 2032:			new->str = dupstrpfx(bbeg, len);
+    #####: 2033:			new->str = ztrdup(quotename(new->str));
+    #####: 2034:			untokenize(new->str);
+    #####: 2035:			new->pos = begi;
+    #####: 2036:			*dbeg = '\0';
+    #####: 2037:			new->qpos = strlen(quotename(predup));
+    #####: 2038:			*dbeg = '{';
+    #####: 2039:			i -= len;
+    #####: 2040:			boffs -= len;
+    #####: 2041:			memmove(dbeg, dbeg + len, 1+strlen(dbeg+len));
+    #####: 2042:			dp -= len;
+        -: 2043:		    }
+    #####: 2044:		    bbeg = lastp = p;
+    #####: 2045:		    dbeg = dp;
+    #####: 2046:		    bend = p + 1;
+    #####: 2047:		    begi = i;
+    #####: 2048:		} else if (*p == Comma && bbeg) {
+    #####: 2049:		    bend = p + 1;
+    #####: 2050:		    hascom = 1;
+        -: 2051:		}
+        -: 2052:	    } else {
+        -: 2053:		/* On or after the cursor position */
+    #####: 2054:		if (*p == Inbrace) {
+    #####: 2055:		    char *tp = p;
+        -: 2056:
+    #####: 2057:		    if (!skipparens(Inbrace, Outbrace, &tp)) {
+        -: 2058:			/*
+        -: 2059:			 * Balanced braces after the cursor.
+        -: 2060:			 * Could do the same with these as
+        -: 2061:			 * those before the cursor.
+        -: 2062:			 */
+    #####: 2063:			i += tp - p - 1;
+    #####: 2064:			dp += tp - p - 1;
+    #####: 2065:			p = tp - 1;
+    #####: 2066:			continue;
+        -: 2067:		    }
+    #####: 2068:		    cant = 1;
+    #####: 2069:		    makecommaspecial(1);
+    #####: 2070:		    break;
+        -: 2071:		}
+    #####: 2072:		if (p == curs) {
+        -: 2073:		    /*
+        -: 2074:		     * We've reached the cursor position.
+        -: 2075:		     * If there's a pending open brace at this
+        -: 2076:		     * point we need to stack the text.
+        -: 2077:		     * We've marked the bit we don't want from
+        -: 2078:		     * bbeg to bend, which might be a comma
+        -: 2079:		     * between the opening brace and us.
+        -: 2080:		     */
+    #####: 2081:		    if (bbeg) {
+        -: 2082:			Brinfo new;
+    #####: 2083:			int len = bend - bbeg;
+        -: 2084:
+    #####: 2085:			new = (Brinfo) zalloc(sizeof(*new));
+    #####: 2086:			nbrbeg++;
+        -: 2087:
+    #####: 2088:			new->next = NULL;
+    #####: 2089:			if (lastbrbeg)
+    #####: 2090:			    lastbrbeg->next = new;
+        -: 2091:			else
+    #####: 2092:			    brbeg = new;
+    #####: 2093:			lastbrbeg = new;
+        -: 2094:
+    #####: 2095:			new->str = dupstrpfx(bbeg, len);
+    #####: 2096:			new->str = ztrdup(quotename(new->str));
+    #####: 2097:			untokenize(new->str);
+    #####: 2098:			new->pos = begi;
+    #####: 2099:			*dbeg = '\0';
+    #####: 2100:			new->qpos = strlen(quotename(predup));
+    #####: 2101:			*dbeg = '{';
+    #####: 2102:			i -= len;
+    #####: 2103:			boffs -= len;
+    #####: 2104:			memmove(dbeg, dbeg + len, 1+strlen(dbeg+len));
+    #####: 2105:			dp -= len;
+        -: 2106:		    }
+    #####: 2107:		    bbeg = NULL;
+        -: 2108:		}
+    #####: 2109:		if (*p == Comma) {
+        -: 2110:		    /*
+        -: 2111:		     * Comma on or after cursor.
+        -: 2112:		     * We set bbeg to NULL at the cursor; here
+        -: 2113:		     * it's being used to find the first comma
+        -: 2114:		     * afterwards.
+        -: 2115:		     */
+    #####: 2116:		    if (!bbeg)
+    #####: 2117:			bbeg = p;
+    #####: 2118:		    hascom = 2;
+    #####: 2119:		} else if (*p == Outbrace) {
+        -: 2120:		    /*
+        -: 2121:		     * Closing brace on or after the cursor.
+        -: 2122:		     * Not sure how this can be after the cursor;
+        -: 2123:		     * if it was matched, wouldn't we have skipped
+        -: 2124:		     * over the group, and if it wasn't, surely we're
+        -: 2125:		     * not interested in it?
+        -: 2126:		     */
+        -: 2127:		    Brinfo new;
+        -: 2128:		    int len;
+        -: 2129:
+    #####: 2130:		    if (!bbeg)
+    #####: 2131:			bbeg = p;
+    #####: 2132:		    len = p + 1 - bbeg;
+    #####: 2133:		    if (!firsts)
+    #####: 2134:			firsts = p + 1;
+        -: 2135:
+    #####: 2136:		    new = (Brinfo) zalloc(sizeof(*new));
+    #####: 2137:		    nbrend++;
+        -: 2138:
+    #####: 2139:		    if (!lastbrend)
+    #####: 2140:			lastbrend = new;
+        -: 2141:
+    #####: 2142:		    new->next = brend;
+    #####: 2143:		    brend = new;
+        -: 2144:
+    #####: 2145:		    new->str = dupstrpfx(bbeg, len);
+    #####: 2146:		    new->str = ztrdup(quotename(new->str));
+    #####: 2147:		    untokenize(new->str);
+    #####: 2148:		    new->pos = dp - predup - len + 1;
+    #####: 2149:		    new->qpos = len;
+    #####: 2150:		    bbeg = NULL;
+        -: 2151:		}
+        -: 2152:	    }
+        -: 2153:	}
+    #####: 2154:	if (cant) {
+    #####: 2155:	    freebrinfo(brbeg);
+    #####: 2156:	    freebrinfo(brend);
+    #####: 2157:	    brbeg = lastbrbeg = brend = lastbrend = NULL;
+    #####: 2158:	    nbrbeg = nbrend = 0;
+        -: 2159:	} else {
+    #####: 2160:	    if (p == curs && bbeg) {
+        -: 2161:		Brinfo new;
+    #####: 2162:		int len = bend - bbeg;
+        -: 2163:
+    #####: 2164:		new = (Brinfo) zalloc(sizeof(*new));
+    #####: 2165:		nbrbeg++;
+        -: 2166:
+    #####: 2167:		new->next = NULL;
+    #####: 2168:		if (lastbrbeg)
+    #####: 2169:		    lastbrbeg->next = new;
+        -: 2170:		else
+    #####: 2171:		    brbeg = new;
+    #####: 2172:		lastbrbeg = new;
+        -: 2173:
+    #####: 2174:		new->str = dupstrpfx(bbeg, len);
+    #####: 2175:		new->str = ztrdup(quotename(new->str));
+    #####: 2176:		untokenize(new->str);
+    #####: 2177:		new->pos = begi;
+    #####: 2178:		*dbeg = '\0';
+    #####: 2179:		new->qpos = strlen(quotename(predup));
+    #####: 2180:		*dbeg = '{';
+    #####: 2181:		boffs -= len;
+    #####: 2182:		memmove(dbeg, dbeg + len, 1+strlen(dbeg+len));
+        -: 2183:	    }
+    #####: 2184:	    if (brend) {
+    #####: 2185:		Brinfo bp, prev = NULL;
+        -: 2186:		int p, l;
+        -: 2187:
+    #####: 2188:		for (bp = brend; bp; bp = bp->next) {
+    #####: 2189:		    bp->prev = prev;
+    #####: 2190:		    prev = bp;
+    #####: 2191:		    p = bp->pos;
+    #####: 2192:		    l = bp->qpos;
+    #####: 2193:		    bp->pos = strlen(predup + p + l);
+    #####: 2194:		    bp->qpos = strlen(quotename(predup + p + l));
+    #####: 2195:		    memmove(predup + p, predup + p + l, 1+bp->pos);
+        -: 2196:		}
+        -: 2197:	    }
+    #####: 2198:	    if (hascom) {
+    #####: 2199:		if (lastp) {
+    #####: 2200:		    char sav = *lastp;
+        -: 2201:
+    #####: 2202:		    *lastp = '\0';
+    #####: 2203:		    untokenize(lastprebr = ztrdup(s));
+    #####: 2204:		    *lastp = sav;
+        -: 2205:		}
+    #####: 2206:		if ((lastpostbr = ztrdup(firsts)))
+    #####: 2207:		    untokenize(lastpostbr);
+        -: 2208:	    }
+    #####: 2209:	    zsfree(s);
+    #####: 2210:	    s = ztrdup(predup);
+    #####: 2211:	    offs = boffs;
+        -: 2212:	}
+        -: 2213:    }
+    #####: 2214:    zcontext_restore();
+        -: 2215:
+    #####: 2216:    return (char *)s;
+        -: 2217:}
+        -: 2218:
+        -: 2219:/* Insert the given string into the command line.  If move is non-zero, *
+        -: 2220: * the cursor position is changed and len is the length of the string   *
+        -: 2221: * to insert (if it is -1, the length is calculated here).              *
+        -: 2222: * The last argument says if we should quote the string.                */
+        -: 2223:
+        -: 2224:/**/
+        -: 2225:mod_export int
+    #####: 2226:inststrlen(char *str, int move, int len)
+        -: 2227:{
+    #####: 2228:    if (!len || !str)
+    #####: 2229:	return 0;
+    #####: 2230:    if (len == -1)
+    #####: 2231:	len = strlen(str);
+    #####: 2232:    if (zlemetaline != NULL) {
+    #####: 2233:	spaceinline(len);
+    #####: 2234:	strncpy(zlemetaline + zlemetacs, str, len);
+    #####: 2235:	if (move)
+    #####: 2236:	    zlemetacs += len;
+        -: 2237:    } else {
+        -: 2238:	char *instr;
+        -: 2239:	ZLE_STRING_T zlestr;
+        -: 2240:	int zlelen;
+        -: 2241:
+    #####: 2242:	instr = ztrduppfx(str, len);
+    #####: 2243:	zlestr = stringaszleline(instr, 0, &zlelen, NULL, NULL);
+    #####: 2244:	spaceinline(zlelen);
+    #####: 2245:	ZS_strncpy(zleline + zlecs, zlestr, zlelen);
+    #####: 2246:	free(zlestr);
+    #####: 2247:	zsfree(instr);
+    #####: 2248:	if (move)
+    #####: 2249:	    zlecs += len;
+        -: 2250:    }
+    #####: 2251:    return len;
+        -: 2252:}
+        -: 2253:
+        -: 2254:/* Expand the current word. */
+        -: 2255:
+        -: 2256:/**/
+        -: 2257:static int
+    #####: 2258:doexpansion(char *s, int lst, int olst, int explincmd)
+        -: 2259:{
+    #####: 2260:    int ret = 1, first = 1;
+        -: 2261:    LinkList vl;
+        -: 2262:    char *ss, *ts;
+        -: 2263:
+    #####: 2264:    pushheap();
+    #####: 2265:    vl = newlinklist();
+    #####: 2266:    ss = dupstring(s);
+        -: 2267:    /* get_comp_string() leaves these quotes unchanged when they are
+        -: 2268:     * inside parameter expansions. */
+    #####: 2269:    for (ts = ss; *ts; ts++)
+    #####: 2270:        if (*ts == '"')
+    #####: 2271:            *ts = Dnull;
+    #####: 2272:        else if (*ts == '\'')
+    #####: 2273:            *ts = Snull;
+    #####: 2274:    addlinknode(vl, ss);
+    #####: 2275:    prefork(vl, 0, NULL);
+    #####: 2276:    if (errflag)
+    #####: 2277:	goto end;
+    #####: 2278:    if (lst == COMP_LIST_EXPAND || lst == COMP_EXPAND) {
+    #####: 2279:	int ng = opts[NULLGLOB];
+        -: 2280:
+    #####: 2281:	opts[NULLGLOB] = 1;
+    #####: 2282:	globlist(vl, PREFORK_NO_UNTOK);
+    #####: 2283:	opts[NULLGLOB] = ng;
+        -: 2284:    }
+    #####: 2285:    if (errflag)
+    #####: 2286:	goto end;
+    #####: 2287:    if (empty(vl) || !*(char *)peekfirst(vl))
+        -: 2288:	goto end;
+    #####: 2289:    if (peekfirst(vl) == (void *) ss ||
+    #####: 2290:	(olst == COMP_EXPAND_COMPLETE &&
+    #####: 2291:	 !nextnode(firstnode(vl)) && *s == Tilde &&
+    #####: 2292:	 (ss = dupstring(s), filesubstr(&ss, 0)) &&
+    #####: 2293:	 !strcmp(ss, (char *)peekfirst(vl)))) {
+        -: 2294:	/* If expansion didn't change the word, try completion if *
+        -: 2295:	 * expandorcomplete was called, otherwise, just beep.     */
+    #####: 2296:	if (lst == COMP_EXPAND_COMPLETE)
+    #####: 2297:	    docompletion(s, COMP_COMPLETE, explincmd);
+    #####: 2298:	goto end;
+        -: 2299:    }
+    #####: 2300:    if (lst == COMP_LIST_EXPAND) {
+        -: 2301:	/* Only the list of expansions was requested. Restore the 
+        -: 2302:         * command line. */
+    #####: 2303:        zlemetacs = 0;
+    #####: 2304:        foredel(zlemetall, CUT_RAW);
+    #####: 2305:        spaceinline(origll);
+    #####: 2306:        memcpy(zlemetaline, origline, origll);
+    #####: 2307:        zlemetacs = origcs;
+    #####: 2308:        ret = listlist(vl);
+    #####: 2309:        showinglist = 0;
+    #####: 2310:	goto end;
+        -: 2311:    }
+        -: 2312:    /* Remove the current word and put the expansions there. */
+    #####: 2313:    zlemetacs = wb;
+    #####: 2314:    foredel(we - wb, CUT_RAW);
+    #####: 2315:    while ((ss = (char *)ugetnode(vl))) {
+    #####: 2316:	ret = 0;
+    #####: 2317:	ss = quotename(ss);
+    #####: 2318:	untokenize(ss);
+    #####: 2319:	inststr(ss);
+    #####: 2320:	if (nonempty(vl) || !first) {
+    #####: 2321:	    spaceinline(1);
+    #####: 2322:	    zlemetaline[zlemetacs++] = ' ';
+        -: 2323:	}
+    #####: 2324:	first = 0;
+        -: 2325:    }
+    #####: 2326:    end:
+    #####: 2327:    popheap();
+        -: 2328:
+    #####: 2329:    return ret;
+        -: 2330:}
+        -: 2331:
+        -: 2332:/**/
+        -: 2333:static int
+    #####: 2334:docompletion(char *s, int lst, int incmd)
+        -: 2335:{
+        -: 2336:    struct compldat dat;
+        -: 2337:
+    #####: 2338:    dat.s = s;
+    #####: 2339:    dat.lst = lst;
+    #####: 2340:    dat.incmd = incmd;
+        -: 2341:
+    #####: 2342:    return runhookdef(COMPLETEHOOK, (void *) &dat);
+        -: 2343:}
+        -: 2344:
+        -: 2345:/*
+        -: 2346: * Return the length of the common prefix of s and t.
+        -: 2347: * s and t are both metafied; the length returned is a raw byte count
+        -: 2348: * into both strings, excluding any common bytes that form less than
+        -: 2349: * a complete wide character.
+        -: 2350: */
+        -: 2351:
+        -: 2352:/**/
+        -: 2353:mod_export int
+    #####: 2354:pfxlen(char *s, char *t)
+        -: 2355:{
+    #####: 2356:    int i = 0;
+        -: 2357:
+        -: 2358:#ifdef MULTIBYTE_SUPPORT
+        -: 2359:    wchar_t wc;
+        -: 2360:    mbstate_t mbs;
+        -: 2361:    size_t cnt;
+    #####: 2362:    int lasti = 0;
+        -: 2363:    char inc;
+        -: 2364:
+    #####: 2365:    memset(&mbs, 0, sizeof mbs);
+    #####: 2366:    while (*s) {
+    #####: 2367:	if (*s == Meta) {
+    #####: 2368:	    if (*t != Meta || t[1] != s[1])
+        -: 2369:		break;
+    #####: 2370:	    inc = s[1] ^ 32;
+    #####: 2371:	    i += 2;
+    #####: 2372:	    s += 2;
+    #####: 2373:	    t += 2;
+        -: 2374:	} else {
+    #####: 2375:	    if (*s != *t)
+    #####: 2376:		break;
+    #####: 2377:	    inc = *s;
+    #####: 2378:	    i++;
+    #####: 2379:	    s++;
+    #####: 2380:	    t++;
+        -: 2381:	}
+        -: 2382:
+    #####: 2383:	cnt = mbrtowc(&wc, &inc, 1, &mbs);
+    #####: 2384:	if (cnt == MB_INVALID) {
+        -: 2385:	    /* error */
+    #####: 2386:	    break;
+        -: 2387:	}
+    #####: 2388:	if (cnt != MB_INCOMPLETE) {
+        -: 2389:	    /* successfully found complete character, record position */
+    #####: 2390:	    lasti = i;
+        -: 2391:	}
+        -: 2392:	/* Otherwise, not found a complete character: keep trying. */
+        -: 2393:    }
+    #####: 2394:    return lasti;
+        -: 2395:#else
+        -: 2396:    while (*s && *s == *t)
+        -: 2397:	s++, t++, i++;
+        -: 2398:    return i;
+        -: 2399:#endif
+        -: 2400:}
+        -: 2401:
+        -: 2402:/* Return the length of the common suffix of s and t. */
+        -: 2403:
+        -: 2404:#if 0
+        -: 2405:static int
+        -: 2406:sfxlen(char *s, char *t)
+        -: 2407:{
+        -: 2408:    if (*s && *t) {
+        -: 2409:	int i = 0;
+        -: 2410:	char *s2 = s + strlen(s) - 1, *t2 = t + strlen(t) - 1;
+        -: 2411:
+        -: 2412:	while (s2 >= s && t2 >= t && *s2 == *t2)
+        -: 2413:	    s2--, t2--, i++;
+        -: 2414:
+        -: 2415:	return i;
+        -: 2416:    } else
+        -: 2417:	return 0;
+        -: 2418:}
+        -: 2419:#endif
+        -: 2420:
+        -: 2421:/* This is used to print the strings (e.g. explanations). *
+        -: 2422: * It returns the number of lines printed.       */
+        -: 2423:
+        -: 2424:/**/
+        -: 2425:mod_export int
+    #####: 2426:printfmt(char *fmt, int n, int dopr, int doesc)
+        -: 2427:{
+    #####: 2428:    char *p = fmt, nc[DIGBUFSIZE];
+    #####: 2429:    int l = 0, cc = 0, b = 0, s = 0, u = 0, m;
+        -: 2430:
+    #####: 2431:    MB_METACHARINIT();
+    #####: 2432:    for (; *p; ) {
+        -: 2433:	/* Handle the `%' stuff (%% == %, %n == <number of matches>). */
+    #####: 2434:	if (doesc && *p == '%') {
+    #####: 2435:	    int arg = 0, is_fg;
+        -: 2436:	    zattr atr;
+    #####: 2437:	    if (idigit(*++p))
+    #####: 2438:		arg = zstrtol(p, &p, 10);
+    #####: 2439:	    if (*p) {
+    #####: 2440:		m = 0;
+    #####: 2441:		switch (*p) {
+    #####: 2442:		case '%':
+    #####: 2443:		    if (dopr)
+    #####: 2444:			putc('%', shout);
+    #####: 2445:		    cc++;
+    #####: 2446:		    break;
+    #####: 2447:		case 'n':
+    #####: 2448:		    sprintf(nc, "%d", n);
+    #####: 2449:		    if (dopr)
+    #####: 2450:			fputs(nc, shout);
+    #####: 2451:		    cc += MB_METASTRWIDTH(nc);
+    #####: 2452:		    break;
+    #####: 2453:		case 'B':
+    #####: 2454:		    b = 1;
+    #####: 2455:		    if (dopr)
+    #####: 2456:			tcout(TCBOLDFACEBEG);
+    #####: 2457:		    break;
+    #####: 2458:		case 'b':
+    #####: 2459:		    b = 0; m = 1;
+    #####: 2460:		    if (dopr)
+    #####: 2461:			tcout(TCALLATTRSOFF);
+    #####: 2462:		    break;
+    #####: 2463:		case 'S':
+    #####: 2464:		    s = 1;
+    #####: 2465:		    if (dopr)
+    #####: 2466:			tcout(TCSTANDOUTBEG);
+    #####: 2467:		    break;
+    #####: 2468:		case 's':
+    #####: 2469:		    s = 0; m = 1;
+    #####: 2470:		    if (dopr)
+    #####: 2471:			tcout(TCSTANDOUTEND);
+    #####: 2472:		    break;
+    #####: 2473:		case 'U':
+    #####: 2474:		    u = 1;
+    #####: 2475:		    if (dopr)
+    #####: 2476:			tcout(TCUNDERLINEBEG);
+    #####: 2477:		    break;
+    #####: 2478:		case 'u':
+    #####: 2479:		    u = 0; m = 1;
+    #####: 2480:		    if (dopr)
+    #####: 2481:			tcout(TCUNDERLINEEND);
+    #####: 2482:		    break;
+    #####: 2483:		case 'F':
+        -: 2484:		case 'K':
+    #####: 2485:		    is_fg = (*p == 'F');
+    #####: 2486:		    if (p[1] == '{') {
+    #####: 2487:			p += 2;
+    #####: 2488:			atr = match_colour((const char **)&p, is_fg, 0);
+    #####: 2489:			if (*p != '}')
+    #####: 2490:			    p--;
+        -: 2491:		    } else
+    #####: 2492:			atr = match_colour(NULL, is_fg, arg);
+    #####: 2493:		    if (atr != TXT_ERROR)
+    #####: 2494:			set_colour_attribute(atr, is_fg ? COL_SEQ_FG :
+        -: 2495:					     COL_SEQ_BG, 0);
+    #####: 2496:		    break;
+    #####: 2497:		case 'f':
+    #####: 2498:		    set_colour_attribute(TXTNOFGCOLOUR, COL_SEQ_FG, 0);
+    #####: 2499:		    break;
+    #####: 2500:		case 'k':
+    #####: 2501:		    set_colour_attribute(TXTNOBGCOLOUR, COL_SEQ_BG, 0);
+    #####: 2502:		    break;
+    #####: 2503:		case '{':
+    #####: 2504:		    if (arg)
+    #####: 2505:			cc += arg;
+    #####: 2506:		    for (p++; *p && (*p != '%' || p[1] != '}'); p++) {
+    #####: 2507:			if (*p == Meta) {
+    #####: 2508:			    p++;
+    #####: 2509:			    if (dopr)
+    #####: 2510:				putc(*p ^ 32, shout);
+        -: 2511:			}
+    #####: 2512:			else if (dopr)
+    #####: 2513:			    putc(*p, shout);
+        -: 2514:		    }
+    #####: 2515:		    if (*p)
+    #####: 2516:			p++;
+        -: 2517:		    else
+    #####: 2518:			p--;
+    #####: 2519:		    break;
+        -: 2520:		}
+    #####: 2521:		if (dopr && m) {
+    #####: 2522:		    if (b)
+    #####: 2523:			tcout(TCBOLDFACEBEG);
+    #####: 2524:		    if (s)
+    #####: 2525:			tcout(TCSTANDOUTBEG);
+    #####: 2526:		    if (u)
+    #####: 2527:			tcout(TCUNDERLINEBEG);
+        -: 2528:		}
+        -: 2529:	    } else
+    #####: 2530:		break;
+    #####: 2531:	    p++;
+        -: 2532:	} else {
+    #####: 2533:	    if (*p == '\n') {
+    #####: 2534:		cc++;
+    #####: 2535:		if (dopr) {
+    #####: 2536:		    if (tccan(TCCLEAREOL))
+    #####: 2537:			tcout(TCCLEAREOL);
+        -: 2538:		    else {
+    #####: 2539:			int s = zterm_columns - 1 - (cc % zterm_columns);
+        -: 2540:
+    #####: 2541:			while (s-- > 0)
+    #####: 2542:			    putc(' ', shout);
+        -: 2543:		    }
+        -: 2544:		}
+    #####: 2545:		l += 1 + ((cc - 1) / zterm_columns);
+    #####: 2546:		cc = 0;
+    #####: 2547:		if (dopr)
+    #####: 2548:		    putc('\n', shout);
+    #####: 2549:		p++;
+        -: 2550:	    } else {
+        -: 2551:		convchar_t cchar;
+    #####: 2552:		int clen = MB_METACHARLENCONV(p, &cchar);
+    #####: 2553:		if (dopr) {
+    #####: 2554:		    while (clen--) {
+    #####: 2555:			if (*p == Meta) {
+    #####: 2556:			    p++;
+    #####: 2557:			    clen--;
+    #####: 2558:			    putc(*p++ ^ 32, shout);
+        -: 2559:			} else
+    #####: 2560:			    putc(*p++, shout);
+        -: 2561:		    }
+        -: 2562:		} else
+    #####: 2563:		    p += clen;
+    #####: 2564:		cc += WCWIDTH_WINT(cchar);
+    #####: 2565:		if (dopr && !(cc % zterm_columns))
+    #####: 2566:			fputs(" \010", shout);
+        -: 2567:	    }
+        -: 2568:	}
+        -: 2569:    }
+    #####: 2570:    if (dopr) {
+    #####: 2571:        if (!(cc % zterm_columns))
+    #####: 2572:            fputs(" \010", shout);
+    #####: 2573:	if (tccan(TCCLEAREOL))
+    #####: 2574:	    tcout(TCCLEAREOL);
+        -: 2575:	else {
+    #####: 2576:	    int s = zterm_columns - 1 - (cc % zterm_columns);
+        -: 2577:
+    #####: 2578:	    while (s-- > 0)
+    #####: 2579:		putc(' ', shout);
+        -: 2580:	}
+        -: 2581:    }
+        -: 2582:    /*
+        -: 2583:     * Experiments suggest that at this point not subtracting 1 from
+        -: 2584:     * cc is correct, i.e. if just misses wrapping we still add 1.
+        -: 2585:     * (Why?)
+        -: 2586:     */
+    #####: 2587:    return l + (cc / zterm_columns);
+        -: 2588:}
+        -: 2589:
+        -: 2590:/* This is used to print expansions. */
+        -: 2591:
+        -: 2592:/**/
+        -: 2593:int
+    #####: 2594:listlist(LinkList l)
+        -: 2595:{
+    #####: 2596:    int num = countlinknodes(l);
+    #####: 2597:    VARARR(char *, data, (num + 1));
+        -: 2598:    LinkNode node;
+        -: 2599:    char **p;
+    #####: 2600:    VARARR(int, lens, num);
+    #####: 2601:    VARARR(int, widths, zterm_columns);
+    #####: 2602:    int longest = 0, shortest = zterm_columns, totl = 0;
+    #####: 2603:    int len, ncols, nlines, tolast, col, i, max, pack = 0, *lenp;
+        -: 2604:
+    #####: 2605:    for (node = firstnode(l), p = data; node; incnode(node), p++)
+    #####: 2606:	*p = (char *) getdata(node);
+    #####: 2607:    *p = NULL;
+        -: 2608:
+    #####: 2609:    strmetasort((char **)data, SORTIT_IGNORING_BACKSLASHES |
+    #####: 2610:		(isset(NUMERICGLOBSORT) ? SORTIT_NUMERICALLY : 0), NULL);
+        -: 2611:
+    #####: 2612:    for (p = data, lenp = lens; *p; p++, lenp++) {
+    #####: 2613:	len = *lenp = ZMB_nicewidth(*p) + 2;
+    #####: 2614:	if (len > longest)
+    #####: 2615:	    longest = len;
+    #####: 2616:	if (len < shortest)
+    #####: 2617:	    shortest = len;
+    #####: 2618:	totl += len;
+        -: 2619:    }
+    #####: 2620:    if ((ncols = ((zterm_columns + 2) / longest))) {
+    #####: 2621:	int tlines = 0, tline, tcols = 0, maxlen, nth, width;
+        -: 2622:
+    #####: 2623:	nlines = (num + ncols - 1) / ncols;
+        -: 2624:
+    #####: 2625:	if (isset(LISTPACKED)) {
+    #####: 2626:	    if (isset(LISTROWSFIRST)) {
+    #####: 2627:		int count, tcol, first, maxlines = 0, llines;
+        -: 2628:
+    #####: 2629:		for (tcols = zterm_columns / shortest; tcols > ncols;
+    #####: 2630:		     tcols--) {
+    #####: 2631:		    for (nth = first = maxlen = width = maxlines =
+    #####: 2632:			     llines = tcol = 0,
+    #####: 2633:			     count = num;
+    #####: 2634:			 count > 0; count--) {
+    #####: 2635:			if (!(nth % tcols))
+    #####: 2636:			    llines++;
+    #####: 2637:			if (lens[nth] > maxlen)
+    #####: 2638:			    maxlen = lens[nth];
+    #####: 2639:			nth += tcols;
+    #####: 2640:			tlines++;
+    #####: 2641:			if (nth >= num) {
+    #####: 2642:			    if ((width += maxlen) >= zterm_columns)
+    #####: 2643:				break;
+    #####: 2644:			    widths[tcol++] = maxlen;
+    #####: 2645:			    maxlen = 0;
+    #####: 2646:			    nth = ++first;
+    #####: 2647:			    if (llines > maxlines)
+    #####: 2648:				maxlines = llines;
+    #####: 2649:			    llines = 0;
+        -: 2650:			}
+        -: 2651:		    }
+    #####: 2652:		    if (nth < num) {
+    #####: 2653:			widths[tcol++] = maxlen;
+    #####: 2654:			width += maxlen;
+        -: 2655:		    }
+    #####: 2656:		    if (!count && width < zterm_columns)
+    #####: 2657:			break;
+        -: 2658:		}
+    #####: 2659:		if (tcols > ncols)
+    #####: 2660:		    tlines = maxlines;
+        -: 2661:	    } else {
+    #####: 2662:		for (tlines = ((totl + zterm_columns) / zterm_columns);
+    #####: 2663:		     tlines < nlines; tlines++) {
+    #####: 2664:		    for (p = data, nth = tline = width =
+    #####: 2665:			     maxlen = tcols = 0;
+    #####: 2666:			 *p; nth++, p++) {
+    #####: 2667:			if (lens[nth] > maxlen)
+    #####: 2668:			    maxlen = lens[nth];
+    #####: 2669:			if (++tline == tlines) {
+    #####: 2670:			    if ((width += maxlen) >= zterm_columns)
+    #####: 2671:				break;
+    #####: 2672:			    widths[tcols++] = maxlen;
+    #####: 2673:			    maxlen = tline = 0;
+        -: 2674:			}
+        -: 2675:		    }
+    #####: 2676:		    if (tline) {
+    #####: 2677:			widths[tcols++] = maxlen;
+    #####: 2678:			width += maxlen;
+        -: 2679:		    }
+    #####: 2680:		    if (nth == num && width < zterm_columns)
+    #####: 2681:			break;
+        -: 2682:		}
+        -: 2683:	    }
+    #####: 2684:	    if ((pack = (tlines < nlines))) {
+    #####: 2685:		nlines = tlines;
+    #####: 2686:		ncols = tcols;
+        -: 2687:	    }
+        -: 2688:	}
+        -: 2689:    } else {
+    #####: 2690:	nlines = 0;
+    #####: 2691:	for (p = data; *p; p++)
+    #####: 2692:	    nlines += 1 + (strlen(*p) / zterm_columns);
+        -: 2693:    }
+        -: 2694:    /* Set the cursor below the prompt. */
+    #####: 2695:    trashzle();
+        -: 2696:
+    #####: 2697:    tolast = ((zmult == 1) == !!isset(ALWAYSLASTPROMPT));
+    #####: 2698:    clearflag = (isset(USEZLE) && !termflags && tolast);
+        -: 2699:
+    #####: 2700:    max = getiparam("LISTMAX");
+    #####: 2701:    if ((max && num > max) || (!max && nlines > zterm_lines)) {
+        -: 2702:	int qup, l;
+        -: 2703:
+    #####: 2704:	zsetterm();
+    #####: 2705:	l = (num > 0 ?
+    #####: 2706:	     fprintf(shout, "zsh: do you wish to see all %d possibilities (%d lines)? ",
+    #####: 2707:		     num, nlines) :
+    #####: 2708:	     fprintf(shout, "zsh: do you wish to see all %d lines? ", nlines));
+    #####: 2709:	qup = ((l + zterm_columns - 1) / zterm_columns) - 1;
+    #####: 2710:	fflush(shout);
+    #####: 2711:	if (!getzlequery()) {
+    #####: 2712:	    if (clearflag) {
+    #####: 2713:		putc('\r', shout);
+    #####: 2714:		tcmultout(TCUP, TCMULTUP, qup);
+    #####: 2715:		if (tccan(TCCLEAREOD))
+    #####: 2716:		    tcout(TCCLEAREOD);
+    #####: 2717:		tcmultout(TCUP, TCMULTUP, nlnct);
+        -: 2718:	    } else
+    #####: 2719:		putc('\n', shout);
+    #####: 2720:	    return 1;
+        -: 2721:	}
+    #####: 2722:	if (clearflag) {
+    #####: 2723:	    putc('\r', shout);
+    #####: 2724:	    tcmultout(TCUP, TCMULTUP, qup);
+    #####: 2725:	    if (tccan(TCCLEAREOD))
+    #####: 2726:		tcout(TCCLEAREOD);
+        -: 2727:	} else
+    #####: 2728:	    putc('\n', shout);
+    #####: 2729:	settyinfo(&shttyinfo);
+        -: 2730:    }
+    #####: 2731:    lastlistlen = (clearflag ? nlines : 0);
+        -: 2732:
+    #####: 2733:    if (ncols) {
+    #####: 2734:	if (isset(LISTROWSFIRST)) {
+    #####: 2735:	    for (col = 1, p = data, lenp = lens; *p;
+    #####: 2736:		 p++, lenp++, col++) {
+    #####: 2737:		nicezputs(*p, shout);
+    #####: 2738:		if (col == ncols) {
+    #####: 2739:		    col = 0;
+    #####: 2740:		    if (p[1])
+    #####: 2741:			putc('\n', shout);
+        -: 2742:		} else {
+    #####: 2743:		    if ((i = (pack ? widths[col - 1] : longest) - *lenp + 2) > 0)
+    #####: 2744:			while (i--)
+    #####: 2745:			    putc(' ', shout);
+        -: 2746:		}
+        -: 2747:	    }
+        -: 2748:	} else {
+        -: 2749:	    char **f;
+        -: 2750:	    int *fl, line;
+        -: 2751:
+    #####: 2752:	    for (f = data, fl = lens, line = 0; line < nlines;
+    #####: 2753:		 f++, fl++, line++) {
+    #####: 2754:		for (col = 1, p = f, lenp = fl; *p; col++) {
+    #####: 2755:		    nicezputs(*p, shout);
+    #####: 2756:		    if (col == ncols)
+    #####: 2757:			break;
+    #####: 2758:		    if ((i = (pack ? widths[col - 1] : longest) - *lenp + 2) > 0)
+    #####: 2759:			while (i--)
+    #####: 2760:			    putc(' ', shout);
+    #####: 2761:		    for (i = nlines; i && *p; i--, p++, lenp++);
+        -: 2762:		}
+    #####: 2763:		if (line + 1 < nlines)
+    #####: 2764:		    putc('\n', shout);
+        -: 2765:	    }
+        -: 2766:	}
+        -: 2767:    } else {
+    #####: 2768:	for (p = data; *p; p++) {
+    #####: 2769:	    nicezputs(*p, shout);
+        -: 2770:	    /* One column: newlines between elements, not after the last */
+    #####: 2771:	    if (p[1])
+    #####: 2772:		putc('\n', shout);
+        -: 2773:	}
+        -: 2774:    }
+    #####: 2775:    if (clearflag) {
+    #####: 2776:	if ((nlines += nlnct - 1) < zterm_lines) {
+    #####: 2777:	    tcmultout(TCUP, TCMULTUP, nlines);
+    #####: 2778:	    showinglist = -1;
+        -: 2779:	} else
+    #####: 2780:	    clearflag = 0, putc('\n', shout);
+        -: 2781:    } else
+    #####: 2782:	putc('\n', shout);
+        -: 2783:
+    #####: 2784:    if (listshown)
+    #####: 2785:	showagain = 1;
+        -: 2786:
+    #####: 2787:    return !num;
+        -: 2788:}
+        -: 2789:
+        -: 2790:/* Expand the history references. */
+        -: 2791:
+        -: 2792:/**/
+        -: 2793:int
+    #####: 2794:doexpandhist(void)
+        -: 2795:{
+        -: 2796:    char *ol;
+    #####: 2797:    int ne = noerrs, err, ona = noaliases;
+        -: 2798:
+        -: 2799:    UNMETACHECK();
+        -: 2800:
+    #####: 2801:    pushheap();
+    #####: 2802:    metafy_line();
+    #####: 2803:    zle_save_positions();
+    #####: 2804:    ol = dupstring(zlemetaline);
+    #####: 2805:    expanding = 1;
+    #####: 2806:    excs = zlemetacs;
+    #####: 2807:    zlemetall = zlemetacs = 0;
+    #####: 2808:    zcontext_save();
+        -: 2809:    /* We push ol as it will remain unchanged */
+    #####: 2810:    inpush(ol, 0, NULL);
+    #####: 2811:    strinbeg(1);
+    #####: 2812:    noaliases = 1;
+    #####: 2813:    noerrs = 1;
+    #####: 2814:    exlast = inbufct;
+        -: 2815:    do {
+    #####: 2816:	ctxtlex();
+    #####: 2817:    } while (tok != ENDINPUT && tok != LEXERR);
+    #####: 2818:    if (tok == LEXERR)
+    #####: 2819:	lexstop = 0;
+    #####: 2820:    while (!lexstop)
+    #####: 2821:	hgetc();
+        -: 2822:    /* We have to save errflags because it's reset in zcontext_restore. Since  *
+        -: 2823:     * noerrs was set to 1 errflag is true if there was a habort() which *
+        -: 2824:     * means that the expanded string is unusable.                       */
+    #####: 2825:    err = errflag;
+    #####: 2826:    noerrs = ne;
+    #####: 2827:    noaliases = ona;
+    #####: 2828:    strinend();
+    #####: 2829:    inpop();
+    #####: 2830:    zcontext_restore();
+    #####: 2831:    expanding = 0;
+        -: 2832:
+    #####: 2833:    if (!err) {
+    #####: 2834:	zlemetacs = excs;
+    #####: 2835:	if (strcmp(zlemetaline, ol)) {
+    #####: 2836:	    zle_free_positions();
+    #####: 2837:	    unmetafy_line();
+        -: 2838:	    /* For vi mode -- reset the beginning-of-insertion pointer   *
+        -: 2839:	     * to the beginning of the line.  This seems a little silly, *
+        -: 2840:	     * if we are, for example, expanding "exec !!".              */
+    #####: 2841:	    if (viinsbegin > findbol())
+    #####: 2842:		viinsbegin = findbol();
+    #####: 2843:	    popheap();
+    #####: 2844:	    return 1;
+        -: 2845:	}
+        -: 2846:    }
+        -: 2847:
+    #####: 2848:    strcpy(zlemetaline, ol);
+    #####: 2849:    zle_restore_positions();
+    #####: 2850:    unmetafy_line();
+        -: 2851:
+    #####: 2852:    popheap();
+        -: 2853:
+    #####: 2854:    return 0;
+        -: 2855:}
+        -: 2856:
+        -: 2857:/**/
+        -: 2858:void
+    #####: 2859:fixmagicspace(void)
+        -: 2860:{
+    #####: 2861:    lastchar = ' ';
+        -: 2862:#ifdef MULTIBYTE_SUPPORT
+        -: 2863:    /*
+        -: 2864:     * This is redundant if the multibyte encoding extends ASCII,
+        -: 2865:     * since lastchar is a full character, but it's safer anyway...
+        -: 2866:     */
+    #####: 2867:    lastchar_wide = L' ';
+    #####: 2868:    lastchar_wide_valid = 1;
+        -: 2869:#endif
+    #####: 2870:}
+        -: 2871:
+        -: 2872:/**/
+        -: 2873:int
+    #####: 2874:magicspace(char **args)
+        -: 2875:{
+        -: 2876:    ZLE_STRING_T bangq;
+        -: 2877:    ZLE_CHAR_T zlebangchar[1];
+        -: 2878:    int ret;
+        -: 2879:#ifdef MULTIBYTE_SUPPORT
+        -: 2880:    mbstate_t mbs;
+        -: 2881:#endif
+        -: 2882:
+    #####: 2883:    fixmagicspace();
+        -: 2884:
+        -: 2885:#ifdef MULTIBYTE_SUPPORT
+        -: 2886:    /*
+        -: 2887:     * Use mbrtowc() here for consistency and to ensure the
+        -: 2888:     * state is initialised properly.  bangchar is unsigned char,
+        -: 2889:     * but must be ASCII, so we simply cast the pointer.
+        -: 2890:     */
+    #####: 2891:    memset(&mbs, 0, sizeof(mbs));
+    #####: 2892:    if (mbrtowc(zlebangchar, (char *)&bangchar, 1, &mbs) == MB_INVALID)
+    #####: 2893:	return selfinsert(args);
+        -: 2894:#else
+        -: 2895:    zlebangchar[0] = bangchar;
+        -: 2896:#endif
+    #####: 2897:    for (bangq = zleline; bangq < zleline + zlell; bangq++) {
+    #####: 2898:	if (*bangq != zlebangchar[0])
+    #####: 2899:	    continue;
+    #####: 2900:	if (bangq[1] == ZWC('"') &&
+    #####: 2901:	    (bangq == zleline || bangq[-1] == ZWC('\\')))
+        -: 2902:	    break;
+        -: 2903:    }
+        -: 2904:
+    #####: 2905:    if (!(ret = selfinsert(args)) &&
+    #####: 2906:	(!bangq || bangq + 2 > zleline + zlecs))
+    #####: 2907:	doexpandhist();
+    #####: 2908:    return ret;
+        -: 2909:}
+        -: 2910:
+        -: 2911:/**/
+        -: 2912:int
+    #####: 2913:expandhistory(UNUSED(char **args))
+        -: 2914:{
+    #####: 2915:    if (!doexpandhist())
+    #####: 2916:	return 1;
+    #####: 2917:    return 0;
+        -: 2918:}
+        -: 2919:
+        -: 2920:static int cmdwb, cmdwe;
+        -: 2921:
+        -: 2922:/**/
+        -: 2923:static char *
+    #####: 2924:getcurcmd(void)
+        -: 2925:{
+        -: 2926:    int curlincmd;
+    #####: 2927:    char *s = NULL;
+        -: 2928:
+    #####: 2929:    zcontext_save();
+    #####: 2930:    lexflags = LEXFLAGS_ZLE;
+    #####: 2931:    metafy_line();
+    #####: 2932:    inpush(dupstrspace(zlemetaline), 0, NULL);
+    #####: 2933:    strinbeg(1);
+    #####: 2934:    pushheap();
+        -: 2935:    do {
+    #####: 2936:	curlincmd = incmdpos;
+    #####: 2937:	ctxtlex();
+    #####: 2938:	if (tok == ENDINPUT || tok == LEXERR)
+        -: 2939:	    break;
+    #####: 2940:	if (tok == STRING && curlincmd) {
+    #####: 2941:	    zsfree(s);
+    #####: 2942:	    s = ztrdup(tokstr);
+    #####: 2943:	    cmdwb = zlemetall - wordbeg;
+    #####: 2944:	    cmdwe = zlemetall + 1 - inbufct;
+        -: 2945:	}
+        -: 2946:    }
+    #####: 2947:    while (tok != ENDINPUT && tok != LEXERR && lexflags);
+    #####: 2948:    popheap();
+    #####: 2949:    strinend();
+    #####: 2950:    inpop();
+    #####: 2951:    errflag &= ~ERRFLAG_ERROR;
+    #####: 2952:    unmetafy_line();
+    #####: 2953:    zcontext_restore();
+        -: 2954:
+    #####: 2955:    return s;
+        -: 2956:}
+        -: 2957:
+        -: 2958:/* Run '$WIDGET $commandword' and then restore the command-line using push-line.
+        -: 2959: */
+        -: 2960:
+        -: 2961:/**/
+        -: 2962:int
+    #####: 2963:processcmd(UNUSED(char **args))
+        -: 2964:{
+        -: 2965:    char *s;
+    #####: 2966:    int m = zmult, na = noaliases;
+        -: 2967:
+    #####: 2968:    noaliases = 1;
+    #####: 2969:    s = getcurcmd();
+    #####: 2970:    noaliases = na;
+    #####: 2971:    if (!s)
+    #####: 2972:	return 1;
+    #####: 2973:    zmult = 1;
+    #####: 2974:    pushline(zlenoargs);
+    #####: 2975:    zmult = m;
+    #####: 2976:    inststr(bindk->nam);
+    #####: 2977:    inststr(" ");
+    #####: 2978:    untokenize(s);
+        -: 2979:
+    #####: 2980:    inststr(quotename(s));
+        -: 2981:
+    #####: 2982:    zsfree(s);
+    #####: 2983:    done = 1;
+    #####: 2984:    return 0;
+        -: 2985:}
+        -: 2986:
+        -: 2987:/**/
+        -: 2988:int
+    #####: 2989:expandcmdpath(UNUSED(char **args))
+        -: 2990:{
+        -: 2991:    /*
+        -: 2992:     * zleline is not metafied for most of this function
+        -: 2993:     * (that happens within getcurcmd()).
+        -: 2994:     */
+    #####: 2995:    int oldcs = zlecs, na = noaliases, strll;
+        -: 2996:    char *s, *str;
+        -: 2997:    ZLE_STRING_T zlestr;
+        -: 2998:
+    #####: 2999:    noaliases = 1;
+    #####: 3000:    s = getcurcmd();
+    #####: 3001:    noaliases = na;
+    #####: 3002:    if (!s)
+    #####: 3003:	return 1;
+        -: 3004:
+    #####: 3005:    if (cmdwb < 0 || cmdwe < cmdwb) {
+    #####: 3006:	zsfree(s);
+    #####: 3007:	return 1;
+        -: 3008:    }
+        -: 3009:
+    #####: 3010:    str = findcmd(s, 1, 0);
+    #####: 3011:    zsfree(s);
+    #####: 3012:    if (!str)
+    #####: 3013:	return 1;
+    #####: 3014:    zlecs = cmdwb;
+    #####: 3015:    foredel(cmdwe - cmdwb, CUT_RAW);
+    #####: 3016:    zlestr = stringaszleline(str, 0, &strll, NULL, NULL);
+    #####: 3017:    spaceinline(strll);
+    #####: 3018:    ZS_strncpy(zleline + zlecs, zlestr, strll);
+    #####: 3019:    free(zlestr);
+    #####: 3020:    zlecs = oldcs;
+    #####: 3021:    if (zlecs >= cmdwe - 1)
+    #####: 3022:	zlecs += cmdwe - cmdwb + strlen(str);
+    #####: 3023:    if (zlecs > zlell)
+    #####: 3024:	zlecs = zlell;
+    #####: 3025:    return 0;
+        -: 3026:}
+        -: 3027:
+        -: 3028:/* Extra function added by AR Iano-Fletcher. */
+        -: 3029:/* This is a expand/complete in the vein of wash. */
+        -: 3030:
+        -: 3031:/**/
+        -: 3032:int
+    #####: 3033:expandorcompleteprefix(char **args)
+        -: 3034:{
+        -: 3035:    int ret;
+        -: 3036:
+    #####: 3037:    comppref = 1;
+    #####: 3038:    ret = expandorcomplete(args);
+    #####: 3039:    if (zlecs && zleline[zlecs - 1] == ZWC(' '))
+    #####: 3040:        makesuffixstr(NULL, "\\-", 0);
+    #####: 3041:    comppref = 0;
+    #####: 3042:    return ret;
+        -: 3043:}
+        -: 3044:
+        -: 3045:/**/
+        -: 3046:int
+    #####: 3047:endoflist(UNUSED(char **args))
+        -: 3048:{
+    #####: 3049:    if (lastlistlen > 0) {
+        -: 3050:	int i;
+        -: 3051:
+    #####: 3052:	clearflag = 0;
+    #####: 3053:	trashzle();
+        -: 3054:
+    #####: 3055:	for (i = lastlistlen; i > 0; i--)
+    #####: 3056:	    putc('\n', shout);
+        -: 3057:
+    #####: 3058:	showinglist = lastlistlen = 0;
+        -: 3059:
+    #####: 3060:	if (sfcontext)
+    #####: 3061:	    zrefresh();
+        -: 3062:
+    #####: 3063:	return 0;
+        -: 3064:    }
+    #####: 3065:    return 1;
+        -: 3066:}

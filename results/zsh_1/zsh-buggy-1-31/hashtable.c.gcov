@@ -1,0 +1,1624 @@
+        -:    0:Source:hashtable.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * hashtable.c - hash tables
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "../config.h"
+        -:   31:#include "zsh.mdh"
+        -:   32:#include "hashtable.pro"
+        -:   33:
+        -:   34:typedef struct scanstatus *ScanStatus;
+        -:   35:typedef struct hashtableimpl* HashTableImpl;
+        -:   36:
+        -:   37:struct hashtableimpl {
+        -:   38:    /* Public part of hash table, accessible from outside of hashtable.c.   *
+        -:   39:     * Must be the first field to allow casting HashTable to HashTableImpl. */
+        -:   40:    struct hashtable pub;
+        -:   41:
+        -:   42:    /* HASHTABLE INTERNAL MEMBERS */
+        -:   43:    ScanStatus scan;		/* status of a scan over this hashtable     */
+        -:   44:
+        -:   45:#ifdef ZSH_HASH_DEBUG
+        -:   46:    /* HASHTABLE DEBUG MEMBERS */
+        -:   47:    HashTableImpl next, last;	/* linked list of all hash tables           */
+        -:   48:    char *tablename;		/* string containing name of the hash table */
+        -:   49:    PrintTableStats printinfo;	/* pointer to function to print table stats */
+        -:   50:#endif /* !ZSH_HASH_DEBUG */
+        -:   51:};
+        -:   52:
+     4924:   53:static inline HashTableImpl impl(HashTable ht) { return (HashTableImpl)ht; }
+        -:   54:
+        -:   55:/* Structure for recording status of a hashtable scan in progress.  When a *
+        -:   56: * scan starts, the .scan member of the hashtable structure points to one  *
+        -:   57: * of these.  That member being non-NULL disables resizing of the          *
+        -:   58: * hashtable (when adding elements).  When elements are deleted, the       *
+        -:   59: * contents of this structure is used to make sure the scan won't stumble  *
+        -:   60: * into the deleted element.                                               */
+        -:   61:
+        -:   62:struct scanstatus {
+        -:   63:    int sorted;
+        -:   64:    union {
+        -:   65:	struct {
+        -:   66:	    HashNode *hashtab;
+        -:   67:	    int ct;
+        -:   68:	} s;
+        -:   69:	HashNode u;
+        -:   70:    } u;
+        -:   71:};
+        -:   72:
+        -:   73:/********************************/
+        -:   74:/* Generic Hash Table functions */
+        -:   75:/********************************/
+        -:   76:
+        -:   77:#ifdef ZSH_HASH_DEBUG
+        -:   78:static void printhashtabinfo(HashTable ht);
+        -:   79:static HashTableImpl firstht, lastht;
+        -:   80:#endif /* ZSH_HASH_DEBUG */
+        -:   81:
+        -:   82:/* Generic hash function */
+        -:   83:
+        -:   84:/**/
+        -:   85:mod_export unsigned
+    84270:   86:hasher(const char *str)
+        -:   87:{
+    84270:   88:    unsigned hashval = 0, c;
+        -:   89:
+   968478:   90:    while ((c = *((unsigned char *) str++)))
+   799938:   91:	hashval += (hashval << 5) + c;
+        -:   92:
+    84270:   93:    return hashval;
+        -:   94:}
+        -:   95:
+        -:   96:/* Get a new hash table */
+        -:   97:
+        -:   98:/**/
+        -:   99:mod_export HashTable
+      122:  100:newhashtable(int size, UNUSED(char const *name), UNUSED(PrintTableStats printinfo))
+        -:  101:{
+        -:  102:    HashTableImpl ht;
+        -:  103:
+      122:  104:    ht = (HashTableImpl) zshcalloc(sizeof *ht);
+        -:  105:#ifdef ZSH_HASH_DEBUG
+        -:  106:    ht->next = NULL;
+        -:  107:    if(!firstht)
+        -:  108:	firstht = ht;
+        -:  109:    ht->last = lastht;
+        -:  110:    if(lastht)
+        -:  111:	lastht->next = ht;
+        -:  112:    lastht = ht;
+        -:  113:    ht->printinfo = printinfo ? printinfo : printhashtabinfo;
+        -:  114:    ht->tablename = ztrdup(name);
+        -:  115:#endif /* ZSH_HASH_DEBUG */
+      122:  116:    ht->pub.nodes = (HashNode *) zshcalloc(size * sizeof(HashNode));
+      122:  117:    ht->pub.hsize = size;
+      122:  118:    ht->pub.ct = 0;
+      122:  119:    ht->scan = NULL;
+      122:  120:    ht->pub.scantab = NULL;
+      122:  121:    return &ht->pub;
+        -:  122:}
+        -:  123:
+        -:  124:/* Delete a hash table.  After this function has been used, any *
+        -:  125: * existing pointers to the hash table are invalid.             */
+        -:  126:
+        -:  127:/**/
+        -:  128:mod_export void
+       75:  129:deletehashtable(HashTable ht)
+        -:  130:{
+       75:  131:    ht->emptytable(ht);
+        -:  132:#ifdef ZSH_HASH_DEBUG
+        -:  133:    if(impl(ht)->next)
+        -:  134:	impl(ht)->next->last = impl(ht)->last;
+        -:  135:    else
+        -:  136:	lastht = impl(ht)->last;
+        -:  137:    if(impl(ht)->last)
+        -:  138:	impl(ht)->last->next = impl(ht)->next;
+        -:  139:    else
+        -:  140:	firstht = impl(ht)->next;
+        -:  141:    zsfree(impl(ht)->tablename);
+        -:  142:#endif /* ZSH_HASH_DEBUG */
+       75:  143:    zfree(ht->nodes, ht->hsize * sizeof(HashNode));
+       75:  144:    zfree(ht, sizeof(struct hashtableimpl));
+       75:  145:}
+        -:  146:
+        -:  147:/* Add a node to a hash table.                          *
+        -:  148: * nam is the key to use in hashing.  nodeptr points    *
+        -:  149: * to the node to add.  If there is already a node in   *
+        -:  150: * the table with the same key, it is first freed, and  *
+        -:  151: * then the new node is added.  If the number of nodes  *
+        -:  152: * is now greater than twice the number of hash values, *
+        -:  153: * the table is then expanded.                          */
+        -:  154:
+        -:  155:/**/
+        -:  156:mod_export void
+    30249:  157:addhashnode(HashTable ht, char *nam, void *nodeptr)
+        -:  158:{
+    30249:  159:    HashNode oldnode = addhashnode2(ht, nam, nodeptr);
+    30249:  160:    if (oldnode)
+    #####:  161:	ht->freenode(oldnode);
+    30249:  162:}
+        -:  163:
+        -:  164:/* Add a node to a hash table, returning the old node on replacement. */
+        -:  165:
+        -:  166:/**/
+        -:  167:HashNode
+    30249:  168:addhashnode2(HashTable ht, char *nam, void *nodeptr)
+        -:  169:{
+        -:  170:    unsigned hashval;
+        -:  171:    HashNode hn, hp, hq;
+        -:  172:
+    30249:  173:    hn = (HashNode) nodeptr;
+    30249:  174:    hn->nam = nam;
+        -:  175:
+    30249:  176:    hashval = ht->hash(hn->nam) % ht->hsize;
+    30249:  177:    hp = ht->nodes[hashval];
+        -:  178:
+        -:  179:    /* check if this is the first node for this hash value */
+    30249:  180:    if (!hp) {
+    16792:  181:	hn->next = NULL;
+    16792:  182:	ht->nodes[hashval] = hn;
+    16792:  183:	if (++ht->ct >= ht->hsize * 2 && !impl(ht)->scan)
+        1:  184:	    expandhashtable(ht);
+    16792:  185:	return NULL;
+        -:  186:    }
+        -:  187:
+        -:  188:    /* else check if the first node contains the same key */
+    13457:  189:    if (ht->cmpnodes(hp->nam, hn->nam) == 0) {
+    #####:  190:	ht->nodes[hashval] = hn;
+    #####:  191:	replacing:
+    #####:  192:	hn->next = hp->next;
+    #####:  193:	if(impl(ht)->scan) {
+    #####:  194:	    if(impl(ht)->scan->sorted) {
+    #####:  195:		HashNode *hashtab = impl(ht)->scan->u.s.hashtab;
+        -:  196:		int i;
+    #####:  197:		for(i = impl(ht)->scan->u.s.ct; i--; )
+    #####:  198:		    if(hashtab[i] == hp)
+    #####:  199:			hashtab[i] = hn;
+    #####:  200:	    } else if(impl(ht)->scan->u.u == hp)
+    #####:  201:		impl(ht)->scan->u.u = hn;
+        -:  202:	}
+    #####:  203:	return hp;
+        -:  204:    }
+        -:  205:
+        -:  206:    /* else run through the list and check all the keys */
+    13457:  207:    hq = hp;
+    13457:  208:    hp = hp->next;
+    22162:  209:    for (; hp; hq = hp, hp = hp->next) {
+     8705:  210:	if (ht->cmpnodes(hp->nam, hn->nam) == 0) {
+    #####:  211:	    hq->next = hn;
+    #####:  212:	    goto replacing;
+        -:  213:	}
+        -:  214:    }
+        -:  215:
+        -:  216:    /* else just add it at the front of the list */
+    13457:  217:    hn->next = ht->nodes[hashval];
+    13457:  218:    ht->nodes[hashval] = hn;
+    13457:  219:    if (++ht->ct >= ht->hsize * 2 && !impl(ht)->scan)
+      149:  220:        expandhashtable(ht);
+    13457:  221:    return NULL;
+        -:  222:}
+        -:  223:
+        -:  224:/* Get an enabled entry in a hash table.  *
+        -:  225: * If successful, it returns a pointer to *
+        -:  226: * the hashnode.  If the node is DISABLED *
+        -:  227: * or isn't found, it returns NULL        */
+        -:  228:
+        -:  229:/**/
+        -:  230:mod_export HashNode
+    23491:  231:gethashnode(HashTable ht, const char *nam)
+        -:  232:{
+        -:  233:    unsigned hashval;
+        -:  234:    HashNode hp;
+        -:  235:
+    23491:  236:    hashval = ht->hash(nam) % ht->hsize;
+    38765:  237:    for (hp = ht->nodes[hashval]; hp; hp = hp->next) {
+    33664:  238:	if (ht->cmpnodes(hp->nam, nam) == 0) {
+    18390:  239:	    if (hp->flags & DISABLED)
+    #####:  240:		return NULL;
+        -:  241:	    else
+    18390:  242:		return hp;
+        -:  243:	}
+        -:  244:    }
+     5101:  245:    return NULL;
+        -:  246:}
+        -:  247:
+        -:  248:/* Get an entry in a hash table.  It will *
+        -:  249: * ignore the DISABLED flag and return a  *
+        -:  250: * pointer to the hashnode if found, else *
+        -:  251: * it returns NULL.                       */
+        -:  252:
+        -:  253:/**/
+        -:  254:mod_export HashNode
+    28128:  255:gethashnode2(HashTable ht, const char *nam)
+        -:  256:{
+        -:  257:    unsigned hashval;
+        -:  258:    HashNode hp;
+        -:  259:
+    28128:  260:    hashval = ht->hash(nam) % ht->hsize;
+    50392:  261:    for (hp = ht->nodes[hashval]; hp; hp = hp->next) {
+    32707:  262:	if (ht->cmpnodes(hp->nam, nam) == 0)
+    10443:  263:	    return hp;
+        -:  264:    }
+    17685:  265:    return NULL;
+        -:  266:}
+        -:  267:
+        -:  268:/* Remove an entry from a hash table.           *
+        -:  269: * If successful, it removes the node from the  *
+        -:  270: * table and returns a pointer to it.  If there *
+        -:  271: * is no such node, then it returns NULL        */
+        -:  272:
+        -:  273:/**/
+        -:  274:mod_export HashNode
+      878:  275:removehashnode(HashTable ht, const char *nam)
+        -:  276:{
+        -:  277:    unsigned hashval;
+        -:  278:    HashNode hp, hq;
+        -:  279:
+      878:  280:    hashval = ht->hash(nam) % ht->hsize;
+      878:  281:    hp = ht->nodes[hashval];
+        -:  282:
+        -:  283:    /* if no nodes at this hash value, return NULL */
+      878:  284:    if (!hp)
+    #####:  285:	return NULL;
+        -:  286:
+        -:  287:    /* else check if the key in the first one matches */
+      878:  288:    if (ht->cmpnodes(hp->nam, nam) == 0) {
+      873:  289:	ht->nodes[hashval] = hp->next;
+      878:  290:	gotit:
+      878:  291:	ht->ct--;
+      878:  292:	if(impl(ht)->scan) {
+      775:  293:	    if(impl(ht)->scan->sorted) {
+    #####:  294:		HashNode *hashtab = impl(ht)->scan->u.s.hashtab;
+        -:  295:		int i;
+    #####:  296:		for(i = impl(ht)->scan->u.s.ct; i--; )
+    #####:  297:		    if(hashtab[i] == hp)
+    #####:  298:			hashtab[i] = NULL;
+      775:  299:	    } else if(impl(ht)->scan->u.u == hp)
+    #####:  300:		impl(ht)->scan->u.u = hp->next;
+        -:  301:	}
+      878:  302:	return hp;
+        -:  303:    }
+        -:  304:
+        -:  305:    /* else run through the list and check the rest of the keys */
+        5:  306:    hq = hp;
+        5:  307:    hp = hp->next;
+        5:  308:    for (; hp; hq = hp, hp = hp->next) {
+        5:  309:	if (ht->cmpnodes(hp->nam, nam) == 0) {
+        5:  310:	    hq->next = hp->next;
+        5:  311:	    goto gotit;
+        -:  312:	}
+        -:  313:    }
+        -:  314:
+        -:  315:    /* else it is not in the list, so return NULL */
+    #####:  316:    return NULL;
+        -:  317:}
+        -:  318:
+        -:  319:/* Disable a node in a hash table */
+        -:  320:
+        -:  321:/**/
+        -:  322:void
+    #####:  323:disablehashnode(HashNode hn, UNUSED(int flags))
+        -:  324:{
+    #####:  325:    hn->flags |= DISABLED;
+    #####:  326:}
+        -:  327:
+        -:  328:/* Enable a node in a hash table */
+        -:  329:
+        -:  330:/**/
+        -:  331:void
+    #####:  332:enablehashnode(HashNode hn, UNUSED(int flags))
+        -:  333:{
+    #####:  334:    hn->flags &= ~DISABLED;
+    #####:  335:}
+        -:  336:
+        -:  337:/* Compare two hash table entries by name */
+        -:  338:
+        -:  339:/**/
+        -:  340:static int
+    #####:  341:hnamcmp(const void *ap, const void *bp)
+        -:  342:{
+    #####:  343:    HashNode a = *(HashNode *)ap;
+    #####:  344:    HashNode b = *(HashNode *)bp;
+    #####:  345:    return ztrcmp(a->nam, b->nam);
+        -:  346:}
+        -:  347:
+        -:  348:/* Scan the nodes in a hash table and execute scanfunc on nodes based on
+        -:  349: * the flags that are set/unset.  scanflags is passed unchanged to
+        -:  350: * scanfunc (if executed).
+        -:  351: *
+        -:  352: * If sorted != 0, then sort entries of hash table before scanning.
+        -:  353: * If flags1 > 0, then execute scanfunc on a node only if at least one of
+        -:  354: *                these flags is set.
+        -:  355: * If flags2 > 0, then execute scanfunc on a node only if all of
+        -:  356: *                these flags are NOT set.
+        -:  357: * The conditions above for flags1/flags2 must both be true.
+        -:  358: *
+        -:  359: * It is safe to add, remove or replace hash table elements from within
+        -:  360: * the scanfunc.  Replaced elements will appear in the scan exactly once,
+        -:  361: * the new version if it was not scanned before the replacement was made.
+        -:  362: * Added elements might or might not appear in the scan.
+        -:  363: *
+        -:  364: * pprog, if non-NULL, is a pattern that must match the name
+        -:  365: * of the node.
+        -:  366: *
+        -:  367: * The function returns the number of matches, as reduced by pprog, flags1
+        -:  368: * and flags2.
+        -:  369: */
+        -:  370:
+        -:  371:/**/
+        -:  372:mod_export int
+     1251:  373:scanmatchtable(HashTable ht, Patprog pprog, int sorted,
+        -:  374:	       int flags1, int flags2, ScanFunc scanfunc, int scanflags)
+        -:  375:{
+     1251:  376:    int match = 0;
+        -:  377:    struct scanstatus st;
+        -:  378:
+        -:  379:    /*
+        -:  380:     * scantab is currently only used by modules to scan
+        -:  381:     * tables where the contents are generated on the fly from
+        -:  382:     * other objects.  Note the fact that in this case pprog,
+        -:  383:     * sorted, flags1 and flags2 are ignore.
+        -:  384:     */
+     1251:  385:    if (!pprog && ht->scantab) {
+       78:  386:	ht->scantab(ht, scanfunc, scanflags);
+       78:  387:	return ht->ct;
+        -:  388:    }
+     1173:  389:    if (sorted) {
+    #####:  390:	int i, ct = ht->ct;
+    #####:  391:	VARARR(HashNode, hnsorttab, ct);
+        -:  392:	HashNode *htp, hn;
+        -:  393:
+        -:  394:	/*
+        -:  395:	 * Because the structure might change under our feet,
+        -:  396:	 * we can't apply the flags and the pattern before sorting,
+        -:  397:	 * tempting though that is.
+        -:  398:	 */
+    #####:  399:	for (htp = hnsorttab, i = 0; i < ht->hsize; i++)
+    #####:  400:	    for (hn = ht->nodes[i]; hn; hn = hn->next)
+    #####:  401:		*htp++ = hn;
+    #####:  402:	qsort((void *)hnsorttab, ct, sizeof(HashNode), hnamcmp);
+        -:  403:
+    #####:  404:	st.sorted = 1;
+    #####:  405:	st.u.s.hashtab = hnsorttab;
+    #####:  406:	st.u.s.ct = ct;
+    #####:  407:	impl(ht)->scan = &st;
+        -:  408:
+    #####:  409:	for (htp = hnsorttab, i = 0; i < ct; i++, htp++) {
+    #####:  410:	    if ((!flags1 || ((*htp)->flags & flags1)) &&
+    #####:  411:		!((*htp)->flags & flags2) &&
+    #####:  412:		(!pprog || pattry(pprog, (*htp)->nam))) {
+    #####:  413:		match++;
+    #####:  414:		scanfunc(*htp, scanflags);
+        -:  415:	    }
+        -:  416:	}
+        -:  417:
+    #####:  418:	impl(ht)->scan = NULL;
+        -:  419:    } else {
+     1173:  420:	int i, hsize = ht->hsize;
+     1173:  421:	HashNode *nodes = ht->nodes;
+        -:  422:
+     1173:  423:	st.sorted = 0;
+     1173:  424:	impl(ht)->scan = &st;
+        -:  425:
+   165484:  426:	for (i = 0; i < hsize; i++)
+   554966:  427:	    for (st.u.u = nodes[i]; st.u.u; ) {
+   226344:  428:		HashNode hn = st.u.u;
+   226344:  429:		st.u.u = st.u.u->next;
+   226344:  430:		if ((!flags1 || (hn->flags & flags1)) && !(hn->flags & flags2)
+   226342:  431:		    && (!pprog || pattry(pprog, hn->nam))) {
+   226342:  432:		    match++;
+   226342:  433:		    scanfunc(hn, scanflags);
+        -:  434:		}
+        -:  435:	    }
+        -:  436:
+     1173:  437:	impl(ht)->scan = NULL;
+        -:  438:    }
+        -:  439:
+     1173:  440:    return match;
+        -:  441:}
+        -:  442:
+        -:  443:
+        -:  444:/**/
+        -:  445:mod_export int
+     1251:  446:scanhashtable(HashTable ht, int sorted, int flags1, int flags2,
+        -:  447:	      ScanFunc scanfunc, int scanflags)
+        -:  448:{
+     1251:  449:    return scanmatchtable(ht, NULL, sorted, flags1, flags2,
+        -:  450:			  scanfunc, scanflags);
+        -:  451:}
+        -:  452:
+        -:  453:/* Expand hash tables when they get too many entries. *
+        -:  454: * The new size is 4 times the previous size.         */
+        -:  455:
+        -:  456:/**/
+        -:  457:static void
+      150:  458:expandhashtable(HashTable ht)
+        -:  459:{
+        -:  460:    struct hashnode **onodes, **ha, *hn, *hp;
+        -:  461:    int i, osize;
+        -:  462:
+      150:  463:    osize = ht->hsize;
+      150:  464:    onodes = ht->nodes;
+        -:  465:
+      150:  466:    ht->hsize = osize * 4;
+      150:  467:    ht->nodes = (HashNode *) zshcalloc(ht->hsize * sizeof(HashNode));
+      150:  468:    ht->ct = 0;
+        -:  469:
+        -:  470:    /* scan through the old list of nodes, and *
+        -:  471:     * rehash them into the new list of nodes  */
+     6648:  472:    for (i = 0, ha = onodes; i < osize; i++, ha++) {
+    25992:  473:	for (hn = *ha; hn;) {
+    12996:  474:	    hp = hn->next;
+    12996:  475:	    ht->addnode(ht, hn->nam, hn);
+    12996:  476:	    hn = hp;
+        -:  477:	}
+        -:  478:    }
+      150:  479:    zfree(onodes, osize * sizeof(HashNode));
+      150:  480:}
+        -:  481:
+        -:  482:/* Empty the hash table and resize it if necessary */
+        -:  483:
+        -:  484:/**/
+        -:  485:static void
+       77:  486:resizehashtable(HashTable ht, int newsize)
+        -:  487:{
+        -:  488:    struct hashnode **ha, *hn, *hp;
+        -:  489:    int i;
+        -:  490:
+        -:  491:    /* free all the hash nodes */
+       77:  492:    ha = ht->nodes;
+    20624:  493:    for (i = 0; i < ht->hsize; i++, ha++) {
+    55675:  494:	for (hn = *ha; hn;) {
+    14581:  495:	    hp = hn->next;
+    14581:  496:	    ht->freenode(hn);
+    14581:  497:	    hn = hp;
+        -:  498:	}
+        -:  499:    }
+        -:  500:
+        -:  501:    /* If new size desired is different from current size, *
+        -:  502:     * we free it and allocate a new nodes array.          */
+       77:  503:    if (ht->hsize != newsize) {
+    #####:  504:	zfree(ht->nodes, ht->hsize * sizeof(HashNode));
+    #####:  505:	ht->nodes = (HashNode *) zshcalloc(newsize * sizeof(HashNode));
+    #####:  506:	ht->hsize = newsize;
+        -:  507:    } else {
+        -:  508:	/* else we just re-zero the current nodes array */
+       77:  509:	memset(ht->nodes, 0, newsize * sizeof(HashNode));
+        -:  510:    }
+        -:  511:
+       77:  512:    ht->ct = 0;
+       77:  513:}
+        -:  514:
+        -:  515:/* Generic method to empty a hash table */
+        -:  516:
+        -:  517:/**/
+        -:  518:mod_export void
+       77:  519:emptyhashtable(HashTable ht)
+        -:  520:{
+       77:  521:    resizehashtable(ht, ht->hsize);
+       77:  522:}
+        -:  523:
+        -:  524:/**/
+        -:  525:#ifdef ZSH_HASH_DEBUG
+        -:  526:
+        -:  527:/* Print info about hash table */
+        -:  528:
+        -:  529:#define MAXDEPTH 7
+        -:  530:
+        -:  531:/**/
+        -:  532:static void
+        -:  533:printhashtabinfo(HashTable ht)
+        -:  534:{
+        -:  535:    HashNode hn;
+        -:  536:    int chainlen[MAXDEPTH + 1];
+        -:  537:    int i, tmpcount, total;
+        -:  538:
+        -:  539:    printf("name of table   : %s\n",   impl(ht)->tablename);
+        -:  540:    printf("size of nodes[] : %d\n",   ht->hsize);
+        -:  541:    printf("number of nodes : %d\n\n", ht->ct);
+        -:  542:
+        -:  543:    memset(chainlen, 0, sizeof(chainlen));
+        -:  544:
+        -:  545:    /* count the number of nodes just to be sure */
+        -:  546:    total = 0;
+        -:  547:    for (i = 0; i < ht->hsize; i++) {
+        -:  548:	tmpcount = 0;
+        -:  549:	for (hn = ht->nodes[i]; hn; hn = hn->next)
+        -:  550:	    tmpcount++;
+        -:  551:	if (tmpcount >= MAXDEPTH)
+        -:  552:	    chainlen[MAXDEPTH]++;
+        -:  553:	else
+        -:  554:	    chainlen[tmpcount]++;
+        -:  555:	total += tmpcount;
+        -:  556:    }
+        -:  557:
+        -:  558:    for (i = 0; i < MAXDEPTH; i++)
+        -:  559:	printf("number of hash values with chain of length %d  : %4d\n", i, chainlen[i]);
+        -:  560:    printf("number of hash values with chain of length %d+ : %4d\n", MAXDEPTH, chainlen[MAXDEPTH]);
+        -:  561:    printf("total number of nodes                         : %4d\n", total);
+        -:  562:}
+        -:  563:
+        -:  564:/**/
+        -:  565:int
+        -:  566:bin_hashinfo(UNUSED(char *nam), UNUSED(char **args), UNUSED(Options ops), UNUSED(int func))
+        -:  567:{
+        -:  568:    HashTableImpl ht;
+        -:  569:
+        -:  570:    printf("----------------------------------------------------\n");
+        -:  571:    queue_signals();
+        -:  572:    for(ht = firstht; ht; ht = ht->next) {
+        -:  573:	ht->printinfo(&ht->pub);
+        -:  574:	printf("----------------------------------------------------\n");
+        -:  575:    }
+        -:  576:    unqueue_signals();
+        -:  577:    return 0;
+        -:  578:}
+        -:  579:
+        -:  580:/**/
+        -:  581:#endif /* ZSH_HASH_DEBUG */
+        -:  582:
+        -:  583:/********************************/
+        -:  584:/* Command Hash Table Functions */
+        -:  585:/********************************/
+        -:  586:
+        -:  587:/* hash table containing external commands */
+        -:  588: 
+        -:  589:/**/
+        -:  590:mod_export HashTable cmdnamtab;
+        -:  591: 
+        -:  592:/* how far we've hashed the PATH so far */
+        -:  593: 
+        -:  594:/**/
+        -:  595:mod_export char **pathchecked;
+        -:  596:
+        -:  597:/* Create a new command hash table */
+        -:  598: 
+        -:  599:/**/
+        -:  600:void
+        2:  601:createcmdnamtable(void)
+        -:  602:{
+        2:  603:    cmdnamtab = newhashtable(201, "cmdnamtab", NULL);
+        -:  604:
+        2:  605:    cmdnamtab->hash        = hasher;
+        2:  606:    cmdnamtab->emptytable  = emptycmdnamtable;
+        2:  607:    cmdnamtab->filltable   = fillcmdnamtable;
+        2:  608:    cmdnamtab->cmpnodes    = strcmp;
+        2:  609:    cmdnamtab->addnode     = addhashnode;
+        2:  610:    cmdnamtab->getnode     = gethashnode2;
+        2:  611:    cmdnamtab->getnode2    = gethashnode2;
+        2:  612:    cmdnamtab->removenode  = removehashnode;
+        2:  613:    cmdnamtab->disablenode = NULL;
+        2:  614:    cmdnamtab->enablenode  = NULL;
+        2:  615:    cmdnamtab->freenode    = freecmdnamnode;
+        2:  616:    cmdnamtab->printnode   = printcmdnamnode;
+        -:  617:
+        2:  618:    pathchecked = path;
+        2:  619:}
+        -:  620:
+        -:  621:/**/
+        -:  622:static void
+        2:  623:emptycmdnamtable(HashTable ht)
+        -:  624:{
+        2:  625:    emptyhashtable(ht);
+        2:  626:    pathchecked = path;
+        2:  627:}
+        -:  628:
+        -:  629:/* Add all commands in a given directory *
+        -:  630: * to the command hashtable.             */
+        -:  631:
+        -:  632:/**/
+        -:  633:void
+        6:  634:hashdir(char **dirp)
+        -:  635:{
+        -:  636:    Cmdnam cn;
+        -:  637:    DIR *dir;
+        -:  638:    char *fn, *unmetadir, *pathbuf, *pathptr;
+        -:  639:    int dirlen;
+        -:  640:#if defined(_WIN32) || defined(__CYGWIN__)
+        -:  641:    char *exe;
+        -:  642:#endif /* _WIN32 || _CYGWIN__ */
+        -:  643:
+        6:  644:    if (isrelative(*dirp))
+    #####:  645:	return;
+        6:  646:    unmetadir = unmeta(*dirp);
+        6:  647:    if (!(dir = opendir(unmetadir)))
+    #####:  648:	return;
+        -:  649:
+        6:  650:    dirlen = strlen(unmetadir);
+        6:  651:    pathbuf = (char *)zalloc(dirlen + PATH_MAX + 2);
+        6:  652:    sprintf(pathbuf, "%s/", unmetadir);
+        6:  653:    pathptr = pathbuf + dirlen + 1;
+        -:  654:
+      718:  655:    while ((fn = zreaddir(dir, 1))) {
+      706:  656:	if (!cmdnamtab->getnode(cmdnamtab, fn)) {
+      702:  657:	    char *fname = ztrdup(fn);
+        -:  658:	    struct stat statbuf;
+      702:  659:	    int add = 0, dummylen;
+        -:  660:
+      702:  661:	    unmetafy(fn, &dummylen);
+      702:  662:	    if (strlen(fn) > PATH_MAX) {
+        -:  663:		/* Too heavy to do all the allocation */
+    #####:  664:		add = 1;
+        -:  665:	    } else {
+      702:  666:		strcpy(pathptr, fn);
+        -:  667:		/*
+        -:  668:		 * This is the same test as for the glob qualifier for
+        -:  669:		 * executable plain files.
+        -:  670:		 */
+      702:  671:		if (unset(HASHEXECUTABLESONLY) ||
+    #####:  672:		    (access(pathbuf, X_OK) == 0 &&
+    #####:  673:		     stat(pathbuf, &statbuf) == 0 &&
+    #####:  674:		     S_ISREG(statbuf.st_mode) && (statbuf.st_mode & S_IXUGO)))
+      702:  675:		    add = 1;
+        -:  676:	    }
+      702:  677:	    if (add) {
+      702:  678:		cn = (Cmdnam) zshcalloc(sizeof *cn);
+      702:  679:		cn->node.flags = 0;
+      702:  680:		cn->u.name = dirp;
+      702:  681:		cmdnamtab->addnode(cmdnamtab, fname, cn);
+        -:  682:	    } else
+    #####:  683:		zsfree(fname);
+        -:  684:	}
+        -:  685:#if defined(_WIN32) || defined(__CYGWIN__)
+        -:  686:	/* Hash foo.exe as foo, since when no real foo exists, foo.exe
+        -:  687:	   will get executed by DOS automatically.  This quiets
+        -:  688:	   spurious corrections when CORRECT or CORRECT_ALL is set. */
+        -:  689:	if ((exe = strrchr(fn, '.')) &&
+        -:  690:	    (exe[1] == 'E' || exe[1] == 'e') &&
+        -:  691:	    (exe[2] == 'X' || exe[2] == 'x') &&
+        -:  692:	    (exe[3] == 'E' || exe[3] == 'e') && exe[4] == 0) {
+        -:  693:	    *exe = 0;
+        -:  694:	    if (!cmdnamtab->getnode(cmdnamtab, fn)) {
+        -:  695:		cn = (Cmdnam) zshcalloc(sizeof *cn);
+        -:  696:		cn->node.flags = 0;
+        -:  697:		cn->u.name = dirp;
+        -:  698:		cmdnamtab->addnode(cmdnamtab, ztrdup(fn), cn);
+        -:  699:	    }
+        -:  700:	}
+        -:  701:#endif /* _WIN32 || __CYGWIN__ */
+        -:  702:    }
+        6:  703:    closedir(dir);
+        6:  704:    zfree(pathbuf, dirlen + PATH_MAX + 2);
+        -:  705:}
+        -:  706:
+        -:  707:/* Go through user's PATH and add everything to *
+        -:  708: * the command hashtable.                       */
+        -:  709:
+        -:  710:/**/
+        -:  711:static void
+    #####:  712:fillcmdnamtable(UNUSED(HashTable ht))
+        -:  713:{
+        -:  714:    char **pq;
+        -:  715: 
+    #####:  716:    for (pq = pathchecked; *pq; pq++)
+    #####:  717:	hashdir(pq);
+        -:  718:
+    #####:  719:    pathchecked = pq;
+    #####:  720:}
+        -:  721:
+        -:  722:/**/
+        -:  723:static void
+    #####:  724:freecmdnamnode(HashNode hn)
+        -:  725:{
+    #####:  726:    Cmdnam cn = (Cmdnam) hn;
+        -:  727: 
+    #####:  728:    zsfree(cn->node.nam);
+    #####:  729:    if (cn->node.flags & HASHED)
+    #####:  730:	zsfree(cn->u.cmd);
+        -:  731: 
+    #####:  732:    zfree(cn, sizeof(struct cmdnam));
+    #####:  733:}
+        -:  734:
+        -:  735:/* Print an element of the cmdnamtab hash table (external command) */
+        -:  736: 
+        -:  737:/**/
+        -:  738:static void
+    #####:  739:printcmdnamnode(HashNode hn, int printflags)
+        -:  740:{
+    #####:  741:    Cmdnam cn = (Cmdnam) hn;
+        -:  742:
+    #####:  743:    if (printflags & PRINT_WHENCE_WORD) {
+    #####:  744:	printf("%s: %s\n", cn->node.nam, (cn->node.flags & HASHED) ? 
+        -:  745:	       "hashed" : "command");
+    #####:  746:	return;
+        -:  747:    }
+        -:  748:
+    #####:  749:    if ((printflags & PRINT_WHENCE_CSH) || (printflags & PRINT_WHENCE_SIMPLE)) {
+    #####:  750:	if (cn->node.flags & HASHED) {
+    #####:  751:	    zputs(cn->u.cmd, stdout);
+    #####:  752:	    putchar('\n');
+        -:  753:	} else {
+    #####:  754:	    zputs(*(cn->u.name), stdout);
+    #####:  755:	    putchar('/');
+    #####:  756:	    zputs(cn->node.nam, stdout);
+    #####:  757:	    putchar('\n');
+        -:  758:	}
+    #####:  759:	return;
+        -:  760:    }
+        -:  761:
+    #####:  762:    if (printflags & PRINT_WHENCE_VERBOSE) {
+    #####:  763:	if (cn->node.flags & HASHED) {
+    #####:  764:	    nicezputs(cn->node.nam, stdout);
+    #####:  765:	    printf(" is hashed to ");
+    #####:  766:	    nicezputs(cn->u.cmd, stdout);
+    #####:  767:	    putchar('\n');
+        -:  768:	} else {
+    #####:  769:	    nicezputs(cn->node.nam, stdout);
+    #####:  770:	    printf(" is ");
+    #####:  771:	    nicezputs(*(cn->u.name), stdout);
+    #####:  772:	    putchar('/');
+    #####:  773:	    nicezputs(cn->node.nam, stdout);
+    #####:  774:	    putchar('\n');
+        -:  775:	}
+    #####:  776:	return;
+        -:  777:    }
+        -:  778:
+    #####:  779:    if (printflags & PRINT_LIST) {
+    #####:  780:	printf("hash ");
+        -:  781:
+    #####:  782:	if(cn->node.nam[0] == '-')
+    #####:  783:	    printf("-- ");
+        -:  784:    }
+        -:  785:
+    #####:  786:    if (cn->node.flags & HASHED) {
+    #####:  787:	quotedzputs(cn->node.nam, stdout);
+    #####:  788:	putchar('=');
+    #####:  789:	quotedzputs(cn->u.cmd, stdout);
+    #####:  790:	putchar('\n');
+        -:  791:    } else {
+    #####:  792:	quotedzputs(cn->node.nam, stdout);
+    #####:  793:	putchar('=');
+    #####:  794:	quotedzputs(*(cn->u.name), stdout);
+    #####:  795:	putchar('/');
+    #####:  796:	quotedzputs(cn->node.nam, stdout);
+    #####:  797:	putchar('\n');
+        -:  798:    }
+        -:  799:}
+        -:  800:
+        -:  801:/***************************************/
+        -:  802:/* Shell Function Hash Table Functions */
+        -:  803:/***************************************/
+        -:  804:
+        -:  805:/* hash table containing the shell functions */
+        -:  806:
+        -:  807:/**/
+        -:  808:mod_export HashTable shfunctab;
+        -:  809:
+        -:  810:/**/
+        -:  811:void
+        2:  812:createshfunctable(void)
+        -:  813:{
+        2:  814:    shfunctab = newhashtable(7, "shfunctab", NULL);
+        -:  815:
+        2:  816:    shfunctab->hash        = hasher;
+        2:  817:    shfunctab->emptytable  = NULL;
+        2:  818:    shfunctab->filltable   = NULL;
+        2:  819:    shfunctab->cmpnodes    = strcmp;
+        2:  820:    shfunctab->addnode     = addhashnode;
+        2:  821:    shfunctab->getnode     = gethashnode;
+        2:  822:    shfunctab->getnode2    = gethashnode2;
+        2:  823:    shfunctab->removenode  = removeshfuncnode;
+        2:  824:    shfunctab->disablenode = disableshfuncnode;
+        2:  825:    shfunctab->enablenode  = enableshfuncnode;
+        2:  826:    shfunctab->freenode    = freeshfuncnode;
+        2:  827:    shfunctab->printnode   = printshfuncnode;
+        2:  828:}
+        -:  829:
+        -:  830:/* Remove an entry from the shell function hash table.   *
+        -:  831: * It checks if the function is a signal trap and if so, *
+        -:  832: * it will disable the trapping of that signal.          */
+        -:  833:
+        -:  834:/**/
+        -:  835:static HashNode
+    #####:  836:removeshfuncnode(UNUSED(HashTable ht), const char *nam)
+        -:  837:{
+        -:  838:    HashNode hn;
+        -:  839:    int signum;
+        -:  840:
+    #####:  841:    if (!strncmp(nam, "TRAP", 4) && (signum = getsignum(nam + 4)) != -1)
+    #####:  842:	hn = removetrap(signum);
+        -:  843:    else
+    #####:  844:	hn = removehashnode(shfunctab, nam);
+        -:  845:
+    #####:  846:    return hn;
+        -:  847:}
+        -:  848:
+        -:  849:/* Disable an entry in the shell function hash table.    *
+        -:  850: * It checks if the function is a signal trap and if so, *
+        -:  851: * it will disable the trapping of that signal.          */
+        -:  852:
+        -:  853:/**/
+        -:  854:static void
+    #####:  855:disableshfuncnode(HashNode hn, UNUSED(int flags))
+        -:  856:{
+    #####:  857:    hn->flags |= DISABLED;
+    #####:  858:    if (!strncmp(hn->nam, "TRAP", 4)) {
+    #####:  859:	int signum = getsignum(hn->nam + 4);
+    #####:  860:	if (signum != -1) {
+    #####:  861:	    sigtrapped[signum] &= ~ZSIG_FUNC;
+    #####:  862:	    unsettrap(signum);
+        -:  863:	}
+        -:  864:    }
+    #####:  865:}
+        -:  866:
+        -:  867:/* Re-enable an entry in the shell function hash table.  *
+        -:  868: * It checks if the function is a signal trap and if so, *
+        -:  869: * it will re-enable the trapping of that signal.        */
+        -:  870:
+        -:  871:/**/
+        -:  872:static void
+    #####:  873:enableshfuncnode(HashNode hn, UNUSED(int flags))
+        -:  874:{
+    #####:  875:    Shfunc shf = (Shfunc) hn;
+        -:  876:
+    #####:  877:    shf->node.flags &= ~DISABLED;
+    #####:  878:    if (!strncmp(shf->node.nam, "TRAP", 4)) {
+    #####:  879:	int signum = getsignum(shf->node.nam + 4);
+    #####:  880:	if (signum != -1) {
+    #####:  881:	    settrap(signum, NULL, ZSIG_FUNC);
+        -:  882:	}
+        -:  883:    }
+    #####:  884:}
+        -:  885:
+        -:  886:/**/
+        -:  887:static void
+    #####:  888:freeshfuncnode(HashNode hn)
+        -:  889:{
+    #####:  890:    Shfunc shf = (Shfunc) hn;
+        -:  891:
+    #####:  892:    zsfree(shf->node.nam);
+    #####:  893:    if (shf->funcdef)
+    #####:  894:	freeeprog(shf->funcdef);
+    #####:  895:    if (shf->redir)
+    #####:  896:	freeeprog(shf->redir);
+    #####:  897:    dircache_set(&shf->filename, NULL);
+    #####:  898:    if (shf->sticky) {
+    #####:  899:	if (shf->sticky->n_on_opts)
+    #####:  900:	    zfree(shf->sticky->on_opts,
+    #####:  901:		  shf->sticky->n_on_opts * sizeof(*shf->sticky->on_opts));
+    #####:  902:	if (shf->sticky->n_off_opts)
+    #####:  903:	    zfree(shf->sticky->off_opts,
+    #####:  904:		  shf->sticky->n_off_opts * sizeof(*shf->sticky->off_opts));
+    #####:  905:	zfree(shf->sticky, sizeof(*shf->sticky));
+        -:  906:    }
+    #####:  907:    zfree(shf, sizeof(struct shfunc));
+    #####:  908:}
+        -:  909:
+        -:  910:/* Print a shell function */
+        -:  911: 
+        -:  912:/**/
+        -:  913:static void
+    #####:  914:printshfuncnode(HashNode hn, int printflags)
+        -:  915:{
+    #####:  916:    Shfunc f = (Shfunc) hn;
+    #####:  917:    char *t = 0;
+        -:  918:
+    #####:  919:    if ((printflags & PRINT_NAMEONLY) ||
+    #####:  920:	((printflags & PRINT_WHENCE_SIMPLE) &&
+    #####:  921:	!(printflags & PRINT_WHENCE_FUNCDEF))) {
+    #####:  922:	zputs(f->node.nam, stdout);
+    #####:  923:	putchar('\n');
+    #####:  924:	return;
+        -:  925:    }
+        -:  926: 
+    #####:  927:    if ((printflags & (PRINT_WHENCE_VERBOSE|PRINT_WHENCE_WORD)) &&
+    #####:  928:	!(printflags & PRINT_WHENCE_FUNCDEF)) {
+    #####:  929:	nicezputs(f->node.nam, stdout);
+    #####:  930:	printf((printflags & PRINT_WHENCE_WORD) ? ": function" :
+    #####:  931:	       (f->node.flags & PM_UNDEFINED) ?
+        -:  932:	       " is an autoload shell function" :
+        -:  933:	       " is a shell function");
+    #####:  934:	if ((printflags & PRINT_WHENCE_VERBOSE) && f->filename) {
+    #####:  935:	    printf(" from ");
+    #####:  936:	    quotedzputs(f->filename, stdout);
+    #####:  937:	    if (f->node.flags & PM_LOADDIR) {
+    #####:  938:		printf("/");
+    #####:  939:		quotedzputs(f->node.nam, stdout);
+        -:  940:	    }
+        -:  941:	}
+    #####:  942:	putchar('\n');
+    #####:  943:	return;
+        -:  944:    }
+        -:  945: 
+    #####:  946:    quotedzputs(f->node.nam, stdout);
+    #####:  947:    if (f->funcdef || f->node.flags & PM_UNDEFINED) {
+    #####:  948:	printf(" () {\n");
+    #####:  949:	zoutputtab(stdout);
+    #####:  950:	if (f->node.flags & PM_UNDEFINED) {
+    #####:  951:	    printf("%c undefined\n", hashchar);
+    #####:  952:	    zoutputtab(stdout);
+        -:  953:	} else
+    #####:  954:	    t = getpermtext(f->funcdef, NULL, 1);
+    #####:  955:	if (f->node.flags & (PM_TAGGED|PM_TAGGED_LOCAL)) {
+    #####:  956:	    printf("%c traced\n", hashchar);
+    #####:  957:	    zoutputtab(stdout);
+        -:  958:	}
+    #####:  959:	if (!t) {
+    #####:  960:	    char *fopt = "UtTkzc";
+    #####:  961:	    int flgs[] = {
+        -:  962:		PM_UNALIASED, PM_TAGGED, PM_TAGGED_LOCAL,
+        -:  963:		PM_KSHSTORED, PM_ZSHSTORED, PM_CUR_FPATH, 0
+        -:  964:	    };
+        -:  965:	    int fl;;
+        -:  966:
+    #####:  967:	    zputs("builtin autoload -X", stdout);
+    #####:  968:	    for (fl=0;fopt[fl];fl++)
+    #####:  969:		if (f->node.flags & flgs[fl]) putchar(fopt[fl]);
+    #####:  970:	    if (f->filename && (f->node.flags & PM_LOADDIR)) {
+    #####:  971:		putchar(' ');
+    #####:  972:		zputs(f->filename, stdout);
+        -:  973:	    }
+        -:  974:	} else {
+    #####:  975:	    zputs(t, stdout);
+    #####:  976:	    zsfree(t);
+    #####:  977:	    if (f->funcdef->flags & EF_RUN) {
+    #####:  978:		printf("\n");
+    #####:  979:		zoutputtab(stdout);
+    #####:  980:		quotedzputs(f->node.nam, stdout);
+    #####:  981:		printf(" \"$@\"");
+        -:  982:	    }
+        -:  983:	}
+    #####:  984:	printf("\n}");
+        -:  985:    } else {
+    #####:  986:	printf(" () { }");
+        -:  987:    }
+    #####:  988:    if (f->redir) {
+    #####:  989:	t = getpermtext(f->redir, NULL, 1);
+    #####:  990:	if (t) {
+    #####:  991:	    zputs(t, stdout);
+    #####:  992:	    zsfree(t);
+        -:  993:	}
+        -:  994:    }
+        -:  995:
+    #####:  996:    putchar('\n');
+        -:  997:}
+        -:  998:
+        -:  999:/*
+        -: 1000: * Wrap scanmatchtable for shell functions with optional
+        -: 1001: * expansion of leading tabs.
+        -: 1002: * expand = 0 is standard: use hard tabs.
+        -: 1003: * expand > 0 uses that many spaces.
+        -: 1004: * expand < 0 uses no indentation.
+        -: 1005: *
+        -: 1006: * Note this function and the following two are called with
+        -: 1007: * interrupts queued, so saving and restoring text_expand_tabs
+        -: 1008: * is safe.
+        -: 1009: */
+        -: 1010:
+        -: 1011:/**/
+        -: 1012:mod_export int
+    #####: 1013:scanmatchshfunc(Patprog pprog, int sorted, int flags1, int flags2,
+        -: 1014:		ScanFunc scanfunc, int scanflags, int expand)
+        -: 1015:{
+        -: 1016:    int ret, save_expand;
+        -: 1017:
+    #####: 1018:    save_expand = text_expand_tabs;
+    #####: 1019:    text_expand_tabs = expand;
+    #####: 1020:    ret = scanmatchtable(shfunctab, pprog, sorted, flags1, flags2,
+        -: 1021:			scanfunc, scanflags);
+    #####: 1022:    text_expand_tabs = save_expand;
+        -: 1023:
+    #####: 1024:    return ret;
+        -: 1025:}
+        -: 1026:
+        -: 1027:/* Wrap scanhashtable to expand tabs for shell functions */
+        -: 1028:
+        -: 1029:/**/
+        -: 1030:mod_export int
+    #####: 1031:scanshfunc(int sorted, int flags1, int flags2,
+        -: 1032:	      ScanFunc scanfunc, int scanflags, int expand)
+        -: 1033:{
+    #####: 1034:    return scanmatchshfunc(NULL, sorted, flags1, flags2,
+        -: 1035:			   scanfunc, scanflags, expand);
+        -: 1036:}
+        -: 1037:
+        -: 1038:/* Wrap shfunctab->printnode to expand tabs */
+        -: 1039:
+        -: 1040:/**/
+        -: 1041:mod_export void
+    #####: 1042:printshfuncexpand(HashNode hn, int printflags, int expand)
+        -: 1043:{
+        -: 1044:    int save_expand;
+        -: 1045:
+    #####: 1046:    save_expand = text_expand_tabs;
+    #####: 1047:    text_expand_tabs = expand;
+    #####: 1048:    shfunctab->printnode(hn, printflags);
+    #####: 1049:    text_expand_tabs = save_expand;
+    #####: 1050:}
+        -: 1051:
+        -: 1052:/*
+        -: 1053: * Get a heap-duplicated name of the shell function, for
+        -: 1054: * use in tracing.
+        -: 1055: */
+        -: 1056:
+        -: 1057:/**/
+        -: 1058:mod_export char *
+     1031: 1059:getshfuncfile(Shfunc shf)
+        -: 1060:{
+     1031: 1061:    if (shf->node.flags & PM_LOADDIR) {
+    #####: 1062:	return zhtricat(shf->filename, "/", shf->node.nam);
+     1031: 1063:    } else if (shf->filename) {
+     1031: 1064:	return dupstring(shf->filename);
+        -: 1065:    } else {
+    #####: 1066:	return NULL;
+        -: 1067:    }
+        -: 1068:}
+        -: 1069:
+        -: 1070:/**************************************/
+        -: 1071:/* Reserved Word Hash Table Functions */
+        -: 1072:/**************************************/
+        -: 1073:
+        -: 1074:/* Nodes for reserved word hash table */
+        -: 1075:
+        -: 1076:static struct reswd reswds[] = {
+        -: 1077:    {{NULL, "!", 0}, BANG},
+        -: 1078:    {{NULL, "[[", 0}, DINBRACK},
+        -: 1079:    {{NULL, "{", 0}, INBRACE},
+        -: 1080:    {{NULL, "}", 0}, OUTBRACE},
+        -: 1081:    {{NULL, "case", 0}, CASE},
+        -: 1082:    {{NULL, "coproc", 0}, COPROC},
+        -: 1083:    {{NULL, "declare", 0}, TYPESET},
+        -: 1084:    {{NULL, "do", 0}, DOLOOP},
+        -: 1085:    {{NULL, "done", 0}, DONE},
+        -: 1086:    {{NULL, "elif", 0}, ELIF},
+        -: 1087:    {{NULL, "else", 0}, ELSE},
+        -: 1088:    {{NULL, "end", 0}, ZEND},
+        -: 1089:    {{NULL, "esac", 0}, ESAC},
+        -: 1090:    {{NULL, "export", 0}, TYPESET},
+        -: 1091:    {{NULL, "fi", 0}, FI},
+        -: 1092:    {{NULL, "float", 0}, TYPESET},
+        -: 1093:    {{NULL, "for", 0}, FOR},
+        -: 1094:    {{NULL, "foreach", 0}, FOREACH},
+        -: 1095:    {{NULL, "function", 0}, FUNC},
+        -: 1096:    {{NULL, "if", 0}, IF},
+        -: 1097:    {{NULL, "integer", 0}, TYPESET},
+        -: 1098:    {{NULL, "local", 0}, TYPESET},
+        -: 1099:    {{NULL, "nocorrect", 0}, NOCORRECT},
+        -: 1100:    {{NULL, "readonly", 0}, TYPESET},
+        -: 1101:    {{NULL, "repeat", 0}, REPEAT},
+        -: 1102:    {{NULL, "select", 0}, SELECT},
+        -: 1103:    {{NULL, "then", 0}, THEN},
+        -: 1104:    {{NULL, "time", 0}, TIME},
+        -: 1105:    {{NULL, "typeset", 0}, TYPESET},
+        -: 1106:    {{NULL, "until", 0}, UNTIL},
+        -: 1107:    {{NULL, "while", 0}, WHILE},
+        -: 1108:    {{NULL, NULL, 0}, 0}
+        -: 1109:};
+        -: 1110:
+        -: 1111:/* hash table containing the reserved words */
+        -: 1112:
+        -: 1113:/**/
+        -: 1114:mod_export HashTable reswdtab;
+        -: 1115:
+        -: 1116:/* Build the hash table containing zsh's reserved words. */
+        -: 1117:
+        -: 1118:/**/
+        -: 1119:void
+        2: 1120:createreswdtable(void)
+        -: 1121:{
+        -: 1122:    Reswd rw;
+        -: 1123:
+        2: 1124:    reswdtab = newhashtable(23, "reswdtab", NULL);
+        -: 1125:
+        2: 1126:    reswdtab->hash        = hasher;
+        2: 1127:    reswdtab->emptytable  = NULL;
+        2: 1128:    reswdtab->filltable   = NULL;
+        2: 1129:    reswdtab->cmpnodes    = strcmp;
+        2: 1130:    reswdtab->addnode     = addhashnode;
+        2: 1131:    reswdtab->getnode     = gethashnode;
+        2: 1132:    reswdtab->getnode2    = gethashnode2;
+        2: 1133:    reswdtab->removenode  = NULL;
+        2: 1134:    reswdtab->disablenode = disablehashnode;
+        2: 1135:    reswdtab->enablenode  = enablehashnode;
+        2: 1136:    reswdtab->freenode    = NULL;
+        2: 1137:    reswdtab->printnode   = printreswdnode;
+        -: 1138:
+       64: 1139:    for (rw = reswds; rw->node.nam; rw++)
+       62: 1140:	reswdtab->addnode(reswdtab, rw->node.nam, rw);
+        2: 1141:}
+        -: 1142:
+        -: 1143:/* Print a reserved word */
+        -: 1144:
+        -: 1145:/**/
+        -: 1146:static void
+    #####: 1147:printreswdnode(HashNode hn, int printflags)
+        -: 1148:{
+    #####: 1149:    Reswd rw = (Reswd) hn;
+        -: 1150:
+    #####: 1151:    if (printflags & PRINT_WHENCE_WORD) {
+    #####: 1152:	printf("%s: reserved\n", rw->node.nam);
+    #####: 1153:	return;
+        -: 1154:    }
+        -: 1155:
+    #####: 1156:    if (printflags & PRINT_WHENCE_CSH) {
+    #####: 1157:	printf("%s: shell reserved word\n", rw->node.nam);
+    #####: 1158:	return;
+        -: 1159:    }
+        -: 1160:
+    #####: 1161:    if (printflags & PRINT_WHENCE_VERBOSE) {
+    #####: 1162:	printf("%s is a reserved word\n", rw->node.nam);
+    #####: 1163:	return;
+        -: 1164:    }
+        -: 1165:
+        -: 1166:    /* default is name only */
+    #####: 1167:    printf("%s\n", rw->node.nam);
+        -: 1168:}
+        -: 1169:
+        -: 1170:/********************************/
+        -: 1171:/* Aliases Hash Table Functions */
+        -: 1172:/********************************/
+        -: 1173:
+        -: 1174:/* hash table containing the aliases */
+        -: 1175: 
+        -: 1176:/**/
+        -: 1177:mod_export HashTable aliastab;
+        -: 1178: 
+        -: 1179:/* has table containing suffix aliases */
+        -: 1180:
+        -: 1181:/**/
+        -: 1182:mod_export HashTable sufaliastab;
+        -: 1183: 
+        -: 1184:/* Create new hash tables for aliases */
+        -: 1185:
+        -: 1186:/**/
+        -: 1187:void
+        4: 1188:createaliastable(HashTable ht)
+        -: 1189:{
+        4: 1190:    ht->hash        = hasher;
+        4: 1191:    ht->emptytable  = NULL;
+        4: 1192:    ht->filltable   = NULL;
+        4: 1193:    ht->cmpnodes    = strcmp;
+        4: 1194:    ht->addnode     = addhashnode;
+        4: 1195:    ht->getnode     = gethashnode;
+        4: 1196:    ht->getnode2    = gethashnode2;
+        4: 1197:    ht->removenode  = removehashnode;
+        4: 1198:    ht->disablenode = disablehashnode;
+        4: 1199:    ht->enablenode  = enablehashnode;
+        4: 1200:    ht->freenode    = freealiasnode;
+        4: 1201:    ht->printnode   = printaliasnode;
+        4: 1202:}
+        -: 1203:
+        -: 1204:/**/
+        -: 1205:void
+        2: 1206:createaliastables(void)
+        -: 1207:{
+        -: 1208:    /* Table for regular and global aliases */
+        -: 1209:
+        2: 1210:    aliastab = newhashtable(23, "aliastab", NULL);
+        -: 1211:
+        2: 1212:    createaliastable(aliastab);
+        -: 1213:
+        -: 1214:    /* add the default aliases */
+        2: 1215:    aliastab->addnode(aliastab, ztrdup("run-help"), createaliasnode(ztrdup("man"), 0));
+        2: 1216:    aliastab->addnode(aliastab, ztrdup("which-command"), createaliasnode(ztrdup("whence"), 0));
+        -: 1217:
+        -: 1218:
+        -: 1219:    /* Table for suffix aliases --- make this smaller */
+        -: 1220:
+        2: 1221:    sufaliastab = newhashtable(11, "sufaliastab", NULL);
+        -: 1222:
+        2: 1223:    createaliastable(sufaliastab);
+        2: 1224:}
+        -: 1225:
+        -: 1226:/* Create a new alias node */
+        -: 1227:
+        -: 1228:/**/
+        -: 1229:mod_export Alias
+        7: 1230:createaliasnode(char *txt, int flags)
+        -: 1231:{
+        -: 1232:    Alias al;
+        -: 1233:
+        7: 1234:    al = (Alias) zshcalloc(sizeof *al);
+        7: 1235:    al->node.flags = flags;
+        7: 1236:    al->text = txt;
+        7: 1237:    al->inuse = 0;
+        7: 1238:    return al;
+        -: 1239:}
+        -: 1240:
+        -: 1241:/**/
+        -: 1242:static void
+    #####: 1243:freealiasnode(HashNode hn)
+        -: 1244:{
+    #####: 1245:    Alias al = (Alias) hn;
+        -: 1246: 
+    #####: 1247:    zsfree(al->node.nam);
+    #####: 1248:    zsfree(al->text);
+    #####: 1249:    zfree(al, sizeof(struct alias));
+    #####: 1250:}
+        -: 1251:
+        -: 1252:/* Print an alias */
+        -: 1253:
+        -: 1254:/**/
+        -: 1255:static void
+    #####: 1256:printaliasnode(HashNode hn, int printflags)
+        -: 1257:{
+    #####: 1258:    Alias a = (Alias) hn;
+        -: 1259:
+    #####: 1260:    if (printflags & PRINT_NAMEONLY) {
+    #####: 1261:	zputs(a->node.nam, stdout);
+    #####: 1262:	putchar('\n');
+    #####: 1263:	return;
+        -: 1264:    }
+        -: 1265:
+    #####: 1266:    if (printflags & PRINT_WHENCE_WORD) {
+    #####: 1267:	if (a->node.flags & ALIAS_SUFFIX)
+    #####: 1268:	    printf("%s: suffix alias\n", a->node.nam);
+    #####: 1269:	else if (a->node.flags & ALIAS_GLOBAL)
+    #####: 1270:	    printf("%s: global alias\n", a->node.nam);
+        -: 1271:	else
+    #####: 1272:	    printf("%s: alias\n", a->node.nam);
+    #####: 1273:	return;
+        -: 1274:    }
+        -: 1275:
+    #####: 1276:    if (printflags & PRINT_WHENCE_SIMPLE) {
+    #####: 1277:	zputs(a->text, stdout);
+    #####: 1278:	putchar('\n');
+    #####: 1279:	return;
+        -: 1280:    }
+        -: 1281:
+    #####: 1282:    if (printflags & PRINT_WHENCE_CSH) {
+    #####: 1283:	nicezputs(a->node.nam, stdout);
+    #####: 1284:	printf(": ");
+    #####: 1285:	if (a->node.flags & ALIAS_SUFFIX)
+    #####: 1286:	    printf("suffix ");
+    #####: 1287:	else if (a->node.flags & ALIAS_GLOBAL)
+    #####: 1288:	    printf("globally ");
+    #####: 1289:	printf ("aliased to ");
+    #####: 1290:	nicezputs(a->text, stdout);
+    #####: 1291:	putchar('\n');
+    #####: 1292:	return;
+        -: 1293:    }
+        -: 1294:
+    #####: 1295:    if (printflags & PRINT_WHENCE_VERBOSE) {
+    #####: 1296:	nicezputs(a->node.nam, stdout);
+    #####: 1297:	printf(" is a");
+    #####: 1298:	if (a->node.flags & ALIAS_SUFFIX)
+    #####: 1299:	    printf(" suffix");
+    #####: 1300:	else if (a->node.flags & ALIAS_GLOBAL)
+    #####: 1301:	    printf(" global");
+        -: 1302:	else
+    #####: 1303:	    printf("n");
+    #####: 1304:	printf(" alias for ");
+    #####: 1305:	nicezputs(a->text, stdout);
+    #####: 1306:	putchar('\n');
+    #####: 1307:	return;
+        -: 1308:    }
+        -: 1309:
+    #####: 1310:    if (printflags & PRINT_LIST) {
+        -: 1311:	/* Fast fail on unrepresentable values. */
+    #####: 1312:	if (strchr(a->node.nam, '=')) {
+    #####: 1313:	    zwarn("invalid alias '%s' encountered while printing aliases", 
+        -: 1314:		  a->node.nam);
+        -: 1315:	    /* ### TODO: Return an error status to the C caller */
+    #####: 1316:	    return;
+        -: 1317:	}
+        -: 1318:
+        -: 1319:	/* Normal path. */
+    #####: 1320:	printf("alias ");
+    #####: 1321:	if (a->node.flags & ALIAS_SUFFIX)
+    #####: 1322:	    printf("-s ");
+    #####: 1323:	else if (a->node.flags & ALIAS_GLOBAL)
+    #####: 1324:	    printf("-g ");
+        -: 1325:
+        -: 1326:	/* If an alias begins with `-' or `+', then we must output `-- '
+        -: 1327:	 * first, so that it is not interpreted as an option.     */
+    #####: 1328:	if(a->node.nam[0] == '-' || a->node.nam[0] == '+')
+    #####: 1329:	    printf("-- ");
+        -: 1330:    }
+        -: 1331:
+    #####: 1332:    quotedzputs(a->node.nam, stdout);
+    #####: 1333:    putchar('=');
+    #####: 1334:    quotedzputs(a->text, stdout);
+        -: 1335:
+    #####: 1336:    putchar('\n');
+        -: 1337:}
+        -: 1338:
+        -: 1339:/*************************************/
+        -: 1340:/* History Line Hash Table Functions */
+        -: 1341:/*************************************/
+        -: 1342:
+        -: 1343:/**/
+        -: 1344:void
+        2: 1345:createhisttable(void)
+        -: 1346:{
+        2: 1347:    histtab = newhashtable(599, "histtab", NULL);
+        -: 1348:
+        2: 1349:    histtab->hash        = histhasher;
+        2: 1350:    histtab->emptytable  = emptyhisttable;
+        2: 1351:    histtab->filltable   = NULL;
+        2: 1352:    histtab->cmpnodes    = histstrcmp;
+        2: 1353:    histtab->addnode     = addhistnode;
+        2: 1354:    histtab->getnode     = gethashnode2;
+        2: 1355:    histtab->getnode2    = gethashnode2;
+        2: 1356:    histtab->removenode  = removehashnode;
+        2: 1357:    histtab->disablenode = NULL;
+        2: 1358:    histtab->enablenode  = NULL;
+        2: 1359:    histtab->freenode    = freehistnode;
+        2: 1360:    histtab->printnode   = NULL;
+        2: 1361:}
+        -: 1362:
+        -: 1363:/**/
+        -: 1364:unsigned
+    #####: 1365:histhasher(const char *str)
+        -: 1366:{
+    #####: 1367:    unsigned hashval = 0;
+        -: 1368:
+    #####: 1369:    while (inblank(*str)) str++;
+        -: 1370:
+    #####: 1371:    while (*str) {
+    #####: 1372:	if (inblank(*str)) {
+    #####: 1373:	    do str++; while (inblank(*str));
+    #####: 1374:	    if (*str)
+    #####: 1375:		hashval += (hashval << 5) + ' ';
+        -: 1376:	}
+        -: 1377:	else
+    #####: 1378:	    hashval += (hashval << 5) + *(unsigned char *)str++;
+        -: 1379:    }
+    #####: 1380:    return hashval;
+        -: 1381:}
+        -: 1382:
+        -: 1383:/**/
+        -: 1384:void
+    #####: 1385:emptyhisttable(HashTable ht)
+        -: 1386:{
+    #####: 1387:    emptyhashtable(ht);
+    #####: 1388:    if (hist_ring)
+    #####: 1389:	histremovedups();
+    #####: 1390:}
+        -: 1391:
+        -: 1392:/* Compare two strings with normalized white-space */
+        -: 1393:
+        -: 1394:/**/
+        -: 1395:int
+    #####: 1396:histstrcmp(const char *str1, const char *str2)
+        -: 1397:{
+    #####: 1398:    while (inblank(*str1)) str1++;
+    #####: 1399:    while (inblank(*str2)) str2++;
+    #####: 1400:    while (*str1 && *str2) {
+    #####: 1401:	if (inblank(*str1)) {
+    #####: 1402:	    if (!inblank(*str2))
+    #####: 1403:		break;
+    #####: 1404:	    do str1++; while (inblank(*str1));
+    #####: 1405:	    do str2++; while (inblank(*str2));
+        -: 1406:	}
+        -: 1407:	else {
+    #####: 1408:	    if (*str1 != *str2)
+    #####: 1409:		break;
+    #####: 1410:	    str1++;
+    #####: 1411:	    str2++;
+        -: 1412:	}
+        -: 1413:    }
+    #####: 1414:    return *str1 - *str2;
+        -: 1415:}
+        -: 1416:
+        -: 1417:/**/
+        -: 1418:void
+    #####: 1419:addhistnode(HashTable ht, char *nam, void *nodeptr)
+        -: 1420:{
+    #####: 1421:    HashNode oldnode = addhashnode2(ht, nam, nodeptr);
+    #####: 1422:    Histent he = (Histent)nodeptr;
+    #####: 1423:    if (oldnode && oldnode != (HashNode)nodeptr) {
+    #####: 1424:	if (he->node.flags & HIST_MAKEUNIQUE
+    #####: 1425:	 || (he->node.flags & HIST_FOREIGN && (Histent)oldnode == he->up)) {
+    #####: 1426:	    (void) addhashnode2(ht, oldnode->nam, oldnode); /* restore hash */
+    #####: 1427:	    he->node.flags |= HIST_DUP;
+    #####: 1428:	    he->node.flags &= ~HIST_MAKEUNIQUE;
+        -: 1429:	}
+        -: 1430:	else {
+    #####: 1431:	    oldnode->flags |= HIST_DUP;
+    #####: 1432:	    if (hist_ignore_all_dups)
+    #####: 1433:		freehistnode(oldnode); /* Remove the old dup */
+        -: 1434:	}
+        -: 1435:    }
+        -: 1436:    else
+    #####: 1437:	he->node.flags &= ~HIST_MAKEUNIQUE;
+    #####: 1438:}
+        -: 1439:
+        -: 1440:/**/
+        -: 1441:void
+    #####: 1442:freehistnode(HashNode nodeptr)
+        -: 1443:{
+    #####: 1444:    freehistdata((Histent)nodeptr, 1);
+    #####: 1445:    zfree(nodeptr, sizeof (struct histent));
+    #####: 1446:}
+        -: 1447:
+        -: 1448:/**/
+        -: 1449:void
+    #####: 1450:freehistdata(Histent he, int unlink)
+        -: 1451:{
+    #####: 1452:    if (!he)
+    #####: 1453:	return;
+        -: 1454:
+    #####: 1455:    if (he == &curline)
+    #####: 1456:	return;
+        -: 1457:
+    #####: 1458:    if (!(he->node.flags & (HIST_DUP | HIST_TMPSTORE)))
+    #####: 1459:	removehashnode(histtab, he->node.nam);
+        -: 1460:
+    #####: 1461:    zsfree(he->node.nam);
+    #####: 1462:    if (he->nwords)
+    #####: 1463:	zfree(he->words, he->nwords*2*sizeof(short));
+        -: 1464:
+    #####: 1465:    if (unlink) {
+    #####: 1466:	if (!--histlinect)
+    #####: 1467:	    hist_ring = NULL;
+        -: 1468:	else {
+    #####: 1469:	    if (he == hist_ring)
+    #####: 1470:		hist_ring = hist_ring->up;
+    #####: 1471:	    he->up->down = he->down;
+    #####: 1472:	    he->down->up = he->up;
+        -: 1473:	}
+        -: 1474:    }
+        -: 1475:}
+        -: 1476:
+        -: 1477:
+        -: 1478:/***********************************************************************
+        -: 1479: * Directory name cache mechanism
+        -: 1480: *
+        -: 1481: * The idea of this is that there are various shell structures,
+        -: 1482: * notably functions, that record the directories with which they
+        -: 1483: * are associated.  Rather than store the full string each time,
+        -: 1484: * we store a pointer to the same location and count the references.
+        -: 1485: * This is optimised so that retrieval is quick at the expense of
+        -: 1486: * searching the list when setting up the structure, which is a much
+        -: 1487: * rarer operation.
+        -: 1488: *
+        -: 1489: * There is nothing special about the fact that the strings are
+        -: 1490: * directories, except for the assumptions for efficiency that many
+        -: 1491: * structures will point to the same one, and that there are not too
+        -: 1492: * many different directories associated with the shell.
+        -: 1493: **********************************************************************/
+        -: 1494:
+        -: 1495:struct dircache_entry
+        -: 1496:{
+        -: 1497:    /* Name of directory in cache */
+        -: 1498:    char *name;
+        -: 1499:    /* Number of references to it */
+        -: 1500:    int refs;
+        -: 1501:};
+        -: 1502:
+        -: 1503:/*
+        -: 1504: * dircache is the cache, of length dircache_size.
+        -: 1505: * dircache_lastentry is the last entry used, an optimisation
+        -: 1506: * for multiple references to the same directory, e.g
+        -: 1507: * "autoload /blah/blah/\*".
+        -: 1508: */
+        -: 1509:static struct dircache_entry *dircache, *dircache_lastentry;
+        -: 1510:static int dircache_size;
+        -: 1511:
+        -: 1512:/*
+        -: 1513: * Set *name to point to a cached version of value.
+        -: 1514: * value is copied so may come from any source.
+        -: 1515: *
+        -: 1516: * If value is NULL, look for the existing value of *name (safe if this
+        -: 1517: * too is NULL) and remove a reference to it from the cache. If it's
+        -: 1518: * not found in the cache, it's assumed to be an allocated string and
+        -: 1519: * freed --- this currently occurs for a shell function that's been
+        -: 1520: * loaded as the filename is now a full path, not just a directory,
+        -: 1521: * though we may one day optimise this to a cached directory plus a
+        -: 1522: * name, too.  Note --- the function does *not* otherwise check
+        -: 1523: * if *name points to something already cached, so this is
+        -: 1524: * necessary any time *name may already be in the cache.
+        -: 1525: */
+        -: 1526:
+        -: 1527:/**/
+        -: 1528:mod_export void
+       37: 1529:dircache_set(char **name, char *value)
+        -: 1530:{
+        -: 1531:    struct dircache_entry *dcptr, *dcnew;
+        -: 1532:
+       37: 1533:    if (!value) {
+       37: 1534:	if (!*name)
+    #####: 1535:	    return;
+       37: 1536:	if (!dircache_size) {
+       37: 1537:	    zsfree(*name);
+       37: 1538:	    *name = NULL;
+       37: 1539:	    return;
+        -: 1540:	}
+        -: 1541:
+    #####: 1542:	for (dcptr = dircache; dcptr < dircache + dircache_size; dcptr++)
+        -: 1543:	{
+        -: 1544:	    /* Must be a pointer much, not a string match */
+    #####: 1545:	    if (*name == dcptr->name)
+        -: 1546:	    {
+    #####: 1547:		--dcptr->refs;
+    #####: 1548:		if (!dcptr->refs) {
+    #####: 1549:		    ptrdiff_t ind = dcptr - dircache;
+    #####: 1550:		    zsfree(dcptr->name);
+    #####: 1551:		    --dircache_size;
+        -: 1552:
+    #####: 1553:		    if (!dircache_size) {
+    #####: 1554:			zfree(dircache, sizeof(*dircache));
+    #####: 1555:			dircache = NULL;
+    #####: 1556:			dircache_lastentry = NULL;
+    #####: 1557:			*name = NULL;
+    #####: 1558:			return;
+        -: 1559:		    }
+    #####: 1560:		    dcnew = (struct dircache_entry *)
+    #####: 1561:			zalloc(dircache_size * sizeof(*dcnew));
+    #####: 1562:		    if (ind)
+    #####: 1563:			memcpy(dcnew, dircache, ind * sizeof(*dcnew));
+    #####: 1564:		    if (ind < dircache_size)
+    #####: 1565:			memcpy(dcnew + ind, dcptr + 1,
+    #####: 1566:			       (dircache_size - ind) * sizeof(*dcnew));
+    #####: 1567:		    zfree(dircache, (dircache_size+1)*sizeof(*dcnew));
+    #####: 1568:		    dircache = dcnew;
+    #####: 1569:		    dircache_lastentry = NULL;
+        -: 1570:		}
+    #####: 1571:		*name = NULL;
+    #####: 1572:		return;
+        -: 1573:	    }
+        -: 1574:	}
+    #####: 1575:	zsfree(*name);
+    #####: 1576:	*name = NULL;
+        -: 1577:    } else {
+        -: 1578:	/*
+        -: 1579:	 * As the function path has been resolved to a particular
+        -: 1580:	 * location, we'll store it as an absolute path.
+        -: 1581:	 */
+    #####: 1582:	if (*value != '/') {
+    #####: 1583:	    value = zhtricat(metafy(zgetcwd(), -1, META_HEAPDUP),
+        -: 1584:			     "/", value);
+    #####: 1585:	    value = xsymlink(value, 1);
+        -: 1586:	}
+        -: 1587:	/*
+        -: 1588:	 * We'll maintain the cache at exactly the right size rather
+        -: 1589:	 * than overallocating.  The rationale here is that typically
+        -: 1590:	 * we'll get a lot of functions in a small number of directories
+        -: 1591:	 * so the complexity overhead of maintaining a separate count
+        -: 1592:	 * isn't really matched by the efficiency gain.
+        -: 1593: 	 */
+    #####: 1594:	if (dircache_lastentry &&
+    #####: 1595:	    !strcmp(value, dircache_lastentry->name)) {
+    #####: 1596:	    *name = dircache_lastentry->name;
+    #####: 1597:	    ++dircache_lastentry->refs;
+    #####: 1598:	    return;
+    #####: 1599:	} else if (!dircache_size) {
+    #####: 1600:	    dircache_size = 1;
+    #####: 1601:	    dcptr = dircache =
+    #####: 1602:		(struct dircache_entry *)zalloc(sizeof(*dircache));
+        -: 1603:	} else {
+    #####: 1604:	    for (dcptr = dircache; dcptr < dircache + dircache_size; dcptr++)
+        -: 1605:	    {
+    #####: 1606:		if (!strcmp(value, dcptr->name)) {
+    #####: 1607:		    *name = dcptr->name;
+    #####: 1608:		    ++dcptr->refs;
+    #####: 1609:		    return;
+        -: 1610:		}
+        -: 1611:	    }
+    #####: 1612:	    ++dircache_size;
+    #####: 1613:	    dircache = (struct dircache_entry *)
+    #####: 1614:		zrealloc(dircache, sizeof(*dircache) * dircache_size);
+    #####: 1615:	    dcptr = dircache + dircache_size - 1;
+        -: 1616:	}
+    #####: 1617:	dcptr->name = ztrdup(value);
+    #####: 1618:	*name = dcptr->name;
+    #####: 1619:	dcptr->refs = 1;
+    #####: 1620:	dircache_lastentry = dcptr;
+        -: 1621:    }
+        -: 1622:}

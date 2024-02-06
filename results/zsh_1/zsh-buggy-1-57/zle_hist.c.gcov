@@ -1,0 +1,2104 @@
+        -:    0:Source:zle_hist.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_hist.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_hist.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_hist.c - history editing
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_hist.pro"
+        -:   32:
+        -:   33:/* Column position of vi ideal cursor.  -1 if it is unknown -- most *
+        -:   34: * movements and changes do this.                                   */
+        -:   35:
+        -:   36:/**/
+        -:   37:int lastcol;
+        -:   38:
+        -:   39:/* current history line number */
+        -:   40:
+        -:   41:/**/
+        -:   42:int histline;
+        -:   43:
+        -:   44:/* Previous search string use in an incremental search */
+        -:   45:
+        -:   46:/**/
+        -:   47:char *previous_search = NULL;
+        -:   48:
+        -:   49:/**/
+        -:   50:int previous_search_len;
+        -:   51:
+        -:   52:/* Previous aborted search string use in an incremental search */
+        -:   53:
+        -:   54:/**/
+        -:   55:char *previous_aborted_search = NULL;
+        -:   56:
+        -:   57:/* Local keymap in isearch mode */
+        -:   58:
+        -:   59:/**/
+        -:   60:Keymap isearch_keymap;
+        -:   61:
+        -:   62:/*** History text manipulation utilities ***/
+        -:   63:
+        -:   64:/*
+        -:   65: * Text for the line:  anything previously modified within zle since
+        -:   66: * the last time the line editor was started, else what was originally
+        -:   67: * put in the history.
+        -:   68: */
+        -:   69:#define GETZLETEXT(ent)	((ent)->zle_text ? (ent)->zle_text : (ent)->node.nam)
+        -:   70:
+        -:   71:/**/
+        -:   72:void
+    #####:   73:remember_edits(void)
+        -:   74:{
+    #####:   75:    Histent ent = quietgethist(histline);
+    #####:   76:    if (ent) {
+    #####:   77:	char *line =
+    #####:   78:	    zlemetaline ? zlemetaline :
+    #####:   79:	    zlelineasstring(zleline, zlell, 0, NULL, NULL, 0);
+    #####:   80:	if (!ent->zle_text || strcmp(line, ent->zle_text) != 0) {
+    #####:   81:	    if (ent->zle_text)
+    #####:   82:		free(ent->zle_text);
+    #####:   83:	    ent->zle_text = zlemetaline ? ztrdup(line) : line;
+    #####:   84:	} else if (!zlemetaline)
+    #####:   85:	    free(line);
+        -:   86:    }
+    #####:   87:}
+        -:   88:
+        -:   89:/**/
+        -:   90:void
+       39:   91:forget_edits(void)
+        -:   92:{
+        -:   93:    Histent he;
+        -:   94:
+      813:   95:    for (he = hist_ring; he; he = up_histent(he)) {
+      774:   96:	if (he->zle_text) {
+    #####:   97:	    free(he->zle_text);
+    #####:   98:	    he->zle_text = NULL;
+        -:   99:	}
+        -:  100:    }
+       39:  101:}
+        -:  102:
+        -:  103:
+        -:  104:/*** Search utilities ***/
+        -:  105:
+        -:  106:
+        -:  107:/*
+        -:  108: * Return zero if the ZLE string histp length histl and the ZLE string
+        -:  109: * inputp length inputl are the same.  Return -1 if inputp is a prefix
+        -:  110: * of histp.  Return 1 if inputp is the lowercase version of histp.
+        -:  111: * Return 2 if inputp is the lowercase prefix of histp and return 3
+        -:  112: * otherwise.
+        -:  113: */
+        -:  114:
+        -:  115:static int
+    #####:  116:zlinecmp(const char *histp, const char *inputp)
+        -:  117:{
+    #####:  118:    const char *hptr = histp, *iptr = inputp;
+        -:  119:#ifdef MULTIBYTE_SUPPORT
+        -:  120:    mbstate_t hstate, istate;
+        -:  121:#endif
+        -:  122:
+    #####:  123:    while (*iptr && *hptr == *iptr) {
+    #####:  124:	hptr++;
+    #####:  125:	iptr++;
+        -:  126:    }
+        -:  127:
+    #####:  128:    if (!*iptr) {
+    #####:  129:	if (!*hptr) {
+        -:  130:	    /* strings are the same */
+    #####:  131:	    return 0;
+        -:  132:	} else {
+        -:  133:	    /* inputp is a prefix */
+    #####:  134:	    return -1;
+        -:  135:	}
+        -:  136:    }
+        -:  137:
+        -:  138:#ifdef MULTIBYTE_SUPPORT
+    #####:  139:    memset(&hstate, 0, sizeof(hstate));
+    #####:  140:    memset(&istate, 0, sizeof(istate));
+        -:  141:#endif
+        -:  142:
+        -:  143:    /* look for lower case versions */
+    #####:  144:    while (*histp && *inputp) {
+        -:  145:#ifdef MULTIBYTE_SUPPORT
+        -:  146:	wint_t hwc, iwc;
+        -:  147:	int hlen, ilen;
+        -:  148:
+    #####:  149:	hlen = mb_metacharlenconv_r(histp, &hwc, &hstate);
+    #####:  150:	ilen = mb_metacharlenconv_r(inputp, &iwc, &istate);
+        -:  151:
+    #####:  152:	if (hwc == WEOF || iwc == WEOF) {
+        -:  153:	    /* can't convert, compare input characters */
+    #####:  154:	    if (ilen != hlen || memcmp(histp, inputp, hlen) != 0)
+    #####:  155:		return 3;
+    #####:  156:	} else if (towlower(hwc) != iwc)
+    #####:  157:	    return 3;
+        -:  158:
+    #####:  159:	histp += hlen;
+    #####:  160:	inputp += ilen;
+        -:  161:#else
+        -:  162:    	if (tulower(*histp++) != *inputp++)
+        -:  163:	    return 3;
+        -:  164:#endif
+        -:  165:    }
+    #####:  166:    if (!*inputp) {
+        -:  167:	/* one string finished, if it's the input... */
+    #####:  168:	if (!*histp)
+    #####:  169:	    return 1;		/* ...same, else */
+        -:  170:	else
+    #####:  171:	    return 2;		/* ...prefix */
+        -:  172:    }
+        -:  173:    /* Different */
+    #####:  174:    return 3;
+        -:  175:}
+        -:  176:
+        -:  177:
+        -:  178:/*
+        -:  179: * Search for needle in haystack.  Haystack and needle are metafied strings.
+        -:  180: * Start the search at position pos in haystack.
+        -:  181: * Search forward if dir > 0, otherwise search backward.
+        -:  182: * sens is used to test against the return value of linecmp.
+        -:  183: *
+        -:  184: * Return the pointer to the location in haystack found, else NULL.
+        -:  185: *
+        -:  186: * We assume we'll only find needle at some sensible position in a multibyte
+        -:  187: * string, so we don't bother calculating multibyte character lengths for
+        -:  188: * incrementing and decrementing the search position.
+        -:  189: */
+        -:  190:
+        -:  191:static char *
+    #####:  192:zlinefind(char *haystack, int pos, char *needle, int dir, int sens)
+        -:  193:{
+    #####:  194:    char *s = haystack + pos;
+        -:  195:
+    #####:  196:    if (dir > 0) {
+    #####:  197:	while (*s) {
+    #####:  198:	    if (zlinecmp(s, needle) < sens)
+    #####:  199:		return s;
+    #####:  200:	    s++;
+        -:  201:	}
+        -:  202:    } else {
+        -:  203:	for (;;) {
+    #####:  204:	    if (zlinecmp(s, needle) < sens)
+    #####:  205:		return s;
+    #####:  206:	    if (s == haystack)
+    #####:  207:		break;
+    #####:  208:	    s--;
+        -:  209:	}
+        -:  210:    }
+        -:  211:
+    #####:  212:    return NULL;
+        -:  213:}
+        -:  214:
+        -:  215:
+        -:  216:/*** Widgets ***/
+        -:  217:
+        -:  218:
+        -:  219:/**/
+        -:  220:int
+    #####:  221:uphistory(UNUSED(char **args))
+        -:  222:{
+    #####:  223:    int nodups = isset(HISTIGNOREDUPS);
+    #####:  224:    if (!zle_goto_hist(histline, -zmult, nodups) && isset(HISTBEEP))
+    #####:  225:	return 1;
+    #####:  226:    return 0;
+        -:  227:}
+        -:  228:
+        -:  229:/**/
+        -:  230:int
+    #####:  231:upline(char **args)
+        -:  232:{
+    #####:  233:    int n = zmult;
+        -:  234:
+    #####:  235:    if (n < 0) {
+    #####:  236:	zmult = -zmult;
+    #####:  237:	n = -downline(args);
+    #####:  238:	zmult = -zmult;
+    #####:  239:	return n;
+        -:  240:    }
+    #####:  241:    if (lastcol == -1)
+    #####:  242:	lastcol = zlecs - findbol();
+    #####:  243:    zlecs = findbol();
+    #####:  244:    while (n) {
+    #####:  245:	if (!zlecs)
+    #####:  246:	    break;
+    #####:  247:	zlecs--;
+    #####:  248:	zlecs = findbol();
+    #####:  249:	n--;
+        -:  250:    }
+    #####:  251:    if (!n) {
+    #####:  252:	int x = findeol();
+        -:  253:
+    #####:  254:	if ((zlecs += lastcol) >= x) {
+    #####:  255:	    zlecs = x;
+    #####:  256:	    if (zlecs > findbol() && invicmdmode())
+    #####:  257:		DECCS();
+        -:  258:	}
+        -:  259:#ifdef MULTIBYTE_SUPPORT
+        -:  260:	else
+    #####:  261:	    CCRIGHT();
+        -:  262:#endif
+        -:  263:	    
+        -:  264:    }
+    #####:  265:    return n;
+        -:  266:}
+        -:  267:
+        -:  268:/**/
+        -:  269:int
+    #####:  270:uplineorhistory(char **args)
+        -:  271:{
+    #####:  272:    int ocs = zlecs;
+    #####:  273:    int n = upline(args);
+    #####:  274:    if (n) {
+    #####:  275:	int m = zmult, ret;
+        -:  276:
+    #####:  277:	zlecs = ocs;
+    #####:  278:	if (virangeflag || !(zlereadflags & ZLRF_HISTORY))
+    #####:  279:	    return 1;
+    #####:  280:	zmult = n;
+    #####:  281:	ret = uphistory(args);
+    #####:  282:	zmult = m;
+    #####:  283:	return ret;
+        -:  284:    }
+    #####:  285:    return 0;
+        -:  286:}
+        -:  287:
+        -:  288:/**/
+        -:  289:int
+    #####:  290:viuplineorhistory(char **args)
+        -:  291:{
+    #####:  292:    int col = lastcol;
+    #####:  293:    uplineorhistory(args);
+    #####:  294:    lastcol = col;
+    #####:  295:    return vifirstnonblank(args);
+        -:  296:}
+        -:  297:
+        -:  298:/**/
+        -:  299:int
+    #####:  300:uplineorsearch(char **args)
+        -:  301:{
+    #####:  302:    int ocs = zlecs;
+    #####:  303:    int n = upline(args);
+    #####:  304:    if (n) {
+    #####:  305:	int m = zmult, ret;
+        -:  306:
+    #####:  307:	zlecs = ocs;
+    #####:  308:	if (virangeflag || !(zlereadflags & ZLRF_HISTORY))
+    #####:  309:	    return 1;
+    #####:  310:	zmult = n;
+    #####:  311:	ret = historysearchbackward(args);
+    #####:  312:	zmult = m;
+    #####:  313:	return ret;
+        -:  314:    }
+    #####:  315:    return 0;
+        -:  316:}
+        -:  317:
+        -:  318:/**/
+        -:  319:int
+    #####:  320:downline(char **args)
+        -:  321:{
+    #####:  322:    int n = zmult;
+        -:  323:
+    #####:  324:    if (n < 0) {
+    #####:  325:	zmult = -zmult;
+    #####:  326:	n = -upline(args);
+    #####:  327:	zmult = -zmult;
+    #####:  328:	return n;
+        -:  329:    }
+    #####:  330:    if (lastcol == -1)
+    #####:  331:	lastcol = zlecs - findbol();
+    #####:  332:    while (n) {
+    #####:  333:	int x = findeol();
+        -:  334:
+    #####:  335:	if (x == zlell)
+    #####:  336:	    break;
+    #####:  337:	zlecs = x + 1;
+    #####:  338:	n--;
+        -:  339:    }
+    #####:  340:    if (!n) {
+    #####:  341:	int x = findeol();
+        -:  342:
+    #####:  343:	if ((zlecs += lastcol) >= x) {
+    #####:  344:	    zlecs = x;
+    #####:  345:	    if (zlecs > findbol() && invicmdmode())
+    #####:  346:		DECCS();
+        -:  347:	}
+        -:  348:#ifdef MULTIBYTE_SUPPORT
+        -:  349:	else
+    #####:  350:	    CCRIGHT();
+        -:  351:#endif
+        -:  352:    }
+    #####:  353:    return n;
+        -:  354:}
+        -:  355:
+        -:  356:/**/
+        -:  357:int
+    #####:  358:downlineorhistory(char **args)
+        -:  359:{
+    #####:  360:    int ocs = zlecs;
+    #####:  361:    int n = downline(args);
+    #####:  362:    if (n) {
+    #####:  363:	int m = zmult, ret;
+        -:  364:
+    #####:  365:	zlecs = ocs;
+    #####:  366:	if (virangeflag || !(zlereadflags & ZLRF_HISTORY))
+    #####:  367:	    return 1;
+    #####:  368:	zmult = n;
+    #####:  369:	ret = downhistory(args);
+    #####:  370:	zmult = m;
+    #####:  371:	return ret;
+        -:  372:    }
+    #####:  373:    return 0;
+        -:  374:}
+        -:  375:
+        -:  376:/**/
+        -:  377:int
+    #####:  378:vidownlineorhistory(char **args)
+        -:  379:{
+    #####:  380:    int col = lastcol;
+    #####:  381:    downlineorhistory(args);
+    #####:  382:    lastcol = col;
+    #####:  383:    return vifirstnonblank(zlenoargs);
+        -:  384:}
+        -:  385:
+        -:  386:/**/
+        -:  387:int
+    #####:  388:downlineorsearch(char **args)
+        -:  389:{
+    #####:  390:    int ocs = zlecs;
+    #####:  391:    int n = downline(args);
+    #####:  392:    if (n) {
+    #####:  393:	int m = zmult, ret;
+        -:  394:
+    #####:  395:	zlecs = ocs;
+    #####:  396:	if (virangeflag || !(zlereadflags & ZLRF_HISTORY))
+    #####:  397:	    return 1;
+    #####:  398:	zmult = n;
+    #####:  399:	ret = historysearchforward(args);
+    #####:  400:	zmult = m;
+    #####:  401:	return ret;
+        -:  402:    }
+    #####:  403:    return 0;
+        -:  404:}
+        -:  405:
+        -:  406:/**/
+        -:  407:int
+    #####:  408:acceptlineanddownhistory(UNUSED(char **args))
+        -:  409:{
+    #####:  410:    Histent he = quietgethist(histline);
+        -:  411:
+    #####:  412:    if (he && (he = movehistent(he, 1, HIST_FOREIGN))) {
+    #####:  413:	zpushnode(bufstack, ztrdup(he->node.nam));
+    #####:  414:	stackhist = he->histnum;
+        -:  415:    }
+    #####:  416:    done = 1;
+    #####:  417:    return 0;
+        -:  418:}
+        -:  419:
+        -:  420:/**/
+        -:  421:int
+    #####:  422:downhistory(UNUSED(char **args))
+        -:  423:{
+    #####:  424:    int nodups = isset(HISTIGNOREDUPS);
+    #####:  425:    if (!zle_goto_hist(histline, zmult, nodups) && isset(HISTBEEP))
+    #####:  426:	return 1;
+    #####:  427:    return 0;
+        -:  428:}
+        -:  429:
+        -:  430:/*
+        -:  431: * Values remembered for history searches to enable repetition.
+        -:  432: * srch_hl remembers the old value of histline, to see if it's changed
+        -:  433: *   since the last search.
+        -:  434: * srch_cs remembers the old value of zlecs for the same purpose (it is
+        -:  435: *   not use for any other purpose, i.e. does not need to be a valid
+        -:  436: *   index into anything).
+        -:  437: * srch_str is the metafied search string, as extracted from the start
+        -:  438: *   of zleline.
+        -:  439: */
+        -:  440:static int histpos, srch_hl, srch_cs = -1;
+        -:  441:static char *srch_str;
+        -:  442:
+        -:  443:/**/
+        -:  444:int
+    #####:  445:historysearchbackward(char **args)
+        -:  446:{
+        -:  447:    Histent he;
+    #####:  448:    int n = zmult;
+        -:  449:    char *str;
+        -:  450:    char *zt;
+        -:  451:
+    #####:  452:    if (zmult < 0) {
+        -:  453:	int ret;
+    #####:  454:	zmult = -n;
+    #####:  455:	ret = historysearchforward(args);
+    #####:  456:	zmult = n;
+    #####:  457:	return ret;
+        -:  458:    }
+    #####:  459:    if (*args) {
+    #####:  460:	str = *args;
+        -:  461:    } else {
+    #####:  462:	char *line = zlelineasstring(zleline, zlell, 0, NULL, NULL, 0);
+    #####:  463:	if (histline == curhist || histline != srch_hl || zlecs != srch_cs ||
+    #####:  464:	    mark != 0 || strncmp(srch_str, line, histpos) != 0) {
+    #####:  465:	    free(srch_str);
+    #####:  466:	    for (histpos = 0; histpos < zlell && !ZC_iblank(zleline[histpos]);
+    #####:  467:		 histpos++)
+        -:  468:		;
+    #####:  469:	    if (histpos < zlell)
+    #####:  470:		histpos++;
+        -:  471:	    /* ensure we're not on a combining character */
+    #####:  472:	    CCRIGHTPOS(histpos);
+        -:  473:	    /* histpos from now on is an index into the metafied string */
+    #####:  474:	    srch_str = zlelineasstring(zleline, histpos, 0, NULL, NULL, 0);
+        -:  475:	}
+    #####:  476:	free(line);
+    #####:  477:	str = srch_str;
+        -:  478:    }
+    #####:  479:    if (!(he = quietgethist(histline)))
+    #####:  480:	return 1;
+        -:  481:
+    #####:  482:    metafy_line();
+    #####:  483:    while ((he = movehistent(he, -1, hist_skip_flags))) {
+    #####:  484:	if (isset(HISTFINDNODUPS) && he->node.flags & HIST_DUP)
+    #####:  485:	    continue;
+    #####:  486:	zt = GETZLETEXT(he);
+    #####:  487:	if (zlinecmp(zt, str) < 0 &&
+    #####:  488:	    (*args || strcmp(zt, zlemetaline) != 0)) {
+    #####:  489:	    if (--n <= 0) {
+    #####:  490:		unmetafy_line();
+    #####:  491:		zle_setline(he);
+    #####:  492:		srch_hl = histline;
+    #####:  493:		srch_cs = zlecs;
+    #####:  494:		return 0;
+        -:  495:	    }
+        -:  496:	}
+        -:  497:    }
+    #####:  498:    unmetafy_line();
+    #####:  499:    return 1;
+        -:  500:}
+        -:  501:
+        -:  502:/**/
+        -:  503:int
+    #####:  504:historysearchforward(char **args)
+        -:  505:{
+        -:  506:    Histent he;
+    #####:  507:    int n = zmult;
+        -:  508:    char *str;
+        -:  509:    char *zt;
+        -:  510:
+    #####:  511:    if (zmult < 0) {
+        -:  512:	int ret;
+    #####:  513:	zmult = -n;
+    #####:  514:	ret = historysearchbackward(args);
+    #####:  515:	zmult = n;
+    #####:  516:	return ret;
+        -:  517:    }
+    #####:  518:    if (*args) {
+    #####:  519:	str = *args;
+        -:  520:    } else {
+    #####:  521:	char *line = zlelineasstring(zleline, zlell, 0, NULL, NULL, 0);
+    #####:  522:	if (histline == curhist || histline != srch_hl || zlecs != srch_cs ||
+    #####:  523:	    mark != 0 || strncmp(srch_str, line, histpos) != 0) {
+    #####:  524:	    free(srch_str);
+    #####:  525:	    for (histpos = 0; histpos < zlell && !ZC_iblank(zleline[histpos]);
+    #####:  526:		 histpos++)
+        -:  527:		;
+    #####:  528:	    if (histpos < zlell)
+    #####:  529:		histpos++;
+    #####:  530:	    CCRIGHT();
+    #####:  531:	    srch_str = zlelineasstring(zleline, histpos, 0, NULL, NULL, 0);
+        -:  532:	}
+    #####:  533:	free(line);
+    #####:  534:	str = srch_str;
+        -:  535:    }
+    #####:  536:    if (!(he = quietgethist(histline)))
+    #####:  537:	return 1;
+        -:  538:
+    #####:  539:    metafy_line();
+    #####:  540:    while ((he = movehistent(he, 1, hist_skip_flags))) {
+    #####:  541:	if (isset(HISTFINDNODUPS) && he->node.flags & HIST_DUP)
+    #####:  542:	    continue;
+    #####:  543:	zt = GETZLETEXT(he);
+    #####:  544:	if (zlinecmp(zt, str) < (he->histnum == curhist) &&
+    #####:  545:	    (*args || strcmp(zt, zlemetaline) != 0)) {
+    #####:  546:	    if (--n <= 0) {
+    #####:  547:		unmetafy_line();
+    #####:  548:		zle_setline(he);
+    #####:  549:		srch_hl = histline;
+    #####:  550:		srch_cs = zlecs;
+    #####:  551:		return 0;
+        -:  552:	    }
+        -:  553:	}
+        -:  554:    }
+    #####:  555:    unmetafy_line();
+    #####:  556:    return 1;
+        -:  557:}
+        -:  558:
+        -:  559:/**/
+        -:  560:int
+    #####:  561:beginningofbufferorhistory(char **args)
+        -:  562:{
+    #####:  563:    if (findbol())
+    #####:  564:	zlecs = 0;
+        -:  565:    else
+    #####:  566:	return beginningofhistory(args);
+    #####:  567:    return 0;
+        -:  568:}
+        -:  569:
+        -:  570:/**/
+        -:  571:int
+    #####:  572:beginningofhistory(UNUSED(char **args))
+        -:  573:{
+    #####:  574:    if (!zle_goto_hist(firsthist(), 0, 0) && isset(HISTBEEP))
+    #####:  575:	return 1;
+    #####:  576:    return 0;
+        -:  577:}
+        -:  578:
+        -:  579:/**/
+        -:  580:int
+    #####:  581:endofbufferorhistory(char **args)
+        -:  582:{
+    #####:  583:    if (findeol() != zlell)
+    #####:  584:	zlecs = zlell;
+        -:  585:    else
+    #####:  586:	return endofhistory(args);
+    #####:  587:    return 0;
+        -:  588:}
+        -:  589:
+        -:  590:/**/
+        -:  591:int
+    #####:  592:endofhistory(UNUSED(char **args))
+        -:  593:{
+    #####:  594:    zle_goto_hist(curhist, 0, 0);
+    #####:  595:    return 0;
+        -:  596:}
+        -:  597:
+        -:  598:/**/
+        -:  599:int
+    #####:  600:insertlastword(char **args)
+        -:  601:{
+    #####:  602:    int n, nwords, histstep = -1, wordpos = 0, deleteword = 0, len;
+        -:  603:    char *s, *t;
+    #####:  604:    Histent he = NULL;
+    #####:  605:    LinkList l = NULL;
+        -:  606:    LinkNode node;
+        -:  607:    ZLE_STRING_T zs;
+        -:  608:
+        -:  609:    static char *lastinsert;
+        -:  610:    static int lasthist, lastpos, lastlen;
+        -:  611:    int evhist;
+        -:  612:
+        -:  613:    /*
+        -:  614:     * If we have at least one argument, the first is the history
+        -:  615:     * step.  The default is -1 (go back).  Repeated calls take
+        -:  616:     * a step in this direction.  A value of 0 is allowed and doesn't
+        -:  617:     * move the line.
+        -:  618:     *
+        -:  619:     * If we have two arguments, the second is the position of
+        -:  620:     * the word to extract, 1..N.  The default is to use the
+        -:  621:     * numeric argument, or the last word if that is not set.
+        -:  622:     *
+        -:  623:     * If we have three arguments, we reset the history pointer to
+        -:  624:     * the current history event before applying the history step.
+        -:  625:     */
+    #####:  626:    if (*args)
+        -:  627:    {
+    #####:  628:	histstep = (int)zstrtol(*args, NULL, 10);
+    #####:  629:	if (*++args)
+        -:  630:	{
+    #####:  631:	    wordpos = (int)zstrtol(*args, NULL, 10);
+    #####:  632:	    if (*++args)
+    #####:  633:		lasthist = curhist;
+        -:  634:	}
+        -:  635:    }
+        -:  636:
+    #####:  637:    fixsuffix();
+    #####:  638:    metafy_line();
+    #####:  639:    if (lastinsert && lastlen &&
+    #####:  640:	lastpos <= zlemetacs &&
+    #####:  641:	lastlen == zlemetacs - lastpos &&
+    #####:  642:	memcmp(lastinsert, &zlemetaline[lastpos], lastlen) == 0)
+    #####:  643:	deleteword = 1;
+        -:  644:    else
+    #####:  645:	lasthist = curhist;
+    #####:  646:    evhist = histstep ? addhistnum(lasthist, histstep, HIST_FOREIGN) :
+        -:  647:	lasthist;
+        -:  648:
+    #####:  649:    if (evhist == curhist) {
+        -:  650:	/*
+        -:  651:	 * The line we are currently editing.  If we are going to
+        -:  652:	 * replace an existing word, delete the old one now to avoid
+        -:  653:	 * confusion.
+        -:  654:	 */
+    #####:  655:	if (deleteword) {
+    #####:  656:	    int pos = zlemetacs;
+    #####:  657:	    zlemetacs = lastpos;
+    #####:  658:	    foredel(pos - zlemetacs, CUT_RAW);
+        -:  659:	    /*
+        -:  660:	     * Mark that this has been deleted.
+        -:  661:	     * For consistency with history lines, we really ought to
+        -:  662:	     * insert it back if the current command later fails. But
+        -:  663:	     * - we can't be bothered
+        -:  664:	     * - the problem that this can screw up going to other
+        -:  665:	     *   lines in the history because we don't update
+        -:  666:	     *   the history line isn't really relevant
+        -:  667:	     * - you can see what you're copying, dammit, so you
+        -:  668:	     *   shouldn't make errors.
+        -:  669:	     * Of course, I could have implemented it in the time
+        -:  670:	     * it took to say why I haven't.
+        -:  671:	     */
+    #####:  672:	    deleteword = 0;
+        -:  673:	}
+        -:  674:	/*
+        -:  675:	 * Can only happen fail if the line is empty, I hope.
+        -:  676:	 * In that case, we don't need to worry about restoring
+        -:  677:	 * a deleted word, because that can only have come
+        -:  678:	 * from a non-empty line.  I think.
+        -:  679:	 */
+    #####:  680:	if (!(l = bufferwords(NULL, NULL, NULL, 0))) {
+    #####:  681:	    unmetafy_line();
+    #####:  682:	    return 1;
+        -:  683:	}
+    #####:  684:	nwords = countlinknodes(l);
+        -:  685:    } else {
+        -:  686:	/* Some stored line.  By default, search for a non-empty line. */
+    #####:  687:	while ((he = quietgethist(evhist)) && histstep == -1 && !*args) {
+    #####:  688:	    if (he->nwords)
+    #####:  689:		break;
+    #####:  690:	    evhist = addhistnum(evhist, histstep, HIST_FOREIGN);
+        -:  691:	}
+    #####:  692:	if (!he || !he->nwords) {
+    #####:  693:	    unmetafy_line();
+    #####:  694:	    return 1;
+        -:  695:	}
+    #####:  696:	nwords = he->nwords;
+        -:  697:    }
+    #####:  698:    if (wordpos) {
+    #####:  699:	n = (wordpos > 0) ? wordpos : nwords + wordpos + 1;
+    #####:  700:    } else if (zmult > 0) {
+    #####:  701:	n = nwords - (zmult - 1);
+        -:  702:    } else {
+    #####:  703:	n = 1 - zmult;
+        -:  704:    }
+    #####:  705:    if (n < 1 || n > nwords) {
+        -:  706:	/*
+        -:  707:	 * We can't put in the requested word, but we did find the
+        -:  708:	 * history entry, so we remember the position in the history
+        -:  709:	 * list.  This avoids getting stuck on a history line with
+        -:  710:	 * fewer words than expected.  The cursor location cs
+        -:  711:	 * has not changed, and lastinsert is still valid.
+        -:  712:	 */
+    #####:  713:	lasthist = evhist;
+    #####:  714:	unmetafy_line();
+    #####:  715:	return 1;
+        -:  716:    }
+        -:  717:    /*
+        -:  718:     * Only remove the old word from the command line if we have
+        -:  719:     * successfully found a new one to insert.
+        -:  720:     */
+    #####:  721:    if (deleteword > 0) {
+    #####:  722:	int pos = zlemetacs;
+    #####:  723:	zlemetacs = lastpos;
+    #####:  724:	foredel(pos - zlemetacs, CUT_RAW);
+        -:  725:    }
+    #####:  726:    if (lastinsert) {
+    #####:  727:	zfree(lastinsert, lastlen);
+    #####:  728:	lastinsert = NULL;
+        -:  729:    }
+    #####:  730:    if (l) {
+    #####:  731:	for (node = firstnode(l); --n; incnode(node))
+        -:  732:	    ;
+    #####:  733:	s = (char *)getdata(node);
+    #####:  734:	t = s + strlen(s);
+        -:  735:    } else {
+    #####:  736:	s = he->node.nam + he->words[2*n-2];
+    #####:  737:	t = he->node.nam + he->words[2*n-1];
+        -:  738:    }
+        -:  739:
+    #####:  740:    lasthist = evhist;
+    #####:  741:    lastpos = zlemetacs;
+        -:  742:    /* ignore trailing whitespace */
+    #####:  743:    lastlen = t - s;
+    #####:  744:    lastinsert = zalloc(t - s);
+    #####:  745:    memcpy(lastinsert, s, lastlen);
+    #####:  746:    n = zmult;
+    #####:  747:    zmult = 1;
+        -:  748:
+    #####:  749:    unmetafy_line();
+        -:  750:
+    #####:  751:    zs = stringaszleline(dupstrpfx(s, t - s), 0, &len, NULL, NULL);
+    #####:  752:    doinsert(zs, len);
+    #####:  753:    free(zs);
+    #####:  754:    zmult = n;
+    #####:  755:    return 0;
+        -:  756:}
+        -:  757:
+        -:  758:/**/
+        -:  759:void
+    #####:  760:zle_setline(Histent he)
+        -:  761:{
+        -:  762:    int remetafy;
+    #####:  763:    if (zlemetaline) {
+    #####:  764:	unmetafy_line();
+    #####:  765:	remetafy = 1;
+        -:  766:    } else
+    #####:  767:	remetafy = 0;
+    #####:  768:    remember_edits();
+    #####:  769:    mkundoent();
+    #####:  770:    histline = he->histnum;
+        -:  771:
+    #####:  772:    setline(GETZLETEXT(he), ZSL_COPY|ZSL_TOEND);
+    #####:  773:    zlecallhook("zle-history-line-set", NULL);
+    #####:  774:    setlastline();
+    #####:  775:    clearlist = 1;
+    #####:  776:    if (remetafy)
+    #####:  777:	metafy_line();
+    #####:  778:}
+        -:  779:
+        -:  780:/**/
+        -:  781:int
+    #####:  782:setlocalhistory(UNUSED(char **args))
+        -:  783:{
+    #####:  784:    if (zmod.flags & MOD_MULT) {
+    #####:  785:	hist_skip_flags = zmult? HIST_FOREIGN : 0;
+        -:  786:    } else {
+    #####:  787:	hist_skip_flags ^= HIST_FOREIGN;
+        -:  788:    }
+    #####:  789:    return 0;
+        -:  790:}
+        -:  791:
+        -:  792:/**/
+        -:  793:int
+    #####:  794:zle_goto_hist(int ev, int n, int skipdups)
+        -:  795:{
+    #####:  796:    Histent he = quietgethist(ev);
+    #####:  797:    char *line = zlelineasstring(zleline, zlell, 0, NULL, NULL, 1);
+        -:  798:
+    #####:  799:    if (!he || !(he = movehistent(he, n, hist_skip_flags)))
+    #####:  800:	return 1;
+    #####:  801:    if (skipdups && n) {
+    #####:  802:	n = n < 0? -1 : 1;
+    #####:  803:	while (he) {
+        -:  804:	    int ret;
+        -:  805:
+    #####:  806:	    ret = zlinecmp(GETZLETEXT(he), line);
+    #####:  807:	    if (ret)
+    #####:  808:		break;
+    #####:  809:	    he = movehistent(he, n, hist_skip_flags);
+        -:  810:	}
+        -:  811:    }
+    #####:  812:    if (!he)
+    #####:  813:	return 0;
+    #####:  814:    zle_setline(he);
+    #####:  815:    return 1;
+        -:  816:}
+        -:  817:
+        -:  818:/**/
+        -:  819:int
+    #####:  820:pushline(UNUSED(char **args))
+        -:  821:{
+    #####:  822:    int n = zmult;
+        -:  823:
+    #####:  824:    if (n < 0)
+    #####:  825:	return 1;
+    #####:  826:    zpushnode(bufstack, zlelineasstring(zleline, zlell, 0, NULL, NULL, 0));
+    #####:  827:    while (--n)
+    #####:  828:	zpushnode(bufstack, ztrdup(""));
+    #####:  829:    if (invicmdmode())
+    #####:  830:	INCCS();
+    #####:  831:    stackcs = zlecs;
+    #####:  832:    *zleline = ZWC('\0');
+    #####:  833:    zlell = zlecs = 0;
+    #####:  834:    clearlist = 1;
+    #####:  835:    return 0;
+        -:  836:}
+        -:  837:
+        -:  838:/**/
+        -:  839:int
+    #####:  840:pushlineoredit(char **args)
+        -:  841:{
+        -:  842:    int ics, ret;
+        -:  843:    ZLE_STRING_T s;
+    #####:  844:    char *hline = hgetline();
+        -:  845:
+    #####:  846:    if (zmult < 0)
+    #####:  847:	return 1;
+    #####:  848:    if (hline && *hline) {
+    #####:  849:	ZLE_STRING_T zhline = stringaszleline(hline, 0, &ics, NULL, NULL);
+        -:  850:
+    #####:  851:	sizeline(ics + zlell + 1);
+        -:  852:	/* careful of overlapping copy */
+    #####:  853:	for (s = zleline + zlell; --s >= zleline; s[ics] = *s)
+        -:  854:	    ;
+    #####:  855:	ZS_memcpy(zleline, zhline, ics);
+    #####:  856:	zlell += ics;
+    #####:  857:	zlecs += ics;
+    #####:  858:	free(zhline);
+        -:  859:    }
+    #####:  860:    ret = pushline(args);
+    #####:  861:    if (!isfirstln) {
+    #####:  862:	errflag |= ERRFLAG_ERROR|ERRFLAG_INT;
+    #####:  863:	done = 1;
+        -:  864:    }
+    #####:  865:    clearlist = 1;
+    #####:  866:    return ret;
+        -:  867:}
+        -:  868:
+        -:  869:/**/
+        -:  870:int
+    #####:  871:pushinput(char **args)
+        -:  872:{
+        -:  873:    int i, ret;
+        -:  874:
+    #####:  875:    if (zmult < 0)
+    #####:  876:	return 1;
+    #####:  877:    zmult += i = !isfirstln;
+    #####:  878:    ret = pushlineoredit(args);
+    #####:  879:    zmult -= i;
+    #####:  880:    return ret;
+        -:  881:}
+        -:  882:
+        -:  883:/* Renamed to avoid clash with library function */
+        -:  884:/**/
+        -:  885:int
+    #####:  886:zgetline(UNUSED(char **args))
+        -:  887:{
+    #####:  888:    char *s = getlinknode(bufstack);
+        -:  889:
+    #####:  890:    if (!s) {
+    #####:  891:	return 1;
+        -:  892:    } else {
+        -:  893:	int cc;
+    #####:  894:	ZLE_STRING_T lineadd = stringaszleline(s, 0, &cc, NULL, NULL);
+        -:  895:
+    #####:  896:	spaceinline(cc);
+    #####:  897:	ZS_memcpy(zleline + zlecs, lineadd, cc);
+    #####:  898:	zlecs += cc;
+    #####:  899:	free(s);
+    #####:  900:	free(lineadd);
+    #####:  901:	clearlist = 1;
+        -:  902:	/* not restoring stackhist as we're inserting into current line */
+    #####:  903:	stackhist = -1;
+        -:  904:    }
+    #####:  905:    return 0;
+        -:  906:}
+        -:  907:
+        -:  908:/**/
+        -:  909:int
+    #####:  910:historyincrementalsearchbackward(char **args)
+        -:  911:{
+    #####:  912:    return doisearch(args, -1, 0);
+        -:  913:}
+        -:  914:
+        -:  915:/**/
+        -:  916:int
+    #####:  917:historyincrementalsearchforward(char **args)
+        -:  918:{
+    #####:  919:    return doisearch(args, 1, 0);
+        -:  920:}
+        -:  921:
+        -:  922:/**/
+        -:  923:int
+    #####:  924:historyincrementalpatternsearchbackward(char **args)
+        -:  925:{
+    #####:  926:    return doisearch(args, -1, 1);
+        -:  927:}
+        -:  928:
+        -:  929:/**/
+        -:  930:int
+    #####:  931:historyincrementalpatternsearchforward(char **args)
+        -:  932:{
+    #####:  933:    return doisearch(args, 1, 1);
+        -:  934:}
+        -:  935:
+        -:  936:static struct isrch_spot {
+        -:  937:    int hl;			/* This spot's histline */
+        -:  938:    int pat_hl;			/* histline where pattern search started */
+        -:  939:    unsigned short pos;		/* The search position in our metafied str */
+        -:  940:    unsigned short pat_pos;     /* pos where pattern search started */
+        -:  941:    unsigned short end_pos;	/* The position of the end of the matched str */
+        -:  942:    unsigned short cs;		/* The visible search position to the user */
+        -:  943:    unsigned short len;		/* The search string's length */
+        -:  944:    unsigned short flags;	/* This spot's flags */
+        -:  945:#define ISS_FORWARD	1
+        -:  946:#define ISS_NOMATCH_SHIFT 1
+        -:  947:} *isrch_spots;
+        -:  948:
+        -:  949:static int max_spot = 0;
+        -:  950:
+        -:  951:/**/
+        -:  952:void
+    #####:  953:free_isrch_spots(void)
+        -:  954:{
+    #####:  955:    zfree(isrch_spots, max_spot * sizeof(*isrch_spots));
+    #####:  956:    max_spot = 0;
+    #####:  957:    isrch_spots = NULL;
+    #####:  958:}
+        -:  959:
+        -:  960:/**/
+        -:  961:static void
+    #####:  962:set_isrch_spot(int num, int hl, int pos, int pat_hl, int pat_pos,
+        -:  963:	       int end_pos, int cs, int len, int dir, int nomatch)
+        -:  964:{
+    #####:  965:    if (num >= max_spot) {
+    #####:  966:	if (!isrch_spots) {
+    #####:  967:	    isrch_spots = (struct isrch_spot*)
+    #####:  968:			    zalloc((max_spot = 64) * sizeof *isrch_spots);
+        -:  969:	} else {
+    #####:  970:	    isrch_spots = (struct isrch_spot*)realloc((char*)isrch_spots,
+    #####:  971:			    (max_spot += 64) * sizeof *isrch_spots);
+        -:  972:	}
+        -:  973:    }
+        -:  974:
+    #####:  975:    isrch_spots[num].hl = hl;
+    #####:  976:    isrch_spots[num].pos = (unsigned short)pos;
+    #####:  977:    isrch_spots[num].pat_hl = pat_hl;
+    #####:  978:    isrch_spots[num].pat_pos = (unsigned short)pat_pos;
+    #####:  979:    isrch_spots[num].end_pos = (unsigned short)end_pos;
+    #####:  980:    isrch_spots[num].cs = (unsigned short)cs;
+    #####:  981:    isrch_spots[num].len = (unsigned short)len;
+    #####:  982:    isrch_spots[num].flags = (dir > 0? ISS_FORWARD : 0)
+    #####:  983:			   + (nomatch << ISS_NOMATCH_SHIFT);
+    #####:  984:}
+        -:  985:
+        -:  986:/**/
+        -:  987:static void
+    #####:  988:get_isrch_spot(int num, int *hlp, int *posp, int *pat_hlp, int *pat_posp,
+        -:  989:	       int *end_posp, int *csp, int *lenp, int *dirp, int *nomatch)
+        -:  990:{
+    #####:  991:    *hlp = isrch_spots[num].hl;
+    #####:  992:    *posp = (int)isrch_spots[num].pos;
+    #####:  993:    *pat_hlp = isrch_spots[num].pat_hl;
+    #####:  994:    *pat_posp = (int)isrch_spots[num].pat_pos;
+    #####:  995:    *end_posp = (int)isrch_spots[num].end_pos;
+    #####:  996:    *csp = (int)isrch_spots[num].cs;
+    #####:  997:    *lenp = (int)isrch_spots[num].len;
+    #####:  998:    *dirp = (isrch_spots[num].flags & ISS_FORWARD)? 1 : -1;
+    #####:  999:    *nomatch = (int)(isrch_spots[num].flags >> ISS_NOMATCH_SHIFT);
+    #####: 1000:}
+        -: 1001:
+        -: 1002:/*
+        -: 1003: * In pattern search mode, look through the list for a match at, or
+        -: 1004: * before or after the given position, according to the direction.
+        -: 1005: * Return new position or -1.
+        -: 1006: *
+        -: 1007: * Note this handles curpos out of range correctly, i.e. curpos < 0
+        -: 1008: * never matches when searching backwards and curpos > length of string
+        -: 1009: * never matches when searching forwards.
+        -: 1010: */
+        -: 1011:static int
+    #####: 1012:isearch_newpos(LinkList matchlist, int curpos, int dir,
+        -: 1013:	       int *endmatchpos)
+        -: 1014:{
+        -: 1015:    LinkNode node;
+        -: 1016:
+    #####: 1017:    if (dir < 0) {
+    #####: 1018:	for (node = lastnode(matchlist);
+    #####: 1019:	     node != (LinkNode)matchlist; decnode(node)) {
+    #####: 1020:	    Repldata rdata = (Repldata)getdata(node);
+    #####: 1021:	    if (rdata->b <= curpos) {
+    #####: 1022:		*endmatchpos = rdata->e;
+    #####: 1023:		return rdata->b;
+        -: 1024:	    }
+        -: 1025:	}
+        -: 1026:    } else {
+    #####: 1027:	for (node = firstnode(matchlist);
+    #####: 1028:	     node; incnode(node)) {
+    #####: 1029:	    Repldata rdata = (Repldata)getdata(node);
+    #####: 1030:	    if (rdata->b >= curpos) {
+    #####: 1031:		*endmatchpos = rdata->e;
+    #####: 1032:		return rdata->b;
+        -: 1033:	    }
+        -: 1034:	}
+        -: 1035:    }
+        -: 1036:
+    #####: 1037:    return -1;
+        -: 1038:}
+        -: 1039:
+        -: 1040:/*
+        -: 1041: * Save an isearch buffer from sbuf to sbuf+sbptr
+        -: 1042: * into the string *search with length *searchlen.
+        -: 1043: * searchlen may be NULL; the string is a NULL-terminated metafied string.
+        -: 1044: */
+        -: 1045:static void
+    #####: 1046:save_isearch_buffer(char *sbuf, int sbptr,
+        -: 1047:		    char **search, int *searchlen)
+        -: 1048:{
+    #####: 1049:    if (*search)
+    #####: 1050:	free(*search);
+    #####: 1051:    *search = zalloc(sbptr+1);
+    #####: 1052:    memcpy(*search, sbuf, sbptr);
+    #####: 1053:    if (searchlen)
+    #####: 1054:	*searchlen = sbptr;
+    #####: 1055:    (*search)[sbptr] = '\0';
+    #####: 1056:}
+        -: 1057:
+        -: 1058:#define ISEARCH_PROMPT		"XXXXXXX XXX-i-search: "
+        -: 1059:#define FAILING_TEXT		"failing"
+        -: 1060:#define INVALID_TEXT		"invalid"
+        -: 1061:#define BAD_TEXT_LEN		7
+        -: 1062:#define NORM_PROMPT_POS		(BAD_TEXT_LEN+1)
+        -: 1063:#define FIRST_SEARCH_CHAR	(NORM_PROMPT_POS + 14)
+        -: 1064:
+        -: 1065:/**/
+        -: 1066:int isearch_active, isearch_startpos, isearch_endpos;
+        -: 1067:
+        -: 1068:/**/
+        -: 1069:static int
+    #####: 1070:doisearch(char **args, int dir, int pattern)
+        -: 1071:{
+        -: 1072:    /* The full search buffer, including space for all prompts */
+    #####: 1073:    char *ibuf = zhalloc(80);
+        -: 1074:    /*
+        -: 1075:     * The part of the search buffer with the search string.
+        -: 1076:     * This is a normal metafied string.
+        -: 1077:     */
+    #####: 1078:    char *sbuf = ibuf + FIRST_SEARCH_CHAR;
+        -: 1079:    /* The previous line shown to the user */
+    #####: 1080:    char *last_line = NULL;
+        -: 1081:    /* Text of the history line being examined */
+        -: 1082:    char *zt;
+        -: 1083:    /*
+        -: 1084:     * sbptr: index into sbuf.
+        -: 1085:     * top_spot: stack index into the "isrch_spot" stack.
+        -: 1086:     * sibuf: allocation size for ibuf
+        -: 1087:     */
+    #####: 1088:    int sbptr = 0, top_spot = 0, sibuf = 80;
+        -: 1089:    /*
+        -: 1090:     * nomatch = 1: failing isearch
+        -: 1091:     * nomatch = 2: invalid pattern
+        -: 1092:     * skip_line: finished with current line, skip to next
+        -: 1093:     * skip_pos: keep current line but try before/after current position.
+        -: 1094:     */
+    #####: 1095:    int nomatch = 0, skip_line = 0, skip_pos = 0;
+        -: 1096:    /*
+        -: 1097:     * odir: original search direction
+        -: 1098:     * sens: limit for zlinecmp to allow (3) or disallow (1) lower case
+        -: 1099:     *       matching upper case.
+        -: 1100:     */
+    #####: 1101:    int odir = dir, sens = zmult == 1 ? 3 : 1;
+        -: 1102:    /*
+        -: 1103:     * hl: the number of the history line we are looking at
+        -: 1104:     * pos: the character position into it.  On backward matches the
+        -: 1105:     *      cursor will be set to this; on forward matches to the end
+        -: 1106:     *      of the matched string
+        -: 1107:     */
+    #####: 1108:    int hl = histline, pos;
+        -: 1109:    /*
+        -: 1110:     * The value of hl and pos at which the last pattern match
+        -: 1111:     * search started.  We need to record these because there's
+        -: 1112:     * a pathology with pattern matching.  Here's an example.  Suppose
+        -: 1113:     * the history consists of:
+        -: 1114:     *  echo '*OH NO*'
+        -: 1115:     *  echo '\n'
+        -: 1116:     *  echo "*WHAT?*"
+        -: 1117:     *  <...backward pattern search starts here...>
+        -: 1118:     * The user types "\".  As there's nothing after it it's treated
+        -: 1119:     * literally (and I certainly don't want to change that).  This
+        -: 1120:     * goes to the second line.  Then the user types "*".  This
+        -: 1121:     * ought to match the "*" in the line immediately before where the
+        -: 1122:     * search started.  However, unless we return to that line for the
+        -: 1123:     * new search it will instead carry on to the first line.  This is
+        -: 1124:     * different from straight string matching where we never have
+        -: 1125:     * to backtrack.
+        -: 1126:     *
+        -: 1127:     * I think these need resetting to the current hl and pos when
+        -: 1128:     * we start a new search or repeat a search.  It seems to work,
+        -: 1129:     * anyway.
+        -: 1130:     *
+        -: 1131:     * We could optimize this more, but I don't think there's a lot
+        -: 1132:     * of point.  (Translation:  it's difficult.)
+        -: 1133:     */
+    #####: 1134:    int pat_hl = hl, pat_pos;
+        -: 1135:    /*
+        -: 1136:     * This is the flag that we need to revert the positions to
+        -: 1137:     * the above for the next pattern search.
+        -: 1138:     */
+    #####: 1139:    int revert_patpos = 0;
+        -: 1140:    /*
+        -: 1141:     * Another nasty feature related to the above.  When
+        -: 1142:     * we revert the position, we might advance the search to
+        -: 1143:     * the same line again.  When we do this the test for ignoring
+        -: 1144:     * duplicates may trigger.  This flag indicates that in this
+        -: 1145:     * case it's OK.
+        -: 1146:     */
+    #####: 1147:    int dup_ok = 0;
+        -: 1148:    /*
+        -: 1149:     * End position of the match.
+        -: 1150:     * When forward matching, this is the position for the cursor.
+        -: 1151:     * When backward matching, the cursor position is pos.
+        -: 1152:     */
+    #####: 1153:    int end_pos = 0;
+        -: 1154:    /*
+        -: 1155:     * savekeys records the unget buffer, so that if we have arguments
+        -: 1156:     * they don't pollute the input.
+        -: 1157:     * feep indicates we should feep.  This is a well-known word
+        -: 1158:     * meaning "to indicate an error in the zsh line editor".
+        -: 1159:     */
+    #####: 1160:    int savekeys = -1, feep = 0;
+        -: 1161:    /* Flag that we are at an old position, no need to search again */
+    #####: 1162:    int nosearch = 0;
+        -: 1163:    /* Command read as input:  we don't read characters directly. */
+        -: 1164:    Thingy cmd;
+        -: 1165:    /* Save the keymap if necessary */
+        -: 1166:    char *okeymap;
+        -: 1167:    /* The current history entry, corresponding to hl */
+        -: 1168:    Histent he;
+        -: 1169:    /* When pattern matching, the compiled pattern */
+    #####: 1170:    Patprog patprog = NULL;
+        -: 1171:    /* When pattern matching, the list of match positions */
+    #####: 1172:    LinkList matchlist = NULL;
+        -: 1173:    /*
+        -: 1174:     * When we exit isearching this may be a zle command to
+        -: 1175:     * execute.  We save it and execute it after unmetafying the
+        -: 1176:     * command line.
+        -: 1177:     */
+    #####: 1178:    ZleIntFunc exitfn = (ZleIntFunc)0;
+        -: 1179:    /*
+        -: 1180:     * Flag that the search was aborted.
+        -: 1181:     */
+    #####: 1182:    int aborted = 0;
+        -: 1183:
+    #####: 1184:    if (!(he = quietgethist(hl)))
+    #####: 1185:	return 1;
+        -: 1186:
+    #####: 1187:    selectlocalmap(isearch_keymap);
+        -: 1188:
+    #####: 1189:    clearlist = 1;
+        -: 1190:
+    #####: 1191:    if (*args) {
+        -: 1192:	int len;
+        -: 1193:	char *arg;
+    #####: 1194:	savekeys = kungetct;
+    #####: 1195:	arg = getkeystring(*args, &len, GETKEYS_BINDKEY, NULL);
+    #####: 1196:	ungetbytes(arg, len);
+        -: 1197:    }
+        -: 1198:
+    #####: 1199:    strcpy(ibuf, ISEARCH_PROMPT);
+        -: 1200:    /* careful with fwd/bck: we don't want the NULL copied */
+    #####: 1201:    memcpy(ibuf + NORM_PROMPT_POS, (dir == 1) ? "fwd" : "bck", 3);
+    #####: 1202:    okeymap = ztrdup(curkeymapname);
+    #####: 1203:    selectkeymap("main", 1);
+        -: 1204:
+    #####: 1205:    metafy_line();
+    #####: 1206:    remember_edits();
+    #####: 1207:    zt = GETZLETEXT(he);
+    #####: 1208:    pat_pos = pos = zlemetacs;
+        -: 1209:    for (;;) {
+        -: 1210:	/* Remember the current values in case search fails (doesn't push). */
+    #####: 1211:	set_isrch_spot(top_spot, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1212:		       zlemetacs, sbptr, dir, nomatch);
+    #####: 1213:	if (sbptr == 1 && sbuf[0] == '^') {
+    #####: 1214:	    zlemetacs = 0;
+    #####: 1215:    	    nomatch = 0;
+    #####: 1216:	    statusline = ibuf + NORM_PROMPT_POS;
+    #####: 1217:	} else if (sbptr > 0) {
+        -: 1218:	    /* The matched text, used as flag that we matched */
+    #####: 1219:	    char *t = NULL;
+    #####: 1220:	    last_line = zt;
+        -: 1221:
+    #####: 1222:	    sbuf[sbptr] = '\0';
+    #####: 1223:	    if (pattern && !patprog && !nosearch) {
+        -: 1224:		/* avoid too much heap use, can get heavy round here... */
+    #####: 1225:		char *patbuf = ztrdup(sbuf);
+        -: 1226:		char *patstring;
+        -: 1227:		/*
+        -: 1228:		 * Do not use static pattern buffer (PAT_STATIC) since we
+        -: 1229:		 * call zle hooks, which might call other pattern
+        -: 1230:		 * functions.  Use PAT_ZDUP because we re-use the pattern
+        -: 1231:		 * in subsequent loops, so we can't pushheap/popheap.
+        -: 1232:		 * Use PAT_NOANCH because we don't need the match anchored
+        -: 1233:		 * to the end, even if it is at the start.
+        -: 1234:		 */
+    #####: 1235:		int patflags = PAT_ZDUP|PAT_NOANCH;
+    #####: 1236:		if (sbuf[0] == '^') {
+        -: 1237:		    /*
+        -: 1238:		     * We'll handle the anchor later when
+        -: 1239:		     * we call into the globbing code.
+        -: 1240:		     */
+    #####: 1241:		    patstring = patbuf + 1;
+        -: 1242:		} else {
+        -: 1243:		    /* Scanning for multiple matches per line */
+    #####: 1244:		    patflags |= PAT_SCAN;
+    #####: 1245:		    patstring = patbuf;
+        -: 1246:		}
+    #####: 1247:		if (sens == 3)
+    #####: 1248:		    patflags |= PAT_LCMATCHUC;
+    #####: 1249:		tokenize(patstring);
+    #####: 1250:		remnulargs(patstring);
+    #####: 1251:		patprog = patcompile(patstring, patflags, NULL);
+    #####: 1252:		free(patbuf);
+    #####: 1253:		if (matchlist) {
+    #####: 1254:		    freematchlist(matchlist);
+    #####: 1255:		    matchlist = NULL;
+        -: 1256:		}
+    #####: 1257:		if (patprog) {
+    #####: 1258:		    revert_patpos = 1;
+    #####: 1259:		    skip_pos = 0;
+        -: 1260:		} else {
+    #####: 1261:		    if (nomatch != 2) {
+    #####: 1262:			handlefeep(zlenoargs);
+    #####: 1263:			nomatch = 2;
+        -: 1264:		    }
+        -: 1265:		    /* indicate "invalid" in status line */
+    #####: 1266:		    memcpy(ibuf, INVALID_TEXT, BAD_TEXT_LEN);
+    #####: 1267:		    statusline = ibuf;
+        -: 1268:		}
+        -: 1269:	    }
+        -: 1270:	    /*
+        -: 1271:	     * skip search if pattern compilation failed, or
+        -: 1272:	     * if we back somewhere we already searched.
+        -: 1273:	     */
+    #####: 1274:	    while ((!pattern || patprog) && !nosearch) {
+    #####: 1275:		if (patprog) {
+    #####: 1276:		    if (revert_patpos) {
+        -: 1277:			/*
+        -: 1278:			 * Search from where the previous
+        -: 1279:			 * search started; see note above.
+        -: 1280:			 * This is down here within the loop because of
+        -: 1281:			 * the "nosearch" optimisation.
+        -: 1282:			 */
+    #####: 1283:			revert_patpos = 0;
+    #####: 1284:			dup_ok = 1;
+    #####: 1285:			he = quietgethist(hl = pat_hl);
+    #####: 1286:			zt = GETZLETEXT(he);
+    #####: 1287:			pos = pat_pos;
+        -: 1288:		    }
+        -: 1289:		    /*
+        -: 1290:		     * We are pattern matching against the current
+        -: 1291:		     * line.  If anchored at the start, this is
+        -: 1292:		     * easy; a single test suffices.
+        -: 1293:		     *
+        -: 1294:		     * Otherwise, our strategy is to retrieve a linked
+        -: 1295:		     * list of all matches within the current line and
+        -: 1296:		     * scan through it as appropriate.  This isn't
+        -: 1297:		     * actually significantly more efficient, but
+        -: 1298:		     * it is algorithmically easier since we just
+        -: 1299:		     * need a single one-off line-matching interface
+        -: 1300:		     * to the pattern code.  We use a variant of
+        -: 1301:		     * the code used for replacing within parameters
+        -: 1302:		     * which for historical reasons is in glob.c rather
+        -: 1303:		     * than pattern.c.
+        -: 1304:		     *
+        -: 1305:		     * The code for deciding whether to skip something
+        -: 1306:		     * is a bit icky but that sort of code always is.
+        -: 1307:		     */
+    #####: 1308:		    if (!skip_line) {
+    #####: 1309:			if (sbuf[0] == '^') {
+        -: 1310:			    /*
+        -: 1311:			     * skip_pos applies to the whole line in
+        -: 1312:			     * this mode.
+        -: 1313:			     */
+    #####: 1314:			    if (!skip_pos &&
+    #####: 1315:				pattryrefs(patprog, zt, -1, -1, NULL, 0,
+        -: 1316:					   NULL, NULL, &end_pos))
+    #####: 1317:				t = zt;
+        -: 1318:			} else {
+    #####: 1319:			    if (!matchlist && !skip_pos) {
+    #####: 1320:				if (!getmatchlist(zt, patprog, &matchlist) ||
+    #####: 1321:				    !firstnode(matchlist)) {
+    #####: 1322:				    if (matchlist) {
+    #####: 1323:					freematchlist(matchlist);
+    #####: 1324:					matchlist = NULL;
+        -: 1325:				    }
+        -: 1326:				}
+        -: 1327:			    }
+    #####: 1328:			    if (matchlist) {
+        -: 1329:				int newpos;
+    #####: 1330:				if (!skip_pos) {
+        -: 1331:				    /* OK to match at current pos */
+    #####: 1332:				    newpos = pos;
+        -: 1333:				} else {
+    #####: 1334:				    if (dir < 0)
+    #####: 1335:					newpos = pos - 1;
+        -: 1336:				    else
+    #####: 1337:					newpos = pos + 1;
+        -: 1338:				}
+    #####: 1339:				newpos = isearch_newpos(matchlist, newpos,
+        -: 1340:							dir, &end_pos);
+        -: 1341:				/* need a new list next time if off the end */
+    #####: 1342:				if (newpos < 0) {
+    #####: 1343:				    freematchlist(matchlist);
+    #####: 1344:				    matchlist = NULL;
+        -: 1345:				} else {
+    #####: 1346:				    t = zt + newpos;
+        -: 1347:				}
+        -: 1348:			    }
+        -: 1349:			}
+        -: 1350:		    }
+    #####: 1351:		    skip_pos = 0;
+        -: 1352:		} else {
+        -: 1353:		    /*
+        -: 1354:		     * If instructed, move past a match position:
+        -: 1355:		     * backwards if searching backwards (skipping
+        -: 1356:		     * the line if we're at the start), forwards
+        -: 1357:		     * if searching forwards (skipping a line if we're
+        -: 1358:		     * at the end).
+        -: 1359:		     */
+    #####: 1360:		    if (skip_pos) {
+    #####: 1361:			if (dir < 0) {
+    #####: 1362:			    if (pos == 0)
+    #####: 1363:				skip_line = 1;
+        -: 1364:			    else
+    #####: 1365:				pos = backwardmetafiedchar(zlemetaline,
+        -: 1366:							   zlemetaline + pos,
+    #####: 1367:							   NULL) - zlemetaline;
+    #####: 1368:			} else if (sbuf[0] != '^') {
+    #####: 1369:			    if (pos >= (int)strlen(zt) - 1)
+    #####: 1370:				skip_line = 1;
+        -: 1371:			    else
+    #####: 1372:				pos += 1;
+        -: 1373:			} else
+    #####: 1374:			    skip_line = 1;
+    #####: 1375:			skip_pos = 0;
+        -: 1376:		    }
+        -: 1377:		    /*
+        -: 1378:		     * First search for a(nother) match within the
+        -: 1379:		     * current line, unless we've been told to skip it.
+        -: 1380:		     */
+    #####: 1381:		    if (!skip_line) {
+    #####: 1382:			if (sbuf[0] == '^') {
+    #####: 1383:			    if (zlinecmp(zt, sbuf + 1) < sens)
+    #####: 1384:				t = zt;
+        -: 1385:			} else
+    #####: 1386:			    t = zlinefind(zt, pos, sbuf, dir, sens);
+    #####: 1387:			if (t)
+    #####: 1388:			    end_pos = (t - zt) + sbptr - (sbuf[0] == '^');
+        -: 1389:		    }
+        -: 1390:		}
+    #####: 1391:		if (t) {
+    #####: 1392:		    pos = t - zt;
+    #####: 1393:		    break;
+        -: 1394:		}
+        -: 1395:		/*
+        -: 1396:		 * If not found within that line, move through
+        -: 1397:		 * the history to try again.
+        -: 1398:		 */
+    #####: 1399:		if (!(zlereadflags & ZLRF_HISTORY)
+    #####: 1400:		 || !(he = movehistent(he, dir, hist_skip_flags))) {
+    #####: 1401:		    if (sbptr == (int)isrch_spots[top_spot-1].len
+    #####: 1402:		     && (isrch_spots[top_spot-1].flags >> ISS_NOMATCH_SHIFT))
+    #####: 1403:			top_spot--;
+    #####: 1404:		    get_isrch_spot(top_spot, &hl, &pos, &pat_hl, &pat_pos,
+        -: 1405:				   &end_pos, &zlemetacs, &sbptr, &dir,
+        -: 1406:				   &nomatch);
+    #####: 1407:		    if (nomatch != 1) {
+    #####: 1408:			feep = 1;
+    #####: 1409:			nomatch = 1;
+        -: 1410:		    }
+    #####: 1411:		    he = quietgethist(hl);
+    #####: 1412:		    zt = GETZLETEXT(he);
+    #####: 1413:		    skip_line = 0;
+        -: 1414:		    /* indicate "failing" in status line */
+    #####: 1415:		    memcpy(ibuf, nomatch == 2 ? INVALID_TEXT :FAILING_TEXT,
+        -: 1416:			   BAD_TEXT_LEN);
+    #####: 1417:		    statusline = ibuf;
+    #####: 1418:		    break;
+        -: 1419:		}
+    #####: 1420:		hl = he->histnum;
+    #####: 1421:		zt = GETZLETEXT(he);
+    #####: 1422:		pos = (dir == 1) ? 0 : strlen(zt);
+    #####: 1423:		if (dup_ok)
+    #####: 1424:		    skip_line = 0;
+        -: 1425:		else
+    #####: 1426:		    skip_line = isset(HISTFINDNODUPS)
+    #####: 1427:			? !!(he->node.flags & HIST_DUP)
+    #####: 1428:			: !strcmp(zt, last_line);
+        -: 1429:	    }
+    #####: 1430:	    dup_ok = 0;
+        -: 1431:	    /*
+        -: 1432:	     * If we matched above (t set), set the new line.
+        -: 1433:	     * If we didn't, but are here because we are on a previous
+        -: 1434:	     * match (nosearch set and nomatch not, set the line again).
+        -: 1435:	     */
+    #####: 1436:	    if (t || (nosearch && !nomatch)) {
+    #####: 1437:		zle_setline(he);
+    #####: 1438:		if (dir == 1)
+    #####: 1439:		    zlemetacs = end_pos;
+        -: 1440:		else
+    #####: 1441:		    zlemetacs = pos;
+    #####: 1442:		statusline = ibuf + NORM_PROMPT_POS;
+    #####: 1443:		nomatch = 0;
+        -: 1444:	    }
+        -: 1445:	} else {
+    #####: 1446:	    top_spot = 0;
+    #####: 1447:    	    nomatch = 0;
+    #####: 1448:	    statusline = ibuf + NORM_PROMPT_POS;
+        -: 1449:	}
+    #####: 1450:	nosearch = 0;
+    #####: 1451:	if (feep) {
+    #####: 1452:	    handlefeep(zlenoargs);
+    #####: 1453:	    feep = 0;
+        -: 1454:	}
+    #####: 1455:	sbuf[sbptr] = '_';
+    #####: 1456:	sbuf[sbptr+1] = '\0';
+    #####: 1457:	if (!nomatch && sbptr && (sbptr > 1 || sbuf[0] != '^')) {
+        -: 1458:#ifdef MULTIBYTE_SUPPORT
+    #####: 1459:	    int charpos = 0, charcount = 0, ret;
+        -: 1460:	    wint_t wc;
+        -: 1461:	    mbstate_t mbs;
+        -: 1462:
+        -: 1463:	    /*
+        -: 1464:	     * Count unmetafied character positions for the
+        -: 1465:	     * start and end of the match for the benefit of
+        -: 1466:	     * highlighting.
+        -: 1467:	     */
+    #####: 1468:	    memset(&mbs, 0, sizeof(mbs));
+    #####: 1469:	    while (charpos < end_pos) {
+    #####: 1470:		ret = mb_metacharlenconv_r(zlemetaline + charpos, &wc, &mbs);
+    #####: 1471:		if (ret <= 0) /* Unrecognised, treat as single char */
+    #####: 1472:		    ret = 1;
+    #####: 1473:		if (charpos <= pos && pos < charpos + ret)
+    #####: 1474:		    isearch_startpos = charcount;
+    #####: 1475:		charcount++;
+    #####: 1476:		charpos += ret;
+        -: 1477:	    }
+    #####: 1478:	    isearch_endpos = charcount;
+        -: 1479:#else
+        -: 1480:	    isearch_startpos = ztrsub(zlemetaline + pos, zlemetaline);
+        -: 1481:	    isearch_endpos = ztrsub(zlemetaline + end_pos,
+        -: 1482:				    zlemetaline);
+        -: 1483:#endif
+    #####: 1484:	    isearch_active = 1;
+        -: 1485:	} else
+    #####: 1486:	    isearch_active = 0;
+    #####: 1487:    ref:
+    #####: 1488:	zlecallhook("zle-isearch-update", NULL);
+    #####: 1489:	redrawhook();
+    #####: 1490:	zrefresh();
+    #####: 1491:	if (!(cmd = getkeycmd()) || cmd == Th(z_sendbreak)) {
+        -: 1492:	    int i;
+    #####: 1493:	    aborted = 1;
+    #####: 1494:	    save_isearch_buffer(sbuf, sbptr,
+        -: 1495:				&previous_aborted_search, NULL);
+    #####: 1496:	    get_isrch_spot(0, &hl, &pos, &pat_hl, &pat_pos, &end_pos,
+        -: 1497:			   &i, &sbptr, &dir, &nomatch);
+    #####: 1498:	    he = quietgethist(hl);
+    #####: 1499:	    zle_setline(he);
+    #####: 1500:	    zt = GETZLETEXT(he);
+    #####: 1501:	    zlemetacs = i;
+    #####: 1502:	    break;
+        -: 1503:	}
+    #####: 1504:	if(cmd == Th(z_clearscreen)) {
+    #####: 1505:	    clearscreen(zlenoargs);
+    #####: 1506:	    goto ref;
+    #####: 1507:	} else if(cmd == Th(z_redisplay)) {
+    #####: 1508:	    redisplay(zlenoargs);
+    #####: 1509:	    goto ref;
+    #####: 1510:	} else if(cmd == Th(z_vicmdmode)) {
+    #####: 1511:	    if(selectkeymap(invicmdmode() ? "main" : "vicmd", 0))
+    #####: 1512:		feep = 1;
+    #####: 1513:	    goto ref;
+    #####: 1514:       } else if (cmd == Th(z_vibackwarddeletechar) ||
+    #####: 1515:		  cmd == Th(z_backwarddeletechar) ||
+    #####: 1516:		  cmd == Th(z_vibackwardkillword) ||
+    #####: 1517:		  cmd == Th(z_backwardkillword) ||
+        -: 1518:		  cmd == Th(z_backwarddeleteword)) {
+    #####: 1519:	    int only_one = (cmd == Th(z_vibackwarddeletechar) ||
+        -: 1520:			    cmd == Th(z_backwarddeletechar));
+    #####: 1521:	    int old_sbptr = sbptr;
+    #####: 1522:	    if (top_spot) {
+        -: 1523:		for (;;) {
+    #####: 1524:		    get_isrch_spot(--top_spot, &hl, &pos, &pat_hl,
+        -: 1525:				   &pat_pos,  &end_pos, &zlemetacs,
+        -: 1526:				   &sbptr, &dir, &nomatch);
+    #####: 1527:		    if (only_one || !top_spot || old_sbptr != sbptr)
+        -: 1528:			break;
+        -: 1529:		}
+    #####: 1530:		freepatprog(patprog);
+    #####: 1531:		patprog = NULL;
+    #####: 1532:		nosearch = 1;
+    #####: 1533:		skip_pos = 0;
+        -: 1534:	    } else
+    #####: 1535:		feep = 1;
+    #####: 1536:	    if (nomatch) {
+    #####: 1537:		memcpy(ibuf, nomatch == 2 ? INVALID_TEXT : FAILING_TEXT,
+        -: 1538:		       BAD_TEXT_LEN);
+    #####: 1539:		statusline = ibuf;
+    #####: 1540:		skip_pos = 1;
+        -: 1541:	    }
+    #####: 1542:	    he = quietgethist(hl);
+    #####: 1543:	    zt = GETZLETEXT(he);
+        -: 1544:	    /*
+        -: 1545:	     * Set the line for the cases where we won't go past
+        -: 1546:	     * the usual line-setting logic:  if we're not on a match,
+        -: 1547:	     * or if we don't have enough to search for.
+        -: 1548:	     */
+    #####: 1549:	    if (nomatch || !sbptr || (sbptr == 1 && sbuf[0] == '^')) {
+    #####: 1550:		int i = zlemetacs;
+    #####: 1551:		zle_setline(he);
+    #####: 1552:		zlemetacs = i;
+        -: 1553:	    }
+    #####: 1554:	    memcpy(ibuf + NORM_PROMPT_POS,
+    #####: 1555:		   (dir == 1) ? "fwd" : "bck", 3);
+    #####: 1556:	    continue;
+    #####: 1557:	} else if(cmd == Th(z_acceptandhold)) {
+    #####: 1558:	    exitfn = acceptandhold;
+    #####: 1559:	    break;
+    #####: 1560:	} else if(cmd == Th(z_acceptandinfernexthistory)) {
+    #####: 1561:	    exitfn = acceptandinfernexthistory;
+    #####: 1562:	    break;
+    #####: 1563:	} else if(cmd == Th(z_acceptlineanddownhistory)) {
+    #####: 1564:	    exitfn = acceptlineanddownhistory;
+    #####: 1565:	    break;
+    #####: 1566:	} else if(cmd == Th(z_acceptline)) {
+    #####: 1567:	    exitfn = acceptline;
+    #####: 1568:	    break;
+    #####: 1569:	} else if(cmd == Th(z_historyincrementalsearchbackward) ||
+        -: 1570:		  cmd == Th(z_historyincrementalpatternsearchbackward)) {
+    #####: 1571:	    pat_hl = hl;
+    #####: 1572:	    pat_pos = pos;
+    #####: 1573:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1574:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1575:	    if (dir != -1)
+    #####: 1576:		dir = -1;
+        -: 1577:	    else
+    #####: 1578:		skip_pos = 1;
+    #####: 1579:	    goto rpt;
+    #####: 1580:	} else if(cmd == Th(z_historyincrementalsearchforward) ||
+        -: 1581:		  cmd == Th(z_historyincrementalpatternsearchforward)) {
+    #####: 1582:	    pat_hl = hl;
+    #####: 1583:	    pat_pos = pos;
+    #####: 1584:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1585:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1586:	    if (dir != 1)
+    #####: 1587:		dir = 1;
+        -: 1588:	    else
+    #####: 1589:		skip_pos = 1;
+    #####: 1590:	    goto rpt;
+    #####: 1591:	} else if(cmd == Th(z_virevrepeatsearch)) {
+    #####: 1592:	    pat_hl = hl;
+    #####: 1593:	    pat_pos = pos;
+    #####: 1594:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1595:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1596:	    dir = -odir;
+    #####: 1597:	    skip_pos = 1;
+    #####: 1598:	    goto rpt;
+    #####: 1599:	} else if(cmd == Th(z_virepeatsearch)) {
+    #####: 1600:	    pat_hl = hl;
+    #####: 1601:	    pat_pos = pos;
+    #####: 1602:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1603:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1604:	    dir = odir;
+    #####: 1605:	    skip_pos = 1;
+    #####: 1606:	rpt:
+    #####: 1607:	    if (!sbptr && previous_search_len && dir == odir) {
+    #####: 1608:		if (previous_search_len > sibuf - FIRST_SEARCH_CHAR - 2) {
+    #####: 1609:		    ibuf = hrealloc((char *)ibuf, sibuf,
+    #####: 1610:				    (sibuf + previous_search_len));
+    #####: 1611:		    sbuf = ibuf + FIRST_SEARCH_CHAR;
+    #####: 1612:		    sibuf += previous_search_len;
+        -: 1613:		}
+    #####: 1614:		memcpy(sbuf, previous_search, sbptr = previous_search_len);
+        -: 1615:	    }
+    #####: 1616:	    memcpy(ibuf + NORM_PROMPT_POS, (dir == 1) ? "fwd" : "bck", 3);
+    #####: 1617:	    continue;
+    #####: 1618:	} else if(cmd == Th(z_viquotedinsert) ||
+        -: 1619:	    	cmd == Th(z_quotedinsert)) {
+    #####: 1620:	    if(cmd == Th(z_viquotedinsert)) {
+    #####: 1621:		sbuf[sbptr] = '^';
+    #####: 1622:		sbuf[sbptr+1] = '\0';
+    #####: 1623:		zrefresh();
+        -: 1624:	    }
+    #####: 1625:	    if (getfullchar(0) == ZLEEOF)
+    #####: 1626:		feep = 1;
+        -: 1627:	    else
+    #####: 1628:		goto ins;
+    #####: 1629:	} else if (cmd == Th(z_bracketedpaste)) {
+    #####: 1630:	    char *paste = bracketedstring();
+    #####: 1631:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1632:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1633:	    size_t pastelen = strlen(paste);
+    #####: 1634:	    if (sbptr + pastelen >= sibuf - FIRST_SEARCH_CHAR - 2) {
+    #####: 1635:		int oldsize = sibuf;
+    #####: 1636:		sibuf += (pastelen >= sibuf) ? pastelen + 1 : sibuf;
+    #####: 1637:		ibuf = hrealloc(ibuf, oldsize, sibuf);
+    #####: 1638:		sbuf = ibuf + FIRST_SEARCH_CHAR;
+        -: 1639:	    }
+    #####: 1640:	    strcpy(sbuf + sbptr, paste);
+    #####: 1641:	    sbptr += pastelen;
+    #####: 1642:	    freepatprog(patprog);
+    #####: 1643:	    patprog = NULL;
+    #####: 1644:	    free(paste);
+    #####: 1645:	} else if (cmd == Th(z_acceptsearch)) {
+    #####: 1646:	    break;
+        -: 1647:	} else {
+    #####: 1648:	    if(cmd == Th(z_selfinsertunmeta)) {
+    #####: 1649:		fixunmeta();
+    #####: 1650:	    } else if (cmd == Th(z_magicspace)) {
+    #####: 1651:		fixmagicspace();
+    #####: 1652:	    } else if (cmd == Th(z_selfinsert)) {
+        -: 1653:#ifdef MULTIBYTE_SUPPORT
+    #####: 1654:		if (!lastchar_wide_valid)
+    #####: 1655:		    if (getrestchar(lastchar, NULL, NULL) == WEOF) {
+    #####: 1656:			handlefeep(zlenoargs);
+    #####: 1657:			continue;
+        -: 1658:		    }
+        -: 1659:#else
+        -: 1660:		;
+        -: 1661:#endif
+        -: 1662:	    } else {
+    #####: 1663:		ungetkeycmd();
+    #####: 1664:		if (cmd == Th(z_sendbreak)) {
+    #####: 1665:		    aborted = 1;
+    #####: 1666:		    save_isearch_buffer(sbuf, sbptr,
+        -: 1667:					&previous_aborted_search, NULL);
+    #####: 1668:		    sbptr = 0;
+        -: 1669:		}
+    #####: 1670:		break;
+        -: 1671:	    }
+    #####: 1672:	ins:
+    #####: 1673:	    if (sbptr == PATH_MAX) {
+    #####: 1674:		feep = 1;
+    #####: 1675:		continue;
+        -: 1676:	    }
+    #####: 1677:	    set_isrch_spot(top_spot++, hl, pos, pat_hl, pat_pos, end_pos,
+        -: 1678:			   zlemetacs, sbptr, dir, nomatch);
+    #####: 1679:	    if (sbptr >= sibuf - FIRST_SEARCH_CHAR - 2 
+        -: 1680:#ifdef MULTIBYTE_SUPPORT
+    #####: 1681:		- 2 * (int)MB_CUR_MAX
+        -: 1682:#endif
+        -: 1683:		) {
+    #####: 1684:		ibuf = hrealloc(ibuf, sibuf, sibuf * 2);
+    #####: 1685:		sbuf = ibuf + FIRST_SEARCH_CHAR;
+    #####: 1686:		sibuf *= 2;
+        -: 1687:	    }
+        -: 1688:	    /*
+        -: 1689:	     * We've supposedly arranged above that lastchar_wide is
+        -: 1690:	     * always valid at this point.
+        -: 1691:	     */
+    #####: 1692:	    sbptr += zlecharasstring(LASTFULLCHAR, sbuf + sbptr);
+    #####: 1693:	    freepatprog(patprog);
+    #####: 1694:	    patprog = NULL;
+        -: 1695:	}
+    #####: 1696:	if (feep)
+    #####: 1697:	    handlefeep(zlenoargs);
+    #####: 1698:	feep = 0;
+        -: 1699:    }
+    #####: 1700:    if (sbptr) {
+    #####: 1701:	save_isearch_buffer(sbuf, sbptr,
+        -: 1702:			    &previous_search, &previous_search_len);
+        -: 1703:    }
+    #####: 1704:    statusline = NULL;
+    #####: 1705:    unmetafy_line();
+    #####: 1706:    zlecallhook("zle-isearch-exit", NULL);
+    #####: 1707:    redrawhook();
+    #####: 1708:    if (exitfn)
+    #####: 1709:	exitfn(zlenoargs);
+    #####: 1710:    selectkeymap(okeymap, 1);
+    #####: 1711:    zsfree(okeymap);
+    #####: 1712:    if (matchlist)
+    #####: 1713:	freematchlist(matchlist);
+    #####: 1714:    freepatprog(patprog);
+    #####: 1715:    isearch_active = 0;
+        -: 1716:    /*
+        -: 1717:     * Don't allow unused characters provided as a string to the
+        -: 1718:     * widget to overflow and be used as separated commands.
+        -: 1719:     */
+    #####: 1720:    if (savekeys >= 0 && kungetct > savekeys)
+    #####: 1721:	kungetct = savekeys;
+        -: 1722:
+    #####: 1723:    selectlocalmap(NULL);
+        -: 1724:
+    #####: 1725:    return aborted ? 3 : nomatch;
+        -: 1726:}
+        -: 1727:
+        -: 1728:static Histent
+    #####: 1729:infernexthist(Histent he, UNUSED(char **args))
+        -: 1730:{
+    #####: 1731:    metafy_line();
+    #####: 1732:    for (he = movehistent(he, -2, HIST_FOREIGN);
+    #####: 1733:	 he; he = movehistent(he, -1, HIST_FOREIGN)) {
+    #####: 1734:	if (!zlinecmp(GETZLETEXT(he), zlemetaline)) {
+    #####: 1735:	    unmetafy_line();
+    #####: 1736:	    return movehistent(he, 1, HIST_FOREIGN);
+        -: 1737:	}
+        -: 1738:    }
+    #####: 1739:    unmetafy_line();
+    #####: 1740:    return NULL;
+        -: 1741:}
+        -: 1742:
+        -: 1743:/**/
+        -: 1744:int
+    #####: 1745:acceptandinfernexthistory(char **args)
+        -: 1746:{
+        -: 1747:    Histent he;
+        -: 1748:
+    #####: 1749:    if (!(he = infernexthist(hist_ring, args)))
+    #####: 1750:	return 1;
+    #####: 1751:    zpushnode(bufstack, ztrdup(he->node.nam));
+    #####: 1752:    done = 1;
+    #####: 1753:    stackhist = he->histnum;
+    #####: 1754:    return 0;
+        -: 1755:}
+        -: 1756:
+        -: 1757:/**/
+        -: 1758:int
+    #####: 1759:infernexthistory(char **args)
+        -: 1760:{
+    #####: 1761:    Histent he = quietgethist(histline);
+        -: 1762:
+    #####: 1763:    if (!he || !(he = infernexthist(he, args)))
+    #####: 1764:	return 1;
+    #####: 1765:    zle_setline(he);
+    #####: 1766:    return 0;
+        -: 1767:}
+        -: 1768:
+        -: 1769:/**/
+        -: 1770:int
+    #####: 1771:vifetchhistory(UNUSED(char **args))
+        -: 1772:{
+    #####: 1773:    if (zmult < 0)
+    #####: 1774:	return 1;
+    #####: 1775:    if (histline == curhist) {
+    #####: 1776:	if (!(zmod.flags & MOD_MULT)) {
+    #####: 1777:	    zlecs = zlell;
+    #####: 1778:	    zlecs = findbol();
+    #####: 1779:	    return 0;
+        -: 1780:	}
+        -: 1781:    }
+    #####: 1782:    if (!zle_goto_hist((zmod.flags & MOD_MULT) ? zmult : curhist, 0, 0) &&
+    #####: 1783:	isset(HISTBEEP)) {
+    #####: 1784:	return 1;
+        -: 1785:    }
+    #####: 1786:    return 0;
+        -: 1787:}
+        -: 1788:
+        -: 1789:/* the last vi search */
+        -: 1790:
+        -: 1791:static char *visrchstr, *vipenultsrchstr;
+        -: 1792:static int visrchsense;
+        -: 1793:
+        -: 1794:/**/
+        -: 1795:static int
+    #####: 1796:getvisrchstr(void)
+        -: 1797:{
+    #####: 1798:    char *sbuf = zhalloc(80);
+    #####: 1799:    int sptr = 1, ret = 0, ssbuf = 80, feep = 0;
+        -: 1800:    Thingy cmd;
+    #####: 1801:    char *okeymap = ztrdup(curkeymapname);
+        -: 1802:
+    #####: 1803:    if (vipenultsrchstr) {
+    #####: 1804:	zsfree(vipenultsrchstr);
+    #####: 1805:	vipenultsrchstr = NULL;
+        -: 1806:    }
+        -: 1807:
+    #####: 1808:    if (visrchstr) {
+    #####: 1809:	vipenultsrchstr = visrchstr;
+    #####: 1810:	visrchstr = NULL;
+        -: 1811:    }
+    #####: 1812:    clearlist = 1;
+    #####: 1813:    statusline = sbuf;
+    #####: 1814:    sbuf[0] = (visrchsense == -1) ? '?' : '/';
+    #####: 1815:    selectkeymap("main", 1);
+    #####: 1816:    while (sptr) {
+    #####: 1817:	sbuf[sptr] = '_';
+    #####: 1818:	sbuf[sptr+1] = '\0';
+    #####: 1819:	zrefresh();
+    #####: 1820:	if (!(cmd = getkeycmd()) || cmd == Th(z_sendbreak)) {
+    #####: 1821:	    ret = 0;
+    #####: 1822:	    break;
+        -: 1823:	}
+    #####: 1824:	if(cmd == Th(z_magicspace)) {
+    #####: 1825:	    fixmagicspace();
+    #####: 1826:	    cmd = Th(z_selfinsert);
+        -: 1827:	}
+    #####: 1828:	if(cmd == Th(z_redisplay)) {
+    #####: 1829:	    redisplay(zlenoargs);
+    #####: 1830:	} else if(cmd == Th(z_clearscreen)) {
+    #####: 1831:	    clearscreen(zlenoargs);
+    #####: 1832:	} else if(cmd == Th(z_acceptline) ||
+        -: 1833:	    	cmd == Th(z_vicmdmode)) {
+    #####: 1834:	    sbuf[sptr] = ZWC('\0');
+    #####: 1835:	    visrchstr = ztrdup(sbuf+1);
+    #####: 1836:	    if (!strlen(visrchstr)) {
+    #####: 1837:	        zsfree(visrchstr);
+    #####: 1838:		visrchstr = ztrdup(vipenultsrchstr);
+        -: 1839:	    }
+    #####: 1840:	    ret = 1;
+    #####: 1841:	    sptr = 0;
+    #####: 1842:	} else if(cmd == Th(z_backwarddeletechar) ||
+        -: 1843:		  cmd == Th(z_vibackwarddeletechar)) {
+    #####: 1844:	    sptr = backwardmetafiedchar(sbuf+1, sbuf+sptr, NULL) - sbuf;
+    #####: 1845:	} else if(cmd == Th(z_backwardkillword) ||
+    #####: 1846:		  cmd == Th(z_vibackwardkillword)) {
+        -: 1847:	    convchar_t cc;
+        -: 1848:	    char *newpos;
+    #####: 1849:	    while (sptr != 1) {
+    #####: 1850:		newpos = backwardmetafiedchar(sbuf+1, sbuf+sptr, &cc);
+    #####: 1851:		if (!ZC_iblank(cc))
+    #####: 1852:		    break;
+    #####: 1853:		sptr = newpos - sbuf;
+        -: 1854:	    }
+    #####: 1855:	    if (sptr > 1) {
+    #####: 1856:		newpos = backwardmetafiedchar(sbuf+1, sbuf+sptr, &cc);
+    #####: 1857:		if (ZC_iident(cc)) {
+        -: 1858:		    for (;;) {
+    #####: 1859:			sptr = newpos - sbuf;
+    #####: 1860:			if (sptr == 1)
+    #####: 1861:			    break;
+    #####: 1862:			newpos = backwardmetafiedchar(sbuf+1, sbuf+sptr, &cc);
+    #####: 1863:			if (!ZC_iident(cc))
+    #####: 1864:			    break;
+        -: 1865:		    }
+        -: 1866:		} else {
+        -: 1867:		    for (;;) {
+    #####: 1868:			sptr = newpos - sbuf;
+    #####: 1869:			if (sptr == 1)
+    #####: 1870:			    break;
+    #####: 1871:			newpos = backwardmetafiedchar(sbuf+1, sbuf+sptr, &cc);
+    #####: 1872:			if (ZC_iident(cc) || ZC_iblank(cc))
+        -: 1873:			    break;
+        -: 1874:		    }
+        -: 1875:		}
+        -: 1876:	    }
+    #####: 1877:	} else if(cmd == Th(z_viquotedinsert) || cmd == Th(z_quotedinsert)) {
+    #####: 1878:	    if(cmd == Th(z_viquotedinsert)) {
+    #####: 1879:		sbuf[sptr] = '^';
+    #####: 1880:		zrefresh();
+        -: 1881:	    }
+    #####: 1882:	    if (getfullchar(0) == ZLEEOF)
+    #####: 1883:		feep = 1;
+        -: 1884:	    else
+    #####: 1885:		goto ins;
+    #####: 1886:	} else if(cmd == Th(z_selfinsertunmeta) || cmd == Th(z_selfinsert)) {
+    #####: 1887:	    if(cmd == Th(z_selfinsertunmeta)) {
+    #####: 1888:		fixunmeta();
+        -: 1889:	    } else {
+        -: 1890:#ifdef MULTIBYTE_SUPPORT
+    #####: 1891:		if (!lastchar_wide_valid)
+    #####: 1892:		    if (getrestchar(lastchar, NULL, NULL) == WEOF) {
+    #####: 1893:			handlefeep(zlenoargs);
+    #####: 1894:			continue;
+        -: 1895:		    }
+        -: 1896:#else
+        -: 1897:		;
+        -: 1898:#endif
+        -: 1899:	    }
+    #####: 1900:	  ins:
+    #####: 1901:	    if (sptr == ssbuf - 1) {
+    #####: 1902:		char *newbuf = (char *)zhalloc((ssbuf *= 2));
+    #####: 1903:		strcpy(newbuf, sbuf);
+    #####: 1904:		statusline = sbuf = newbuf;
+        -: 1905:	    }
+    #####: 1906:	    sptr += zlecharasstring(LASTFULLCHAR, sbuf + sptr);
+        -: 1907:	} else {
+    #####: 1908:	    feep = 1;
+        -: 1909:	}
+    #####: 1910:	if (feep)
+    #####: 1911:	    handlefeep(zlenoargs);
+    #####: 1912:	feep = 0;
+        -: 1913:    }
+    #####: 1914:    statusline = NULL;
+    #####: 1915:    selectkeymap(okeymap, 1);
+    #####: 1916:    zsfree(okeymap);
+    #####: 1917:    return ret;
+        -: 1918:}
+        -: 1919:
+        -: 1920:/**/
+        -: 1921:int
+    #####: 1922:vihistorysearchforward(char **args)
+        -: 1923:{
+    #####: 1924:    if (*args) {
+    #####: 1925:	int ose = visrchsense, ret;
+    #####: 1926:	char *ost = visrchstr;
+        -: 1927:
+    #####: 1928:	visrchsense = 1;
+    #####: 1929:	visrchstr = *args;
+    #####: 1930:	ret = virepeatsearch(zlenoargs);
+    #####: 1931:	visrchsense = ose;
+    #####: 1932:	visrchstr = ost;
+    #####: 1933:	return ret;
+        -: 1934:    }
+    #####: 1935:    visrchsense = 1;
+    #####: 1936:    if (getvisrchstr())
+    #####: 1937:	return virepeatsearch(zlenoargs);
+    #####: 1938:    return 1;
+        -: 1939:}
+        -: 1940:
+        -: 1941:/**/
+        -: 1942:int
+    #####: 1943:vihistorysearchbackward(char **args)
+        -: 1944:{
+    #####: 1945:    if (*args) {
+    #####: 1946:	int ose = visrchsense, ret;
+    #####: 1947:	char *ost = visrchstr;
+        -: 1948:
+    #####: 1949:	visrchsense = -1;
+    #####: 1950:	visrchstr = *args;
+    #####: 1951:	ret = virepeatsearch(zlenoargs);
+    #####: 1952:	visrchsense = ose;
+    #####: 1953:	visrchstr = ost;
+    #####: 1954:	return ret;
+        -: 1955:    }
+    #####: 1956:    visrchsense = -1;
+    #####: 1957:    if (getvisrchstr())
+    #####: 1958:	return virepeatsearch(zlenoargs);
+    #####: 1959:    return 1;
+        -: 1960:}
+        -: 1961:
+        -: 1962:/**/
+        -: 1963:int
+    #####: 1964:virepeatsearch(UNUSED(char **args))
+        -: 1965:{
+        -: 1966:    Histent he;
+    #####: 1967:    int n = zmult;
+        -: 1968:    char *zt;
+        -: 1969:
+    #####: 1970:    if (!visrchstr)
+    #####: 1971:	return 1;
+    #####: 1972:    if (zmult < 0) {
+    #####: 1973:	n = -n;
+    #####: 1974:	visrchsense = -visrchsense;
+        -: 1975:    }
+    #####: 1976:    if (!(he = quietgethist(histline)))
+    #####: 1977:	return 1;
+    #####: 1978:    metafy_line();
+    #####: 1979:    while ((he = movehistent(he, visrchsense, hist_skip_flags))) {
+    #####: 1980:	if (isset(HISTFINDNODUPS) && he->node.flags & HIST_DUP)
+    #####: 1981:	    continue;
+    #####: 1982:	zt = GETZLETEXT(he);
+    #####: 1983:	if (zlinecmp(zt, zlemetaline) &&
+    #####: 1984:	    (*visrchstr == '^' ? strpfx(visrchstr + 1, zt) :
+    #####: 1985:	     zlinefind(zt, 0, visrchstr, 1, 1) != 0)) {
+    #####: 1986:	    if (--n <= 0) {
+    #####: 1987:		unmetafy_line();
+    #####: 1988:		zle_setline(he);
+    #####: 1989:		return 0;
+        -: 1990:	    }
+        -: 1991:	}
+        -: 1992:    }
+    #####: 1993:    unmetafy_line();
+    #####: 1994:    return 1;
+        -: 1995:}
+        -: 1996:
+        -: 1997:/**/
+        -: 1998:int
+    #####: 1999:virevrepeatsearch(char **args)
+        -: 2000:{
+        -: 2001:    int ret;
+    #####: 2002:    visrchsense = -visrchsense;
+    #####: 2003:    ret = virepeatsearch(args);
+    #####: 2004:    visrchsense = -visrchsense;
+    #####: 2005:    return ret;
+        -: 2006:}
+        -: 2007:
+        -: 2008:/* Extra function added by A.R. Iano-Fletcher.	*/
+        -: 2009:/*The extern variable "zlecs" is the position of the cursor. */
+        -: 2010:/* history-beginning-search-backward */
+        -: 2011:
+        -: 2012:/**/
+        -: 2013:int
+    #####: 2014:historybeginningsearchbackward(char **args)
+        -: 2015:{
+        -: 2016:    Histent he;
+    #####: 2017:    int cpos = zlecs;		/* save cursor position */
+    #####: 2018:    int n = zmult;
+        -: 2019:    char *zt;
+        -: 2020:
+    #####: 2021:    if (zmult < 0) {
+        -: 2022:	int ret;
+    #####: 2023:	zmult = -n;
+    #####: 2024:	ret = historybeginningsearchforward(args);
+    #####: 2025:	zmult = n;
+    #####: 2026:	return ret;
+        -: 2027:    }
+    #####: 2028:    if (!(he = quietgethist(histline)))
+    #####: 2029:	return 1;
+    #####: 2030:    metafy_line();
+    #####: 2031:    while ((he = movehistent(he, -1, hist_skip_flags))) {
+        -: 2032:	int tst;
+        -: 2033:	char sav;
+    #####: 2034:	if (isset(HISTFINDNODUPS) && he->node.flags & HIST_DUP)
+    #####: 2035:	    continue;
+    #####: 2036:	zt = GETZLETEXT(he);
+    #####: 2037:	sav = zlemetaline[zlemetacs];
+    #####: 2038:	zlemetaline[zlemetacs] = '\0';
+    #####: 2039:	tst = zlinecmp(zt, zlemetaline);
+    #####: 2040:	zlemetaline[zlemetacs] = sav;
+    #####: 2041:	if (tst < 0 && zlinecmp(zt, zlemetaline)) {
+    #####: 2042:	    if (--n <= 0) {
+    #####: 2043:		unmetafy_line();
+    #####: 2044:		zle_setline(he);
+    #####: 2045:		zlecs = cpos;
+    #####: 2046:		CCRIGHT();
+    #####: 2047:		return 0;
+        -: 2048:	    }
+        -: 2049:	}
+        -: 2050:    }
+    #####: 2051:    unmetafy_line();
+    #####: 2052:    return 1;
+        -: 2053:}
+        -: 2054:
+        -: 2055:/* Extra function added by A.R. Iano-Fletcher.	*/
+        -: 2056:
+        -: 2057:/* history-beginning-search-forward */
+        -: 2058:/**/
+        -: 2059:int
+    #####: 2060:historybeginningsearchforward(char **args)
+        -: 2061:{
+        -: 2062:    Histent he;
+    #####: 2063:    int cpos = zlecs;		/* save cursor position */
+    #####: 2064:    int n = zmult;
+        -: 2065:    char *zt;
+        -: 2066:
+    #####: 2067:    if (zmult < 0) {
+        -: 2068:	int ret;
+    #####: 2069:	zmult = -n;
+    #####: 2070:	ret = historybeginningsearchbackward(args);
+    #####: 2071:	zmult = n;
+    #####: 2072:	return ret;
+        -: 2073:    }
+    #####: 2074:    if (!(he = quietgethist(histline)))
+    #####: 2075:	return 1;
+    #####: 2076:    metafy_line();
+    #####: 2077:    while ((he = movehistent(he, 1, hist_skip_flags))) {
+        -: 2078:	char sav;
+        -: 2079:	int tst;
+    #####: 2080:	if (isset(HISTFINDNODUPS) && he->node.flags & HIST_DUP)
+    #####: 2081:	    continue;
+    #####: 2082:	zt = GETZLETEXT(he);
+    #####: 2083:	sav = zlemetaline[zlemetacs];
+    #####: 2084:	zlemetaline[zlemetacs] = '\0';
+    #####: 2085:	tst = zlinecmp(zt, zlemetaline) < (he->histnum == curhist);
+    #####: 2086:	zlemetaline[zlemetacs] = sav;
+    #####: 2087:	if (tst && zlinecmp(zt, zlemetaline)) {
+    #####: 2088:	    if (--n <= 0) {
+    #####: 2089:		unmetafy_line();
+    #####: 2090:		zle_setline(he);
+    #####: 2091:		zlecs = cpos;
+    #####: 2092:		CCRIGHT();
+    #####: 2093:		return 0;
+        -: 2094:	    }
+        -: 2095:	}
+        -: 2096:    }
+    #####: 2097:    unmetafy_line();
+    #####: 2098:    return 1;
+        -: 2099:}

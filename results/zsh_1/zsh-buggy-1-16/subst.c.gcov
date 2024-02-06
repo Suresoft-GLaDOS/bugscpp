@@ -1,0 +1,4633 @@
+        -:    0:Source:subst.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * subst.c - various substitutions
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "subst.pro"
+        -:   32:
+        -:   33:#define LF_ARRAY	1
+        -:   34:
+        -:   35:/**/
+        -:   36:char nulstring[] = {Nularg, '\0'};
+        -:   37:
+        -:   38:/* Check for array assignent with entries like [key]=val.
+        -:   39: *
+        -:   40: * Insert Marker node, convert following nodes to list to alternate key
+        -:   41: * / val form, perform appropriate substitution, and return last
+        -:   42: * inserted (value) node if found.
+        -:   43: *
+        -:   44: * Caller to check errflag.
+        -:   45: */
+        -:   46:
+        -:   47:/**/
+        -:   48:static LinkNode
+    13793:   49:keyvalpairelement(LinkList list, LinkNode node)
+        -:   50:{
+        -:   51:    char *start, *end, *dat;
+        -:   52:
+    27586:   53:    if ((start = (char *)getdata(node)) &&
+    13793:   54:	start[0] == Inbrack &&
+    #####:   55:	(end = strchr(start+1, Outbrack)) &&
+        -:   56:	/* ..]=value or ]+=Value */
+    #####:   57:	(end[1] == Equals ||
+    #####:   58:	 (end[1] == '+' && end[2] == Equals))) {
+        -:   59:	static char marker[2] = { Marker, '\0' };
+        -:   60:	static char marker_plus[3] = { Marker, '+', '\0' };
+    #####:   61:	*end = '\0';
+        -:   62:
+    #####:   63:	dat = start + 1;
+    #####:   64:	singsub(&dat);
+    #####:   65:	untokenize(dat);
+    #####:   66:	if (end[1] == '+') {
+    #####:   67:	    setdata(node, marker_plus);
+    #####:   68:	    node = insertlinknode(list, node, dat);
+    #####:   69:	    dat = end + 3;
+        -:   70:	} else {
+    #####:   71:	    setdata(node, marker);
+    #####:   72:	    node = insertlinknode(list, node, dat);
+    #####:   73:	    dat = end + 2;
+        -:   74:	}
+    #####:   75:	singsub(&dat);
+    #####:   76:	untokenize(dat);
+    #####:   77:	return insertlinknode(list, node, dat);
+        -:   78:    }
+    13793:   79:    return NULL;
+        -:   80:}
+        -:   81:
+        -:   82:/* Do substitutions before fork. These are:
+        -:   83: *  - Process substitution: <(...), >(...), =(...)
+        -:   84: *  - Parameter substitution
+        -:   85: *  - Command substitution
+        -:   86: * Followed by
+        -:   87: *  - Quote removal
+        -:   88: *  - Brace expansion
+        -:   89: *  - Tilde and equals substitution
+        -:   90: *
+        -:   91: * "flag"s contains PREFORK_* flags, defined in zsh.h.
+        -:   92: *
+        -:   93: * "ret_flags" is used to return PREFORK_* values from nested parameter
+        -:   94: * substitutions.  It may be NULL in which case PREFORK_SUBEXP must not
+        -:   95: * appear in flags; any return value from below will be discarded.
+        -:   96: */
+        -:   97:
+        -:   98:/**/
+        -:   99:mod_export void
+     2243:  100:prefork(LinkList list, int flags, int *ret_flags)
+        -:  101:{
+     2243:  102:    LinkNode node, insnode, stop = 0;
+     2243:  103:    int keep = 0, asssub = (flags & PREFORK_TYPESET) && isset(KSHTYPESET);
+     2243:  104:    int ret_flags_local = 0;
+     2243:  105:    if (!ret_flags)
+     1993:  106:	ret_flags = &ret_flags_local; /* will be discarded */
+        -:  107:
+     2243:  108:    queue_signals();
+     2243:  109:    node = firstnode(list);
+    21105:  110:    while (node) {
+    30412:  111:	if ((flags & (PREFORK_SINGLE|PREFORK_ASSIGN)) == PREFORK_ASSIGN &&
+    13793:  112:	    (insnode = keyvalpairelement(list, node))) {
+    #####:  113:	    node = insnode;
+    #####:  114:	    incnode(node);
+    #####:  115:	    *ret_flags |= PREFORK_KEY_VALUE;
+    #####:  116:	    continue;
+        -:  117:	}
+    16619:  118:	if (errflag) {
+    #####:  119:	    unqueue_signals();
+    #####:  120:	    return;
+        -:  121:	}
+    16619:  122:	if (isset(SHFILEEXPANSION)) {
+        -:  123:	    /*
+        -:  124:	     * Here and below we avoid taking the address
+        -:  125:	     * of a void * and then pretending it's a char **
+        -:  126:	     * instead of a void ** by a little inefficiency.
+        -:  127:	     * This could be avoided with some extra linked list
+        -:  128:	     * machinery, but that would need quite a lot of work
+        -:  129:	     * to ensure consistency.  What we really need is
+        -:  130:	     * templates...
+        -:  131:	     */
+    #####:  132:	    char *cptr = (char *)getdata(node);
+    #####:  133:	    filesub(&cptr, flags & (PREFORK_TYPESET|PREFORK_ASSIGN));
+        -:  134:	    /*
+        -:  135:	     * The assignment is so simple it's not worth
+        -:  136:	     * testing if cptr changed...
+        -:  137:	     */
+    #####:  138:	    setdata(node, cptr);
+        -:  139:	}
+        -:  140:	else
+        -:  141:	{
+    16619:  142:	    if (!(node = stringsubst(list, node,
+        -:  143:				     flags & ~(PREFORK_TYPESET|PREFORK_ASSIGN),
+        -:  144:				     ret_flags, asssub))) {
+    #####:  145:		unqueue_signals();
+    #####:  146:		return;
+        -:  147:	    }
+        -:  148:	}
+    16619:  149:	incnode(node);
+        -:  150:    }
+     2243:  151:    if (isset(SHFILEEXPANSION)) {
+        -:  152:	/*
+        -:  153:	 * stringsubst() may insert new nodes, so doesn't work
+        -:  154:	 * well in the same loop as file expansion.
+        -:  155:	 */
+    #####:  156:	for (node = firstnode(list); node; incnode(node)) {
+    #####:  157:	    if (!(node = stringsubst(list, node,
+        -:  158:				     flags & ~(PREFORK_TYPESET|PREFORK_ASSIGN),
+        -:  159:				     ret_flags, asssub))) {
+    #####:  160:		unqueue_signals();
+    #####:  161:		return;
+        -:  162:	    }
+        -:  163:	}
+        -:  164:    }
+    18862:  165:    for (node = firstnode(list); node; incnode(node)) {
+    16619:  166:	if (node == stop)
+    14376:  167:	    keep = 0;
+    16619:  168:	if (*(char *)getdata(node)) {
+    16486:  169:	    remnulargs(getdata(node));
+    16486:  170:	    if (unset(IGNOREBRACES) && !(flags & PREFORK_SINGLE)) {
+    15248:  171:		if (!keep)
+    15248:  172:		    stop = nextnode(node);
+    30496:  173:		while (hasbraces(getdata(node))) {
+    #####:  174:		    keep = 1;
+    #####:  175:		    xpandbraces(list, &node);
+        -:  176:		}
+        -:  177:	    }
+    16486:  178:	    if (unset(SHFILEEXPANSION)) {
+    16486:  179:		char *cptr = (char *)getdata(node);
+    16486:  180:		filesub(&cptr, flags & (PREFORK_TYPESET|PREFORK_ASSIGN));
+    16486:  181:		setdata(node, cptr);
+        -:  182:	    }
+      136:  183:	} else if (!(flags & PREFORK_SINGLE) &&
+        6:  184:		   !(*ret_flags & PREFORK_KEY_VALUE) &&
+        -:  185:		   !keep)
+        3:  186:	    uremnode(list, node);
+    16619:  187:	if (errflag) {
+    #####:  188:	    unqueue_signals();
+    #####:  189:	    return;
+        -:  190:	}
+        -:  191:    }
+     2243:  192:    unqueue_signals();
+        -:  193:}
+        -:  194:
+        -:  195:/*
+        -:  196: * Perform $'...' quoting.  The arguments are
+        -:  197: *   strstart   The start of the string
+        -:  198: *   pstrdpos   Initially, *pstrdpos is the position where the $ of the $'
+        -:  199: *              occurs.  It will be updated to the next character after the
+        -:  200: *              last ' of the $'...'.
+        -:  201: * The return value is the entire allocated string from strstart on the heap.
+        -:  202: * Note the original string may be modified in the process.
+        -:  203: */
+        -:  204:/**/
+        -:  205:static char *
+    #####:  206:stringsubstquote(char *strstart, char **pstrdpos)
+        -:  207:{
+        -:  208:    int len;
+    #####:  209:    char *strdpos = *pstrdpos, *strsub, *strret;
+        -:  210:
+    #####:  211:    strsub = getkeystring(strdpos+2, &len,
+        -:  212:			  GETKEYS_DOLLARS_QUOTE, NULL);
+    #####:  213:    len += 2;			/* measured from strdpos */
+        -:  214:
+    #####:  215:    if (strstart != strdpos) {
+    #####:  216:	*strdpos = '\0';
+    #####:  217:	if (strdpos[len])
+    #####:  218:	    strret = zhtricat(strstart, strsub, strdpos + len);
+        -:  219:	else
+    #####:  220:	    strret = dyncat(strstart, strsub);
+    #####:  221:    } else if (strdpos[len])
+    #####:  222:	strret = dyncat(strsub, strdpos + len);
+    #####:  223:    else if (*strsub)
+    #####:  224:	strret = strsub;
+        -:  225:    else {
+        -:  226:	/* This ensures a $'' doesn't get elided. */
+    #####:  227:	strret = dupstring(nulstring);
+        -:  228:    }
+        -:  229:
+    #####:  230:    *pstrdpos = strret + (strdpos - strstart) + strlen(strsub);
+        -:  231:
+    #####:  232:    return strret;
+        -:  233:}
+        -:  234:
+        -:  235:/**/
+        -:  236:static LinkNode
+    16619:  237:stringsubst(LinkList list, LinkNode node, int pf_flags, int *ret_flags,
+        -:  238:	    int asssub)
+        -:  239:{
+        -:  240:    int qt;
+    16619:  241:    char *str3 = (char *)getdata(node);
+    16619:  242:    char *str  = str3, c;
+        -:  243:
+   155302:  244:    while (!errflag && (c = *str)) {
+   244128:  245:	if (((c = *str) == Inang || c == OutangProc ||
+   138683:  246:	     (str == str3 && c == Equals))
+    #####:  247:	    && str[1] == Inpar) {
+        -:  248:	    char *subst, *rest, *snew, *sptr;
+    #####:  249:	    int str3len = str - str3, sublen, restlen;
+        -:  250:
+    #####:  251:	    if (c == Inang || c == OutangProc)
+    #####:  252:		subst = getproc(str, &rest);	/* <(...) or >(...) */
+        -:  253:	    else
+    #####:  254:		subst = getoutputfile(str, &rest);	/* =(...) */
+    #####:  255:	    if (errflag)
+    #####:  256:		return NULL;
+    #####:  257:	    if (!subst)
+    #####:  258:		rest = subst = "";
+        -:  259:
+    #####:  260:	    sublen = strlen(subst);
+    #####:  261:	    restlen = strlen(rest);
+    #####:  262:	    sptr = snew = hcalloc(str3len + sublen + restlen + 1);
+    #####:  263:	    if (str3len) {
+    #####:  264:		memcpy(sptr, str3, str3len);
+    #####:  265:		sptr += str3len;
+        -:  266:	    }
+    #####:  267:	    if (sublen) {
+    #####:  268:		memcpy(sptr, subst, sublen);
+    #####:  269:		sptr += sublen;
+        -:  270:	    }
+    #####:  271:	    if (restlen)
+    #####:  272:		memcpy(sptr, rest, restlen);
+    #####:  273:	    sptr[restlen] = '\0';
+    #####:  274:	    str3 = snew;
+    #####:  275:	    str = snew + str3len + sublen;
+    #####:  276:	    setdata(node, str3);
+        -:  277:	} else
+   122064:  278:	    str++;
+        -:  279:    }
+    16619:  280:    str = str3;
+        -:  281:
+   150167:  282:    while (!errflag && (c = *str)) {
+   116929:  283:	if ((qt = c == Qstring) || c == String) {
+     1784:  284:	    if ((c = str[1]) == Inpar || c == Inparmath) {
+       42:  285:		if (!qt)
+       22:  286:		    list->list.flags |= LF_ARRAY;
+       42:  287:		str++;
+       42:  288:		goto comsub;
+     1742:  289:	    } else if (c == Inbrack) {
+        -:  290:		/* $[...] */
+    #####:  291:		char *str2 = str;
+    #####:  292:		str2++;
+    #####:  293:		if (skipparens(Inbrack, Outbrack, &str2)) {
+    #####:  294:		    zerr("closing bracket missing");
+    #####:  295:		    return NULL;
+        -:  296:		}
+    #####:  297:		str2[-1] = *str = '\0';
+    #####:  298:		str = arithsubst(str + 2, &str3, str2);
+    #####:  299:		setdata(node, (void *) str3);
+    #####:  300:		continue;
+     1742:  301:	    } else if (c == Snull) {
+    #####:  302:		str3 = stringsubstquote(str3, &str);
+    #####:  303:		setdata(node, (void *) str3);
+    #####:  304:		continue;
+        -:  305:	    } else {
+        -:  306:		/*
+        -:  307:		 * To avoid setting and unsetting the SHWORDSPLIT
+        -:  308:		 * option, we pass flags if we need to control it for
+        -:  309:		 * recursive expansion via multsub()
+        -:  310:		 * If PREFORK_NOSHWORDSPLIT is set, the option is
+        -:  311:		 * disregarded; otherwise, use it if set.
+        -:  312:		 * If PREFORK_SPLIT is set, splitting is forced,
+        -:  313:		 * regardless of the option
+        -:  314:		 * If PREFORK_SHWORDSPLIT is already set, or used by the
+        -:  315:		 * previous two to signal paramsubst(), we'll do
+        -:  316:		 * sh-style wordsplitting on parameters.
+        -:  317:		 */
+     1742:  318:		if ((isset(SHWORDSPLIT) &&
+     1742:  319:		     !(pf_flags & PREFORK_NOSHWORDSPLIT)) ||
+     1742:  320:		    (pf_flags & PREFORK_SPLIT))
+    #####:  321:		    pf_flags |= PREFORK_SHWORDSPLIT;
+     1742:  322:		node = paramsubst(
+        -:  323:		    list, node, &str, qt,
+        -:  324:		    pf_flags & (PREFORK_SINGLE|PREFORK_SHWORDSPLIT|
+        -:  325:				PREFORK_SUBEXP), ret_flags);
+     1742:  326:		if (errflag || !node)
+    #####:  327:		    return NULL;
+     1742:  328:		str3 = (char *)getdata(node);
+     1742:  329:		continue;
+        -:  330:	    }
+   230290:  331:	} else if ((qt = c == Qtick) || (c == Tick ? (list->list.flags |= LF_ARRAY) : 0))
+    #####:  332:	  comsub: {
+        -:  333:	    LinkList pl;
+       42:  334:	    char *s, *str2 = str;
+        -:  335:	    char endchar;
+        -:  336:	    int l1, l2;
+        -:  337:
+       42:  338:	    if (c == Inpar) {
+       40:  339:		endchar = Outpar;
+       40:  340:		str[-1] = '\0';
+        -:  341:#ifdef DEBUG
+        -:  342:		if (skipparens(Inpar, Outpar, &str))
+        -:  343:		    dputs("BUG: parse error in command substitution");
+        -:  344:#else
+       40:  345:		skipparens(Inpar, Outpar, &str);
+        -:  346:#endif
+       40:  347:		str--;
+        2:  348:	    } else if (c == Inparmath) {
+        -:  349:		/*
+        -:  350:		 * Math substitution of the form $((...)).
+        -:  351:		 * These can be nested, for goodness sake...
+        -:  352:		 */
+        2:  353:		int mathpar = 1;
+        2:  354:		str[-1] = '\0';
+       44:  355:		while (mathpar && *str) {
+       40:  356:		    str++;
+       40:  357:		    if (*str == Outparmath)
+        2:  358:			mathpar--;
+       38:  359:		    else if (*str == Inparmath)
+    #####:  360:			mathpar++;
+        -:  361:		}
+        2:  362:		if (*str != Outparmath) {
+    #####:  363:		    zerr("failed to find end of math substitution");
+    #####:  364:		    return NULL;
+        -:  365:		}
+        2:  366:		str[-1] = '\0';
+        2:  367:		if (isset(EXECOPT))
+        2:  368:		    str = arithsubst(str2 + 2, &str3, str+1);
+        -:  369:		else
+    #####:  370:		    strncpy(str3, str2, 1);
+        2:  371:		setdata(node, (void *) str3);
+        2:  372:		continue;
+        -:  373:	    } else {
+    #####:  374:		endchar = c;
+    #####:  375:		*str = '\0';
+        -:  376:
+    #####:  377:		while (*++str != endchar) {
+    #####:  378:		    if (!*str) {
+    #####:  379:			zerr("failed to find end of command substitution");
+    #####:  380:			return NULL;
+        -:  381:		    }
+        -:  382:		}
+        -:  383:	    }
+       40:  384:	    *str++ = '\0';
+        -:  385:
+        -:  386:	    /* It is a command substitution, which will be parsed again   *
+        -:  387:	     * by the lexer, so we untokenize it first, but we cannot use *
+        -:  388:	     * untokenize() since in the case of `...` some Bnulls should *
+        -:  389:	     * be left unchanged.  Note that the lexer doesn't tokenize   *
+        -:  390:	     * the body of a command substitution so if there are some    *
+        -:  391:	     * tokens here they are from a ${(e)~...} substitution.       */
+      540:  392:	    for (str = str2; (c = *++str); )
+      460:  393:		if (itok(c) && c != Nularg &&
+    #####:  394:		    !(endchar != Outpar && c == Bnull &&
+    #####:  395:		      (str[1] == '$' || str[1] == '\\' || str[1] == '`' ||
+    #####:  396:		       (qt && str[1] == '"'))))
+    #####:  397:		    *str = ztokens[c - Pound];
+       40:  398:	    str++;
+       60:  399:	    if (!(pl = getoutput(str2 + 1, qt ||
+       20:  400:				 (pf_flags & PREFORK_SINGLE)))) {
+    #####:  401:		zerr("parse error in command substitution");
+    #####:  402:		return NULL;
+        -:  403:	    }
+       40:  404:	    if (endchar == Outpar)
+       40:  405:		str2--;
+       40:  406:	    if (!(s = (char *) ugetnode(pl))) {
+    #####:  407:		str = (char *)memmove(str2, str, strlen(str)+1);
+    #####:  408:		continue;
+        -:  409:	    }
+       40:  410:	    if (!qt && (pf_flags & PREFORK_SINGLE) && isset(GLOBSUBST))
+    #####:  411:		shtokenize(s);
+       40:  412:	    l1 = str2 - str3;
+       40:  413:	    l2 = strlen(s);
+       40:  414:	    if (nonempty(pl)) {
+    #####:  415:		LinkNode n = lastnode(pl);
+    #####:  416:		str2 = (char *) hcalloc(l1 + l2 + 1);
+    #####:  417:		strcpy(str2, str3);
+    #####:  418:		strcpy(str2 + l1, s);
+    #####:  419:		setdata(node, str2);
+    #####:  420:		insertlinklist(pl, node, list);
+    #####:  421:		s = (char *) getdata(node = n);
+    #####:  422:		l1 = 0;
+    #####:  423:		l2 = strlen(s);
+        -:  424:	    }
+       40:  425:	    str2 = (char *) hcalloc(l1 + l2 + strlen(str) + 1);
+       40:  426:	    if (l1)
+       20:  427:		strcpy(str2, str3);
+       40:  428:	    strcpy(str2 + l1, s);
+       40:  429:	    str = strcpy(str2 + l1 + l2, str);
+       40:  430:	    str3 = str2;
+       40:  431:	    setdata(node, str3);
+       40:  432:	    continue;
+   115145:  433:	} else if (asssub && ((c == '=') || c == Equals) && str != str3) {
+        -:  434:	    /*
+        -:  435:	     * We are in a normal argument which looks like an assignment
+        -:  436:	     * and is to be treated like one, with no word splitting.
+        -:  437:	     */
+    #####:  438:	    pf_flags |= PREFORK_SINGLE;
+        -:  439:	}
+   115145:  440:	str++;
+        -:  441:    }
+    16619:  442:    return errflag ? NULL : node;
+        -:  443:}
+        -:  444:
+        -:  445:/*
+        -:  446: * Simplified version of the prefork/singsub processing where
+        -:  447: * we only do substitutions appropriate to quoting.  Currently
+        -:  448: * this means only the expansions in $'....'.  This is used
+        -:  449: * for the end tag for here documents.  As we are not doing
+        -:  450: * `...` expansions, we just use those for quoting.  However,
+        -:  451: * they stay in the text.  This is weird, but that's not
+        -:  452: * my fault.
+        -:  453: *
+        -:  454: * The remnulargs() makes this consistent with the other forms
+        -:  455: * of substitution, indicating that quotes have been fully
+        -:  456: * processed.
+        -:  457: *
+        -:  458: * The fully processed string is returned.
+        -:  459: */
+        -:  460:
+        -:  461:/**/
+        -:  462:char *
+    #####:  463:quotesubst(char *str)
+        -:  464:{
+    #####:  465:    char *s = str;
+        -:  466:
+    #####:  467:    while (*s) {
+    #####:  468:	if (*s == String && s[1] == Snull) {
+    #####:  469:	    str = stringsubstquote(str, &s);
+        -:  470:	} else {
+    #####:  471:	    s++;
+        -:  472:	}
+        -:  473:    }
+    #####:  474:    remnulargs(str);
+    #####:  475:    return str;
+        -:  476:}
+        -:  477:
+        -:  478:/* Glob entries of a linked list.
+        -:  479: *
+        -:  480: * flags are from PREFORK_*, but only two are handled:
+        -:  481: * - PREFORK_NO_UNTOK: pass into zglob() a flag saying do not untokenise.
+        -:  482: * - PREFORK_KEY_VALUE: look out for Marker / Key / Value list triads
+        -:  483: *   and don't glob them.  The key and value should already have
+        -:  484: *   been untokenised as they are not subject to further expansion.
+        -:  485: */
+        -:  486:
+        -:  487:/**/
+        -:  488:mod_export void
+      463:  489:globlist(LinkList list, int flags)
+        -:  490:{
+        -:  491:    LinkNode node, next;
+        -:  492:
+      463:  493:    badcshglob = 0;
+    15685:  494:    for (node = firstnode(list); !errflag && node; node = next) {
+    15222:  495:	next = nextnode(node);
+    15222:  496:	if ((flags & PREFORK_KEY_VALUE) &&
+    #####:  497:	    *(char *)getdata(node) == Marker) {
+        -:  498:	    /* Skip key / value pair */
+    #####:  499:	    next = nextnode(nextnode(next));
+        -:  500:	} else {
+    15222:  501:	    zglob(list, node, (flags & PREFORK_NO_UNTOK) != 0);
+        -:  502:	}
+        -:  503:    }
+      463:  504:    if (noerrs)
+    #####:  505:	badcshglob = 0;
+      463:  506:    else if (badcshglob == 1)
+    #####:  507:	zerr("no match");
+      463:  508:}
+        -:  509:
+        -:  510:/* perform substitution on a single word */
+        -:  511:
+        -:  512:/**/
+        -:  513:mod_export void
+     1041:  514:singsub(char **s)
+        -:  515:{
+        -:  516:    local_list1(foo);
+        -:  517:
+     1041:  518:    init_list1(foo, *s);
+        -:  519:
+     1041:  520:    prefork(&foo, PREFORK_SINGLE, NULL);
+     1041:  521:    if (errflag)
+    #####:  522:	return;
+     1041:  523:    *s = (char *) ugetnode(&foo);
+        -:  524:    DPUTS(nonempty(&foo), "BUG: singsub() produced more than one word!");
+        -:  525:}
+        -:  526:
+        -:  527:/* Perform substitution on a single word, *s. Unlike with singsub(), the
+        -:  528: * result can be more than one word. If split is non-zero, the string is
+        -:  529: * first word-split using IFS, but only for non-quoted "whitespace" (as
+        -:  530: * indicated by Dnull, Snull, Tick, Bnull, Inpar, and Outpar).
+        -:  531: *
+        -:  532: * If arg "a" was non-NULL and we got an array as a result of the parsing,
+        -:  533: * the strings are stored in *a (even for a 1-element array) and *isarr is
+        -:  534: * set to 1.  Otherwise, *isarr is set to 0, and the result is put into *s,
+        -:  535: * with any necessary joining of multiple elements using sep (which can be
+        -:  536: * NULL to use IFS).  The return value is true iff the expansion resulted
+        -:  537: * in an empty list.
+        -:  538: *
+        -:  539: * *ms_flags is set to bits in the enum above as needed.
+        -:  540: */
+        -:  541:
+        -:  542:/**/
+        -:  543:static int
+       26:  544:multsub(char **s, int pf_flags, char ***a, int *isarr, char *sep,
+        -:  545:	int *ms_flags)
+        -:  546:{
+        -:  547:    int l;
+       26:  548:    char **r, **p, *x = *s;
+        -:  549:    local_list1(foo);
+        -:  550:
+       26:  551:    if (pf_flags & PREFORK_SPLIT) {
+        -:  552:	/*
+        -:  553:	 * This doesn't handle multibyte characters, but we're
+        -:  554:	 * looking for whitespace separators which must be ASCII.
+        -:  555:	 */
+    #####:  556:	for ( ; *x; x += l) {
+    #####:  557:	    char c = (l = *x == Meta) ? x[1] ^ 32 : *x;
+    #####:  558:	    l++;
+    #####:  559:	    if (!iwsep(STOUC(c)))
+    #####:  560:		break;
+    #####:  561:	    *ms_flags |= MULTSUB_WS_AT_START;
+        -:  562:	}
+        -:  563:    }
+        -:  564:
+       26:  565:    init_list1(foo, x);
+        -:  566:
+       26:  567:    if (pf_flags & PREFORK_SPLIT) {
+    #####:  568:	LinkNode n = firstnode(&foo);
+    #####:  569:	int inq = 0, inp = 0;
+    #####:  570:	MB_METACHARINIT();
+    #####:  571:	for ( ; *x; x += l) {
+    #####:  572:	    int rawc = -1;
+        -:  573:	    convchar_t c;
+    #####:  574:	    if (*x == Dash)
+    #####:  575:		*x = '-';
+    #####:  576:	    if (itok(STOUC(*x))) {
+        -:  577:		/* token, can't be separator, must be single byte */
+    #####:  578:		rawc = *x;
+    #####:  579:		l = 1;
+        -:  580:	    } else {
+    #####:  581:		l = MB_METACHARLENCONV(x, &c);
+    #####:  582:		if (!inq && !inp && WC_ZISTYPE(c, ISEP)) {
+    #####:  583:		    *x = '\0';
+    #####:  584:		    for (x += l; *x; x += l) {
+    #####:  585:			if (itok(STOUC(*x))) {
+        -:  586:			    /* as above */
+    #####:  587:			    rawc = *x;
+    #####:  588:			    l = 1;
+    #####:  589:			    break;
+        -:  590:			}
+    #####:  591:			l = MB_METACHARLENCONV(x, &c);
+    #####:  592:			if (!WC_ZISTYPE(c, ISEP))
+    #####:  593:			    break;
+        -:  594:		    }
+    #####:  595:		    if (!*x) {
+    #####:  596:			*ms_flags |= MULTSUB_WS_AT_END;
+    #####:  597:			break;
+        -:  598:		    }
+    #####:  599:		    insertlinknode(&foo, n, (void *)x), incnode(n);
+        -:  600:		}
+        -:  601:	    }
+    #####:  602:	    switch (rawc) {
+    #####:  603:	    case Dnull:  /* " */
+        -:  604:	    case Snull:  /* ' */
+        -:  605:	    case Tick:   /* ` (note: no Qtick!) */
+        -:  606:		/* These always occur in unnested pairs. */
+    #####:  607:		inq = !inq;
+    #####:  608:		break;
+    #####:  609:	    case Inpar:  /* ( */
+    #####:  610:		inp++;
+    #####:  611:		break;
+    #####:  612:	    case Outpar: /* ) */
+    #####:  613:		inp--;
+    #####:  614:		break;
+    #####:  615:	    case Bnull:  /* \ */
+        -:  616:	    case Bnullkeep:
+        -:  617:		/* The parser verified the following char's existence. */
+    #####:  618:		x += l;
+    #####:  619:		l = MB_METACHARLEN(x);
+    #####:  620:		break;
+        -:  621:	    }
+        -:  622:	}
+        -:  623:    }
+        -:  624:
+       26:  625:    prefork(&foo, pf_flags, ms_flags);
+       26:  626:    if (errflag) {
+    #####:  627:	if (isarr)
+    #####:  628:	    *isarr = 0;
+    #####:  629:	return 0;
+        -:  630:    }
+        -:  631:
+       26:  632:    if ((l = countlinknodes(&foo)) > 1 || (foo.list.flags & LF_ARRAY && a)) {
+    #####:  633:	p = r = hcalloc((l + 1) * sizeof(char*));
+    #####:  634:	while (nonempty(&foo))
+    #####:  635:	    *p++ = (char *)ugetnode(&foo);
+    #####:  636:	*p = NULL;
+        -:  637:	/* We need a way to figure out if a one-item result was a scalar
+        -:  638:	 * or a single-item array.  The parser will have set LF_ARRAY
+        -:  639:	 * in the latter case, allowing us to return it as an array to
+        -:  640:	 * our caller (if they provided for that result). */
+    #####:  641:	if (a && (l > 1 || foo.list.flags & LF_ARRAY)) {
+    #####:  642:	    *a = r;
+    #####:  643:	    *isarr = SCANPM_MATCHMANY;
+    #####:  644:	    return 0;
+        -:  645:	}
+    #####:  646:	*s = sepjoin(r, sep, 1);
+    #####:  647:	if (isarr)
+    #####:  648:	    *isarr = 0;
+    #####:  649:	return 0;
+        -:  650:    }
+       26:  651:    if (l)
+       26:  652:	*s = (char *) ugetnode(&foo);
+        -:  653:    else
+    #####:  654:	*s = dupstring("");
+       26:  655:    if (isarr)
+       26:  656:	*isarr = 0;
+       26:  657:    return !l;
+        -:  658:}
+        -:  659:
+        -:  660:/*
+        -:  661: * ~, = subs: assign & PREFORK_TYPESET => typeset or magic equals
+        -:  662: *            assign & PREFORK_ASSIGN => normal assignment
+        -:  663: */
+        -:  664:
+        -:  665:/**/
+        -:  666:mod_export void
+    16486:  667:filesub(char **namptr, int assign)
+        -:  668:{
+    16486:  669:    char *eql = NULL, *sub = NULL, *str, *ptr;
+        -:  670:    int len;
+        -:  671:
+    16486:  672:    filesubstr(namptr, assign);
+        -:  673:
+    16486:  674:    if (!assign)
+     4701:  675:	return;
+        -:  676:
+    14149:  677:    if (assign & PREFORK_TYPESET) {
+       39:  678:	if ((*namptr)[1] && (eql = sub = strchr(*namptr + 1, Equals))) {
+       12:  679:	    str = sub + 1;
+       24:  680:	    if ((sub[1] == Tilde || sub[1] == Equals) && filesubstr(&str, assign)) {
+    #####:  681:		sub[1] = '\0';
+    #####:  682:		*namptr = dyncat(*namptr, str);
+        -:  683:	    }
+        -:  684:	} else
+       27:  685:	    return;
+        -:  686:    }
+        -:  687:
+    14122:  688:    ptr = *namptr;
+    28244:  689:    while ((sub = strchr(ptr, ':'))) {
+    #####:  690:	str = sub + 1;
+    #####:  691:	len = sub - *namptr;
+    #####:  692:	if (sub > eql &&
+    #####:  693:	    (sub[1] == Tilde || sub[1] == Equals) &&
+    #####:  694:	    filesubstr(&str, assign)) {
+    #####:  695:	    sub[1] = '\0';
+    #####:  696:	    *namptr = dyncat(*namptr, str);
+        -:  697:	}
+    #####:  698:	ptr = *namptr + len + 1;
+        -:  699:    }
+        -:  700:}
+        -:  701:
+        -:  702:#define isend(c) ( !(c) || (c)=='/' || (c)==Inpar || (assign && (c)==':') )
+        -:  703:#define isend2(c) ( !(c) || (c)==Inpar || (assign && (c)==':') )
+        -:  704:
+        -:  705:/*
+        -:  706: * do =foo substitution, or equivalent.
+        -:  707: * on entry, str should point to the "foo".
+        -:  708: * if assign, this is in an assignment
+        -:  709: * if nomatch, report hard error on failure.
+        -:  710: * if successful, returns the expansion, else NULL.
+        -:  711: */
+        -:  712:
+        -:  713:/**/
+        -:  714:char *
+    #####:  715:equalsubstr(char *str, int assign, int nomatch)
+        -:  716:{
+        -:  717:    char *pp, *cnam, *cmdstr;
+        -:  718:
+    #####:  719:    for (pp = str; !isend2(*pp); pp++)
+        -:  720:	;
+    #####:  721:    cmdstr = dupstrpfx(str, pp-str);
+    #####:  722:    untokenize(cmdstr);
+    #####:  723:    remnulargs(cmdstr);
+    #####:  724:    if (!(cnam = findcmd(cmdstr, 1, 0))) {
+    #####:  725:	if (nomatch)
+    #####:  726:	    zerr("%s not found", cmdstr);
+    #####:  727:	return NULL;
+        -:  728:    }
+    #####:  729:    if (*pp)
+    #####:  730:	return dyncat(cnam, pp);
+        -:  731:    else
+    #####:  732:	return cnam;		/* already duplicated */
+        -:  733:}
+        -:  734:
+        -:  735:/**/
+        -:  736:mod_export int
+    16486:  737:filesubstr(char **namptr, int assign)
+        -:  738:{
+    16486:  739:    char *str = *namptr;
+        -:  740:
+    16486:  741:    if (*str == Tilde && str[1] != '=' && str[1] != Equals) {
+        -:  742:	char *ptr, *tmp, *res, *ptr2;
+        -:  743:	int val;
+        -:  744:
+        2:  745:	if (str[1] == Dash)
+    #####:  746:	    str[1] = '-';
+        2:  747:	val = zstrtol(str + 1, &ptr, 10);
+        2:  748:	if (isend(str[1])) {   /* ~ */
+    #####:  749:	    *namptr = dyncat(home ? home : "", str + 1);
+        2:  750:	    return 1;
+        2:  751:	} else if (str[1] == '+' && isend(str[2])) {   /* ~+ */
+    #####:  752:	    *namptr = dyncat(pwd, str + 2);
+    #####:  753:	    return 1;
+        2:  754:	} else if (str[1] == '-' && isend(str[2])) {   /* ~- */
+    #####:  755:	    *namptr = dyncat((tmp = oldpwd) ? tmp : pwd, str + 2);
+    #####:  756:	    return 1;
+        2:  757:	} else if (str[1] == Inbrack &&
+    #####:  758:		   (ptr2 = strchr(str+2, Outbrack))) {
+        -:  759:	    char **arr;
+    #####:  760:	    untokenize(tmp = dupstrpfx(str+2, ptr2 - (str+2)));
+    #####:  761:	    remnulargs(tmp);
+    #####:  762:	    arr = subst_string_by_hook("zsh_directory_name", "n", tmp);
+    #####:  763:	    res = arr ? *arr : NULL;
+    #####:  764:	    if (res) {
+    #####:  765:		*namptr = dyncat(res, ptr2+1);
+    #####:  766:		return 1;
+        -:  767:	    }
+    #####:  768:	    if (isset(NOMATCH) && isset(EXECOPT))
+    #####:  769:		zerr("no directory expansion: ~[%s]", tmp);
+    #####:  770:	    return 0;
+        2:  771:	} else if (!inblank(str[1]) && isend(*ptr) &&
+    #####:  772:		   (!idigit(str[1]) || (ptr - str < 4))) {
+        -:  773:	    char *ds;
+        -:  774:
+    #####:  775:	    if (val < 0)
+    #####:  776:		val = -val;
+    #####:  777:	    ds = dstackent(str[1], val);
+    #####:  778:	    if (!ds)
+    #####:  779:		return 0;
+    #####:  780:	    *namptr = dyncat(ds, ptr);
+    #####:  781:	    return 1;
+        2:  782:	} else if ((ptr = itype_end(str+1, IUSER, 0)) != str+1) {   /* ~foo */
+        -:  783:	    char *untok, *hom;
+        -:  784:
+        2:  785:	    if (!isend(*ptr))
+    #####:  786:		return 0;
+        2:  787:	    untok = dupstring(++str);
+        2:  788:	    untok[ptr-str] = 0;
+        2:  789:	    untokenize(untok);
+        -:  790:
+        2:  791:	    if (!(hom = getnameddir(untok))) {
+    #####:  792:		if (isset(NOMATCH) && isset(EXECOPT))
+    #####:  793:		    zerr("no such user or named directory: %s", untok);
+    #####:  794:		return 0;
+        -:  795:	    }
+        2:  796:	    *namptr = dyncat(hom, ptr);
+        2:  797:	    return 1;
+        -:  798:	}
+    16484:  799:    } else if (*str == Equals && isset(EQUALS) && str[1] && str[1] != Inpar) {   /* =foo */
+    #####:  800:	char *expn = equalsubstr(str+1, assign, isset(NOMATCH));
+    #####:  801:	if (expn) {
+    #####:  802:	    *namptr = expn;
+    #####:  803:	    return 1;
+        -:  804:	}
+        -:  805:    }
+    16484:  806:    return 0;
+        -:  807:}
+        -:  808:
+        -:  809:#undef isend
+        -:  810:#undef isend2
+        -:  811:
+        -:  812:/**/
+        -:  813:static char *
+     1797:  814:strcatsub(char **d, char *pb, char *pe, char *src, int l, char *s, int glbsub,
+        -:  815:	  int copied)
+        -:  816:{
+        -:  817:    char *dest;
+     1797:  818:    int pl = pe - pb;
+        -:  819:
+     1797:  820:    if (!pl && (!s || !*s)) {
+     1419:  821:	*d = dest = (copied ? src : dupstring(src));
+     2838:  822:	if (glbsub)
+    #####:  823:	    shtokenize(dest);
+        -:  824:    } else {
+      378:  825:	*d = dest = hcalloc(pl + l + (s ? strlen(s) : 0) + 1);
+      378:  826:	strncpy(dest, pb, pl);
+      378:  827:	dest += pl;
+      378:  828:	strcpy(dest, src);
+      378:  829:	if (glbsub)
+        1:  830:	    shtokenize(dest);
+      378:  831:	dest += l;
+      378:  832:	if (s)
+      358:  833:	    strcpy(dest, s);
+        -:  834:    }
+     1797:  835:    return dest;
+        -:  836:}
+        -:  837:
+        -:  838:#ifdef MULTIBYTE_SUPPORT
+        -:  839:#define WCPADWIDTH(cchar, mw)	wcpadwidth(cchar, mw)
+        -:  840:
+        -:  841:/*
+        -:  842: * Width of character for padding purposes.
+        -:  843: * 0: all characters count 1.
+        -:  844: * 1: use width of multibyte character.
+        -:  845: * 2: non-zero width characters count 1, zero width 0.
+        -:  846: */
+        -:  847:static int
+    #####:  848:wcpadwidth(wchar_t wc, int multi_width)
+        -:  849:{
+        -:  850:    int width;
+        -:  851:
+    #####:  852:    switch (multi_width)
+        -:  853:    {
+    #####:  854:    case 0:
+    #####:  855:	return 1;
+        -:  856:
+    #####:  857:    case 1:
+    #####:  858:	width = WCWIDTH(wc);
+    #####:  859:	if (width >= 0)
+    #####:  860:	    return width;
+    #####:  861:	return 0;
+        -:  862:
+    #####:  863:    default:
+    #####:  864:	return WCWIDTH(wc) > 0 ? 1 : 0;
+        -:  865:    }
+        -:  866:}
+        -:  867:
+        -:  868:#else
+        -:  869:#define WCPADWIDTH(cchar, mw)	(1)
+        -:  870:#endif
+        -:  871:
+        -:  872:/*
+        -:  873: * Pad the string str, returning a result from the heap (or str itself,
+        -:  874: * if it didn't need padding).  If str is too large, it will be truncated.
+        -:  875: * Calculations are in terms of width if MULTIBYTE is in effect and
+        -:  876: * multi_width is non-zero, else characters.
+        -:  877: *
+        -:  878: * prenum and postnum are the width to which the string needs padding
+        -:  879: * on the left and right.
+        -:  880: *
+        -:  881: * preone and postone are string to insert once only before and after
+        -:  882: * str.  They will be truncated on the left or right, respectively,
+        -:  883: * if necessary to fit the width.  Either or both may be NULL in which
+        -:  884: * case they will not be used.
+        -:  885: *
+        -:  886: * premul and postmul are the padding strings to be repeated before
+        -:  887: * on the left (if prenum is non-zero) and right (if postnum is non-zero).  If
+        -:  888: * NULL the first character of IFS (typically but not necessarily a space)
+        -:  889: * will be used.
+        -:  890: */
+        -:  891:
+        -:  892:static char *
+    #####:  893:dopadding(char *str, int prenum, int postnum, char *preone, char *postone,
+        -:  894:	  char *premul, char *postmul
+        -:  895:#ifdef MULTIBYTE_SUPPORT
+        -:  896:	  , int multi_width
+        -:  897:#endif
+        -:  898:    )
+        -:  899:{
+        -:  900:    char *def, *ret, *t, *r;
+        -:  901:    int ls, ls2, lpreone, lpostone, lpremul, lpostmul, lr, f, m, c, cc, cl;
+        -:  902:    convchar_t cchar;
+        -:  903:
+    #####:  904:    MB_METACHARINIT();
+    #####:  905:    if (!ifs || *ifs) {
+    #####:  906:	char *tmpifs = ifs ? ifs : DEFAULT_IFS;
+    #####:  907:	def = dupstrpfx(tmpifs, MB_METACHARLEN(tmpifs));
+        -:  908:    } else
+    #####:  909:	def = "";
+    #####:  910:    if (preone && !*preone)
+    #####:  911:	preone = def;
+    #####:  912:    if (postone && !*postone)
+    #####:  913:	postone = def;
+    #####:  914:    if (!premul || !*premul)
+    #####:  915:	premul = def;
+    #####:  916:    if (!postmul || !*postmul)
+    #####:  917:	postmul = def;
+        -:  918:
+    #####:  919:    ls = MB_METASTRLEN2(str, multi_width);
+    #####:  920:    lpreone = preone ? MB_METASTRLEN2(preone, multi_width) : 0;
+    #####:  921:    lpostone = postone ? MB_METASTRLEN2(postone, multi_width) : 0;
+    #####:  922:    lpremul = MB_METASTRLEN2(premul, multi_width);
+    #####:  923:    lpostmul = MB_METASTRLEN2(postmul, multi_width);
+        -:  924:
+    #####:  925:    if (prenum + postnum == ls)
+    #####:  926:	return str;
+        -:  927:
+        -:  928:    /*
+        -:  929:     * Try to be careful with allocated lengths.  The following
+        -:  930:     * is a maximum, in case we need the entire repeated string
+        -:  931:     * for each repetition.  We probably don't, but in case the user
+        -:  932:     * has given us something pathological which doesn't convert
+        -:  933:     * easily into a width we'd better be safe.
+        -:  934:     */
+    #####:  935:    lr = strlen(str) + strlen(premul) * prenum + strlen(postmul) * postnum;
+        -:  936:    /*
+        -:  937:     * Same logic for preone and postone, except those may be NULL.
+        -:  938:     */
+    #####:  939:    if (preone)
+    #####:  940:	lr += strlen(preone);
+    #####:  941:    if (postone)
+    #####:  942:	lr += strlen(postone);
+    #####:  943:    r = ret = (char *)zhalloc(lr + 1);
+        -:  944:
+    #####:  945:    if (prenum) {
+        -:  946:	/*
+        -:  947:	 * Pad on the left.
+        -:  948:	 */
+    #####:  949:	if (postnum) {
+        -:  950:	    /*
+        -:  951:	     * Pad on both right and left.
+        -:  952:	     * The strategy is to divide the string into two halves.
+        -:  953:	     * The first half is dealt with by the left hand padding
+        -:  954:	     * code, the second by the right hand.
+        -:  955:	     */
+    #####:  956:	    ls2 = ls / 2;
+        -:  957:
+        -:  958:	    /* The width left to pad for the first half. */
+    #####:  959:	    f = prenum - ls2;
+    #####:  960:	    if (f <= 0) {
+        -:  961:		/* First half doesn't fit.  Skip the first -f width. */
+    #####:  962:		f = -f;
+    #####:  963:		MB_METACHARINIT();
+    #####:  964:		while (f > 0) {
+    #####:  965:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####:  966:		    if (!cl)
+    #####:  967:			break;
+    #####:  968:		    str += cl;
+    #####:  969:		    f -= WCPADWIDTH(cchar, multi_width);
+        -:  970:		}
+        -:  971:		/* Now finish the first half. */
+    #####:  972:		for (c = prenum; c > 0; ) {
+    #####:  973:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####:  974:		    if (!cl)
+    #####:  975:			break;
+    #####:  976:		    while (cl--)
+    #####:  977:			*r++ = *str++;
+    #####:  978:		    c -= WCPADWIDTH(cchar, multi_width);
+        -:  979:		}
+        -:  980:	    } else {
+    #####:  981:		if (f <= lpreone) {
+    #####:  982:		    if (preone) {
+        -:  983:			/*
+        -:  984:			 * The unrepeated string doesn't fit.
+        -:  985:			 */
+    #####:  986:			MB_METACHARINIT();
+        -:  987:			/* The width we need to skip */
+    #####:  988:			f = lpreone - f;
+        -:  989:			/* So skip. */
+    #####:  990:			for (t = preone; f > 0; ) {
+    #####:  991:			    cl = MB_METACHARLENCONV(t, &cchar);
+    #####:  992:			    if (!cl)
+    #####:  993:				break;
+    #####:  994:			    t += cl;
+    #####:  995:			    f -= WCPADWIDTH(cchar, multi_width);
+        -:  996:			}
+        -:  997:			/* Then copy the entire remainder. */
+    #####:  998:			while (*t)
+    #####:  999:			    *r++ = *t++;
+        -: 1000:		    }
+        -: 1001:		} else {
+    #####: 1002:		    f -= lpreone;
+    #####: 1003:		    if (lpremul) {
+    #####: 1004:			if ((m = f % lpremul)) {
+        -: 1005:			    /*
+        -: 1006:			     * Left over fraction of repeated string.
+        -: 1007:			     */
+    #####: 1008:			    MB_METACHARINIT();
+        -: 1009:			    /* Skip this much. */
+    #####: 1010:			    m = lpremul - m;
+    #####: 1011:			    for (t = premul; m > 0; ) {
+    #####: 1012:				cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1013:				if (!cl)
+    #####: 1014:				    break;
+    #####: 1015:				t += cl;
+    #####: 1016:				m -= WCPADWIDTH(cchar, multi_width);
+        -: 1017:			    }
+        -: 1018:			    /* Output the rest. */
+    #####: 1019:			    while (*t)
+    #####: 1020:				*r++ = *t++;
+        -: 1021:			}
+    #####: 1022:			for (cc = f / lpremul; cc--;) {
+        -: 1023:			    /* Repeat the repeated string */
+    #####: 1024:			    MB_METACHARINIT();
+    #####: 1025:			    for (c = lpremul, t = premul; c > 0; ) {
+    #####: 1026:				cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1027:				if (!cl)
+    #####: 1028:				    break;
+    #####: 1029:				while (cl--)
+    #####: 1030:				    *r++ = *t++;
+    #####: 1031:				c -= WCPADWIDTH(cchar, multi_width);
+        -: 1032:			    }
+        -: 1033:			}
+        -: 1034:		    }
+    #####: 1035:		    if (preone) {
+        -: 1036:			/* Output the full unrepeated string */
+    #####: 1037:			while (*preone)
+    #####: 1038:			    *r++ = *preone++;
+        -: 1039:		    }
+        -: 1040:		}
+        -: 1041:		/* Output the first half width of the original string. */
+    #####: 1042:		for (c = ls2; c > 0; ) {
+    #####: 1043:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1044:		    if (!cl)
+    #####: 1045:			break;
+    #####: 1046:		    c -= WCPADWIDTH(cchar, multi_width);
+    #####: 1047:		    while (cl--)
+    #####: 1048:			*r++ = *str++;
+        -: 1049:		}
+        -: 1050:	    }
+        -: 1051:	    /* Other half.  In case the string had an odd length... */
+    #####: 1052:	    ls2 = ls - ls2;
+        -: 1053:	    /* Width that needs padding... */
+    #####: 1054:	    f = postnum - ls2;
+    #####: 1055:	    if (f <= 0) {
+        -: 1056:		/* ...is negative, truncate original string */
+    #####: 1057:		MB_METACHARINIT();
+    #####: 1058:		for (c = postnum; c > 0; ) {
+    #####: 1059:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1060:		    if (!cl)
+    #####: 1061:			break;
+    #####: 1062:		    c -= WCPADWIDTH(cchar, multi_width);
+    #####: 1063:		    while (cl--)
+    #####: 1064:			*r++ = *str++;
+        -: 1065:		}
+        -: 1066:	    } else {
+        -: 1067:		/* Rest of original string fits, output it complete */
+    #####: 1068:		while (*str)
+    #####: 1069:		    *r++ = *str++;
+    #####: 1070:		if (f <= lpostone) {
+    #####: 1071:		    if (postone) {
+        -: 1072:			/* Can't fit unrepeated string, truncate it */
+    #####: 1073:			for (c = f; c > 0; ) {
+    #####: 1074:			    cl = MB_METACHARLENCONV(postone, &cchar);
+    #####: 1075:			    if (!cl)
+    #####: 1076:				break;
+    #####: 1077:			    c -= WCPADWIDTH(cchar, multi_width);
+    #####: 1078:			    while (cl--)
+    #####: 1079:				*r++ = *postone++;
+        -: 1080:			}
+        -: 1081:		    }
+        -: 1082:		} else {
+    #####: 1083:		    if (postone) {
+    #####: 1084:			f -= lpostone;
+        -: 1085:			/* Output entire unrepeated string */
+    #####: 1086:			while (*postone)
+    #####: 1087:			    *r++ = *postone++;
+        -: 1088:		    }
+    #####: 1089:		    if (lpostmul) {
+    #####: 1090:			for (cc = f / lpostmul; cc--;) {
+        -: 1091:			    /* Begin the beguine */
+    #####: 1092:			    for (t = postmul; *t; )
+    #####: 1093:				*r++ = *t++;
+        -: 1094:			}
+    #####: 1095:			if ((m = f % lpostmul)) {
+        -: 1096:			    /* Fill leftovers with chunk of repeated string */
+    #####: 1097:			    MB_METACHARINIT();
+    #####: 1098:			    while (m > 0) {
+    #####: 1099:				cl = MB_METACHARLENCONV(postmul, &cchar);
+    #####: 1100:				if (!cl)
+    #####: 1101:				    break;
+    #####: 1102:				m -= WCPADWIDTH(cchar, multi_width);
+    #####: 1103:				while (cl--)
+    #####: 1104:				    *r++ = *postmul++;
+        -: 1105:			    }
+        -: 1106:			}
+        -: 1107:		    }
+        -: 1108:		}
+        -: 1109:	    }
+        -: 1110:	} else {
+        -: 1111:	    /*
+        -: 1112:	     * Pad only on the left.
+        -: 1113:	     */
+    #####: 1114:	    f = prenum - ls;
+    #####: 1115:	    if (f <= 0) {
+        -: 1116:		/*
+        -: 1117:		 * Original string is at least as wide as padding.
+        -: 1118:		 * Truncate original string to width.
+        -: 1119:		 * Truncate on left, so skip the characters we
+        -: 1120:		 * don't need.
+        -: 1121:		 */
+    #####: 1122:		f = -f;
+    #####: 1123:		MB_METACHARINIT();
+    #####: 1124:		while (f > 0) {
+    #####: 1125:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1126:		    if (!cl)
+    #####: 1127:			break;
+    #####: 1128:		    str += cl;
+    #####: 1129:		    f -= WCPADWIDTH(cchar, multi_width);
+        -: 1130:		}
+        -: 1131:		/* Copy the rest of the original string */
+    #####: 1132:		for (c = prenum; c > 0; ) {
+    #####: 1133:		    cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1134:		    if (!cl)
+    #####: 1135:			break;
+    #####: 1136:		    while (cl--)
+    #####: 1137:			*r++ = *str++;
+    #####: 1138:		    c -= WCPADWIDTH(cchar, multi_width);
+        -: 1139:		}
+        -: 1140:	    } else {
+        -: 1141:		/*
+        -: 1142:		 * We can fit the entire string...
+        -: 1143:		 */
+    #####: 1144:		if (f <= lpreone) {
+    #####: 1145:		    if (preone) {
+        -: 1146:			/*
+        -: 1147:			 * ...with some fraction of the unrepeated string.
+        -: 1148:			 */
+        -: 1149:			/* We need this width of characters. */
+    #####: 1150:			c = f;
+        -: 1151:			/*
+        -: 1152:			 * We therefore need to skip this width of
+        -: 1153:			 * characters.
+        -: 1154:			 */
+    #####: 1155:			f = lpreone - f;
+    #####: 1156:			MB_METACHARINIT();
+    #####: 1157:			for (t = preone; f > 0; ) {
+    #####: 1158:			    cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1159:			    if (!cl)
+    #####: 1160:				break;
+    #####: 1161:			    t += cl;
+    #####: 1162:			    f -= WCPADWIDTH(cchar, multi_width);
+        -: 1163:			}
+        -: 1164:			/* Copy the rest of preone */
+    #####: 1165:			while (*t)
+    #####: 1166:			    *r++ = *t++;
+        -: 1167:		    }
+        -: 1168:		} else {
+        -: 1169:		    /*
+        -: 1170:		     * We can fit the whole of preone, needing this width
+        -: 1171:		     * first
+        -: 1172:		     */
+    #####: 1173:		    f -= lpreone;
+    #####: 1174:		    if (lpremul) {
+    #####: 1175:			if ((m = f % lpremul)) {
+        -: 1176:			    /*
+        -: 1177:			     * Some fraction of the repeated string needed.
+        -: 1178:			     */
+        -: 1179:			    /* Need this much... */
+    #####: 1180:			    c = m;
+        -: 1181:			    /* ...skipping this much first. */
+    #####: 1182:			    m = lpremul - m;
+    #####: 1183:			    MB_METACHARINIT();
+    #####: 1184:			    for (t = premul; m > 0; ) {
+    #####: 1185:				cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1186:				if (!cl)
+    #####: 1187:				    break;
+    #####: 1188:				t += cl;
+    #####: 1189:				m -= WCPADWIDTH(cchar, multi_width);
+        -: 1190:			    }
+        -: 1191:			    /* Now the rest of the repeated string. */
+    #####: 1192:			    while (c > 0) {
+    #####: 1193:				cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1194:				if (!cl)
+    #####: 1195:				    break;
+    #####: 1196:				while (cl--)
+    #####: 1197:				    *r++ = *t++;
+    #####: 1198:				c -= WCPADWIDTH(cchar, multi_width);
+        -: 1199:			    }
+        -: 1200:			}
+    #####: 1201:			for (cc = f / lpremul; cc--;) {
+        -: 1202:			    /*
+        -: 1203:			     * Repeat the repeated string.
+        -: 1204:			     */
+    #####: 1205:			    MB_METACHARINIT();
+    #####: 1206:			    for (c = lpremul, t = premul; c > 0; ) {
+    #####: 1207:				cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1208:				if (!cl)
+    #####: 1209:				    break;
+    #####: 1210:				while (cl--)
+    #####: 1211:				    *r++ = *t++;
+    #####: 1212:				c -= WCPADWIDTH(cchar, multi_width);
+        -: 1213:			    }
+        -: 1214:			}
+        -: 1215:		    }
+    #####: 1216:		    if (preone) {
+        -: 1217:			/*
+        -: 1218:			 * Now the entire unrepeated string.  Don't
+        -: 1219:			 * count the width, just dump it.  This is
+        -: 1220:			 * significant if there are special characters
+        -: 1221:			 * in this string.  It's sort of a historical
+        -: 1222:			 * accident that this worked, but there's nothing
+        -: 1223:			 * to stop us just dumping the thing out and assuming
+        -: 1224:			 * the user knows what they're doing.
+        -: 1225:			 */
+    #####: 1226:			while (*preone)
+    #####: 1227:			    *r++ = *preone++;
+        -: 1228:		    }
+        -: 1229:		}
+        -: 1230:		/* Now the string being padded */
+    #####: 1231:		while (*str)
+    #####: 1232:		    *r++ = *str++;
+        -: 1233:	    }
+        -: 1234:	}
+    #####: 1235:    } else if (postnum) {
+        -: 1236:	/*
+        -: 1237:	 * Pad on the right.
+        -: 1238:	 */
+    #####: 1239:	f = postnum - ls;
+    #####: 1240:	MB_METACHARINIT();
+    #####: 1241:	if (f <= 0) {
+        -: 1242:	    /*
+        -: 1243:	     * Original string is at least as wide as padding.
+        -: 1244:	     * Truncate original string to width.
+        -: 1245:	     */
+    #####: 1246:	    for (c = postnum; c > 0; ) {
+    #####: 1247:		cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1248:		if (!cl)
+    #####: 1249:		    break;
+    #####: 1250:		while (cl--)
+    #####: 1251:		    *r++ = *str++;
+    #####: 1252:		c -= WCPADWIDTH(cchar, multi_width);
+        -: 1253:	    }
+        -: 1254:	} else {
+        -: 1255:	    /*
+        -: 1256:	     * There's some space to fill.  First copy the original
+        -: 1257:	     * string, counting the width.  Make sure we copy the
+        -: 1258:	     * entire string.
+        -: 1259:	     */
+    #####: 1260:	    for (c = ls; *str; ) {
+    #####: 1261:		cl = MB_METACHARLENCONV(str, &cchar);
+    #####: 1262:		if (!cl)
+    #####: 1263:		    break;
+    #####: 1264:		while (cl--)
+    #####: 1265:		    *r++ = *str++;
+    #####: 1266:		c -= WCPADWIDTH(cchar, multi_width);
+        -: 1267:	    }
+    #####: 1268:	    MB_METACHARINIT();
+    #####: 1269:	    if (f <= lpostone) {
+    #####: 1270:		if (postone) {
+        -: 1271:		    /*
+        -: 1272:		     * Not enough or only just enough space to fit
+        -: 1273:		     * the unrepeated string.  Truncate as necessary.
+        -: 1274:		     */
+    #####: 1275:		    for (c = f; c > 0; ) {
+    #####: 1276:			cl = MB_METACHARLENCONV(postone, &cchar);
+    #####: 1277:			if (!cl)
+    #####: 1278:			    break;
+    #####: 1279:			while (cl--)
+    #####: 1280:			    *r++ = *postone++;
+    #####: 1281:			c -= WCPADWIDTH(cchar, multi_width);
+        -: 1282:		    }
+        -: 1283:		}
+        -: 1284:	    } else {
+    #####: 1285:		if (postone) {
+    #####: 1286:		    f -= lpostone;
+        -: 1287:		    /* Copy the entire unrepeated string */
+    #####: 1288:		    for (c = lpostone; *postone; ) {
+    #####: 1289:			cl = MB_METACHARLENCONV(postone, &cchar);
+    #####: 1290:			if (!cl)
+    #####: 1291:			    break;
+    #####: 1292:			while (cl--)
+    #####: 1293:			    *r++ = *postone++;
+    #####: 1294:			c -= WCPADWIDTH(cchar, multi_width);
+        -: 1295:		    }
+        -: 1296:		}
+    #####: 1297:		if (lpostmul) {
+        -: 1298:		    /* Repeat the repeated string */
+    #####: 1299:		    for (cc = f / lpostmul; cc--;) {
+    #####: 1300:			MB_METACHARINIT();
+    #####: 1301:			for (c = lpostmul, t = postmul; *t; ) {
+    #####: 1302:			    cl = MB_METACHARLENCONV(t, &cchar);
+    #####: 1303:			    if (!cl)
+    #####: 1304:				break;
+    #####: 1305:			    while (cl--)
+    #####: 1306:				*r++ = *t++;
+    #####: 1307:			    c -= WCPADWIDTH(cchar, multi_width);
+        -: 1308:			}
+        -: 1309:		    }
+        -: 1310:		    /*
+        -: 1311:		     * See if there's any fraction of the repeated
+        -: 1312:		     * string needed to fill up the remaining space.
+        -: 1313:		     */
+    #####: 1314:		    if ((m = f % lpostmul)) {
+    #####: 1315:			MB_METACHARINIT();
+    #####: 1316:			while (m > 0) {
+    #####: 1317:			    cl = MB_METACHARLENCONV(postmul, &cchar);
+    #####: 1318:			    if (!cl)
+    #####: 1319:				break;
+    #####: 1320:			    while (cl--)
+    #####: 1321:				*r++ = *postmul++;
+    #####: 1322:			    m -= WCPADWIDTH(cchar, multi_width);
+        -: 1323:			}
+        -: 1324:		    }
+        -: 1325:		}
+        -: 1326:	    }
+        -: 1327:	}
+        -: 1328:    }
+    #####: 1329:    *r = '\0';
+        -: 1330:
+    #####: 1331:    return ret;
+        -: 1332:}
+        -: 1333:
+        -: 1334:
+        -: 1335:/*
+        -: 1336: * Look for a delimited portion of a string.  The first (possibly
+        -: 1337: * multibyte) character at s is the delimiter.  Various forms
+        -: 1338: * of brackets are treated separately, as documented.
+        -: 1339: *
+        -: 1340: * Returns a pointer to the final delimiter.  Sets *len to the
+        -: 1341: * length of the final delimiter; a NULL causes *len to be set
+        -: 1342: * to zero since we shouldn't advance past it.  (The string is
+        -: 1343: * tokenized, so a NULL is a real end of string.)
+        -: 1344: */
+        -: 1345:
+        -: 1346:/**/
+        -: 1347:char *
+    #####: 1348:get_strarg(char *s, int *lenp)
+        -: 1349:{
+        -: 1350:    convchar_t del;
+        -: 1351:    int len;
+    #####: 1352:    char ctok = 0;
+        -: 1353:
+    #####: 1354:    MB_METACHARINIT();
+    #####: 1355:    len = MB_METACHARLENCONV(s, &del);
+    #####: 1356:    if (!len) {
+    #####: 1357:	*lenp = 0;
+    #####: 1358:	return s;
+        -: 1359:    }
+        -: 1360:
+        -: 1361:#ifdef MULTIBYTE_SUPPORT
+    #####: 1362:    if (del == WEOF)
+    #####: 1363:	del = (wint_t)((*s == Meta) ? s[1] ^ 32 : *s);
+        -: 1364:#endif
+    #####: 1365:    s += len;
+    #####: 1366:    switch (del) {
+    #####: 1367:    case ZWC('('):
+    #####: 1368:	del = ZWC(')');
+    #####: 1369:	break;
+    #####: 1370:    case '[':
+    #####: 1371:	del = ZWC(']');
+    #####: 1372:	break;
+    #####: 1373:    case '{':
+    #####: 1374:	del = ZWC('}');
+    #####: 1375:	break;
+    #####: 1376:    case '<':
+    #####: 1377:	del = ZWC('>');
+    #####: 1378:	break;
+    #####: 1379:    case Inpar:
+    #####: 1380:	ctok = Outpar;
+    #####: 1381:	break;
+    #####: 1382:    case Inang:
+    #####: 1383:	ctok = Outang;
+    #####: 1384:	break;
+    #####: 1385:    case Inbrace:
+    #####: 1386:	ctok = Outbrace;
+    #####: 1387:	break;
+    #####: 1388:    case Inbrack:
+    #####: 1389:	ctok = Outbrack;
+    #####: 1390:	break;
+        -: 1391:    }
+        -: 1392:
+    #####: 1393:    if (ctok) {
+        -: 1394:	/*
+        -: 1395:	 * Looking for a matching token; we want the literal byte,
+        -: 1396:	 * not a decoded multibyte character, so search specially.
+        -: 1397:	 */
+    #####: 1398:	while (*s && *s != ctok)
+    #####: 1399:	    s++;
+        -: 1400:    } else {
+        -: 1401:	convchar_t del2;
+    #####: 1402:	len = 0;
+    #####: 1403:	while (*s) {
+    #####: 1404:	    len = MB_METACHARLENCONV(s, &del2);
+        -: 1405:#ifdef MULTIBYTE_SUPPORT
+    #####: 1406:	    if (del2 == WEOF)
+    #####: 1407:		del2 = (wint_t)((*s == Meta) ? s[1] ^ 32 : *s);
+        -: 1408:#endif
+    #####: 1409:	    if (del == del2)
+    #####: 1410:		break;
+    #####: 1411:	    s += len;
+        -: 1412:	}
+        -: 1413:    }
+        -: 1414:
+    #####: 1415:    *lenp = len;
+    #####: 1416:    return s;
+        -: 1417:}
+        -: 1418:
+        -: 1419:/*
+        -: 1420: * Get an integer argument; update *s to the end of the
+        -: 1421: * final delimiter.  *delmatchp is set to the length of the
+        -: 1422: * matched delimiter if we have matching, delimiters and there was no error in
+        -: 1423: * the evaluation, else 0.
+        -: 1424: */
+        -: 1425:
+        -: 1426:/**/
+        -: 1427:static int
+    #####: 1428:get_intarg(char **s, int *delmatchp)
+        -: 1429:{
+        -: 1430:    int arglen;
+    #####: 1431:    char *t = get_strarg(*s, &arglen);
+        -: 1432:    char *p, sav;
+        -: 1433:    zlong ret;
+        -: 1434:
+    #####: 1435:    *delmatchp = 0;
+    #####: 1436:    if (!*t)
+    #####: 1437:	return -1;
+    #####: 1438:    sav = *t;
+    #####: 1439:    *t = '\0';
+    #####: 1440:    p = dupstring(*s + arglen);
+    #####: 1441:    *s = t + arglen;
+    #####: 1442:    *t = sav;
+    #####: 1443:    if (parsestr(&p))
+    #####: 1444:	return -1;
+    #####: 1445:    singsub(&p);
+    #####: 1446:    if (errflag)
+    #####: 1447:	return -1;
+    #####: 1448:    ret = mathevali(p);
+    #####: 1449:    if (errflag)
+    #####: 1450:	return -1;
+    #####: 1451:    if (ret < 0)
+    #####: 1452:	ret = -ret;
+    #####: 1453:    *delmatchp = arglen;
+    #####: 1454:    return ret;
+        -: 1455:}
+        -: 1456:
+        -: 1457:/* Parsing for the (e) flag. */
+        -: 1458:
+        -: 1459:static int
+    #####: 1460:subst_parse_str(char **sp, int single, int err)
+        -: 1461:{
+        -: 1462:    char *s;
+        -: 1463:
+    #####: 1464:    *sp = s = dupstring(*sp);
+        -: 1465:
+    #####: 1466:    if (!(err ? parsestr(&s) : parsestrnoerr(&s))) {
+    #####: 1467:	*sp = s;
+    #####: 1468:	if (!single) {
+    #####: 1469:            int qt = 0;
+        -: 1470:
+    #####: 1471:	    for (; *s; s++) {
+    #####: 1472:		if (!qt) {
+    #####: 1473:		    if (*s == Qstring)
+    #####: 1474:			*s = String;
+    #####: 1475:		    else if (*s == Qtick)
+    #####: 1476:			*s = Tick;
+        -: 1477:                }
+    #####: 1478:		if (*s == Dnull)
+    #####: 1479:                    qt = !qt;
+        -: 1480:	    }
+        -: 1481:	}
+    #####: 1482:	return 0;
+        -: 1483:    }
+    #####: 1484:    return 1;
+        -: 1485:}
+        -: 1486:
+        -: 1487:/* Evaluation for (#) flag */
+        -: 1488:
+        -: 1489:static char *
+    #####: 1490:substevalchar(char *ptr)
+        -: 1491:{
+    #####: 1492:    zlong ires = mathevali(ptr);
+    #####: 1493:    int len = 0;
+        -: 1494:
+    #####: 1495:    if (errflag)
+    #####: 1496:	return NULL;
+        -: 1497:#ifdef MULTIBYTE_SUPPORT
+    #####: 1498:    if (isset(MULTIBYTE) && ires > 127) {
+        -: 1499:	/* '\\' + 'U' + 8 bytes of character + '\0' */
+        -: 1500:	char buf[11];
+        -: 1501:
+        -: 1502:	/* inefficient: should separate out \U handling from getkeystring */
+    #####: 1503:	sprintf(buf, "\\U%.8x", (unsigned int)ires & 0xFFFFFFFFu);
+    #####: 1504:	ptr = getkeystring(buf, &len, GETKEYS_BINDKEY, NULL);
+        -: 1505:    }
+    #####: 1506:    if (len == 0)
+        -: 1507:#endif
+        -: 1508:    {
+    #####: 1509:	ptr = zhalloc(2);
+    #####: 1510:	len = 1;
+    #####: 1511:	sprintf(ptr, "%c", (int)ires);
+        -: 1512:    }
+    #####: 1513:    return metafy(ptr, len, META_USEHEAP);
+        -: 1514:}
+        -: 1515:
+        -: 1516:/*
+        -: 1517: * Helper function for arguments to parameter flags which
+        -: 1518: * handles the (p) and (~) flags as escapes and tok_arg respectively.
+        -: 1519: */
+        -: 1520:
+        -: 1521:static char *
+    #####: 1522:untok_and_escape(char *s, int escapes, int tok_arg)
+        -: 1523:{
+        -: 1524:    int klen;
+    #####: 1525:    char *dst = NULL;
+        -: 1526:
+    #####: 1527:    if (escapes && (*s == String || *s == Qstring) && s[1]) {
+    #####: 1528:	char *pstart = s+1, *pend;
+    #####: 1529:	for (pend = pstart; *pend; pend++)
+    #####: 1530:	    if (!iident(*pend))
+    #####: 1531:		break;
+    #####: 1532:	if (!*pend) {
+    #####: 1533:	    dst = dupstring(getsparam(pstart));
+        -: 1534:	}
+        -: 1535:    }
+    #####: 1536:    if (dst == NULL) {
+    #####: 1537:	untokenize(dst = dupstring(s));
+    #####: 1538:	if (escapes) {
+    #####: 1539:	    dst = getkeystring(dst, &klen, GETKEYS_SEP, NULL);
+    #####: 1540:	    dst = metafy(dst, klen, META_HREALLOC);
+        -: 1541:	}
+        -: 1542:    }
+    #####: 1543:    if (tok_arg)
+    #####: 1544:	shtokenize(dst);
+    #####: 1545:    return dst;
+        -: 1546:}
+        -: 1547:
+        -: 1548:/*
+        -: 1549: * See if an argument str looks like a subscript or length following
+        -: 1550: * a colon and parse it.  It must be followed by a ':' or nothing.
+        -: 1551: * If this succeeds, expand and return the evaluated expression if
+        -: 1552: * found, else return NULL.
+        -: 1553: *
+        -: 1554: * We assume this is what is meant if the first character is not
+        -: 1555: * an alphabetic character or '&', which signify modifiers.
+        -: 1556: *
+        -: 1557: * Set *endp to point to the next character following.
+        -: 1558: */
+        -: 1559:static char *
+    #####: 1560:check_colon_subscript(char *str, char **endp)
+        -: 1561:{
+        -: 1562:    int sav;
+        -: 1563:
+        -: 1564:    /* Could this be a modifier (or empty)? */
+    #####: 1565:    if (!*str || ialpha(*str) || *str == '&')
+    #####: 1566:	return NULL;
+        -: 1567:
+    #####: 1568:    if (*str == ':') {
+    #####: 1569:	*endp = str;
+    #####: 1570:	return dupstring("0");
+        -: 1571:    }
+        -: 1572:
+    #####: 1573:    *endp = parse_subscript(str, 0, ':');
+    #####: 1574:    if (!*endp) {
+        -: 1575:	/* No trailing colon? */
+    #####: 1576:	*endp = parse_subscript(str, 0, '\0');
+    #####: 1577:	if (!*endp)
+    #####: 1578:	    return NULL;
+        -: 1579:    }
+    #####: 1580:    sav = **endp;
+    #####: 1581:    **endp = '\0';
+    #####: 1582:    str = dupstring(str);
+    #####: 1583:    if (parsestr(&str)) {
+    #####: 1584:	**endp = sav;
+    #####: 1585:	return NULL;
+        -: 1586:    }
+    #####: 1587:    singsub(&str);
+    #####: 1588:    remnulargs(str);
+    #####: 1589:    untokenize(str);
+        -: 1590:
+    #####: 1591:    **endp = sav;
+    #####: 1592:    return str;
+        -: 1593:}
+        -: 1594:
+        -: 1595:/* parameter substitution */
+        -: 1596:
+        -: 1597:#define	isstring(c) ((c) == '$' || (char)(c) == String || (char)(c) == Qstring)
+        -: 1598:#define isbrack(c)  ((c) == '[' || (char)(c) == Inbrack)
+        -: 1599:
+        -: 1600:/*
+        -: 1601: * Given a linked list l with node n, perform parameter substitution
+        -: 1602: * starting from *str.  Return the node with the substitutuion performed
+        -: 1603: * or NULL if it failed.
+        -: 1604: *
+        -: 1605: * If qt is true, the `$' was quoted.  TODO: why can't we just look
+        -: 1606: * to see if the first character was String or Qstring?
+        -: 1607: *
+        -: 1608: * If ssub is true, we are being called via singsubst(), which means
+        -: 1609: * the result will be a single word.  TODO: can we generate the
+        -: 1610: * single word at the end?  TODO: if not, or maybe in any case,
+        -: 1611: * can we pass down the ssub flag from prefork with the other flags
+        -: 1612: * instead of pushing it into different arguments?  (How exactly
+        -: 1613: * to qt and ssub differ?  Are both necessary, if so is there some
+        -: 1614: * better way of separating the two?)
+        -: 1615: */
+        -: 1616:
+        -: 1617:/**/
+        -: 1618:static LinkNode
+     1742: 1619:paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+        -: 1620:	   int *ret_flags)
+        -: 1621:{
+     1742: 1622:    char *aptr = *str, c, cc;
+     1742: 1623:    char *s = aptr, *fstr, *idbeg, *idend, *ostr = (char *) getdata(n);
+        -: 1624:    int colf;			/* != 0 means we found a colon after the name */
+        -: 1625:    /*
+        -: 1626:     * There are far too many flags.  They need to be grouped
+        -: 1627:     * together into some structure which ties them to where they
+        -: 1628:     * came from.
+        -: 1629:     *
+        -: 1630:     * Some flags have a an obscure relationship to their effect which
+        -: 1631:     * depends on incrementing them to particular values in particular
+        -: 1632:     * ways.
+        -: 1633:     */
+        -: 1634:    /*
+        -: 1635:     * Whether the value is an array (in aval) or not (in val).  There's
+        -: 1636:     * a movement from storing the value in the stuff read from the
+        -: 1637:     * parameter (the value v) to storing them in val and aval.
+        -: 1638:     * However, sometimes you find v reappearing temporarily.
+        -: 1639:     *
+        -: 1640:     * The values -1 and 2 are special to isarr.  The value -1 is used
+        -: 1641:     * to force us to keep an empty array.  It's tested in the YUK chunk
+        -: 1642:     * (I mean the one explicitly marked as such).  The value 2
+        -: 1643:     * indicates an array has come from splitting a scalar.  We use
+        -: 1644:     * that to override the usual rule that in double quotes we don't
+        -: 1645:     * remove empty elements (so "${(s.:):-foo::bar}" produces two
+        -: 1646:     * words).  This seems to me to be quite the wrong thing to do,
+        -: 1647:     * but it looks like code may be relying on it.  So we require (@)
+        -: 1648:     * as well before we keep the empty fields (look for assignments
+        -: 1649:     * like "isarr = nojoin ? 1 : 2").
+        -: 1650:     */
+     1742: 1651:    int isarr = 0;
+        -: 1652:    /*
+        -: 1653:     * This is just the setting of the option except we need to
+        -: 1654:     * take account of ^ and ^^.
+        -: 1655:     */
+     1742: 1656:    int plan9 = isset(RCEXPANDPARAM);
+        -: 1657:    /*
+        -: 1658:     * Likwise, but with ~ and ~~.  Also, we turn it off later
+        -: 1659:     * on if qt is passed down. The value can go to 2 if we
+        -: 1660:     * use ~ to force this on.
+        -: 1661:     */
+     1742: 1662:    int globsubst = isset(GLOBSUBST);
+        -: 1663:    /*
+        -: 1664:     * Indicates ${(#)...}.
+        -: 1665:     */
+     1742: 1666:    int evalchar = 0;
+        -: 1667:    /*
+        -: 1668:     * Indicates ${#pm}, massaged by whichlen which is set by
+        -: 1669:     * the (c), (w), and (W) flags to indicate how we take the length.
+        -: 1670:     */
+     1742: 1671:    int getlen = 0;
+     1742: 1672:    int whichlen = 0;
+        -: 1673:    /*
+        -: 1674:     * Indicates ${+pm}: a simple boolean for once.
+        -: 1675:     */
+     1742: 1676:    int chkset = 0;
+        -: 1677:    /*
+        -: 1678:     * Indicates we have tried to get a value in v but that was
+        -: 1679:     * unset.  I don't quite understand why (v == NULL) isn't
+        -: 1680:     * good enough, but there are places where we seem to need
+        -: 1681:     * to second guess whether a value is a real value or not.
+        -: 1682:     * See in particular the (colf && !vunset) test below.
+        -: 1683:     */
+     1742: 1684:    int vunset = 0;
+        -: 1685:    /*
+        -: 1686:     * Indicates (t) flag, i.e. print out types.  The code for
+        -: 1687:     * this actually isn't too horrifically inbred compared with
+        -: 1688:     * that for (P).
+        -: 1689:     */
+     1742: 1690:    int wantt = 0;
+        -: 1691:    /*
+        -: 1692:     * Indicates splitting a string into an array.  There aren't
+        -: 1693:     * actually that many special cases for this --- which may
+        -: 1694:     * be why it doesn't work properly; we split in some cases
+        -: 1695:     * where we shouldn't, in particular on the multsubs for
+        -: 1696:     * handling embedded values for ${...=...} and the like.
+        -: 1697:     */
+     3484: 1698:    int spbreak = (pf_flags & PREFORK_SHWORDSPLIT) &&
+     1742: 1699:	!(pf_flags & PREFORK_SINGLE) && !qt;
+        -: 1700:    /* Scalar and array value, see isarr above */
+     1742: 1701:    char *val = NULL, **aval = NULL;
+        -: 1702:    /*
+        -: 1703:     * vbuf and v are both used to retrieve parameter values; this
+        -: 1704:     * is a kludge, we pass down vbuf and it may or may not return v.
+        -: 1705:     */
+        -: 1706:    struct value vbuf;
+     1742: 1707:    Value v = NULL;
+        -: 1708:    /*
+        -: 1709:     * This expressive name refers to the set of flags which
+        -: 1710:     * is applied to matching for #, %, / and their doubled variants:
+        -: 1711:     * (M), (R), (B), (E), (N), (S), (*).
+        -: 1712:     */
+     1742: 1713:    int flags = 0;
+        -: 1714:    /* Value from (I) flag, used for ditto. */
+     1742: 1715:    int flnum = 0;
+        -: 1716:    /*
+        -: 1717:     * sortit is to be passed to strmetasort().
+        -: 1718:     * indord is the (a) flag, which for consistency doesn't get
+        -: 1719:     * combined into sortit.
+        -: 1720:     */
+     1742: 1721:    int sortit = SORTIT_ANYOLDHOW, indord = 0;
+        -: 1722:    /* (u): straightforward. */
+     1742: 1723:    int unique = 0;
+        -: 1724:    /* combination of (L), (U) and (C) flags. */
+     1742: 1725:    int casmod = CASMOD_NONE;
+        -: 1726:    /*
+        -: 1727:     * quotemod says we are doing either (q/b) (positive), (Q) (negative)
+        -: 1728:     * or not (0).  quotetype counts the q's for the first case.
+        -: 1729:     * quoterr is simply (X) but gets passed around a lot because the
+        -: 1730:     * combination (eX) needs it.
+        -: 1731:     */
+     1742: 1732:    int quotemod = 0, quotetype = QT_NONE, quoteerr = 0;
+        -: 1733:    /*
+        -: 1734:     * Various fairly straightforward modifications, except that as with so
+        -: 1735:     * many flags it's not easy to decide where to put them in the order.
+        -: 1736:     * bit 0: (D) flag.
+        -: 1737:     * bit 1: (V) flag.
+        -: 1738:     */
+     1742: 1739:    int mods = 0;
+        -: 1740:    /*
+        -: 1741:     * The (z) flag, nothing to do with SH_WORD_SPLIT which is tied
+        -: 1742:     * spbreak, see above; fairly straightforward in use but cf.
+        -: 1743:     * the comment for mods.
+        -: 1744:     *
+        -: 1745:     * This gets set to one of the LEXFLAGS_* values.
+        -: 1746:     */
+     1742: 1747:    int shsplit = 0;
+        -: 1748:    /*
+        -: 1749:     * "ssub" is true when we are called from singsub (via prefork):
+        -: 1750:     * it means that we must join arrays and should not split words.
+        -: 1751:     */
+     1742: 1752:    int ssub = (pf_flags & PREFORK_SINGLE);
+        -: 1753:    /*
+        -: 1754:     * The separator from (j) and (s) respectively, or (F) and (f)
+        -: 1755:     * respectively (hardwired to "\n" in that case).  Slightly
+        -: 1756:     * confusingly also used for ${#pm}, thought that's at least
+        -: 1757:     * documented in the manual
+        -: 1758:     */
+     1742: 1759:    char *sep = NULL, *spsep = NULL;
+        -: 1760:    /*
+        -: 1761:     * Padding strings.  The left and right padding strings which
+        -: 1762:     * are repeated, then the ones which only occur once, for
+        -: 1763:     * the (l) and (r) flags.
+        -: 1764:     */
+     1742: 1765:    char *premul = NULL, *postmul = NULL, *preone = NULL, *postone = NULL;
+        -: 1766:    /* Replacement string for /orig/repl and //orig/repl */
+     1742: 1767:    char *replstr = NULL;
+        -: 1768:    /* The numbers for (l) and (r) */
+     1742: 1769:    zlong prenum = 0, postnum = 0;
+        -: 1770:#ifdef MULTIBYTE_SUPPORT
+        -: 1771:    /* The (m) flag: use width of multibyte characters */
+     1742: 1772:    int multi_width = 0;
+        -: 1773:#endif
+        -: 1774:    /*
+        -: 1775:     * Whether the value has been copied.  Optimisation:  if we
+        -: 1776:     * are modifying an expression, we only need to copy it the
+        -: 1777:     * first time, and if we don't modify it we can just use the
+        -: 1778:     * value from the parameter or input.
+        -: 1779:     */
+     1742: 1780:    int copied = 0;
+        -: 1781:    /*
+        -: 1782:     * The (A) flag for array assignment, with consequences for
+        -: 1783:     * splitting and joining; (AA) gives arrasg == 2 for associative
+        -: 1784:     * arrays.
+        -: 1785:     */
+     1742: 1786:    int arrasg = 0;
+        -: 1787:    /*
+        -: 1788:     * The (e) flag.  As we need to do extra work not quite
+        -: 1789:     * at the end, the effect of this is kludged in several places.
+        -: 1790:     */
+     1742: 1791:    int eval = 0;
+        -: 1792:    /*
+        -: 1793:     * The (P) flag.  This interacts a bit obscurely with whether
+        -: 1794:     * or not we are dealing with a sub expression (subexp).
+        -: 1795:     */
+     1742: 1796:    int aspar = 0;
+        -: 1797:    /*
+        -: 1798:     * The (%) flag, c.f. mods again.
+        -: 1799:     */	
+     1742: 1800:    int presc = 0;
+        -: 1801:    /*
+        -: 1802:     * The (g) flag.  Process escape sequences with various GETKEY_ flags.
+        -: 1803:     */
+     1742: 1804:    int getkeys = -1;
+        -: 1805:    /*
+        -: 1806:     * The (@) flag; interacts obscurely with qt and isarr.
+        -: 1807:     * This is one of the things that decides whether multsub
+        -: 1808:     * will produce an array, but in an extremely indirect fashion.
+        -: 1809:     */
+     1742: 1810:    int nojoin = (pf_flags & PREFORK_SHWORDSPLIT) ? !(ifs && *ifs) && !qt : 0;
+        -: 1811:    /*
+        -: 1812:     * != 0 means ${...}, otherwise $...  What works without braces
+        -: 1813:     * is largely a historical artefact (everything works with braces,
+        -: 1814:     * I sincerely hope).
+        -: 1815:     */
+     1742: 1816:    char inbrace = 0;
+        -: 1817:    /*
+        -: 1818:     * Use for the (k) flag.  Goes down into the parameter code,
+        -: 1819:     * sometimes.
+        -: 1820:     */
+     1742: 1821:    char hkeys = 0;
+        -: 1822:    /*
+        -: 1823:     * Used for the (v) flag, ditto.  Not quite sure why they're
+        -: 1824:     * separate, but the tradition seems to be that things only
+        -: 1825:     * get combined when that makes the result more obscure rather
+        -: 1826:     * than less.
+        -: 1827:     */
+     1742: 1828:    char hvals = 0;
+        -: 1829:    /*
+        -: 1830:     * Whether we had to evaluate a subexpression, i.e. an
+        -: 1831:     * internal ${...} or $(...) or plain $pm.  We almost don't
+        -: 1832:     * need to remember this (which would be neater), but the (P)
+        -: 1833:     * flag means the subexp and !subexp code is obscurely combined,
+        -: 1834:     * and the argument passing to fetchvalue has another kludge.
+        -: 1835:     */
+        -: 1836:    int subexp;
+        -: 1837:    /*
+        -: 1838:     * If we're referring to the positional parameters, then
+        -: 1839:     * e.g ${*:1:1} refers to $1.
+        -: 1840:     * This is for compatibility.
+        -: 1841:     */
+     1742: 1842:    int horrible_offset_hack = 0;
+        -: 1843:    /*
+        -: 1844:     * Signal back from multsub: with something like
+        -: 1845:     *   x${:- $foo}
+        -: 1846:     * with word-splitting active we need to split on that leading
+        -: 1847:     * whitespace.  However, if there's no "x" the whitespace is
+        -: 1848:     * simply removed.
+        -: 1849:     */
+     1742: 1850:    int ms_flags = 0;
+        -: 1851:    /*
+        -: 1852:     * We need to do an extra fetch to honour the (P) flag.
+        -: 1853:     * Complicated by the use of subexpressions that may have
+        -: 1854:     * nested (P) flags.
+        -: 1855:     */
+        -: 1856:    int fetch_needed;
+        -: 1857:
+     1742: 1858:    *s++ = '\0';
+        -: 1859:    /*
+        -: 1860:     * Nothing to do unless the character following the $ is
+        -: 1861:     * something we recognise.
+        -: 1862:     *
+        -: 1863:     * Shouldn't this be a table or something?  We test for all
+        -: 1864:     * these later on, too.
+        -: 1865:     */
+     1742: 1866:    c = *s;
+     1742: 1867:    if (itype_end(s, IIDENT, 1) == s && *s != '#' && c != Pound &&
+      231: 1868:	!IS_DASH(c) &&
+      231: 1869:	c != '!' && c != '$' && c != String && c != Qstring &&
+      209: 1870:	c != '?' && c != Quest &&
+      197: 1871:	c != '*' && c != Star && c != '@' && c != '{' &&
+    #####: 1872:	c != Inbrace && c != '=' && c != Equals && c != Hat &&
+    #####: 1873:	c != '^' && c != '~' && c != Tilde && c != '+') {
+    #####: 1874:	s[-1] = '$';
+    #####: 1875:	*str = s;
+    #####: 1876:	return n;
+        -: 1877:    }
+        -: 1878:    DPUTS(c == '{', "BUG: inbrace == '{' in paramsubst()");
+        -: 1879:    /*
+        -: 1880:     * Extra processing if there is an opening brace: mostly
+        -: 1881:     * flags in parentheses, but also one ksh hack.
+        -: 1882:     */
+     1742: 1883:    if (c == Inbrace) {
+      177: 1884:	inbrace = 1;
+      177: 1885:	s++;
+        -: 1886:	/*
+        -: 1887:	 * In ksh emulation a leading `!' is a special flag working
+        -: 1888:	 * sort of like our (k).
+        -: 1889:	 * TODO: this is one of very few cases tied directly to
+        -: 1890:	 * the emulation mode rather than an option.  Since ksh
+        -: 1891:	 * doesn't have parameter flags it might be neater to
+        -: 1892:	 * handle this with the ^, =, ~ stuff, below.
+        -: 1893:	 */
+      177: 1894:	if ((c = *s) == '!' && s[1] != Outbrace && EMULATION(EMULATE_KSH)) {
+    #####: 1895:	    hkeys = SCANPM_WANTKEYS;
+    #####: 1896:	    s++;
+      177: 1897:	} else if (c == '(' || c == Inpar) {
+        -: 1898:	    char *t, sav;
+       14: 1899:	    int tt = 0;
+        -: 1900:	    zlong num;
+        -: 1901:	    /*
+        -: 1902:	     * The (p) flag is only remembered within
+        -: 1903:	     * this block.  It says we do print-style handling
+        -: 1904:	     * on the values for flags, but only on those.
+        -: 1905:	     */
+       14: 1906:	    int escapes = 0;
+        -: 1907:	    /*
+        -: 1908:	     * '~' in parentheses caused tokenization of string arg:
+        -: 1909:	     * similar to (p).
+        -: 1910:	     */
+       14: 1911:	    int tok_arg = 0;
+        -: 1912:
+       41: 1913:	    for (s++; (c = *s) != ')' && c != Outpar; s++, tt = 0) {
+        -: 1914:		int arglen;	/* length of modifier argument */
+        -: 1915:		int dellen;	/* length of matched delimiter, 0 if not */
+        -: 1916:		char *del0;	/* pointer to initial delimiter */
+        -: 1917:
+       27: 1918:		switch (c) {
+    #####: 1919:		case ')':
+        -: 1920:		case Outpar:
+        -: 1921:		    /* how can this happen? */
+    #####: 1922:		    break;
+    #####: 1923:		case '~':
+        -: 1924:		case Tilde:
+    #####: 1925:		    tok_arg = !tok_arg;
+    #####: 1926:		    break;
+    #####: 1927:		case 'A':
+    #####: 1928:		    ++arrasg;
+    #####: 1929:		    break;
+    #####: 1930:		case '@':
+    #####: 1931:		    nojoin = 2;	/* nojoin = 2 means force */
+    #####: 1932:		    break;
+    #####: 1933:		case '*':
+        -: 1934:		case Star:
+    #####: 1935:		    flags |= SUB_EGLOB;
+    #####: 1936:		    break;
+    #####: 1937:		case 'M':
+    #####: 1938:		    flags |= SUB_MATCH;
+    #####: 1939:		    break;
+    #####: 1940:		case 'R':
+    #####: 1941:		    flags |= SUB_REST;
+    #####: 1942:		    break;
+    #####: 1943:		case 'B':
+    #####: 1944:		    flags |= SUB_BIND;
+    #####: 1945:		    break;
+    #####: 1946:		case 'E':
+    #####: 1947:		    flags |= SUB_EIND;
+    #####: 1948:		    break;
+    #####: 1949:		case 'N':
+    #####: 1950:		    flags |= SUB_LEN;
+    #####: 1951:		    break;
+    #####: 1952:		case 'S':
+    #####: 1953:		    flags |= SUB_SUBSTR;
+    #####: 1954:		    break;
+    #####: 1955:		case 'I':
+    #####: 1956:		    s++;
+    #####: 1957:		    flnum = get_intarg(&s, &dellen);
+    #####: 1958:		    if (flnum < 0)
+    #####: 1959:			goto flagerr;
+    #####: 1960:		    s--;
+    #####: 1961:		    break;
+        -: 1962:
+    #####: 1963:		case 'L':
+    #####: 1964:		    casmod = CASMOD_LOWER;
+    #####: 1965:		    break;
+    #####: 1966:		case 'U':
+    #####: 1967:		    casmod = CASMOD_UPPER;
+    #####: 1968:		    break;
+    #####: 1969:		case 'C':
+    #####: 1970:		    casmod = CASMOD_CAPS;
+    #####: 1971:		    break;
+        -: 1972:
+    #####: 1973:		case 'o':
+    #####: 1974:		    if (!sortit)
+    #####: 1975:			sortit |= SORTIT_SOMEHOW; /* sort, no modifiers */
+    #####: 1976:		    break;
+    #####: 1977:		case 'O':
+    #####: 1978:		    sortit |= SORTIT_BACKWARDS;
+    #####: 1979:		    break;
+    #####: 1980:		case 'i':
+    #####: 1981:		    sortit |= SORTIT_IGNORING_CASE;
+    #####: 1982:		    break;
+    #####: 1983:		case 'n':
+    #####: 1984:		    sortit |= SORTIT_NUMERICALLY;
+    #####: 1985:		    break;
+    #####: 1986:		case '-':
+        -: 1987:		case Dash:
+    #####: 1988:		    sortit |= SORTIT_NUMERICALLY_SIGNED;
+    #####: 1989:		    break;
+    #####: 1990:		case 'a':
+    #####: 1991:		    sortit |= SORTIT_SOMEHOW;
+    #####: 1992:		    indord = 1;
+    #####: 1993:		    break;
+        -: 1994:
+    #####: 1995:		case 'D':
+    #####: 1996:		    mods |= 1;
+    #####: 1997:		    break;
+    #####: 1998:		case 'V':
+    #####: 1999:		    mods |= 2;
+    #####: 2000:		    break;
+        -: 2001:
+    #####: 2002:		case 'q':
+    #####: 2003:		    if (quotetype == QT_DOLLARS ||
+        -: 2004:			quotetype == QT_BACKSLASH_PATTERN)
+        -: 2005:			goto flagerr;
+    #####: 2006:		    if (IS_DASH(s[1]) || s[1] == '+') {
+    #####: 2007:			if (quotemod)
+    #####: 2008:			    goto flagerr;
+    #####: 2009:			s++;
+    #####: 2010:			quotemod = 1;
+    #####: 2011:			quotetype = (*s == '+') ? QT_QUOTEDZPUTS :
+        -: 2012:			    QT_SINGLE_OPTIONAL;
+        -: 2013:		    } else {
+    #####: 2014:			if (quotetype == QT_SINGLE_OPTIONAL) {
+        -: 2015:			    /* extra q's after '-' not allowed */
+    #####: 2016:			    goto flagerr;
+        -: 2017:			}
+    #####: 2018:			quotemod++, quotetype++;
+        -: 2019:		    }
+    #####: 2020:		    break;
+    #####: 2021:		case 'b':
+    #####: 2022:		    if (quotemod || quotetype != QT_NONE)
+        -: 2023:			goto flagerr;
+    #####: 2024:		    quotemod = 1;
+    #####: 2025:		    quotetype = QT_BACKSLASH_PATTERN;
+    #####: 2026:		    break;
+    #####: 2027:		case 'Q':
+    #####: 2028:		    quotemod--;
+    #####: 2029:		    break;
+    #####: 2030:		case 'X':
+    #####: 2031:		    quoteerr = 1;
+    #####: 2032:		    break;
+        -: 2033:
+    #####: 2034:		case 'e':
+    #####: 2035:		    eval = 1;
+    #####: 2036:		    break;
+    #####: 2037:		case 'P':
+    #####: 2038:		    aspar = 1;
+    #####: 2039:		    break;
+        -: 2040:
+    #####: 2041:		case 'c':
+    #####: 2042:		    whichlen = 1;
+    #####: 2043:		    break;
+    #####: 2044:		case 'w':
+    #####: 2045:		    whichlen = 2;
+    #####: 2046:		    break;
+    #####: 2047:		case 'W':
+    #####: 2048:		    whichlen = 3;
+    #####: 2049:		    break;
+        -: 2050:
+        1: 2051:		case 'f':
+        1: 2052:		    spsep = "\n";
+        1: 2053:		    break;
+    #####: 2054:		case 'F':
+    #####: 2055:		    sep = "\n";
+    #####: 2056:		    break;
+        -: 2057:
+    #####: 2058:		case '0':
+    #####: 2059:		    spsep = zhalloc(3);
+    #####: 2060:		    spsep[0] = Meta;
+    #####: 2061:		    spsep[1] = '\0' ^ 32;
+    #####: 2062:		    spsep[2] = '\0';
+    #####: 2063:		    break;
+        -: 2064:
+    #####: 2065:		case 's':
+    #####: 2066:		    tt = 1;
+        -: 2067:		/* fall through */
+    #####: 2068:		case 'j':
+    #####: 2069:		    t = get_strarg(++s, &arglen);
+    #####: 2070:		    if (*t) {
+    #####: 2071:			sav = *t;
+    #####: 2072:			*t = '\0';
+    #####: 2073:			if (tt)
+    #####: 2074:			    spsep = untok_and_escape(s + arglen,
+        -: 2075:						     escapes, tok_arg);
+        -: 2076:			else
+    #####: 2077:			    sep = untok_and_escape(s + arglen,
+        -: 2078:						   escapes, tok_arg);
+    #####: 2079:			*t = sav;
+    #####: 2080:			s = t + arglen - 1;
+        -: 2081:		    } else
+    #####: 2082:			goto flagerr;
+    #####: 2083:		    break;
+        -: 2084:
+    #####: 2085:		case 'l':
+    #####: 2086:		    tt = 1;
+        -: 2087:		/* fall through */
+    #####: 2088:		case 'r':
+    #####: 2089:		    s++;
+        -: 2090:		    /* delimiter position */
+    #####: 2091:		    del0 = s;
+    #####: 2092:		    num = get_intarg(&s, &dellen);
+    #####: 2093:		    if (num < 0)
+    #####: 2094:			goto flagerr;
+    #####: 2095:		    if (tt)
+    #####: 2096:			prenum = num;
+        -: 2097:		    else
+    #####: 2098:			postnum = num;
+        -: 2099:		    /* must have same delimiter if more arguments */
+    #####: 2100:		    if (!dellen || memcmp(del0, s, dellen)) {
+        -: 2101:			/* decrement since loop will increment */
+    #####: 2102:			s--;
+    #####: 2103:			break;
+        -: 2104:		    }
+    #####: 2105:		    t = get_strarg(s, &arglen);
+    #####: 2106:		    if (!*t)
+    #####: 2107:			goto flagerr;
+    #####: 2108:		    sav = *t;
+    #####: 2109:		    *t = '\0';
+    #####: 2110:		    if (tt)
+    #####: 2111:			premul = untok_and_escape(s + arglen, escapes,
+        -: 2112:						  tok_arg);
+        -: 2113:		    else
+    #####: 2114:			postmul = untok_and_escape(s + arglen, escapes,
+        -: 2115:						   tok_arg);
+    #####: 2116:		    *t = sav;
+    #####: 2117:		    sav = *s;
+    #####: 2118:		    s = t + arglen;
+        -: 2119:		    /* again, continue only if another start delimiter */
+    #####: 2120:		    if (memcmp(del0, s, dellen)) {
+        -: 2121:			/* decrement since loop will increment */
+    #####: 2122:			s--;
+    #####: 2123:			break;
+        -: 2124:		    }
+    #####: 2125:		    t = get_strarg(s, &arglen);
+    #####: 2126:		    if (!*t)
+    #####: 2127:			goto flagerr;
+    #####: 2128:		    sav = *t;
+    #####: 2129:		    *t = '\0';
+    #####: 2130:		    if (tt)
+    #####: 2131:			preone = untok_and_escape(s + arglen,
+        -: 2132:						  escapes, tok_arg);
+        -: 2133:		    else
+    #####: 2134:			postone = untok_and_escape(s + arglen,
+        -: 2135:						   escapes, tok_arg);
+    #####: 2136:		    *t = sav;
+        -: 2137:		    /* -1 since loop will increment */
+    #####: 2138:		    s = t + arglen - 1;
+    #####: 2139:		    break;
+        -: 2140:
+    #####: 2141:		case 'm':
+        -: 2142:#ifdef MULTIBYTE_SUPPORT
+    #####: 2143:		    multi_width++;
+        -: 2144:#endif
+    #####: 2145:		    break;
+        -: 2146:
+    #####: 2147:		case 'p':
+    #####: 2148:		    escapes = 1;
+    #####: 2149:		    break;
+        -: 2150:
+       13: 2151:		case 'k':
+       13: 2152:		    hkeys = SCANPM_WANTKEYS;
+       13: 2153:		    break;
+       13: 2154:		case 'v':
+       13: 2155:		    hvals = SCANPM_WANTVALS;
+       13: 2156:		    break;
+        -: 2157:
+    #####: 2158:		case 't':
+    #####: 2159:		    wantt = 1;
+    #####: 2160:		    break;
+        -: 2161:
+    #####: 2162:		case '%':
+    #####: 2163:		    presc++;
+    #####: 2164:		    break;
+        -: 2165:
+    #####: 2166:		case 'g':
+    #####: 2167:		    t = get_strarg(++s, &arglen);
+    #####: 2168:		    if (getkeys < 0)
+    #####: 2169:			getkeys = 0;
+    #####: 2170:		    if (*t) {
+    #####: 2171:			sav = *t;
+    #####: 2172:			*t = 0;
+    #####: 2173:			while (*++s) {
+    #####: 2174:			    switch (*s) {
+    #####: 2175:			    case 'e':
+    #####: 2176:				getkeys |= GETKEY_EMACS;
+    #####: 2177:				break;
+    #####: 2178:			    case 'o':
+    #####: 2179:				getkeys |= GETKEY_OCTAL_ESC;
+    #####: 2180:				break;
+    #####: 2181:			    case 'c':
+    #####: 2182:				getkeys |= GETKEY_CTRL;
+    #####: 2183:				break;
+        -: 2184:
+    #####: 2185:			    default:
+    #####: 2186:				*t = sav;
+    #####: 2187:				goto flagerr;
+        -: 2188:			    }
+        -: 2189:			}
+    #####: 2190:			*t = sav;
+    #####: 2191:			s = t + arglen - 1;
+        -: 2192:		    } else
+    #####: 2193:			goto flagerr;
+    #####: 2194:		    break;
+        -: 2195:
+    #####: 2196:		case 'z':
+    #####: 2197:		    shsplit = LEXFLAGS_ACTIVE;
+    #####: 2198:		    break;
+        -: 2199:
+    #####: 2200:		case 'Z':
+    #####: 2201:		    t = get_strarg(++s, &arglen);
+    #####: 2202:		    if (*t) {
+    #####: 2203:			sav = *t;
+    #####: 2204:			*t = 0;
+    #####: 2205:			while (*++s) {
+    #####: 2206:			    switch (*s) {
+    #####: 2207:			    case 'c':
+        -: 2208:				/* Parse and keep comments */
+    #####: 2209:				shsplit |= LEXFLAGS_COMMENTS_KEEP;
+    #####: 2210:				break;
+        -: 2211:
+    #####: 2212:			    case 'C':
+        -: 2213:				/* Parse and remove comments */
+    #####: 2214:				shsplit |= LEXFLAGS_COMMENTS_STRIP;
+    #####: 2215:				break;
+        -: 2216:
+    #####: 2217:			    case 'n':
+        -: 2218:				/* Treat newlines as whitespace */
+    #####: 2219:				shsplit |= LEXFLAGS_NEWLINE;
+    #####: 2220:				break;
+        -: 2221:
+    #####: 2222:			    default:
+    #####: 2223:				*t = sav;
+    #####: 2224: 				goto flagerr;
+        -: 2225:			    }
+        -: 2226:			}
+    #####: 2227:			*t = sav;
+    #####: 2228:			s = t + arglen - 1;
+        -: 2229:		    } else
+    #####: 2230:			goto flagerr;
+    #####: 2231:		    break;
+        -: 2232:
+    #####: 2233:		case 'u':
+    #####: 2234:		    unique = 1;
+    #####: 2235:		    break;
+        -: 2236:
+    #####: 2237:		case '#':
+        -: 2238:		case Pound:
+    #####: 2239:		    evalchar = 1;
+    #####: 2240:		    break;
+        -: 2241:
+    #####: 2242:		case '_':
+    #####: 2243:		    t = get_strarg(++s, &arglen);
+    #####: 2244:		    if (*t) {
+    #####: 2245:			sav = *t;
+    #####: 2246:			*t = 0;
+    #####: 2247:			while (*++s) {
+        -: 2248:			    /* Reserved for future use */
+    #####: 2249:			    switch (*s) {
+        -: 2250:			    default:
+    #####: 2251:				*t = sav;
+    #####: 2252:				goto flagerr;
+        -: 2253:			    }
+        -: 2254:			}
+    #####: 2255:			*t = sav;
+    #####: 2256:			s = t + arglen - 1;
+        -: 2257:		    } else
+    #####: 2258:			goto flagerr;
+    #####: 2259:		    break;
+        -: 2260:
+        -: 2261:		default:
+    #####: 2262:		flagerr:
+        -: 2263:		    {
+        -: 2264:			/* 
+        -: 2265:			 * We're trying to output the string that failed to
+        -: 2266:			 * parse and the offset of the parse error within that.
+        -: 2267:			 *
+        -: 2268:			 * The string is *str.  It hasn't been changed since
+        -: 2269:			 * entry to this function, I think, except that the
+        -: 2270:			 * first non-variable-declaration line in this function
+        -: 2271:			 * (currently the 238th line in this function)
+        -: 2272:			 * writes a NUL to the first place in *str, so we'll
+        -: 2273:			 * compensate by outputting the dollar sign manually.
+        -: 2274:			 */
+    #####: 2275:			char *str_copy_for_output = dupstring(*str + 1);
+        -: 2276:
+        -: 2277:			/* 
+        -: 2278:			 * Convert to a 1-based offset, because the shell
+        -: 2279:			 * language is 1-based by default.
+        -: 2280:			 */
+    #####: 2281:			zlong offset = s - *str + 1;
+        -: 2282:
+    #####: 2283:			untokenize(str_copy_for_output);
+    #####: 2284:			zerr("error in flags near position %z in '$%s'", offset, str_copy_for_output);
+    #####: 2285:			return NULL;
+        -: 2286:		    }
+        -: 2287:		}
+        -: 2288:	    }
+       14: 2289:	    s++;
+        -: 2290:	}
+        -: 2291:    }
+        -: 2292:
+        -: 2293:    /*
+        -: 2294:     * premul, postmul specify the padding character to be used
+        -: 2295:     * multiple times with the (l) and (r) flags respectively.
+        -: 2296:     */
+     1742: 2297:    if (!premul)
+     1742: 2298:	premul = " ";
+     1742: 2299:    if (!postmul)
+     1742: 2300:	postmul = " ";
+        -: 2301:
+        -: 2302:    /*
+        -: 2303:     * Look for special unparenthesised flags.
+        -: 2304:     * TODO: could make these able to appear inside parentheses, too,
+        -: 2305:     * i.e. ${(^)...} etc.
+        -: 2306:     */
+        -: 2307:    for (;;) {
+     1744: 2308:	if ((c = *s) == '^' || c == Hat) {
+        -: 2309:	    /* RC_EXPAND_PARAM on or off (doubled )*/
+    #####: 2310:	    if ((c = *++s) == '^' || c == Hat) {
+    #####: 2311:		plan9 = 0;
+    #####: 2312:		s++;
+        -: 2313:	    } else
+    #####: 2314:		plan9 = 1;
+     1743: 2315:	} else if ((c = *s) == '=' || c == Equals) {
+        -: 2316:	    /* SH_WORD_SPLIT on or off (doubled). spbreak = 2 means force */
+    #####: 2317:	    if ((c = *++s) == '=' || c == Equals) {
+    #####: 2318:		spbreak = 0;
+    #####: 2319:		if (nojoin < 2)
+    #####: 2320:		    nojoin = 0;
+    #####: 2321:		s++;
+        -: 2322:	    } else {
+    #####: 2323:		spbreak = 2;
+    #####: 2324:		if (nojoin < 2)
+    #####: 2325:		    nojoin = !(ifs && *ifs);
+        -: 2326:	    }
+     1743: 2327:	} else if ((c == '#' || c == Pound) &&
+        2: 2328:		   (inbrace || !isset(POSIXIDENTIFIERS)) &&
+        1: 2329:		   (itype_end(s+1, IIDENT, 0) != s + 1
+        1: 2330:		    || (cc = s[1]) == '*' || cc == Star || cc == '@'
+        1: 2331:		    || cc == '?' || cc == Quest
+        1: 2332:		    || cc == '$' || cc == String || cc == Qstring
+        -: 2333:		    /*
+        -: 2334:		     * Me And My Squiggle:
+        -: 2335:		     * ${##} is the length of $#, but ${##foo}
+        -: 2336:		     * is $# with a "foo" removed from the start.
+        -: 2337:		     * If someone had defined the *@!@! language
+        -: 2338:		     * properly in the first place we wouldn't
+        -: 2339:		     * have this nonsense.
+        -: 2340:		     */
+        1: 2341:		    || ((cc == '#' || cc == Pound) && s[2] == Outbrace)
+        1: 2342:		    || IS_DASH(cc)
+        1: 2343:		    || (cc == ':' && IS_DASH(s[2]))
+        1: 2344:		    || (isstring(cc) && (s[2] == Inbrace || s[2] == Inpar)))) {
+    #####: 2345:	    getlen = 1 + whichlen, s++;
+        -: 2346:	    /*
+        -: 2347:	     * Return the length of the parameter.
+        -: 2348:	     * getlen can be more than 1 to indicate characters (2),
+        -: 2349:	     * words ignoring multiple delimiters (3), words taking
+        -: 2350:	     * account of multiple delimiters.  delimiter is in
+        -: 2351:	     * spsep, NULL means $IFS.
+        -: 2352:	     */
+     1743: 2353:	} else if (c == '~' || c == Tilde) {
+        -: 2354:	    /* GLOB_SUBST (forced) on or off (doubled) */
+        2: 2355:	    if ((c = *++s) == '~' || c == Tilde) {
+    #####: 2356:		globsubst = 0;
+    #####: 2357:		s++;
+        -: 2358:	    } else
+        1: 2359:		globsubst = 2;
+     1742: 2360:	} else if (c == '+') {
+        -: 2361:	    /*
+        -: 2362:	     * Return whether indicated parameter is set. 
+        -: 2363:	     * Try to handle this when parameter is named
+        -: 2364:	     * by (P) (second part of test).
+        -: 2365:	     */
+    #####: 2366:	    if (itype_end(s+1, IIDENT, 0) != s+1 || (aspar && isstring(s[1]) &&
+    #####: 2367:				 (s[2] == Inbrace || s[2] == Inpar)))
+    #####: 2368:		chkset = 1, s++;
+    #####: 2369:	    else if (!inbrace) {
+        -: 2370:		/* Special case for `$+' on its own --- leave unmodified */
+    #####: 2371:		*aptr = '$';
+    #####: 2372:		*str = aptr + 1;
+    #####: 2373:		return n;
+        -: 2374:	    } else {
+    #####: 2375:		zerr("bad substitution");
+    #####: 2376:		return NULL;
+        -: 2377:	    }
+     1742: 2378:	} else if (inbrace && inull(*s) && *s != Bnull) {
+        -: 2379:	    /*
+        -: 2380:	     * Handles things like ${(f)"$(<file)"} by skipping 
+        -: 2381:	     * the double quotes.  We don't need to know what was
+        -: 2382:	     * actually there; the presence of a String or Qstring
+        -: 2383:	     * is good enough.
+        -: 2384:	     */
+    #####: 2385:	    s++;
+        -: 2386:	} else
+        -: 2387:	    break;
+        -: 2388:    }
+        -: 2389:    /* Don't activate special pattern characters if inside quotes */
+     1742: 2390:    if (qt)
+      346: 2391:	globsubst = 0;
+        -: 2392:
+        -: 2393:    /*
+        -: 2394:     * At this point, we usually expect a parameter name.
+        -: 2395:     * However, there may be a nested ${...} or $(...).
+        -: 2396:     * These say that the parameter itself is somewhere inside,
+        -: 2397:     * or that there isn't a parameter and we will get the values
+        -: 2398:     * from a command substitution itself.  In either case,
+        -: 2399:     * the current instance of paramsubst() doesn't fetch a value,
+        -: 2400:     * it just operates on what gets passed up.
+        -: 2401:     * (The first ought to have been {...}, reserving ${...}
+        -: 2402:     * for substituting a value at that point, but it's too late now.)
+        -: 2403:     */
+     1742: 2404:    idbeg = s;
+     1746: 2405:    if ((subexp = (inbrace && s[-1] && isstring(*s) &&
+        2: 2406:		   (s[1] == Inbrace || s[1] == Inpar || s[1] == Inparmath)))) {
+        -: 2407:	int sav;
+        2: 2408:	int quoted = *s == Qstring;
+        -: 2409:	int outtok;
+        -: 2410:
+        2: 2411:	val = s++;
+        2: 2412:	switch (*s) {
+        2: 2413:	case Inbrace:
+        2: 2414:	    outtok = Outbrace;
+        2: 2415:	    break;
+    #####: 2416:	case Inpar:
+    #####: 2417:	    outtok = Outpar;
+    #####: 2418:	    break;
+    #####: 2419:	case Inparmath:
+    #####: 2420:	    outtok = Outparmath;
+    #####: 2421:	    break;
+    #####: 2422:	default:
+        -: 2423:	    /* "Can't Happen" (TM) */
+        -: 2424:	    DPUTS(1, "Nested substitution: This Can't Happen (TM)");
+    #####: 2425:	    return NULL;
+        -: 2426:	}
+        2: 2427:	skipparens(*s, outtok, &s);
+        2: 2428:	sav = *s;
+        2: 2429:	*s = 0;
+        -: 2430:	/*
+        -: 2431:	 * This handles arrays.  TODO: this is not the most obscure call to
+        -: 2432:	 * multsub() (see below) but even so it would be nicer to pass down
+        -: 2433:	 * and back the arrayness more rationally.  In that case, we should
+        -: 2434:	 * remove the aspar test and extract a value from an array, if
+        -: 2435:	 * necessary, when we handle (P) lower down.
+        -: 2436:	 */
+        2: 2437:	if (multsub(&val, PREFORK_SUBEXP, (aspar ? NULL : &aval), &isarr, NULL,
+    #####: 2438:		    &ms_flags) && quoted) {
+        -: 2439:	    /* Empty quoted string --- treat as null string, not elided */
+    #####: 2440:	    isarr = -1;
+    #####: 2441:	    aval = (char **) hcalloc(sizeof(char *));
+    #####: 2442:	    aspar = 0;
+        2: 2443:	} else if (aspar)
+    #####: 2444:	    idbeg = val;
+        2: 2445:	if (*val == Nularg)
+        1: 2446:	    ++val;
+        2: 2447:	*s = sav;
+        -: 2448:	/*
+        -: 2449:	 * This tests for the second double quote in an expression
+        -: 2450:	 * like ${(f)"$(<file)"}, compare above.
+        -: 2451:	 */
+        4: 2452:	while (inull(*s))
+    #####: 2453:	    s++;
+        2: 2454:	if (ms_flags & MULTSUB_PARAM_NAME) {
+        -: 2455:	    /*
+        -: 2456:	     * Downbelow has told us this is a parameter name, e.g.
+        -: 2457:	     * ${${(P)name}...}.  We're going to behave as if
+        -: 2458:	     * we have exactly that name followed by the rest of
+        -: 2459:	     * the parameter for subscripting etc.
+        -: 2460:	     *
+        -: 2461:	     * See below for where we set the flag in the nested
+        -: 2462:	     * substitution.
+        -: 2463:	     */
+    #####: 2464:	    if (isarr) {
+    #####: 2465:		if (aval[0] && aval[1]) {
+    #####: 2466:		    zerr("parameter name reference used with array");
+    #####: 2467:		    return NULL;
+        -: 2468:		}
+    #####: 2469:		val = aval[0];
+    #####: 2470:		isarr = 0;
+        -: 2471:	    }
+    #####: 2472:	    s = val ? dyncat(val, s) : dupstring(s);
+        -: 2473:	    /* Now behave po-faced as if it was always like that... */
+    #####: 2474:	    subexp = 0;
+        -: 2475:	    /*
+        -: 2476:	     * If this is a (P) (first test) and at the top level
+        -: 2477:	     * (second test) we can't rely on the caller fetching
+        -: 2478:	     * the result from the pending aspar.  So do it below.
+        -: 2479:	     */
+    #####: 2480:	    fetch_needed = aspar && !(pf_flags & PREFORK_SUBEXP);
+        -: 2481:	} else
+        2: 2482:	    fetch_needed = 0; 	/* any initial aspar fetch already done */
+        2: 2483:	v = (Value) NULL;
+        -: 2484:    } else
+     1740: 2485:	fetch_needed = aspar;	/* aspar fetch still needed */
+     1742: 2486:    if (fetch_needed) {
+        -: 2487:	/*
+        -: 2488:	 * No subexpression, but in any case the value is going
+        -: 2489:	 * to give us the name of a parameter on which we do
+        -: 2490:	 * our remaining processing.  In other words, this
+        -: 2491:	 * makes ${(P)param} work like ${(P)${param}}.  (Probably
+        -: 2492:	 * better looked at, this is the basic code for ${(P)param}
+        -: 2493:	 * and it's been kludged into the subexp code because no
+        -: 2494:	 * opportunity for a kludge has been neglected.)
+        -: 2495:	 */
+    #####: 2496:	if ((v = fetchvalue(&vbuf, &s, 1, (qt ? SCANPM_DQUOTED : 0)))) {
+    #####: 2497:	    val = idbeg = getstrvalue(v);
+    #####: 2498:	    subexp = 1;
+        -: 2499:	} else
+    #####: 2500:	    vunset = 1;
+        -: 2501:    }
+     1742: 2502:    if (aspar && (pf_flags & PREFORK_SUBEXP)) {
+        -: 2503:	/*
+        -: 2504:	 * This is the inner handling for the case referred to above
+        -: 2505:	 * where we have something like ${${(P)name}...}.
+        -: 2506:	 *
+        -: 2507:	 * Treat this as a normal value here; all transformations on
+        -: 2508:	 * result are in outer instance.
+        -: 2509:	 */
+    #####: 2510:	aspar = 0;
+    #####: 2511:	*ret_flags |= MULTSUB_PARAM_NAME;
+        -: 2512:    }
+        -: 2513:    /*
+        -: 2514:     * We need to retrieve a value either if we haven't already
+        -: 2515:     * got it from a subexpression, or if the processing so
+        -: 2516:     * far has just yielded us a parameter name to be processed
+        -: 2517:     * with (P).
+        -: 2518:     */
+     1742: 2519:    if (!subexp || aspar) {
+     1740: 2520:	char *ov = val;
+     1740: 2521:	int scanflags = hkeys | hvals;
+     1740: 2522:	if (arrasg)
+    #####: 2523:	    scanflags |= SCANPM_ASSIGNING;
+     1740: 2524:	if (qt)
+      344: 2525:	    scanflags |= SCANPM_DQUOTED;
+     1740: 2526:	if (chkset)
+    #####: 2527:	    scanflags |= SCANPM_CHECKING;
+        -: 2528:	/*
+        -: 2529:	 * Second argument: decide whether to use the subexpression or
+        -: 2530:	 *   the string next on the line as the parameter name.
+        -: 2531:	 * Third argument:  decide how processing for brackets
+        -: 2532:	 *   1 means full processing
+        -: 2533:	 *   -1 appears to mean something along the lines of
+        -: 2534:	 *     only handle single digits and don't handle brackets.
+        -: 2535:	 *     I *think* (but it's really only a guess) that this
+        -: 2536:	 *     is used by the test below the wantt handling, so
+        -: 2537:	 *     that in certain cases we handle brackets there.
+        -: 2538:	 *   0 would apparently mean something like we know we
+        -: 2539:	 *     should have the name of a scalar and we get cross
+        -: 2540:	 *     if there's anything present which disagrees with that
+        -: 2541:	 * but you will search fetchvalue() in vain for comments on this.
+        -: 2542:	 * Fourth argument gives flags to do with keys, values, quoting,
+        -: 2543:	 * assigning depending on context and parameter flags.
+        -: 2544:	 *
+        -: 2545:	 * This is the last mention of subexp, so presumably this
+        -: 2546:	 * is what the code which makes sure subexp is set if aspar (the
+        -: 2547:	 * (P) flag) is set.  I *think* what's going on here is the
+        -: 2548:	 * second argument is for both input and output: with
+        -: 2549:	 * subexp, we only want the input effect, whereas normally
+        -: 2550:	 * we let fetchvalue set the main string pointer s to
+        -: 2551:	 * the end of the bit it's fetched.
+        -: 2552:	 */
+     3480: 2553:	if (!(v = fetchvalue(&vbuf, (subexp ? &ov : &s),
+        -: 2554:			     (wantt ? -1 :
+     1740: 2555:			      ((unset(KSHARRAYS) || inbrace) ? 1 : -1)),
+     1734: 2556:			     scanflags)) ||
+     5202: 2557:	    (v->pm && (v->pm->node.flags & PM_UNSET)) ||
+     1734: 2558:	    (v->flags & VALFLAG_EMPTY))
+        6: 2559:	    vunset = 1;
+        -: 2560:
+     1740: 2561:	if (wantt) {
+        -: 2562:	    /*
+        -: 2563:	     * Handle the (t) flag: value now becomes the type
+        -: 2564:	     * information for the parameter.
+        -: 2565:	     */
+    #####: 2566:	    if (v && v->pm && ((v->pm->node.flags & PM_DECLARED) ||
+    #####: 2567:			       !(v->pm->node.flags & PM_UNSET))) {
+    #####: 2568:		int f = v->pm->node.flags;
+        -: 2569:
+    #####: 2570:		switch (PM_TYPE(f)) {
+    #####: 2571:		case PM_SCALAR:  val = "scalar"; break;
+    #####: 2572:		case PM_ARRAY:   val = "array"; break;
+    #####: 2573:		case PM_INTEGER: val = "integer"; break;
+    #####: 2574:		case PM_EFLOAT:
+    #####: 2575:		case PM_FFLOAT:  val = "float"; break;
+    #####: 2576:		case PM_HASHED:  val = "association"; break;
+        -: 2577:		}
+    #####: 2578:		val = dupstring(val);
+    #####: 2579:		if (v->pm->level)
+    #####: 2580:		    val = dyncat(val, "-local");
+    #####: 2581:		if (f & PM_LEFT)
+    #####: 2582:		    val = dyncat(val, "-left");
+    #####: 2583:		if (f & PM_RIGHT_B)
+    #####: 2584:		    val = dyncat(val, "-right_blanks");
+    #####: 2585:		if (f & PM_RIGHT_Z)
+    #####: 2586:		    val = dyncat(val, "-right_zeros");
+    #####: 2587:		if (f & PM_LOWER)
+    #####: 2588:		    val = dyncat(val, "-lower");
+    #####: 2589:		if (f & PM_UPPER)
+    #####: 2590:		    val = dyncat(val, "-upper");
+    #####: 2591:		if (f & PM_READONLY)
+    #####: 2592:		    val = dyncat(val, "-readonly");
+    #####: 2593:		if (f & PM_TAGGED)
+    #####: 2594:		    val = dyncat(val, "-tag");
+    #####: 2595:		if (f & PM_TIED)
+    #####: 2596:		    val = dyncat(val, "-tied");
+    #####: 2597:		if (f & PM_EXPORTED)
+    #####: 2598:		    val = dyncat(val, "-export");
+    #####: 2599:		if (f & PM_UNIQUE)
+    #####: 2600:		    val = dyncat(val, "-unique");
+    #####: 2601:		if (f & PM_HIDE)
+    #####: 2602:		    val = dyncat(val, "-hide");
+    #####: 2603:		if (f & PM_HIDEVAL)
+    #####: 2604:		    val = dyncat(val, "-hideval");
+    #####: 2605:		if (f & PM_SPECIAL)
+    #####: 2606:		    val = dyncat(val, "-special");
+    #####: 2607:		vunset = 0;
+        -: 2608:	    } else
+    #####: 2609:		val = dupstring("");
+        -: 2610:
+    #####: 2611:	    v = NULL;
+    #####: 2612:	    isarr = 0;
+        -: 2613:	}
+        -: 2614:    }
+        -: 2615:    /*
+        -: 2616:     * We get in here two ways; either we need to convert v into
+        -: 2617:     * the local value system, or we need to get rid of brackets
+        -: 2618:     * even if there isn't a v.
+        -: 2619:     */
+     3668: 2620:    while (v || ((inbrace || (unset(KSHARRAYS) && vunset)) && isbrack(*s))) {
+     1744: 2621:	if (!v) {
+        -: 2622:	    /*
+        -: 2623:	     * Index applied to non-existent parameter; we may or may
+        -: 2624:	     * not have a value to index, however.  Create a temporary
+        -: 2625:	     * empty parameter as a trick, and index on that.  This
+        -: 2626:	     * usually happens the second time around the loop when
+        -: 2627:	     * we've used up the original parameter value and want to
+        -: 2628:	     * apply a subscript to what's left.  However, it's also
+        -: 2629:	     * possible it's got something to do with some of that murky
+        -: 2630:	     * passing of -1's as the third argument to fetchvalue() to
+        -: 2631:	     * inhibit bracket parsing at that stage.
+        -: 2632:	     */
+        -: 2633:	    Param pm;
+       10: 2634:	    char *os = s;
+        -: 2635:
+       10: 2636:	    if (!isbrack(*s))
+    #####: 2637:		break;
+       10: 2638:	    if (vunset) {
+    #####: 2639:		val = dupstring("");
+    #####: 2640:		isarr = 0;
+        -: 2641:	    }
+       10: 2642:	    pm = createparam(nulstring, isarr ? PM_ARRAY : PM_SCALAR);
+        -: 2643:	    DPUTS(!pm, "BUG: parameter not created");
+       10: 2644:	    if (isarr)
+    #####: 2645:		pm->u.arr = aval;
+        -: 2646:	    else
+       10: 2647:		pm->u.str = val;
+       10: 2648:	    v = (Value) hcalloc(sizeof *v);
+       10: 2649:	    v->isarr = isarr;
+       10: 2650:	    v->pm = pm;
+       10: 2651:	    v->end = -1;
+       10: 2652:	    if (getindex(&s, v, qt ? SCANPM_DQUOTED : 0) || s == os)
+        -: 2653:		break;
+        -: 2654:	}
+        -: 2655:	/*
+        -: 2656:	 * This is where we extract a value (we know now we have
+        -: 2657:	 * one) into the local parameters for a scalar (val) or
+        -: 2658:	 * array (aval) value.  TODO: move val and aval into
+        -: 2659:	 * a structure with a discriminator.  Hope we can make
+        -: 2660:	 * more things array values at this point and dearrayify later.
+        -: 2661:	 * v->isarr tells us whether the stuff from down below looks
+        -: 2662:	 * like an array.
+        -: 2663:	 *
+        -: 2664:	 * I think we get to discard the existing value of isarr
+        -: 2665:	 * here because it's already been taken account of, either
+        -: 2666:	 * in the subexp stuff or immediately above.
+        -: 2667:	 */
+     1744: 2668:	if ((isarr = v->isarr)) {
+        -: 2669:	    /*
+        -: 2670:	     * No way to get here with v->flags & VALFLAG_INV, so
+        -: 2671:	     * getvaluearr() is called by getarrvalue(); needn't test
+        -: 2672:	     * PM_HASHED.
+        -: 2673:	     */
+       55: 2674:	    if (v->isarr == SCANPM_WANTINDEX) {
+    #####: 2675:		isarr = v->isarr = 0;
+    #####: 2676:		val = dupstring(v->pm->node.nam);
+        -: 2677:	    } else
+       55: 2678:		aval = getarrvalue(v);
+        -: 2679:	} else {
+        -: 2680:	    /* Value retrieved from parameter/subexpression is scalar */
+     1689: 2681:	    if (v->pm->node.flags & PM_ARRAY) {
+        -: 2682:		/*
+        -: 2683:		 * Although the value is a scalar, the parameter
+        -: 2684:		 * itself is an array.  Presumably this is due to
+        -: 2685:		 * being quoted, or doing single substitution or something,
+        -: 2686:		 * TODO: we're about to do some definitely stringy
+        -: 2687:		 * stuff, so something like this bit is probably
+        -: 2688:		 * necessary.  However, I'd like to leave any
+        -: 2689:		 * necessary joining of arrays until this point
+        -: 2690:		 * to avoid the multsub() horror.
+        -: 2691:		 */
+        -: 2692:
+        -: 2693:		/* arrlen() is expensive, so only compute it if needed. */
+      196: 2694:		int tmplen = -1;
+        -: 2695:
+      196: 2696:		if (v->start < 0) {
+    #####: 2697:		    tmplen = arrlen(v->pm->gsu.a->getfn(v->pm));
+    #####: 2698:		    v->start += tmplen + ((v->flags & VALFLAG_INV) ? 1 : 0);
+        -: 2699:		}
+      196: 2700:		if (!(v->flags & VALFLAG_INV))
+      392: 2701:		    if (v->start < 0 ||
+        -: 2702:			(tmplen != -1
+    #####: 2703:			 ? v->start >= tmplen
+      196: 2704:			 : arrlen_le(v->pm->gsu.a->getfn(v->pm), v->start)))
+    #####: 2705:		    vunset = 1;
+        -: 2706:	    }
+     1689: 2707:	    if (!vunset) {
+        -: 2708:		/*
+        -: 2709:		 * There really is a value.  Padding and case
+        -: 2710:		 * transformations used to be handled here, but
+        -: 2711:		 * are now handled in getstrvalue() for greater
+        -: 2712:		 * consistency.  However, we get unexpected effects
+        -: 2713:		 * if we allow them to applied on every call, so
+        -: 2714:		 * set the flag that allows them to be substituted.
+        -: 2715:		 */
+     1689: 2716:		v->flags |= VALFLAG_SUBST;
+     1689: 2717:		val = getstrvalue(v);
+        -: 2718:	    }
+        -: 2719:	}
+        -: 2720:	/* See if this is a reference to the positional parameters. */
+     1918: 2721:	if (v && v->pm && v->pm->gsu.a == &vararray_gsu &&
+      174: 2722:	    (char ***)v->pm->u.data == &pparams)
+      174: 2723:	    horrible_offset_hack = 1;
+        -: 2724:	else
+     1570: 2725:	    horrible_offset_hack = 0;
+        -: 2726:	/*
+        -: 2727:	 * Finished with the original parameter and its indices;
+        -: 2728:	 * carry on looping to see if we need to do more indexing.
+        -: 2729:	 * This means we final get rid of v in favour of val and
+        -: 2730:	 * aval.  We could do with somehow encapsulating the bit
+        -: 2731:	 * where we need v.
+        -: 2732:	 */
+     1744: 2733:	v = NULL;
+     1744: 2734:	if (!inbrace)
+     1560: 2735:	    break;
+        -: 2736:    }
+        -: 2737:    /*
+        -: 2738:     * We're now past the name or subexpression; the only things
+        -: 2739:     * which can happen now are a closing brace, one of the standard
+        -: 2740:     * parameter postmodifiers, or a history-style colon-modifier.
+        -: 2741:     *
+        -: 2742:     * Again, this duplicates tests for characters we're about to
+        -: 2743:     * examine properly later on.
+        -: 2744:     */
+     1742: 2745:    if (inbrace) {
+      177: 2746:	c = *s;
+      177: 2747:	if (!IS_DASH(c) &&
+      177: 2748:	    c != '+' && c != ':' && c != '%'  && c != '/' &&
+      137: 2749:	    c != '=' && c != Equals &&
+      137: 2750:	    c != '#' && c != Pound &&
+      137: 2751:	    c != '?' && c != Quest &&
+      137: 2752:	    c != '}' && c != Outbrace) {
+    #####: 2753:	    zerr("bad substitution");
+    #####: 2754:	    return NULL;
+        -: 2755:	}
+        -: 2756:    }
+        -: 2757:    /*
+        -: 2758:     * Join arrays up if we're in quotes and there isn't some
+        -: 2759:     * override such as (@).
+        -: 2760:     * TODO: hmm, if we're called as part of some recursive
+        -: 2761:     * substitution do we want to delay this until we get back to
+        -: 2762:     * the top level?  Or is if there's a qt (i.e. this parameter
+        -: 2763:     * substitution is in quotes) always good enough?  Potentially
+        -: 2764:     * we may be OK by now --- all potential `@'s and subexpressions
+        -: 2765:     * have been handled, including any [@] index which comes up
+        -: 2766:     * by virtue of v->isarr being set to SCANPM_ISVAR_AT which
+        -: 2767:     * is now in isarr.
+        -: 2768:     *
+        -: 2769:     * However, if we are replacing multsub() with something that
+        -: 2770:     * doesn't mangle arrays, we may need to delay this step until after
+        -: 2771:     * the foo:- or foo:= or whatever that causes that.  Note the value
+        -: 2772:     * (string or array) at this point is irrelevant if we are going to
+        -: 2773:     * be doing that.  This would mean // and stuff get applied
+        -: 2774:     * arraywise even if quoted.  That's probably wrong, so maybe
+        -: 2775:     * this just stays.
+        -: 2776:     *
+        -: 2777:     * We do a separate stage of dearrayification in the YUK chunk,
+        -: 2778:     * I think mostly because of the way we make array or scalar
+        -: 2779:     * values appear to the caller.
+        -: 2780:     */
+     1742: 2781:    if (isarr) {
+       55: 2782:	if (nojoin)
+    #####: 2783:	    isarr = -1;
+       55: 2784:	if (qt && !getlen && isarr > 0) {
+    #####: 2785:	    val = sepjoin(aval, sep, 1);
+    #####: 2786:	    isarr = 0;
+        -: 2787:	}
+        -: 2788:    }
+        -: 2789:
+     1742: 2790:    idend = s;
+     1742: 2791:    if (inbrace) {
+        -: 2792:	/*
+        -: 2793:	 * This is to match a closing double quote in case
+        -: 2794:	 * we didn't have a subexpression, e.g. ${"foo"}.
+        -: 2795:	 * This form is pointless, but logically it ought to work.
+        -: 2796:	 */
+      354: 2797:	while (inull(*s))
+    #####: 2798:	    s++;
+        -: 2799:    }
+        -: 2800:    /*
+        -: 2801:     * We don't yet know whether a `:' introduces a history-style
+        -: 2802:     * colon modifier or qualifies something like ${...:=...}.
+        -: 2803:     * But if we remember the colon here it's easy to check later.
+        -: 2804:     */
+     1742: 2805:    if ((colf = *s == ':'))
+       41: 2806:	s++;
+        -: 2807:
+        -: 2808:
+        -: 2809:    /* fstr is to be the text following the substitution.  If we have *
+        -: 2810:     * braces, we look for it here, else we infer it later on.        */
+     1742: 2811:    fstr = s;
+     1742: 2812:    if (inbrace) {
+        -: 2813:	int bct;
+      701: 2814:	for (bct = 1; (c = *fstr); fstr++) {
+      701: 2815:	    if (c == Inbrace)
+       33: 2816:		bct++;
+      668: 2817:	    else if (c == Outbrace && !--bct)
+      177: 2818:		break;
+        -: 2819:	}
+        -: 2820:
+      177: 2821:	if (bct) {
+    #####: 2822:	    zerr("closing brace expected");
+    #####: 2823:	    return NULL;
+        -: 2824:	}
+      177: 2825:	if (c)
+      177: 2826:	    *fstr++ = '\0';
+        -: 2827:    }
+        -: 2828:
+        -: 2829:    /* Check for ${..?..} or ${..=..} or one of those. *
+        -: 2830:     * Only works if the name is in braces.            */
+        -: 2831:
+     1742: 2832:    if (inbrace && ((c = *s) == '+' ||
+      142: 2833:		    IS_DASH(c) ||
+      142: 2834:		    c == ':' ||	/* i.e. a doubled colon */
+      142: 2835:		    c == '=' || c == Equals ||
+      139: 2836:		    c == '%' ||
+      137: 2837:		    c == '#' || c == Pound ||
+      137: 2838:		    c == '?' || c == Quest ||
+       40: 2839:		    c == '/')) {
+       40: 2840:	int eglob = isset(EXTENDEDGLOB);
+        -: 2841:	/*
+        -: 2842:	 * Default index is 1 if no (I) or (I) gave zero.   But
+        -: 2843:	 * why don't we set the default explicitly at the start
+        -: 2844:	 * and massage any passed index where we set flnum anyway?
+        -: 2845:	 */
+       40: 2846:	if (!flnum)
+       40: 2847:	    flnum++;
+       40: 2848:	if (c == '%')
+        1: 2849:	    flags |= SUB_END;
+        -: 2850:
+        -: 2851:	/* Check for ${..%%..} or ${..##..} */
+       40: 2852:	if ((c == '%' || c == '#' || c == Pound) && c == s[1]) {
+    #####: 2853:	    s++;
+        -: 2854:	    /* we have %%, not %, or ##, not # */
+    #####: 2855:	    flags |= SUB_LONG;
+        -: 2856:	}
+       40: 2857:	s++;
+       40: 2858:	if (s[-1] == '/') {
+        -: 2859:	    char *ptr;
+        -: 2860:	    /*
+        -: 2861:	     * previous flags are irrelevant, except for (S) which
+        -: 2862:	     * indicates shortest substring; else look for longest,
+        -: 2863:	     * and (*) which temporarily enables extended globbing.
+        -: 2864:	     */
+    #####: 2865:	    flags = ((flags & SUB_SUBSTR) ? 0 : SUB_LONG)|(flags & SUB_EGLOB);
+    #####: 2866:	    if ((c = *s) == '/') {
+        -: 2867:		/* doubled, so replace all occurrences */
+    #####: 2868:		flags |= SUB_GLOBAL;
+    #####: 2869:		c = *++s;
+        -: 2870:	    }
+        -: 2871:	    /* Check for anchored substitution */
+    #####: 2872:	    if (c == '#' || c == Pound) {
+        -: 2873:		/*
+        -: 2874:		 * anchor at head: this is the `normal' case in
+        -: 2875:		 * getmatch and we only require the flag if SUB_END
+        -: 2876:		 * is also present.
+        -: 2877:		 */
+    #####: 2878:		flags |= SUB_START;
+    #####: 2879:		s++;
+        -: 2880:	    }
+    #####: 2881:	    if (*s == '%') {
+        -: 2882:		/* anchor at tail */
+    #####: 2883:		flags |= SUB_END;
+    #####: 2884:		s++;
+        -: 2885:	    }
+    #####: 2886:	    if (!(flags & (SUB_START|SUB_END))) {
+        -: 2887:		/* No anchor, so substring */
+    #####: 2888:		flags |= SUB_SUBSTR;
+        -: 2889:	    }
+        -: 2890:	    /*
+        -: 2891:	     * Find the / marking the end of the search pattern.
+        -: 2892:	     * If there isn't one, we're just going to delete that,
+        -: 2893:	     * i.e. replace it with an empty string.
+        -: 2894:	     *
+        -: 2895:	     * We used to use double backslashes to quote slashes,
+        -: 2896:	     * but actually that was buggy and using a single backslash
+        -: 2897:	     * is easier and more obvious.
+        -: 2898:	     */
+    #####: 2899:	    for (ptr = s; (c = *ptr) && c != '/'; ptr++)
+        -: 2900:	    {
+    #####: 2901:		if ((c == Bnull || c == Bnullkeep || c == '\\') && ptr[1])
+        -: 2902:		{
+    #####: 2903:		    if (ptr[1] == '/')
+    #####: 2904:			chuck(ptr);
+        -: 2905:		    else
+    #####: 2906:			ptr++;
+        -: 2907:		}
+        -: 2908:	    }
+    #####: 2909:	    replstr = (*ptr && ptr[1]) ? ptr+1 : "";
+    #####: 2910:	    *ptr = '\0';
+        -: 2911:	}
+        -: 2912:
+        -: 2913:	/* See if this was ${...:-...}, ${...:=...}, etc. */
+       40: 2914:	if (colf)
+       39: 2915:	    flags |= SUB_ALL;
+        -: 2916:	/*
+        -: 2917:	 * With no special flags, i.e. just a # or % or whatever,
+        -: 2918:	 * the matched portion is removed and we keep the rest.
+        -: 2919:	 * We also want the rest when we're doing a substitution.
+        -: 2920:	 */
+       40: 2921:	if (!(flags & (SUB_MATCH|SUB_REST|SUB_BIND|SUB_EIND|SUB_LEN)))
+       40: 2922:	    flags |= SUB_REST;
+        -: 2923:
+        -: 2924:	/*
+        -: 2925:	 * With ":" treat a value as unset if the variable is set but
+        -: 2926:	 * - (array) contains no elements
+        -: 2927:	 * - (scalar) contains an empty string
+        -: 2928:	 */
+       40: 2929:	if (colf && !vunset) {
+       38: 2930:	    vunset = (isarr) ? !*aval : !*val || (*val == Nularg && !val[1]);
+       38: 2931:	    vunset *= -1; /* Record that vunset was originally false */
+        -: 2932:	}
+        -: 2933:
+       40: 2934:	switch (s[-1]) {
+       35: 2935:	case '+':
+       35: 2936:	    if (vunset) {
+       12: 2937:		val = dupstring("");
+       12: 2938:		copied = 1;
+       12: 2939:		isarr = 0;
+       12: 2940:		break;
+        -: 2941:	    }
+       23: 2942:	    vunset = 1;
+        -: 2943:	/* Fall Through! */
+       23: 2944:	case '-':
+        -: 2945:	case Dash:
+       23: 2946:	    if (vunset) {
+        -: 2947:		int split_flags;
+       23: 2948:		val = dupstring(s);
+        -: 2949:		/* If word-splitting is enabled, we ask multsub() to split
+        -: 2950:		 * the substituted string at unquoted whitespace.  Then, we
+        -: 2951:		 * turn off spbreak so that no further splitting occurs.
+        -: 2952:		 * This allows a construct such as ${1+"$@"} to correctly
+        -: 2953:		 * keep its array splits, and weird constructs such as
+        -: 2954:		 * ${str+"one two" "3 2 1" foo "$str"} to only be split
+        -: 2955:		 * at the unquoted spaces. */
+       23: 2956:		if (spbreak) {
+    #####: 2957:		    split_flags = PREFORK_SHWORDSPLIT;
+    #####: 2958:		    if (!aspar)
+    #####: 2959:			split_flags |= PREFORK_SPLIT;
+        -: 2960:		} else {
+        -: 2961:		    /*
+        -: 2962:		     * It's not good enough not passing the flag to use
+        -: 2963:		     * SHWORDSPLIT, because when we get to a nested
+        -: 2964:		     * paramsubst we need to ignore isset(SHWORDSPLIT).
+        -: 2965:		     */
+       23: 2966:		    split_flags = PREFORK_NOSHWORDSPLIT;
+        -: 2967:		}
+       23: 2968:		multsub(&val, split_flags, (aspar ? NULL : &aval),
+        -: 2969:			&isarr, NULL, &ms_flags);
+       23: 2970:		copied = 1;
+       23: 2971:		spbreak = 0;
+        -: 2972:		/* Leave globsubst on if forced */
+       23: 2973:		if (globsubst != 2)
+       23: 2974:		    globsubst = 0;
+        -: 2975:	    }
+       23: 2976:	    break;
+    #####: 2977:	case ':':
+        -: 2978:	    /* this could be either `::=', unconditional assignment
+        -: 2979:	     * or a ${name:offset:length} with an empty offset */
+    #####: 2980:	    if (*s != '=' && *s != Equals) {
+    #####: 2981:		s -= 1;
+    #####: 2982:		goto colonsubscript;
+        -: 2983:	    }
+    #####: 2984:	    vunset = 1;
+    #####: 2985:	    s++;
+        -: 2986:	    /* Fall through */
+        2: 2987:	case '=':
+        -: 2988:	case Equals:
+        2: 2989:	    if (vunset) {
+        1: 2990:		char sav = *idend;
+        -: 2991:		int l, split_flags;
+        -: 2992:
+        1: 2993:		*idend = '\0';
+        1: 2994:		val = dupstring(s);
+        1: 2995:		if (spsep || !arrasg) {
+        -: 2996:		    /* POSIX requires PREFORK_SINGLE semantics here, but
+        -: 2997:		     * traditional zsh used PREFORK_NOSHWORDSPLIT.  Base
+        -: 2998:		     * behavior on caller choice of PREFORK_SHWORDSPLIT. */
+        1: 2999:		    multsub(&val,
+        -: 3000:			    spbreak ? PREFORK_SINGLE : PREFORK_NOSHWORDSPLIT,
+        -: 3001:			    NULL, &isarr, NULL, &ms_flags);
+        -: 3002:		} else {
+    #####: 3003:		    if (spbreak)
+    #####: 3004:			split_flags = PREFORK_SPLIT|PREFORK_SHWORDSPLIT;
+        -: 3005:		    else
+    #####: 3006:			split_flags = PREFORK_NOSHWORDSPLIT;
+    #####: 3007:		    multsub(&val, split_flags, &aval, &isarr, NULL,
+        -: 3008:			    &ms_flags);
+    #####: 3009:		    spbreak = 0;
+        -: 3010:		}
+        1: 3011:		if (arrasg) {
+        -: 3012:		    /* This is an array assignment. */
+        -: 3013:		    char *arr[2], **t, **a, **p;
+    #####: 3014:		    if (spsep || spbreak) {
+    #####: 3015:			aval = sepsplit(val, spsep, 0, 1);
+    #####: 3016:			isarr = nojoin ? 1 : 2;
+    #####: 3017:			l = arrlen(aval);
+    #####: 3018:			if (l && !*(aval[l-1]))
+    #####: 3019:			    l--;
+    #####: 3020:			if (l && !**aval)
+    #####: 3021:			    l--, t = aval + 1;
+        -: 3022:			else
+    #####: 3023:			    t = aval;
+    #####: 3024:		    } else if (!isarr) {
+    #####: 3025:			if (!*val && arrasg > 1) {
+    #####: 3026:			    arr[0] = NULL;
+    #####: 3027:			    l = 0;
+        -: 3028:			} else {
+    #####: 3029:			    arr[0] = val;
+    #####: 3030:			    arr[1] = NULL;
+    #####: 3031:			    l = 1;
+        -: 3032:			}
+    #####: 3033:			t = aval = arr;
+        -: 3034:		    } else
+    #####: 3035:			l = arrlen(aval), t = aval;
+    #####: 3036:		    p = a = zalloc(sizeof(char *) * (l + 1));
+    #####: 3037:		    while (l--) {
+    #####: 3038:			untokenize(*t);
+    #####: 3039:			*p++ = ztrdup(*t++);
+        -: 3040:		    }
+    #####: 3041:		    *p++ = NULL;
+    #####: 3042:		    if (arrasg > 1) {
+    #####: 3043:			Param pm = sethparam(idbeg, a);
+    #####: 3044:			if (pm)
+    #####: 3045:			    aval = paramvalarr(pm->gsu.h->getfn(pm), hkeys|hvals);
+        -: 3046:		    } else
+    #####: 3047:			setaparam(idbeg, a);
+    #####: 3048:		    isarr = 1;
+    #####: 3049:		    arrasg = 0;
+        -: 3050:		} else {
+        1: 3051:		    untokenize(val);
+        1: 3052:		    setsparam(idbeg, ztrdup(val));
+        -: 3053:		}
+        1: 3054:		*idend = sav;
+        1: 3055:		copied = 1;
+        1: 3056:		if (isarr) {
+    #####: 3057:		    if (nojoin)
+    #####: 3058:			isarr = -1;
+    #####: 3059:		    if (qt && !getlen && isarr > 0 && !spsep && spbreak < 2) {
+    #####: 3060:			val = sepjoin(aval, sep, 1);
+    #####: 3061:			isarr = 0;
+        -: 3062:		    }
+    #####: 3063:		    sep = spsep = NULL;
+    #####: 3064:		    spbreak = 0;
+        -: 3065:		}
+        -: 3066:	    }
+        2: 3067:	    break;
+    #####: 3068:	case '?':
+        -: 3069:	case Quest:
+    #####: 3070:	    if (vunset) {
+    #####: 3071:                if (isset(EXECOPT)) {
+    #####: 3072:                    *idend = '\0';
+    #####: 3073:                    zerr("%s: %s", idbeg, *s ? s : "parameter not set");
+        -: 3074:                    /*
+        -: 3075:                     * In interactive shell we need to return to
+        -: 3076:                     * top-level prompt --- don't clear this error
+        -: 3077:                     * after handling a command as we do with
+        -: 3078:                     * most errors.
+        -: 3079:                     */
+    #####: 3080:                    errflag |= ERRFLAG_HARD;
+    #####: 3081:                    if (!interact) {
+    #####: 3082:                        if (mypid == getpid()) {
+        -: 3083:                            /*
+        -: 3084:                             * paranoia: don't check for jobs, but there
+        -: 3085:                             * shouldn't be any if not interactive.
+        -: 3086:                             */
+    #####: 3087:                            stopmsg = 1;
+    #####: 3088:                            zexit(1, ZEXIT_NORMAL);
+        -: 3089:                        } else
+    #####: 3090:                            _exit(1);
+        -: 3091:                    }
+        -: 3092:                }
+    #####: 3093:		return NULL;
+        -: 3094:	    }
+    #####: 3095:	    break;
+        3: 3096:	case '%':
+        -: 3097:	case '#':
+        -: 3098:	case Pound:
+        -: 3099:	case '/':
+        -: 3100:            /* This once was executed only `if (qt) ...'. But with that
+        -: 3101:             * patterns in a expansion resulting from a ${(e)...} aren't
+        -: 3102:             * tokenized even though this function thinks they are (it thinks
+        -: 3103:             * they are because parse_subst_str() turns Qstring tokens
+        -: 3104:             * into String tokens and for unquoted parameter expansions the
+        -: 3105:             * lexer normally does tokenize patterns inside parameter
+        -: 3106:             * expansions). */
+        -: 3107:            {
+        3: 3108:		int one = noerrs, oef = errflag, haserr;
+        -: 3109:
+        3: 3110:		if (!quoteerr)
+        3: 3111:		    noerrs = 1;
+        3: 3112:		haserr = parse_subst_string(s);
+        3: 3113:		noerrs = one;
+        3: 3114:		if (!quoteerr) {
+        -: 3115:		    /* Retain user interrupt error status */
+        3: 3116:		    errflag = oef | (errflag & ERRFLAG_INT);
+        3: 3117:		    if (haserr)
+    #####: 3118:			shtokenize(s);
+    #####: 3119:		} else if (haserr || errflag) {
+    #####: 3120:		    zerr("parse error in ${...%c...} substitution", s[-1]);
+    #####: 3121:		    return NULL;
+        -: 3122:		}
+        -: 3123:	    }
+        -: 3124:	    {
+        -: 3125:#if 0
+        -: 3126:		/*
+        -: 3127:		 * This allows # and % to be at the start of
+        -: 3128:		 * a parameter in the substitution, which is
+        -: 3129:		 * a bit nasty, and can be done (although
+        -: 3130:		 * less efficiently) with anchors.
+        -: 3131:		 */
+        -: 3132:
+        -: 3133:		char t = s[-1];
+        -: 3134:
+        -: 3135:		singsub(&s);
+        -: 3136:
+        -: 3137:		if (t == '/' && (flags & SUB_SUBSTR)) {
+        -: 3138:		    if ((c = *s) == '#' || c == '%') {
+        -: 3139:			flags &= ~SUB_SUBSTR;
+        -: 3140:			if (c == '%')
+        -: 3141:			    flags |= SUB_END;
+        -: 3142:			s++;
+        -: 3143:		    } else if (c == '\\') {
+        -: 3144:			s++;
+        -: 3145:		    }
+        -: 3146:		}
+        -: 3147:#else
+        3: 3148:		singsub(&s);
+        -: 3149:#endif
+        -: 3150:	    }
+        -: 3151:
+        -: 3152:	    /*
+        -: 3153:	     * Either loop over an array doing replacements or
+        -: 3154:	     * do the replacement on a string.
+        -: 3155:	     *
+        -: 3156:	     * We need an untokenized value for matching.
+        -: 3157:	     */
+        3: 3158:	    if (!vunset && isarr) {
+        -: 3159:		char **ap;
+    #####: 3160:		if (!copied) {
+    #####: 3161:		    aval = arrdup(aval);
+    #####: 3162:		    copied = 1;
+        -: 3163:		}
+    #####: 3164:		for (ap = aval; *ap; ap++) {
+    #####: 3165:		    untokenize(*ap);
+        -: 3166:		}
+    #####: 3167:		if (flags & SUB_EGLOB)
+    #####: 3168:		    opts[EXTENDEDGLOB] = 1;
+    #####: 3169:		getmatcharr(&aval, s, flags, flnum, replstr);
+    #####: 3170:		opts[EXTENDEDGLOB] = eglob;
+        -: 3171:	    } else {
+        3: 3172:		if (vunset) {
+    #####: 3173:		    if (vunset > 0 && unset(UNSET)) {
+    #####: 3174:			*idend = '\0';
+    #####: 3175:			zerr("%s: parameter not set", idbeg);
+    #####: 3176:			return NULL;
+        -: 3177:		    }
+    #####: 3178:		    val = dupstring("");
+        -: 3179:		}
+        3: 3180:		if (!copied) {
+        3: 3181:		    val = dupstring(val);
+        3: 3182:		    copied = 1;
+        3: 3183:		    untokenize(val);
+        -: 3184:		}
+        3: 3185:		if (flags & SUB_EGLOB)
+    #####: 3186:		    opts[EXTENDEDGLOB] = 1;
+        3: 3187:		getmatch(&val, s, flags, flnum, replstr);
+        3: 3188:		opts[EXTENDEDGLOB] = eglob;
+        -: 3189:	    }
+        3: 3190:	    break;
+        -: 3191:	}
+     1702: 3192:    } else if (inbrace && (*s == '^' || *s == Hat)) {
+        -: 3193:	char **zip;
+    #####: 3194:	int shortest = 1;
+    #####: 3195:	++s;
+    #####: 3196:	if (*s == '^' || *s == Hat) {
+    #####: 3197:	    shortest = 0;
+    #####: 3198:	    ++s;
+        -: 3199:	}
+    #####: 3200:	if (*itype_end(s, IIDENT, 0)) {
+    #####: 3201:	    untokenize(s);
+    #####: 3202:	    zerr("not an identifier: %s", s);
+    #####: 3203:	    return NULL;
+        -: 3204:	}
+    #####: 3205:	if (vunset) {
+    #####: 3206:	    if (vunset > 0 && unset(UNSET)) {
+    #####: 3207:		*idend = '\0';
+    #####: 3208:		zerr("%s: parameter not set", idbeg);
+    #####: 3209:		return NULL;
+        -: 3210:	    }
+    #####: 3211:	    val = dupstring("");
+        -: 3212:	} else {
+        -: 3213:	    char *sval;
+    #####: 3214:	    zip = getaparam(s);
+    #####: 3215:	    if (!zip) {
+    #####: 3216:		sval = getsparam(s);
+    #####: 3217:		if (sval)
+    #####: 3218:		    zip = hmkarray(sval);
+        -: 3219:	    }
+    #####: 3220:	    if (!isarr) {
+    #####: 3221:		aval = hmkarray(val);
+    #####: 3222:		isarr = 1;
+        -: 3223:	    }
+    #####: 3224:	    if (zip) {
+        -: 3225:		char **out;
+    #####: 3226:		int alen, ziplen, outlen, i = 0;
+    #####: 3227:		alen = arrlen(aval);
+    #####: 3228:		ziplen = arrlen(zip);
+    #####: 3229:		outlen = shortest ^ (alen > ziplen) ? alen : ziplen;
+    #####: 3230:		if (!shortest && (alen == 0 || ziplen == 0)) {
+    #####: 3231:		    if (ziplen)
+    #####: 3232:			aval = arrdup(zip);
+        -: 3233:		} else {
+    #####: 3234:		    out = zhalloc(sizeof(char *) * (2 * outlen + 1));
+    #####: 3235:		    while (i < outlen) {
+    #####: 3236:			if (copied)
+    #####: 3237:			    out[i*2] = aval[i % alen];
+        -: 3238:			else
+    #####: 3239:			    out[i*2] = dupstring(aval[i % alen]);
+    #####: 3240:			out[i*2+1] = dupstring(zip[i % ziplen]);
+    #####: 3241:			i++;
+        -: 3242:		    }
+    #####: 3243:		    out[i*2] = NULL;
+    #####: 3244:		    aval = out;
+    #####: 3245:		    copied = 1;
+        -: 3246:		}
+        -: 3247:	    } else {
+    #####: 3248:		if (unset(UNSET)) {
+    #####: 3249:		    zerr("%s: parameter not set", s);
+    #####: 3250:		    return NULL;
+        -: 3251:		}
+    #####: 3252:		val = dupstring("");
+        -: 3253:	    }
+        -: 3254:	}
+     1839: 3255:    } else if (inbrace && (*s == '|' || *s == Bar ||
+      274: 3256:			   *s == '*' || *s == Star)) {
+    #####: 3257:	int intersect = (*s == '*' || *s == Star);
+        -: 3258:	char **compare, **ap, **apsrc;
+    #####: 3259:	++s;
+    #####: 3260:	if (*itype_end(s, IIDENT, 0)) {
+    #####: 3261:	    untokenize(s);
+    #####: 3262:	    zerr("not an identifier: %s", s);
+    #####: 3263:	    return NULL;
+        -: 3264:	}
+    #####: 3265:	compare = getaparam(s);
+    #####: 3266:	if (compare) {
+    #####: 3267:	    HashTable ht = newuniqtable(arrlen(compare)+1);
+        -: 3268:	    int present;
+    #####: 3269:	    for (ap = compare; *ap; ap++)
+    #####: 3270:		(void)addhashnode2(ht, *ap, (HashNode)
+        -: 3271:				   zhalloc(sizeof(struct hashnode)));
+    #####: 3272:	    if (!vunset && isarr) {
+    #####: 3273:		if (!copied) {
+    #####: 3274:		    aval = arrdup(aval);
+    #####: 3275:		    copied = 1;
+        -: 3276:		}
+    #####: 3277:		for (ap = apsrc = aval; *apsrc; apsrc++) {
+    #####: 3278:		    untokenize(*apsrc);
+    #####: 3279:		    present = (gethashnode2(ht, *apsrc) != NULL);
+    #####: 3280:		    if (intersect ? present : !present) {
+    #####: 3281:			if (ap != apsrc) {
+    #####: 3282:			    *ap = *apsrc;
+        -: 3283:			}
+    #####: 3284:			ap++;
+        -: 3285:		    }
+        -: 3286:		}
+    #####: 3287:		*ap = NULL;
+        -: 3288:	    } else {
+    #####: 3289:		if (vunset) {
+    #####: 3290:		    if (vunset > 0 && unset(UNSET)) {
+    #####: 3291:			*idend = '\0';
+    #####: 3292:			zerr("%s: parameter not set", idbeg);
+    #####: 3293:			deletehashtable(ht);
+    #####: 3294:			return NULL;
+        -: 3295:		    }
+    #####: 3296:		    val = dupstring("");
+        -: 3297:		} else {
+    #####: 3298:		    present = (gethashnode2(ht, val) != NULL);
+    #####: 3299:		    if (intersect ? !present : present)
+    #####: 3300:			val = dupstring("");
+        -: 3301:		}
+        -: 3302:	    }
+    #####: 3303:	    deletehashtable(ht);
+    #####: 3304:	} else if (intersect) {
+        -: 3305:	    /*
+        -: 3306:	     * The intersection with nothing is nothing...
+        -: 3307:	     * Seems a bit pointless complaining that the first
+        -: 3308:	     * expression is unset here if the second is, too.
+        -: 3309:	     */
+    #####: 3310:	    if (!vunset) {
+    #####: 3311:		if (isarr) {
+    #####: 3312:		    aval = hmkarray(NULL);
+        -: 3313:		} else {
+    #####: 3314:		    val = dupstring("");
+        -: 3315:		}
+        -: 3316:	    }
+        -: 3317:	}
+    #####: 3318:	if (vunset) {
+    #####: 3319:	    if (vunset > 0 && unset(UNSET)) {
+    #####: 3320:		*idend = '\0';
+    #####: 3321:		zerr("%s: parameter not set", idbeg);
+    #####: 3322:		return NULL;
+        -: 3323:	    }
+    #####: 3324:	    val = dupstring("");
+        -: 3325:	}
+        -: 3326:    } else {			/* no ${...=...} or anything, but possible modifiers. */
+        -: 3327:	/*
+        -: 3328:	 * Handler ${+...}.  TODO: strange, why do we handle this only
+        -: 3329:	 * if there isn't a trailing modifier?  Why don't we do this
+        -: 3330:	 * e.g. when we handle the ${(t)...} flag?
+        -: 3331:	 */
+     1702: 3332:colonsubscript:
+     1702: 3333:	if (chkset) {
+    #####: 3334:	    val = dupstring(vunset ? "0" : "1");
+    #####: 3335:	    isarr = 0;
+     1702: 3336:	} else if (vunset) {
+        5: 3337:	    if (vunset > 0 && unset(UNSET)) {
+    #####: 3338:		*idend = '\0';
+    #####: 3339:		zerr("%s: parameter not set", idbeg);
+    #####: 3340:		return NULL;
+        -: 3341:	    }
+        5: 3342:	    val = dupstring("");
+        -: 3343:	}
+     1702: 3344:	if (colf && inbrace) {
+        -: 3345:	    /*
+        -: 3346:	     * Look for ${PARAM:OFFSET} or ${PARAM:OFFSET:LENGTH}.
+        -: 3347:	     * This must appear before modifiers.  For compatibility
+        -: 3348:	     * with bash we perform both standard string substitutions
+        -: 3349:	     * and math eval.
+        -: 3350:	     */
+        -: 3351:	    char *check_offset2;
+    #####: 3352:	    char *check_offset = check_colon_subscript(s, &check_offset2);
+    #####: 3353:	    if (check_offset) {
+    #####: 3354:		zlong offset = mathevali(check_offset);
+    #####: 3355:		zlong length = 0;
+    #####: 3356:		int length_set = 0;
+    #####: 3357:		int offset_hack_argzero = 0;
+    #####: 3358:		if (errflag)
+    #####: 3359:		    return NULL;
+    #####: 3360:		if ((*check_offset2 && *check_offset2 != ':')) {
+    #####: 3361:		    zerr("invalid subscript: %s", check_offset);
+    #####: 3362:		    return NULL;
+        -: 3363:		}
+    #####: 3364:		if (*check_offset2) {
+        -: 3365:		    char *nextp;
+    #####: 3366:		    check_offset = check_colon_subscript(check_offset2 + 1,
+        -: 3367:							 &nextp);
+    #####: 3368:		    if (check_offset) {
+    #####: 3369:			check_offset2 = nextp;
+    #####: 3370:			if (*check_offset2 && *check_offset2 != ':') {
+    #####: 3371:			    zerr("invalid length: %s", check_offset);
+    #####: 3372:			    return NULL;
+        -: 3373:			}
+    #####: 3374:			length = mathevali(check_offset);
+    #####: 3375:			length_set = 1;
+    #####: 3376:			if (errflag)
+    #####: 3377:			    return NULL;
+        -: 3378:		    }
+        -: 3379:		}
+    #####: 3380:		if (isarr) {
+        -: 3381:		    int alen, count;
+        -: 3382:		    char **srcptr, **dstptr, **newarr;
+        -: 3383:
+    #####: 3384:		    if (horrible_offset_hack) {
+        -: 3385:			/*
+        -: 3386:			 * As part of the 'orrible hoffset 'ack,
+        -: 3387:			 * (what hare you? Han 'orrible hoffset 'ack,
+        -: 3388:			 * sergeant major), if we are given a ksh/bash/POSIX
+        -: 3389:			 * style positional parameter array which includes
+        -: 3390:			 * offset 0, we use $0.
+        -: 3391:			 */
+    #####: 3392:			if (offset == 0) {
+    #####: 3393:			    offset_hack_argzero = 1;
+    #####: 3394:			} else if (offset > 0) {
+    #####: 3395:			    offset--;
+        -: 3396:			}
+        -: 3397:		    }
+        -: 3398:
+    #####: 3399:		    alen = arrlen(aval);
+    #####: 3400:		    if (offset < 0) {
+    #####: 3401:			offset += alen;
+    #####: 3402:			if (offset < 0)
+    #####: 3403:			    offset = 0;
+        -: 3404:		    }
+    #####: 3405:		    if (offset_hack_argzero)
+    #####: 3406:			alen++;
+    #####: 3407:		    if (length_set) {
+    #####: 3408:			if (length < 0)
+    #####: 3409:			    length += alen - offset;
+    #####: 3410:			if (length < 0) {
+    #####: 3411:			    zerr("substring expression: %d < %d",
+    #####: 3412:			         (int)(length + offset), (int)offset);
+    #####: 3413:			    return NULL;
+        -: 3414:			}
+        -: 3415:		    } else
+    #####: 3416:			length = alen;
+    #####: 3417:		    if (offset > alen)
+    #####: 3418:			offset = alen;
+    #####: 3419:		    if (offset + length > alen)
+    #####: 3420:			length = alen - offset;
+    #####: 3421:		    count = length;
+    #####: 3422:		    srcptr = aval + offset;
+    #####: 3423:		    newarr = dstptr = (char **)
+    #####: 3424:			zhalloc((length+1)*sizeof(char *));
+    #####: 3425:		    if (count && offset_hack_argzero) {
+    #####: 3426:			*dstptr++ = dupstring(argzero);
+    #####: 3427:			count--;
+        -: 3428:		    }
+    #####: 3429:		    while (count--)
+    #####: 3430:			*dstptr++ = dupstring(*srcptr++);
+    #####: 3431:		    *dstptr = (char *)NULL;
+    #####: 3432:		    aval = newarr;
+        -: 3433:		} else {
+        -: 3434:		    char *sptr, *eptr;
+        -: 3435:		    int given_offset;
+    #####: 3436:		    if (offset < 0) {
+    #####: 3437:			MB_METACHARINIT();
+    #####: 3438:			for (sptr = val; *sptr; ) {
+    #####: 3439:			    sptr += MB_METACHARLEN(sptr);
+    #####: 3440:			    offset++;
+        -: 3441:			}
+    #####: 3442:			if (offset < 0)
+    #####: 3443:			    offset = 0;
+        -: 3444:		    }
+    #####: 3445:		    given_offset = offset;
+    #####: 3446:		    MB_METACHARINIT();
+    #####: 3447:		    if (length_set && length < 0)
+    #####: 3448:			length -= offset;
+    #####: 3449:		    for (sptr = val; *sptr && offset; ) {
+    #####: 3450:			sptr += MB_METACHARLEN(sptr);
+    #####: 3451:			offset--;
+        -: 3452:		    }
+    #####: 3453:		    if (length_set) {
+    #####: 3454:			if (length < 0) {
+    #####: 3455:			    MB_METACHARINIT();
+    #####: 3456:			    for (eptr = val; *eptr; ) {
+    #####: 3457:				eptr += MB_METACHARLEN(eptr);
+    #####: 3458:				length++;
+        -: 3459:			    }
+    #####: 3460:			    if (length < 0) {
+    #####: 3461:				zerr("substring expression: %d < %d",
+    #####: 3462:				     (int)(length + given_offset),
+        -: 3463:				     (int)given_offset);
+    #####: 3464:				return NULL;
+        -: 3465:			    }
+        -: 3466:			}
+    #####: 3467:			for (eptr = sptr; *eptr && length; ) {
+    #####: 3468:			    eptr += MB_METACHARLEN(eptr);
+    #####: 3469:			    length--;
+        -: 3470:			}
+    #####: 3471:			val = dupstrpfx(sptr, eptr - sptr);
+        -: 3472:		    } else {
+    #####: 3473:			val = dupstring(sptr);
+        -: 3474:		    }
+        -: 3475:		}
+    #####: 3476:		if (!*check_offset2) {
+    #####: 3477:		    colf = 0;
+        -: 3478:		} else {
+    #####: 3479:		    s = check_offset2 + 1;
+        -: 3480:		}
+        -: 3481:	    }
+        -: 3482:	}
+     1702: 3483:	if (colf) {
+        -: 3484:	    /*
+        -: 3485:	     * History style colon modifiers.  May need to apply
+        -: 3486:	     * on multiple elements of an array.
+        -: 3487:	     */
+        2: 3488:	    s--;
+        2: 3489:	    if (unset(KSHARRAYS) || inbrace) {
+        2: 3490:		if (!isarr)
+        2: 3491:		    modify(&val, &s, inbrace);
+        -: 3492:		else {
+        -: 3493:		    char *ss;
+    #####: 3494:		    char **ap = aval;
+    #####: 3495:		    char **pp = aval = (char **) hcalloc(sizeof(char *) *
+    #####: 3496:							 (arrlen(aval) + 1));
+        -: 3497:
+    #####: 3498:		    while ((*pp = *ap++)) {
+    #####: 3499:			ss = s;
+    #####: 3500:			modify(pp++, &ss, inbrace);
+        -: 3501:		    }
+    #####: 3502:		    if (pp == aval) {
+    #####: 3503:			char *t = "";
+    #####: 3504:			ss = s;
+    #####: 3505:			modify(&t, &ss, inbrace);
+        -: 3506:		    }
+    #####: 3507:		    s = ss;
+        -: 3508:		}
+        2: 3509:		copied = 1;
+        2: 3510:		if (inbrace && *s) {
+    #####: 3511:		    if (*s == ':' && !imeta(s[1]))
+    #####: 3512:			zerr("unrecognized modifier `%c'", s[1]);
+        -: 3513:		    else
+    #####: 3514:			zerr("unrecognized modifier");
+    #####: 3515:		    return NULL;
+        -: 3516:		}
+        -: 3517:	    }
+        -: 3518:	}
+     1702: 3519:	if (!inbrace)
+     1565: 3520:	    fstr = s;
+        -: 3521:    }
+     1742: 3522:    if (errflag)
+    #####: 3523:	return NULL;
+     1742: 3524:    if (evalchar) {
+    #####: 3525:	int one = noerrs, oef = errflag, haserr = 0;
+        -: 3526:
+    #####: 3527:	if (!quoteerr)
+    #####: 3528:	    noerrs = 1;
+        -: 3529:	/*
+        -: 3530:	 * Evaluate the value numerically and output the result as
+        -: 3531:	 * a character.
+        -: 3532:	 */
+    #####: 3533:	if (isarr) {
+        -: 3534:	    char **aval2, **avptr, **av2ptr;
+        -: 3535:
+    #####: 3536:	    aval2 = (char **)zhalloc((arrlen(aval)+1)*sizeof(char *));
+        -: 3537:
+    #####: 3538:	    for (avptr = aval, av2ptr = aval2; *avptr; avptr++, av2ptr++)
+        -: 3539:	    {
+        -: 3540:		/* When noerrs = 1, the only error is out-of-memory */
+    #####: 3541:		if (!(*av2ptr = substevalchar(*avptr))) {
+    #####: 3542:		    haserr = 1;
+    #####: 3543:		    break;
+        -: 3544:		}
+        -: 3545:	    }
+    #####: 3546:	    *av2ptr = NULL;
+    #####: 3547:	    aval = aval2;
+        -: 3548:	} else {
+        -: 3549:	    /* When noerrs = 1, the only error is out-of-memory */
+    #####: 3550:	    if (!(val = substevalchar(val)))
+    #####: 3551:		haserr = 1;
+        -: 3552:	}
+    #####: 3553:	noerrs = one;
+    #####: 3554:	if (!quoteerr) {
+        -: 3555:	    /* Retain user interrupt error status */
+    #####: 3556:	    errflag = oef | (errflag & ERRFLAG_INT);
+        -: 3557:	}
+    #####: 3558:	if (haserr || errflag)
+    #####: 3559:	    return NULL;
+    #####: 3560:	ms_flags = 0;
+        -: 3561:    }
+        -: 3562:    /*
+        -: 3563:     * This handles taking a length with ${#foo} and variations.
+        -: 3564:     * TODO: again. one might naively have thought this had the
+        -: 3565:     * same sort of effect as the ${(t)...} flag and the ${+...}
+        -: 3566:     * test, although in this case we do need the value rather
+        -: 3567:     * the parameter, so maybe it's a bit different.
+        -: 3568:     */
+     1742: 3569:    if (getlen) {
+    #####: 3570:	long len = 0;
+        -: 3571:	char buf[14];
+        -: 3572:
+    #####: 3573:	if (isarr) {
+        -: 3574:	    char **ctr;
+    #####: 3575:	    int sl = sep ? MB_METASTRLEN(sep) : 1;
+        -: 3576:
+    #####: 3577:	    if (getlen == 1)
+    #####: 3578:		for (ctr = aval; *ctr; ctr++, len++);
+    #####: 3579:	    else if (getlen == 2) {
+    #####: 3580:		if (*aval)
+    #####: 3581:		    for (len = -sl, ctr = aval;
+    #####: 3582:			 len += sl + MB_METASTRLEN2(*ctr, multi_width),
+    #####: 3583:			     *++ctr;);
+        -: 3584:	    }
+        -: 3585:	    else
+    #####: 3586:		for (ctr = aval;
+    #####: 3587:		     *ctr;
+    #####: 3588:		     len += wordcount(*ctr, spsep, getlen > 3), ctr++);
+        -: 3589:	} else {
+    #####: 3590:	    if (getlen < 3)
+    #####: 3591:		len = MB_METASTRLEN2(val, multi_width);
+        -: 3592:	    else
+    #####: 3593:		len = wordcount(val, spsep, getlen > 3);
+        -: 3594:	}
+        -: 3595:
+    #####: 3596:	sprintf(buf, "%ld", len);
+    #####: 3597:	val = dupstring(buf);
+    #####: 3598:	isarr = 0;
+    #####: 3599:	ms_flags = 0;
+        -: 3600:    }
+        -: 3601:    /* At this point we make sure that our arrayness has affected the
+        -: 3602:     * arrayness of the linked list.  Then, we can turn our value into
+        -: 3603:     * a scalar for convenience sake without affecting the arrayness
+        -: 3604:     * of the resulting value.  ## This is the YUK chunk. ## */
+     1742: 3605:    if (isarr)
+       55: 3606:	l->list.flags |= LF_ARRAY;
+        -: 3607:    else
+     1687: 3608:	l->list.flags &= ~LF_ARRAY;
+     1742: 3609:    if (isarr > 0 && !plan9 && (!aval || !aval[0])) {
+    #####: 3610:	val = dupstring("");
+    #####: 3611:	isarr = 0;
+     1742: 3612:    } else if (isarr && aval && aval[0] && !aval[1]) {
+        -: 3613:	/* treat a one-element array as a scalar for purposes of   *
+        -: 3614:	 * concatenation with surrounding text (some${param}thing) *
+        -: 3615:	 * and rc_expand_param handling.  Note: LF_ARRAY (above)   *
+        -: 3616:	 * propagates the true array type from nested expansions.  */
+    #####: 3617:	val = aval[0];
+    #####: 3618:	isarr = 0;
+        -: 3619:    }
+        -: 3620:    /* This is where we may join arrays together, e.g. (j:,:) sets "sep", and
+        -: 3621:     * (afterward) may split the joined value (e.g. (s:-:) sets "spsep").  One
+        -: 3622:     * exception is that ${name:-word} and ${name:+word} will have already
+        -: 3623:     * done any requested splitting of the word value with quoting preserved.
+        -: 3624:     */
+     1742: 3625:    if (ssub || spbreak || spsep || sep) {
+     1195: 3626:	int force_split = !ssub && (spbreak || spsep);
+     1195: 3627:	if (isarr) {
+        -: 3628:	    /* sep non-null here means F or j flag, force join */
+    #####: 3629:	    if (nojoin == 0 || sep) {
+    #####: 3630:		val = sepjoin(aval, sep, 1);
+    #####: 3631:		isarr = 0;
+    #####: 3632:	    } else if (force_split &&
+    #####: 3633:		       (spsep || nojoin == 2 || (!ifs && isarr < 0))) {
+        -: 3634:		/* Hack to simulate splitting individual elements:
+        -: 3635:		 * forced joining as previously determined, or
+        -: 3636:		 * join on what we later use to forcibly split
+        -: 3637:		 */
+    #####: 3638:		val = sepjoin(aval, (nojoin == 1 ? NULL : spsep), 1);
+    #####: 3639:		isarr = 0;
+        -: 3640:	    }
+    #####: 3641:	    if (!isarr)
+    #####: 3642:		ms_flags = 0;
+        -: 3643:	}
+     1195: 3644:	if (force_split && !isarr) {
+        1: 3645:	    aval = sepsplit(val, spsep, 0, 1);
+        1: 3646:	    if (!aval || !aval[0])
+    #####: 3647:		val = dupstring("");
+        1: 3648:	    else if (!aval[1])
+        1: 3649:		val = aval[0];
+        -: 3650:	    else
+    #####: 3651:		isarr = nojoin ? 1 : 2;
+        -: 3652:	}
+     1195: 3653:	if (isarr)
+    #####: 3654:	    l->list.flags |= LF_ARRAY;
+        -: 3655:	else
+     1195: 3656:	    l->list.flags &= ~LF_ARRAY;
+        -: 3657:    }
+        -: 3658:    /*
+        -: 3659:     * Perform case modififications.
+        -: 3660:     */
+     1742: 3661:    if (casmod != CASMOD_NONE) {
+    #####: 3662:	copied = 1;		/* string is always modified by copy */
+    #####: 3663:	if (isarr) {
+        -: 3664:	    char **ap, **ap2;
+        -: 3665:
+    #####: 3666:	    ap = aval;
+    #####: 3667:	    ap2 = aval = (char **) zhalloc(sizeof(char *) * (arrlen(aval)+1));
+        -: 3668:
+    #####: 3669:	    while (*ap)
+    #####: 3670:		*ap2++ = casemodify(*ap++, casmod);
+    #####: 3671:	    *ap2++ = NULL;
+        -: 3672:	} else {
+    #####: 3673:	    val = casemodify(val, casmod);
+        -: 3674:	}
+        -: 3675:    }
+        -: 3676:    /*
+        -: 3677:     * Process echo- and print-style escape sequences.
+        -: 3678:     */
+     1742: 3679:    if (getkeys >= 0) {
+        -: 3680:	int len;
+        -: 3681:
+    #####: 3682:	copied = 1;		/* string is always copied */
+    #####: 3683:	if (isarr) {
+        -: 3684:	    char **ap, **ap2;
+        -: 3685:
+    #####: 3686:	    ap = aval;
+    #####: 3687:	    aval = (char **) zhalloc(sizeof(char *) * (arrlen(aval)+1));
+    #####: 3688:	    for (ap2 = aval; *ap; ap++, ap2++) {
+    #####: 3689:		*ap2 = getkeystring(*ap, &len, getkeys, NULL);
+    #####: 3690:		*ap2 = metafy(*ap2, len, META_USEHEAP);
+        -: 3691:	    }
+    #####: 3692:	    *ap2++ = NULL;
+        -: 3693:	} else {
+    #####: 3694:	    val = getkeystring(val, &len, getkeys, NULL);
+    #####: 3695:	    val = metafy(val, len, META_USEHEAP);
+        -: 3696:	}
+        -: 3697:    }
+        -: 3698:    /*
+        -: 3699:     * Perform prompt-style modifications.
+        -: 3700:     */
+     1742: 3701:    if (presc) {
+    #####: 3702:	int ops = opts[PROMPTSUBST], opb = opts[PROMPTBANG];
+    #####: 3703:	int opp = opts[PROMPTPERCENT];
+        -: 3704:
+    #####: 3705:	if (presc < 2) {
+    #####: 3706:	    opts[PROMPTPERCENT] = 1;
+    #####: 3707:	    opts[PROMPTSUBST] = opts[PROMPTBANG] = 0;
+        -: 3708:	}
+        -: 3709:	/*
+        -: 3710:	 * TODO:  It would be really quite nice to abstract the
+        -: 3711:	 * isarr and !isarr code into a function which gets
+        -: 3712:	 * passed a pointer to a function with the effect of
+        -: 3713:	 * the promptexpand bit.  Then we could use this for
+        -: 3714:	 * a lot of stuff and bury val/aval/isarr inside a structure
+        -: 3715:	 * which gets passed to it.
+        -: 3716:	 */
+    #####: 3717:	if (isarr) {
+        -: 3718:	    char **ap;
+        -: 3719:
+    #####: 3720:	    if (!copied)
+    #####: 3721:		aval = arrdup(aval), copied = 1;
+    #####: 3722:	    ap = aval;
+    #####: 3723:	    for (; *ap; ap++) {
+        -: 3724:		char *tmps;
+    #####: 3725:		untokenize(*ap);
+    #####: 3726:		tmps = promptexpand(*ap, 0, NULL, NULL, NULL);
+    #####: 3727:		*ap = dupstring(tmps);
+    #####: 3728:		free(tmps);
+        -: 3729:	    }
+        -: 3730:	} else {
+        -: 3731:	    char *tmps;
+    #####: 3732:	    if (!copied)
+    #####: 3733:		val = dupstring(val), copied = 1;
+    #####: 3734:	    untokenize(val);
+    #####: 3735:	    tmps = promptexpand(val, 0, NULL, NULL, NULL);
+    #####: 3736:	    val = dupstring(tmps);
+    #####: 3737:	    free(tmps);
+        -: 3738:	}
+    #####: 3739:	opts[PROMPTSUBST] = ops;
+    #####: 3740:	opts[PROMPTBANG] = opb;
+    #####: 3741:	opts[PROMPTPERCENT] = opp;
+        -: 3742:    }
+        -: 3743:    /*
+        -: 3744:     * One of the possible set of quotes to apply, depending on
+        -: 3745:     * the repetitions of the (q) flag.
+        -: 3746:     */
+     1742: 3747:    if (quotemod) {
+    #####: 3748:	int pre = 0, post = 0;
+        -: 3749:
+    #####: 3750:	if (quotemod > 0) {
+    #####: 3751:	    switch (quotetype)
+        -: 3752:	    {
+    #####: 3753:	    case QT_DOLLARS:
+        -: 3754:		/* space for "$" */
+    #####: 3755:		pre = 2;
+    #####: 3756:		post = 1;
+    #####: 3757:		break;
+        -: 3758:
+    #####: 3759:	    case QT_SINGLE_OPTIONAL:
+        -: 3760:		/* quotes will be added for us */
+        -: 3761:	    case QT_BACKSLASH:
+        -: 3762:	    case QT_BACKSLASH_PATTERN:
+        -: 3763:		/* no quotes */
+    #####: 3764:		break;
+        -: 3765:
+    #####: 3766:	    default:
+    #####: 3767:		pre = post = 1;
+    #####: 3768:		break;
+        -: 3769:	    }
+    #####: 3770:	}
+    #####: 3771:	if (isarr) {
+        -: 3772:	    char **ap;
+        -: 3773:
+    #####: 3774:	    if (!copied)
+    #####: 3775:		aval = arrdup(aval), copied = 1;
+    #####: 3776:	    ap = aval;
+        -: 3777:
+    #####: 3778:	    if (quotemod > 0) {
+    #####: 3779:		if (quotetype == QT_QUOTEDZPUTS) {
+    #####: 3780:		    for (; *ap; ap++)
+    #####: 3781:			*ap = quotedzputs(*ap, NULL);
+    #####: 3782:		} else if (quotetype > QT_BACKSLASH) {
+        -: 3783:		    int sl;
+        -: 3784:		    char *tmp;
+        -: 3785:
+    #####: 3786:		    for (; *ap; ap++) {
+    #####: 3787:			tmp = quotestring(*ap, quotetype);
+    #####: 3788:			sl = strlen(tmp);
+    #####: 3789:			*ap = (char *) zhalloc(pre + sl + post + 1);
+    #####: 3790:			strcpy((*ap) + pre, tmp);
+    #####: 3791:			if (pre)
+    #####: 3792:			    ap[0][pre - 1] = ap[0][pre + sl] =
+        -: 3793:				(quotetype != QT_DOUBLE ? '\'' : '"');
+    #####: 3794:			ap[0][pre + sl + post] = '\0';
+    #####: 3795:			if (quotetype == QT_DOLLARS)
+    #####: 3796:			  ap[0][0] = '$';
+        -: 3797:		    }
+        -: 3798:		} else
+    #####: 3799:		    for (; *ap; ap++)
+    #####: 3800:			*ap = quotestring(*ap, QT_BACKSLASH_SHOWNULL);
+        -: 3801:	    } else {
+    #####: 3802:		int one = noerrs, oef = errflag, haserr = 0;
+        -: 3803:
+    #####: 3804:		if (!quoteerr)
+    #####: 3805:		    noerrs = 1;
+    #####: 3806:		for (; *ap; ap++) {
+    #####: 3807:		    haserr |= parse_subst_string(*ap);
+    #####: 3808:		    remnulargs(*ap);
+    #####: 3809:		    untokenize(*ap);
+        -: 3810:		}
+    #####: 3811:		noerrs = one;
+    #####: 3812:		if (!quoteerr) {
+        -: 3813:		    /* Retain any user interrupt error status */
+    #####: 3814:		    errflag = oef | (errflag & ERRFLAG_INT);
+        -: 3815:		}
+    #####: 3816:		else if (haserr || errflag) {
+    #####: 3817:		    zerr("parse error in parameter value");
+    #####: 3818:		    return NULL;
+        -: 3819:		}
+        -: 3820:	    }
+        -: 3821:	} else {
+    #####: 3822:	    if (!copied)
+    #####: 3823:		val = dupstring(val), copied = 1;
+    #####: 3824:	    if (quotemod > 0) {
+    #####: 3825:		if (quotetype == QT_QUOTEDZPUTS) {
+    #####: 3826:		    val = quotedzputs(val, NULL);
+    #####: 3827:		} else if (quotetype > QT_BACKSLASH) {
+        -: 3828:		    int sl;
+        -: 3829:		    char *tmp;
+    #####: 3830:		    tmp = quotestring(val, quotetype);
+    #####: 3831:		    sl = strlen(tmp);
+    #####: 3832:		    val = (char *) zhalloc(pre + sl + post + 1);
+    #####: 3833:		    strcpy(val + pre, tmp);
+    #####: 3834:		    if (pre)
+    #####: 3835:			val[pre - 1] = val[pre + sl] =
+        -: 3836:			    (quotetype != QT_DOUBLE ? '\'' : '"');
+    #####: 3837:		    val[pre + sl + post] = '\0';
+    #####: 3838:		    if (quotetype == QT_DOLLARS)
+    #####: 3839:		      val[0] = '$';
+        -: 3840:		} else
+    #####: 3841:		    val = quotestring(val, QT_BACKSLASH_SHOWNULL);
+        -: 3842:	    } else {
+    #####: 3843:		int one = noerrs, oef = errflag, haserr;
+        -: 3844:
+    #####: 3845:		if (!quoteerr)
+    #####: 3846:		    noerrs = 1;
+    #####: 3847:		haserr = parse_subst_string(val);
+    #####: 3848:		noerrs = one;
+    #####: 3849:		if (!quoteerr) {
+        -: 3850:		    /* Retain any user interrupt error status */
+    #####: 3851:		    errflag = oef | (errflag & ERRFLAG_INT);
+        -: 3852:		}
+    #####: 3853:		else if (haserr || errflag) {
+    #####: 3854:		    zerr("parse error in parameter value");
+    #####: 3855:		    return NULL;
+        -: 3856:		}
+    #####: 3857:		remnulargs(val);
+    #####: 3858:		untokenize(val);
+        -: 3859:	    }
+        -: 3860:	}
+        -: 3861:    }
+        -: 3862:    /*
+        -: 3863:     * Transform special characters in the string to make them
+        -: 3864:     * printable, or to show directories, or possibly even both.
+        -: 3865:     */
+     1742: 3866:    if (mods) {
+    #####: 3867:	if (isarr) {
+        -: 3868:	    char **ap;
+    #####: 3869:	    if (!copied)
+    #####: 3870:		aval = arrdup(aval), copied = 1;
+    #####: 3871:	    for (ap = aval; *ap; ap++) {
+    #####: 3872:		if (mods & 1)
+    #####: 3873:		    *ap = substnamedir(*ap);
+    #####: 3874:		if (mods & 2)
+    #####: 3875:		    *ap = nicedupstring(*ap);
+        -: 3876:	    }
+        -: 3877:	} else {
+    #####: 3878:	    if (!copied)
+    #####: 3879:		val = dupstring(val), copied = 1;
+    #####: 3880:	    if (mods & 1)
+    #####: 3881:		val = substnamedir(val);
+    #####: 3882:	    if (mods & 2)
+    #####: 3883:		val = nicedupstring(val);
+        -: 3884:	}
+        -: 3885:    }
+        -: 3886:    /*
+        -: 3887:     * Nothing particularly to do with SH_WORD_SPLIT --- this
+        -: 3888:     * performs lexical splitting on a string as specified by
+        -: 3889:     * the (z) flag.
+        -: 3890:     */
+     1742: 3891:    if (shsplit) {
+    #####: 3892:	LinkList list = NULL;
+        -: 3893:
+    #####: 3894:	if (isarr) {
+        -: 3895:	    char **ap;
+    #####: 3896:	    for (ap = aval; *ap; ap++) {
+    #####: 3897:		untokenize(*ap);
+    #####: 3898:		list = bufferwords(list, *ap, NULL, shsplit);
+        -: 3899:	    }
+    #####: 3900:	    isarr = 0;
+        -: 3901:	} else {
+    #####: 3902:	    untokenize(val);
+    #####: 3903:	    list = bufferwords(NULL, val, NULL, shsplit);
+        -: 3904:	}
+        -: 3905:
+    #####: 3906:	if (!list || !firstnode(list))
+    #####: 3907:	    val = dupstring("");
+    #####: 3908:	else if (!nextnode(firstnode(list)))
+    #####: 3909:	    val = getdata(firstnode(list));
+        -: 3910:	else {
+    #####: 3911:	    aval = hlinklist2array(list, 0);
+    #####: 3912:	    isarr = nojoin ? 1 : 2;
+    #####: 3913:	    l->list.flags |= LF_ARRAY;
+        -: 3914:	}
+    #####: 3915:	copied = 1;
+        -: 3916:    }
+        -: 3917:    /*
+        -: 3918:     * TODO: hmm.  At this point we have to be on our toes about
+        -: 3919:     * whether we're putting stuff into a line or not, i.e.
+        -: 3920:     * we don't want to do this from a recursive call.
+        -: 3921:     * Rather than passing back flags in a non-trivial way, maybe
+        -: 3922:     * we could decide on the basis of flags passed down to us.
+        -: 3923:     *
+        -: 3924:     * This is the ideal place to do any last-minute conversion from
+        -: 3925:     * array to strings.  However, given all the transformations we've
+        -: 3926:     * already done, probably if it's going to be done it will already
+        -: 3927:     * have been.  (I'd really like to keep everying in aval or
+        -: 3928:     * equivalent and only locally decide if we need to treat it
+        -: 3929:     * as a scalar.)
+        -: 3930:     */
+        -: 3931:
+     1742: 3932:    if (isarr && ssub) {
+        -: 3933:	/* prefork() wants a scalar, so join no matter what else */
+    #####: 3934:	val = sepjoin(aval, NULL, 1);
+    #####: 3935:	isarr = 0;
+    #####: 3936:	l->list.flags &= ~LF_ARRAY;
+        -: 3937:    }
+        -: 3938:
+        -: 3939:    /*
+        -: 3940:     * If a multsub result had whitespace at the start and we're
+        -: 3941:     * splitting and there's a previous string, now's the time to do so.
+        -: 3942:     */
+     1742: 3943:    if ((ms_flags & MULTSUB_WS_AT_START) && aptr > ostr) {
+    #####: 3944:	insertlinknode(l, n, dupstrpfx(ostr, aptr - ostr)), incnode(n);
+    #####: 3945:	ostr = aptr;
+        -: 3946:    }
+        -: 3947:    /* Likewise at the end */
+     1742: 3948:    if ((ms_flags & MULTSUB_WS_AT_END) && *fstr) {
+    #####: 3949:	insertlinknode(l, n, dupstring(fstr)); /* appended, no incnode */
+    #####: 3950:	*fstr = '\0';
+        -: 3951:    }
+     1742: 3952:    if (arrasg && !isarr) {
+        -: 3953:	/*
+        -: 3954:	 * Caller requested this be forced to an array even if scalar.
+        -: 3955:	 * Any point in distinguishing arrasg == 2 (assoc array) here?
+        -: 3956:	 */
+    #####: 3957:	l->list.flags |= LF_ARRAY;
+    #####: 3958:	aval = hmkarray(val);
+    #####: 3959:	isarr = 1;
+        -: 3960:	DPUTS(!val, "value is NULL in paramsubst, empty array");
+        -: 3961:    }
+     1742: 3962:    if (isarr) {
+        -: 3963:	char *x;
+        -: 3964:	char *y;
+        -: 3965:	int xlen;
+        -: 3966:	int i;
+       55: 3967:	LinkNode on = n;
+        -: 3968:
+        -: 3969:	/* Handle the (u) flag; we need this before the next test */
+       55: 3970:	if (unique) {
+    #####: 3971:	    if(!copied)
+    #####: 3972:		aval = arrdup(aval);
+        -: 3973:
+    #####: 3974:	    i = arrlen(aval);
+    #####: 3975:	    if (i > 1)
+    #####: 3976:		zhuniqarray(aval);
+        -: 3977:	}
+       55: 3978:	if ((!aval[0] || !aval[1]) && !plan9) {
+        -: 3979:	    /*
+        -: 3980:	     * Empty array or single element.  Currently you only
+        -: 3981:	     * get a single element array at this point from the
+        -: 3982:	     * unique expansion above. but we can potentially
+        -: 3983:	     * have other reasons.
+        -: 3984:	     *
+        -: 3985:	     * The following test removes the markers
+        -: 3986:	     * from surrounding double quotes, but I don't know why
+        -: 3987:	     * that's necessary.
+        -: 3988:	     */
+        -: 3989:	    int vallen;
+    #####: 3990:	    if (aptr > (char *) getdata(n) &&
+    #####: 3991:		aptr[-1] == Dnull && *fstr == Dnull)
+    #####: 3992:		*--aptr = '\0', fstr++;
+    #####: 3993:	    vallen = aval[0] ? strlen(aval[0]) : 0;
+    #####: 3994:	    y = (char *) hcalloc((aptr - ostr) + vallen + strlen(fstr) + 1);
+    #####: 3995:	    strcpy(y, ostr);
+    #####: 3996:	    *str = y + (aptr - ostr);
+    #####: 3997:	    if (vallen)
+        -: 3998:	    {
+    #####: 3999:		strcpy(*str, aval[0]);
+    #####: 4000:		*str += vallen;
+        -: 4001:	    }
+    #####: 4002:	    strcpy(*str, fstr);
+    #####: 4003:	    setdata(n, y);
+    #####: 4004:	    return n;
+        -: 4005:	}
+        -: 4006:	/* Handle (o) and (O) and their variants */
+       55: 4007:	if (sortit != SORTIT_ANYOLDHOW) {
+    #####: 4008:	    if (!copied)
+    #####: 4009:		aval = arrdup(aval);
+    #####: 4010:	    if (indord) {
+    #####: 4011:		if (sortit & SORTIT_BACKWARDS) {
+        -: 4012:		    char *copy;
+    #####: 4013:		    char **end = aval + arrlen(aval) - 1, **start = aval;
+        -: 4014:
+        -: 4015:		    /* reverse the array */
+    #####: 4016:		    while (start < end) {
+    #####: 4017:			copy = *end;
+    #####: 4018:			*end-- = *start;
+    #####: 4019:			*start++ = copy;
+        -: 4020:		    }
+        -: 4021:		}
+        -: 4022:	    } else {
+        -: 4023:		/*
+        -: 4024:		 * HERE: we tested if the last element of the array
+        -: 4025:		 * was not a NULL string.  Why the last element?
+        -: 4026:		 * Why didn't we expect NULL strings to work?
+        -: 4027:		 * Was it just a clumsy way of testing whether there
+        -: 4028:		 * was enough in the array to sort?
+        -: 4029:		 */
+    #####: 4030:		strmetasort(aval, sortit, NULL);
+        -: 4031:	    }
+        -: 4032:	}
+       55: 4033:	if (plan9) {
+        -: 4034:	    /* Handle RC_EXPAND_PARAM */
+        -: 4035:	    LinkNode tn;
+        -: 4036:	    local_list1(tl);
+        -: 4037:
+    #####: 4038:	    *--fstr = Marker;
+    #####: 4039:	    init_list1(tl, fstr);
+    #####: 4040:	    if (!eval && !stringsubst(&tl, firstnode(&tl), ssub, ret_flags, 0))
+    #####: 4041:		return NULL;
+    #####: 4042:	    *str = aptr;
+    #####: 4043:	    tn = firstnode(&tl);
+    #####: 4044:	    while ((x = *aval++)) {
+    #####: 4045:		if (prenum || postnum)
+    #####: 4046:		    x = dopadding(x, prenum, postnum, preone, postone,
+        -: 4047:				  premul, postmul
+        -: 4048:#ifdef MULTIBYTE_SUPPORT
+        -: 4049:				  , multi_width
+        -: 4050:#endif
+        -: 4051:			);
+    #####: 4052:		if (eval && subst_parse_str(&x, (qt && !nojoin), quoteerr))
+    #####: 4053:		    return NULL;
+    #####: 4054:		xlen = strlen(x);
+    #####: 4055:		for (tn = firstnode(&tl);
+    #####: 4056:		     tn && *(y = (char *) getdata(tn)) == Marker;
+    #####: 4057:		     incnode(tn)) {
+    #####: 4058:		    strcatsub(&y, ostr, aptr, x, xlen, y + 1, globsubst,
+        -: 4059:			      copied);
+    #####: 4060:		    if (qt && !*y && isarr != 2)
+    #####: 4061:			y = dupstring(nulstring);
+    #####: 4062:		    if (plan9)
+    #####: 4063:			setdata(n, (void *) y), plan9 = 0;
+        -: 4064:		    else
+    #####: 4065:			insertlinknode(l, n, (void *) y), incnode(n);
+        -: 4066:		}
+        -: 4067:	    }
+    #####: 4068:	    for (; tn; incnode(tn)) {
+    #####: 4069:		y = (char *) getdata(tn);
+    #####: 4070:		if (*y == Marker)
+    #####: 4071:		    continue;
+    #####: 4072:		if (qt && !*y && isarr != 2)
+    #####: 4073:		    y = dupstring(nulstring);
+    #####: 4074:		if (plan9)
+    #####: 4075:		    setdata(n, (void *) y), plan9 = 0;
+        -: 4076:		else
+    #####: 4077:		    insertlinknode(l, n, (void *) y), incnode(n);
+        -: 4078:	    }
+    #####: 4079:	    if (plan9) {
+    #####: 4080:		uremnode(l, n);
+    #####: 4081:		return n;
+        -: 4082:	    }
+        -: 4083:	} else {
+        -: 4084:	    /*
+        -: 4085:	     * Not RC_EXPAND_PARAM: simply join the first and
+        -: 4086:	     * last values.
+        -: 4087:	     * TODO: how about removing the restriction that
+        -: 4088:	     * aval[1] is non-NULL to promote consistency?, or
+        -: 4089:	     * simply changing the test so that we drop into
+        -: 4090:	     * the scalar branch, instead of tricking isarr?
+        -: 4091:	     */
+       55: 4092:	    x = aval[0];
+       55: 4093:	    if (prenum || postnum)
+    #####: 4094:		x = dopadding(x, prenum, postnum, preone, postone,
+        -: 4095:			      premul, postmul
+        -: 4096:#ifdef MULTIBYTE_SUPPORT
+        -: 4097:			      , multi_width
+        -: 4098:#endif
+        -: 4099:		    );
+       55: 4100:	    if (eval && subst_parse_str(&x, (qt && !nojoin), quoteerr))
+    #####: 4101:		return NULL;
+       55: 4102:	    xlen = strlen(x);
+       55: 4103:	    strcatsub(&y, ostr, aptr, x, xlen, NULL, globsubst, copied);
+       55: 4104:	    if (qt && !*y && isarr != 2)
+    #####: 4105:		y = dupstring(nulstring);
+       55: 4106:	    setdata(n, (void *) y);
+        -: 4107:
+       55: 4108:	    i = 1;
+        -: 4109:	    /* aval[1] is non-null here */
+    13850: 4110:	    while (aval[i + 1]) {
+    13740: 4111:		x = aval[i++];
+    13740: 4112:		if (prenum || postnum)
+    #####: 4113:		    x = dopadding(x, prenum, postnum, preone, postone,
+        -: 4114:				  premul, postmul
+        -: 4115:#ifdef MULTIBYTE_SUPPORT
+        -: 4116:				  , multi_width
+        -: 4117:#endif
+        -: 4118:			);
+    13740: 4119:		if (eval && subst_parse_str(&x, (qt && !nojoin), quoteerr))
+    #####: 4120:		    return NULL;
+    13740: 4121:		if (qt && !*x && isarr != 2)
+    #####: 4122:		    y = dupstring(nulstring);
+        -: 4123:		else {
+    13740: 4124:		    y = dupstring(x);
+    13740: 4125:		    if (globsubst)
+    #####: 4126:			shtokenize(y);
+        -: 4127:		}
+    13740: 4128:		insertlinknode(l, n, (void *) y), incnode(n);
+        -: 4129:	    }
+        -: 4130:
+       55: 4131:	    x = aval[i];
+       55: 4132:	    if (prenum || postnum)
+    #####: 4133:		x = dopadding(x, prenum, postnum, preone, postone,
+        -: 4134:			      premul, postmul
+        -: 4135:#ifdef MULTIBYTE_SUPPORT
+        -: 4136:			      , multi_width
+        -: 4137:#endif
+        -: 4138:		    );
+       55: 4139:	    if (eval && subst_parse_str(&x, (qt && !nojoin), quoteerr))
+    #####: 4140:		return NULL;
+       55: 4141:	    xlen = strlen(x);
+       55: 4142:	    *str = strcatsub(&y, aptr, aptr, x, xlen, fstr, globsubst, copied);
+       55: 4143:	    if (qt && !*y && isarr != 2)
+    #####: 4144:		y = dupstring(nulstring);
+       55: 4145:	    insertlinknode(l, n, (void *) y), incnode(n);
+        -: 4146:	}
+        -: 4147:	/* This used to omit restoring of *str and instead test
+        -: 4148:	 *   if (eval)
+        -: 4149:	 *       n = on;
+        -: 4150:	 * but that causes strange behavior of history modifiers when
+        -: 4151:	 * applied across all values of an array.  What is magic about
+        -: 4152:	 * eval here that *str seemed not to need restoring?
+        -: 4153:	 */
+       55: 4154:	*str = getdata(n = on);
+        -: 4155:    } else {
+        -: 4156:	/*
+        -: 4157:	 * Scalar value.  Handle last minute transformations
+        -: 4158:	 * such as left- or right-padding and the (e) flag to
+        -: 4159:	 * revaluate the result.
+        -: 4160:	 */
+        -: 4161:	int xlen;
+        -: 4162:	char *x;
+        -: 4163:	char *y;
+        -: 4164:
+     1687: 4165:	x = val;
+     1687: 4166:	if (!x) {
+        -: 4167:	    /* Shouldn't have got here with a NULL string. */
+        -: 4168:	    DPUTS(1, "value is NULL in paramsubst");
+    #####: 4169:	    return NULL;
+        -: 4170:	}
+     1687: 4171:	if (prenum || postnum)
+    #####: 4172:	    x = dopadding(x, prenum, postnum, preone, postone,
+        -: 4173:			  premul, postmul
+        -: 4174:#ifdef MULTIBYTE_SUPPORT
+        -: 4175:			  , multi_width
+        -: 4176:#endif
+        -: 4177:		);
+     1687: 4178:	if (eval && subst_parse_str(&x, (qt && !nojoin), quoteerr))
+    #####: 4179:	    return NULL;
+     1687: 4180:	xlen = strlen(x);
+     1687: 4181:	*str = strcatsub(&y, ostr, aptr, x, xlen, fstr, globsubst, copied);
+     1687: 4182:	if (qt && !*y)
+        1: 4183:	    y = dupstring(nulstring);
+     1687: 4184:	setdata(n, (void *) y);
+        -: 4185:    }
+     1742: 4186:    if (eval)
+    #####: 4187:	*str = (char *) getdata(n);
+        -: 4188:
+     1742: 4189:    return n;
+        -: 4190:}
+        -: 4191:
+        -: 4192:/*
+        -: 4193: * Arithmetic substitution: `a' is the string to be evaluated, `bptr'
+        -: 4194: * points to the beginning of the string containing it.  The tail of
+        -: 4195: * the string is given by `rest'. *bptr is modified with the substituted
+        -: 4196: * string. The function returns a pointer to the tail in the substituted
+        -: 4197: * string.
+        -: 4198: */
+        -: 4199:
+        -: 4200:/**/
+        -: 4201:static char *
+        2: 4202:arithsubst(char *a, char **bptr, char *rest)
+        -: 4203:{
+        2: 4204:    char *s = *bptr, *t;
+        -: 4205:    char buf[BDIGBUFSIZE], *b;
+        -: 4206:    mnumber v;
+        -: 4207:
+        2: 4208:    singsub(&a);
+        2: 4209:    v = matheval(a);
+        2: 4210:    if ((v.type & MN_FLOAT) && !outputradix)
+    #####: 4211:	b = convfloat_underscore(v.u.d, outputunderscore);
+        -: 4212:    else {
+        2: 4213:	if (v.type & MN_FLOAT)
+    #####: 4214:	    v.u.l = (zlong) v.u.d;
+        2: 4215:	b = convbase_underscore(buf, v.u.l, outputradix, outputunderscore);
+        -: 4216:    }
+        4: 4217:    t = *bptr = (char *) hcalloc(strlen(*bptr) + strlen(b) +
+        2: 4218:				 strlen(rest) + 1);
+        2: 4219:    t--;
+        2: 4220:    while ((*++t = *s++));
+        2: 4221:    t--;
+        2: 4222:    while ((*++t = *b++));
+        2: 4223:    strcat(t, rest);
+        2: 4224:    return t;
+        -: 4225:}
+        -: 4226:
+        -: 4227:/* This function implements colon modifiers.
+        -: 4228: *
+        -: 4229: * STR is an in/out parameter.  On entry it is the string (e.g., path)
+        -: 4230: * to modified.  On return it is the modified path.
+        -: 4231: *
+        -: 4232: * PTR is an in/out parameter.  On entry it contains the string of colon
+        -: 4233: * modifiers.  On return it points past the last recognised modifier.
+        -: 4234: *
+        -: 4235: * INBRACE is non-zero if we are in some form of a bracketed or
+        -: 4236: * parenthesised expression; it is zero for modifiers ocurring
+        -: 4237: * in an an unbracketed variable substitution.  This means that
+        -: 4238: * $foo:t222 is treated ias ${foo:t}222 rather than ${foo:t222}
+        -: 4239: * for backward compatibility.
+        -: 4240: *
+        -: 4241: * Example:
+        -: 4242: *     ENTRY:   *str is "."   *ptr is ":AN"
+        -: 4243: *     RETURN:  *str is "/home/foobar" (equal to $PWD)   *ptr points to the "N"
+        -: 4244: */
+        -: 4245:
+        -: 4246:/**/
+        -: 4247:void
+        2: 4248:modify(char **str, char **ptr, int inbrace)
+        -: 4249:{
+        -: 4250:    char *ptr1, *ptr2, *ptr3, *lptr, c, *test, *sep, *t, *tt, tc, *e;
+        -: 4251:    char *copy, *all, *tmp, sav, sav1, *ptr1end;
+        -: 4252:    int gbal, wall, rec, al, nl, charlen, dellen;
+        -: 4253:    convchar_t del;
+        -: 4254:
+        2: 4255:    test = NULL;
+        -: 4256:
+        2: 4257:    if (**ptr == ':')
+        2: 4258:	*str = dupstring(*str);
+        -: 4259:
+        4: 4260:    while (**ptr == ':') {
+        2: 4261:	int count = 0;
+        -: 4262:
+        2: 4263:	lptr = *ptr;
+        2: 4264:	(*ptr)++;
+        2: 4265:	wall = gbal = 0;
+        2: 4266:	rec = 1;
+        2: 4267:	c = '\0';
+        2: 4268:	sep = NULL;
+        -: 4269:
+        4: 4270:	for (; !c && **ptr;) {
+        2: 4271:	    switch (**ptr) {
+    #####: 4272:            case 'a':
+        -: 4273:            case 'A':
+        -: 4274:	    case 'c':
+        -: 4275:	    case 'r':
+        -: 4276:	    case 'e':
+        -: 4277:	    case 'l':
+        -: 4278:	    case 'u':
+        -: 4279:	    case 'q':
+        -: 4280:	    case 'Q':
+        -: 4281:	    case 'P':
+    #####: 4282:		c = **ptr;
+    #####: 4283:		break;
+        -: 4284:
+    #####: 4285:	    case 'h':
+        -: 4286:	    case 't':
+    #####: 4287:		c = **ptr;
+    #####: 4288:		if (inbrace && idigit((*ptr)[1])) {
+        -: 4289:		    do {
+    #####: 4290:			count = 10 * count + ((*ptr)[1] - '0');
+    #####: 4291:			++(*ptr);
+    #####: 4292:		    } while (idigit((*ptr)[1]));
+        -: 4293:		}
+    #####: 4294:		break;
+        -: 4295:
+    #####: 4296:	    case 's':
+    #####: 4297:		c = **ptr;
+    #####: 4298:		(*ptr)++;
+    #####: 4299:		ptr1 = *ptr;
+    #####: 4300:		MB_METACHARINIT();
+    #####: 4301:		charlen = MB_METACHARLENCONV(ptr1, &del);
+        -: 4302:#ifdef MULTIBYTE_SUPPORT
+    #####: 4303:		if (del == WEOF)
+    #####: 4304:		    del = (wint_t)((*ptr1 == Meta) ? ptr1[1] ^ 32 : *ptr1);
+        -: 4305:#endif
+    #####: 4306:		ptr1 += charlen;
+    #####: 4307:		for (ptr2 = ptr1, charlen = 0; *ptr2; ptr2 += charlen) {
+        -: 4308:		    convchar_t del2;
+    #####: 4309:		    if ((*ptr2 == Bnull || *ptr2 == '\\') && ptr2[1]) {
+        -: 4310:			/* in double quotes, the backslash isn't tokenized */
+    #####: 4311:			if (*ptr2 == '\\')
+    #####: 4312:			    *ptr2 = Bnull;
+    #####: 4313:			charlen = 2;
+    #####: 4314:			continue;
+        -: 4315:		    }
+    #####: 4316:		    charlen = MB_METACHARLENCONV(ptr2, &del2);
+        -: 4317:#ifdef MULTIBYTE_SUPPORT
+    #####: 4318:		    if (del2 == WEOF)
+    #####: 4319:			del2 = (wint_t)((*ptr2 == Meta) ?
+    #####: 4320:					ptr2[1] ^ 32 : *ptr2);
+        -: 4321:#endif
+    #####: 4322:		    if (del2 == del)
+    #####: 4323:			break;
+        -: 4324:		}
+    #####: 4325:		if (!*ptr2) {
+    #####: 4326:		    zerr("bad substitution");
+    #####: 4327:		    return;
+        -: 4328:		}
+    #####: 4329:		ptr1end = ptr2;
+    #####: 4330:		ptr2 += charlen;
+    #####: 4331:		sav1 = *ptr1end;
+    #####: 4332:		*ptr1end = '\0';
+    #####: 4333:		for (ptr3 = ptr2, charlen = 0; *ptr3; ptr3 += charlen) {
+        -: 4334:		    convchar_t del3;
+    #####: 4335:		    if ((*ptr3 == Bnull || *ptr3 == '\\') && ptr3[1]) {
+        -: 4336:			/* in double quotes, the backslash isn't tokenized */
+    #####: 4337:			if (*ptr3 == '\\')
+    #####: 4338:			    *ptr3 = Bnull;
+    #####: 4339:			charlen = 2;
+    #####: 4340:			continue;
+        -: 4341:		    }
+    #####: 4342:		    charlen = MB_METACHARLENCONV(ptr3, &del3);
+        -: 4343:#ifdef MULTIBYTE_SUPPORT
+    #####: 4344:		    if (del3 == WEOF)
+    #####: 4345:			del3 = (wint_t)((*ptr3 == Meta) ?
+    #####: 4346:					ptr3[1] ^ 32 : *ptr3);
+        -: 4347:#endif
+    #####: 4348:		    if (del3 == del)
+    #####: 4349:			break;
+        -: 4350:		}
+    #####: 4351:		sav = *ptr3;
+    #####: 4352:		*ptr3 = '\0';
+    #####: 4353:		if (*ptr1) {
+    #####: 4354:		    zsfree(hsubl);
+    #####: 4355:		    hsubl = ztrdup(ptr1);
+        -: 4356: 		}
+    #####: 4357:		if (!hsubl) {
+    #####: 4358:		    zerr("no previous substitution");
+    #####: 4359:		    return;
+        -: 4360:		}
+    #####: 4361:		zsfree(hsubr);
+    #####: 4362:		for (tt = hsubl; *tt; tt++)
+    #####: 4363:		    if (inull(*tt) && *tt != Bnullkeep)
+    #####: 4364:			chuck(tt--);
+    #####: 4365:		if (!isset(HISTSUBSTPATTERN))
+    #####: 4366:		    untokenize(hsubl);
+    #####: 4367:		for (tt = hsubr = ztrdup(ptr2); *tt; tt++) {
+    #####: 4368:		    if (inull(*tt) && *tt != Bnullkeep) {
+    #####: 4369:			if (*tt == Bnull && (tt[1] == '&' || tt[1] == '\\')) {
+        -: 4370:			    /*
+        -: 4371:			     * The substitution will treat \& and \\
+        -: 4372:			     * specially.  We need to leave real \'s
+        -: 4373:			     * as the first character for this to work.
+        -: 4374:			     */
+    #####: 4375:			    *tt = '\\';
+        -: 4376:			} else {
+    #####: 4377:			    chuck(tt--);
+        -: 4378:			}
+        -: 4379:		    }
+        -: 4380:		}
+    #####: 4381:		*ptr1end = sav1;
+    #####: 4382:		*ptr3 = sav;
+    #####: 4383:		*ptr = ptr3 - 1;
+    #####: 4384:		if (*ptr3) {
+        -: 4385:		    /* Final terminator is optional. */
+    #####: 4386:		    *ptr += charlen;
+        -: 4387:		}
+    #####: 4388:		break;
+        -: 4389:
+    #####: 4390:	    case '&':
+    #####: 4391:		c = 's';
+    #####: 4392:		break;
+        -: 4393:
+    #####: 4394:	    case 'g':
+    #####: 4395:		(*ptr)++;
+    #####: 4396:		gbal = 1;
+    #####: 4397:		break;
+        -: 4398:
+    #####: 4399:	    case 'w':
+    #####: 4400:		wall = 1;
+    #####: 4401:		(*ptr)++;
+    #####: 4402:		break;
+    #####: 4403:	    case 'W':
+    #####: 4404:		wall = 1;
+    #####: 4405:		(*ptr)++;
+    #####: 4406:		ptr1 = get_strarg(ptr2 = *ptr, &charlen);
+    #####: 4407:		if ((sav = *ptr1))
+    #####: 4408:		    *ptr1 = '\0';
+    #####: 4409:		sep = dupstring(ptr2 + charlen);
+    #####: 4410:		if (sav)
+    #####: 4411:		    *ptr1 = sav;
+    #####: 4412:		*ptr = ptr1 + charlen;
+    #####: 4413:		c = '\0';
+    #####: 4414:		break;
+        -: 4415:
+    #####: 4416:	    case 'f':
+    #####: 4417:		rec = -1;
+    #####: 4418:		(*ptr)++;
+    #####: 4419:		break;
+    #####: 4420:	    case 'F':
+    #####: 4421:		(*ptr)++;
+    #####: 4422:		rec = get_intarg(ptr, &dellen);
+    #####: 4423:		break;
+        2: 4424:	    default:
+        2: 4425:		*ptr = lptr;
+        2: 4426:		return;
+        -: 4427:	    }
+        -: 4428:	}
+    #####: 4429:	(*ptr)++;
+    #####: 4430:	if (!c) {
+    #####: 4431:	    *ptr = lptr;
+    #####: 4432:	    return;
+        -: 4433:	}
+    #####: 4434:	if (rec < 0)
+    #####: 4435:	    test = dupstring(*str);
+        -: 4436:
+    #####: 4437:	while (rec--) {
+    #####: 4438:	    if (wall) {
+    #####: 4439:		al = 0;
+    #####: 4440:		all = NULL;
+    #####: 4441:		for (t = e = *str; (tt = findword(&e, sep));) {
+    #####: 4442:		    tc = *e;
+    #####: 4443:		    *e = '\0';
+    #####: 4444:		    if (c != 'l' && c != 'u')
+    #####: 4445:			copy = dupstring(tt);
+    #####: 4446:		    *e = tc;
+    #####: 4447:		    switch (c) {
+    #####: 4448:                    case 'a':
+    #####: 4449:			chabspath(&copy);
+    #####: 4450:			break;
+    #####: 4451:		    case 'A':
+    #####: 4452:			chrealpath(&copy, 'A', 1);
+    #####: 4453:			break;
+    #####: 4454:		    case 'c':
+        -: 4455:		    {
+    #####: 4456:			char *copy2 = equalsubstr(copy, 0, 0);
+    #####: 4457:			if (copy2)
+    #####: 4458:			    copy = copy2;
+    #####: 4459:			break;
+        -: 4460:		    }
+    #####: 4461:		    case 'h':
+    #####: 4462:			remtpath(&copy, count);
+    #####: 4463:			break;
+    #####: 4464:		    case 'r':
+    #####: 4465:			remtext(&copy);
+    #####: 4466:			break;
+    #####: 4467:		    case 'e':
+    #####: 4468:			rembutext(&copy);
+    #####: 4469:			break;
+    #####: 4470:		    case 't':
+    #####: 4471:			remlpaths(&copy, count);
+    #####: 4472:			break;
+    #####: 4473:		    case 'l':
+    #####: 4474:			copy = casemodify(tt, CASMOD_LOWER);
+    #####: 4475:			break;
+    #####: 4476:		    case 'u':
+    #####: 4477:			copy = casemodify(tt, CASMOD_UPPER);
+    #####: 4478:			break;
+    #####: 4479:		    case 's':
+    #####: 4480:			if (hsubl && hsubr)
+    #####: 4481:			    subst(&copy, hsubl, hsubr, gbal);
+    #####: 4482:			break;
+    #####: 4483:		    case 'q':
+    #####: 4484:			copy = quotestring(copy, QT_BACKSLASH_SHOWNULL);
+    #####: 4485:			break;
+    #####: 4486:		    case 'Q':
+        -: 4487:			{
+    #####: 4488:			    int one = noerrs, oef = errflag;
+        -: 4489:
+    #####: 4490:			    noerrs = 1;
+    #####: 4491:			    parse_subst_string(copy);
+    #####: 4492:			    noerrs = one;
+        -: 4493:			    /* Retain any user interrupt error status */
+    #####: 4494:			    errflag = oef | (errflag & ERRFLAG_INT);
+    #####: 4495:			    remnulargs(copy);
+    #####: 4496:			    untokenize(copy);
+        -: 4497:			}
+    #####: 4498:			break;
+    #####: 4499:		    case 'P':
+    #####: 4500:			if (*copy != '/') {
+    #####: 4501:			    char *here = zgetcwd();
+    #####: 4502:			    if (here[strlen(here)-1] != '/')
+    #####: 4503:				copy = zhtricat(metafy(here, -1, META_HEAPDUP), "/", copy);
+        -: 4504:			    else
+    #####: 4505:				copy = dyncat(here, copy);
+        -: 4506:			}
+    #####: 4507:			copy = xsymlink(copy, 1);
+    #####: 4508:			break;
+        -: 4509:		    }
+    #####: 4510:		    tc = *tt;
+    #####: 4511:		    *tt = '\0';
+    #####: 4512:		    nl = al + strlen(t) + strlen(copy);
+    #####: 4513:		    ptr1 = tmp = (char *)zhalloc(nl + 1);
+    #####: 4514:		    if (all)
+    #####: 4515:			for (ptr2 = all; *ptr2;)
+    #####: 4516:			    *ptr1++ = *ptr2++;
+    #####: 4517:		    for (ptr2 = t; *ptr2;)
+    #####: 4518:			*ptr1++ = *ptr2++;
+    #####: 4519:		    *tt = tc;
+    #####: 4520:		    for (ptr2 = copy; *ptr2;)
+    #####: 4521:			*ptr1++ = *ptr2++;
+    #####: 4522:		    *ptr1 = '\0';
+    #####: 4523:		    al = nl;
+    #####: 4524:		    all = tmp;
+    #####: 4525:		    t = e;
+        -: 4526:		}
+    #####: 4527:		if (!all)
+    #####: 4528:		    *str = dupstring("");
+        -: 4529:		else
+    #####: 4530:		    *str = all;
+        -: 4531:
+        -: 4532:	    } else {
+    #####: 4533:		switch (c) {
+    #####: 4534:		case 'a':
+    #####: 4535:		    chabspath(str);
+    #####: 4536:		    break;
+    #####: 4537:		case 'A':
+    #####: 4538:		    chrealpath(str, 'A', 1);
+    #####: 4539:		    break;
+    #####: 4540:		case 'c':
+        -: 4541:		{
+    #####: 4542:		    char *copy2 = equalsubstr(*str, 0, 0);
+    #####: 4543:		    if (copy2)
+    #####: 4544:			*str = copy2;
+    #####: 4545:		    break;
+        -: 4546:		}
+    #####: 4547:		case 'h':
+    #####: 4548:		    remtpath(str, count);
+    #####: 4549:		    break;
+    #####: 4550:		case 'r':
+    #####: 4551:		    remtext(str);
+    #####: 4552:		    break;
+    #####: 4553:		case 'e':
+    #####: 4554:		    rembutext(str);
+    #####: 4555:		    break;
+    #####: 4556:		case 't':
+    #####: 4557:		    remlpaths(str, count);
+    #####: 4558:		    break;
+    #####: 4559:		case 'l':
+    #####: 4560:		    *str = casemodify(*str, CASMOD_LOWER);
+    #####: 4561:		    break;
+    #####: 4562:		case 'u':
+    #####: 4563:		    *str = casemodify(*str, CASMOD_UPPER);
+    #####: 4564:		    break;
+    #####: 4565:		case 's':
+    #####: 4566:		    if (hsubl && hsubr)
+    #####: 4567:			subst(str, hsubl, hsubr, gbal);
+    #####: 4568:		    break;
+    #####: 4569:		case 'q':
+    #####: 4570:		    *str = quotestring(*str, QT_BACKSLASH);
+    #####: 4571:		    break;
+    #####: 4572:		case 'Q':
+        -: 4573:		    {
+    #####: 4574:			int one = noerrs, oef = errflag;
+        -: 4575:
+    #####: 4576:			noerrs = 1;
+    #####: 4577:			parse_subst_string(*str);
+    #####: 4578:			noerrs = one;
+        -: 4579:			/* Retain any user interrupt error status */
+    #####: 4580:			errflag = oef | (errflag & ERRFLAG_INT);
+    #####: 4581:			remnulargs(*str);
+    #####: 4582:			untokenize(*str);
+        -: 4583:		    }
+    #####: 4584:		    break;
+    #####: 4585:		case 'P':
+    #####: 4586:		    if (**str != '/') {
+    #####: 4587:			char *here = zgetcwd();
+    #####: 4588:			if (here[strlen(here)-1] != '/')
+    #####: 4589:			    *str = zhtricat(metafy(here, -1, META_HEAPDUP), "/", *str);
+        -: 4590:			else
+    #####: 4591:			    *str = dyncat(here, *str);
+        -: 4592:		    }
+    #####: 4593:		    *str = xsymlink(*str, 1);
+    #####: 4594:		    break;
+        -: 4595:		}
+        -: 4596:	    }
+    #####: 4597:	    if (rec < 0) {
+    #####: 4598:		if (!strcmp(test, *str))
+    #####: 4599:		    rec = 0;
+        -: 4600:		else
+    #####: 4601:		    test = dupstring(*str);
+        -: 4602:	    }
+        -: 4603:	}
+        -: 4604:    }
+        -: 4605:}
+        -: 4606:
+        -: 4607:/* get a directory stack entry */
+        -: 4608:
+        -: 4609:/**/
+        -: 4610:static char *
+    #####: 4611:dstackent(char ch, int val)
+        -: 4612:{
+        -: 4613:    int backwards;
+    #####: 4614:    LinkNode end=(LinkNode)dirstack, n;
+        -: 4615:
+    #####: 4616:    backwards = ch == (isset(PUSHDMINUS) ? '+' : '-');
+    #####: 4617:    if(!backwards && !val--)
+    #####: 4618:	return pwd;
+    #####: 4619:    if (backwards)
+    #####: 4620:	for (n=lastnode(dirstack); n != end && val; val--, n=prevnode(n));
+        -: 4621:    else
+    #####: 4622:	for (end=NULL, n=firstnode(dirstack); n && val; val--, n=nextnode(n));
+    #####: 4623:    if (n == end) {
+    #####: 4624:	if (backwards && !val)
+    #####: 4625:	    return pwd;
+    #####: 4626:	if (isset(NOMATCH))
+    #####: 4627:	    zerr("not enough directory stack entries.");
+    #####: 4628:	return NULL;
+        -: 4629:    }
+    #####: 4630:    return (char *)getdata(n);
+        -: 4631:}

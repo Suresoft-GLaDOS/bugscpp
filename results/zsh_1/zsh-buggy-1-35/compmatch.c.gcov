@@ -1,0 +1,2976 @@
+        -:    0:Source:compmatch.c
+        -:    0:Graph:/home/workspace/Src/Zle/compmatch.gcno
+        -:    0:Data:/home/workspace/Src/Zle/compmatch.gcda
+        -:    0:Runs:6
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * compmatch.c - the complete module, completion matching code
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "complete.mdh"
+        -:   31:#include "compmatch.pro"
+        -:   32:
+        -:   33:/*
+        -:   34: * This compares two cpattern lists and returns non-zero if they are
+        -:   35: * equal (N.B. opposite sense to usual *cmp()).
+        -:   36: *
+        -:   37: * The old version of this didn't worry about whether the lists
+        -:   38: * were the same length.  This one does.  It's hard to see how
+        -:   39: * that can be wrong even if it's unnecessary.
+        -:   40: */
+        -:   41:
+        -:   42:/**/
+        -:   43:static int
+    #####:   44:cpatterns_same(Cpattern a, Cpattern b)
+        -:   45:{
+    #####:   46:    while (a) {
+    #####:   47:	if (!b)
+    #####:   48:	    return 0;
+    #####:   49:	if (a->tp != b->tp)
+    #####:   50:	    return 0;
+    #####:   51:	switch (a->tp) {
+    #####:   52:	case CPAT_CCLASS:
+        -:   53:	case CPAT_NCLASS:
+        -:   54:	case CPAT_EQUIV:
+        -:   55:	    /*
+        -:   56:	     * Patterns can actually match the same even if
+        -:   57:	     * the range strings don't compare differently, but
+        -:   58:	     * I don't think we need to handle that subtlety.
+        -:   59:	     */
+    #####:   60:	    if (strcmp(a->u.str, b->u.str) != 0)
+    #####:   61:		return 0;
+    #####:   62:	    break;
+        -:   63:
+    #####:   64:	case CPAT_CHAR:
+    #####:   65:	    if (a->u.chr != b->u.chr)
+    #####:   66:		return 0;
+    #####:   67:	    break;
+        -:   68:
+    #####:   69:	default:
+        -:   70:	    /* here to silence compiler */
+    #####:   71:	    break;
+        -:   72:	}
+        -:   73:
+    #####:   74:	a = a->next;
+    #####:   75:	b = b->next;
+        -:   76:    }
+    #####:   77:    return !b;
+        -:   78:}
+        -:   79:
+        -:   80:/* This compares two cmatchers and returns non-zero if they are equal. */
+        -:   81:
+        -:   82:/**/
+        -:   83:static int
+    #####:   84:cmatchers_same(Cmatcher a, Cmatcher b)
+        -:   85:{
+    #####:   86:    return (a == b ||
+    #####:   87:	    (a->flags == b->flags &&
+    #####:   88:	     a->llen == b->llen && a->wlen == b->wlen &&
+    #####:   89:	     (!a->llen || cpatterns_same(a->line, b->line)) &&
+    #####:   90:	     (a->wlen <= 0 || cpatterns_same(a->word, b->word)) &&
+    #####:   91:	     (!(a->flags & (CMF_LEFT | CMF_RIGHT)) ||
+    #####:   92:	      (a->lalen == b->lalen && a->ralen == b->ralen &&
+    #####:   93:	       (!a->lalen || cpatterns_same(a->left, b->left)) &&
+    #####:   94:	       (!a->ralen || cpatterns_same(a->right, b->right))))));
+        -:   95:}
+        -:   96:
+        -:   97:/* Add the given matchers to the bmatcher list. */
+        -:   98:
+        -:   99:/**/
+        -:  100:mod_export void
+    #####:  101:add_bmatchers(Cmatcher m)
+        -:  102:{
+    #####:  103:    Cmlist old = bmatchers, *q = &bmatchers, n;
+        -:  104:
+    #####:  105:    for (; m; m = m->next) {
+    #####:  106:	if ((!m->flags && m->wlen > 0 && m->llen > 0) ||
+    #####:  107:	    (m->flags == CMF_RIGHT && m->wlen < 0 && !m->llen)) {
+    #####:  108:	    *q = n = (Cmlist) zhalloc(sizeof(struct cmlist));
+    #####:  109:	    n->matcher = m;
+    #####:  110:	    q = &(n->next);
+        -:  111:	}
+        -:  112:    }
+    #####:  113:    *q = old;
+    #####:  114:}
+        -:  115:
+        -:  116:/* This is called when the matchers in the mstack have changed to
+        -:  117: * ensure that the bmatchers list contains no matchers not in mstack. */
+        -:  118:
+        -:  119:/**/
+        -:  120:mod_export void
+    #####:  121:update_bmatchers(void)
+        -:  122:{
+    #####:  123:    Cmlist p = bmatchers, ms;
+        -:  124:    Cmatcher mp;
+        -:  125:    int t;
+        -:  126:
+    #####:  127:    while (p) {
+    #####:  128:	t = 0;
+    #####:  129:	for (ms = mstack; ms && !t; ms = ms->next)
+    #####:  130:	    for (mp = ms->matcher; mp && !t; mp = mp->next)
+    #####:  131:		t = cmatchers_same(mp, p->matcher);
+        -:  132:
+    #####:  133:	p = p->next;
+    #####:  134:	if (!t) {
+    #####:  135:	    bmatchers = p;
+        -:  136:	}
+        -:  137:    }
+    #####:  138:}
+        -:  139:
+        -:  140:/* This returns a new Cline structure. */
+        -:  141:
+        -:  142:/**/
+        -:  143:Cline
+    #####:  144:get_cline(char *l, int ll, char *w, int wl, char *o, int ol, int fl)
+        -:  145:{
+        -:  146:    Cline r;
+        -:  147:
+        -:  148:    /* Prefer to take it from the buffer list (freecl), if there
+        -:  149:     * is none, allocate a new one. */
+        -:  150:
+    #####:  151:    if ((r = freecl))
+    #####:  152:	freecl = r->next;
+        -:  153:    else
+    #####:  154:	r = (Cline) zhalloc(sizeof(*r));
+        -:  155:
+    #####:  156:    r->next = NULL;
+    #####:  157:    r->line = l; r->llen = ll;
+    #####:  158:    r->word = w; r->wlen = wl;
+        -:  159:    DPUTS(wl > 0 && !*w, "Bad word");
+    #####:  160:    r->orig = o; r->olen = ol;
+    #####:  161:    r->slen = 0;
+    #####:  162:    r->flags = fl;
+    #####:  163:    r->prefix = r->suffix = NULL;
+    #####:  164:    r->min = r->max = 0;
+    #####:  165:    return r;
+        -:  166:}
+        -:  167:
+        -:  168:/* This frees a cline list. */
+        -:  169:
+        -:  170:/**/
+        -:  171:void
+    #####:  172:free_cline(Cline l)
+        -:  173:{
+        -:  174:    Cline n;
+        -:  175:
+    #####:  176:    while (l) {
+    #####:  177:	n = l->next;
+    #####:  178:	l->next = freecl;
+    #####:  179:	freecl = l;
+    #####:  180:	free_cline(l->prefix);
+    #####:  181:	free_cline(l->suffix);
+    #####:  182:	l = n;
+        -:  183:    }
+    #####:  184:}
+        -:  185:
+        -:  186:/* Copy a cline list. */
+        -:  187:
+        -:  188:/**/
+        -:  189:Cline
+    #####:  190:cp_cline(Cline l, int deep)
+        -:  191:{
+    #####:  192:    Cline r = NULL, *p = &r, t, lp = NULL;
+        -:  193:
+    #####:  194:    while (l) {
+    #####:  195:	if ((t = freecl))
+    #####:  196:	    freecl = t->next;
+        -:  197:	else
+    #####:  198:	    t = (Cline) zhalloc(sizeof(*t));
+    #####:  199:	memcpy(t, l, sizeof(*t));
+    #####:  200:	if (deep) {
+    #####:  201:	    if (t->prefix)
+    #####:  202:		t->prefix = cp_cline(t->prefix, 0);
+    #####:  203:	    if (t->suffix)
+    #####:  204:		t->suffix = cp_cline(t->suffix, 0);
+        -:  205:	}
+    #####:  206:	*p = lp = t;
+    #####:  207:	p = &(t->next);
+    #####:  208:	l = l->next;
+        -:  209:    }
+    #####:  210:    *p = NULL;
+        -:  211:
+    #####:  212:    return r;
+        -:  213:}
+        -:  214:
+        -:  215:/* Calculate the length of a cline and its sub-lists. */
+        -:  216:
+        -:  217:/**/
+        -:  218:int
+    #####:  219:cline_sublen(Cline l)
+        -:  220:{
+    #####:  221:    int len = ((l->flags & CLF_LINE) ? l->llen : l->wlen);
+        -:  222:
+    #####:  223:    if (l->olen && !((l->flags & CLF_SUF) ? l->suffix : l->prefix))
+    #####:  224:	len += l->olen;
+        -:  225:    else {
+        -:  226:	Cline p;
+        -:  227:
+    #####:  228:	for (p = l->prefix; p; p = p->next)
+    #####:  229:	    len += ((p->flags & CLF_LINE) ? p->llen : p->wlen);
+    #####:  230:	for (p = l->suffix; p; p = p->next)
+    #####:  231:	    len += ((p->flags & CLF_LINE) ? p->llen : p->wlen);
+        -:  232:    }
+    #####:  233:    return len;
+        -:  234:}
+        -:  235:
+        -:  236:/* Set the lengths in the cline lists. */
+        -:  237:
+        -:  238:/**/
+        -:  239:void
+    #####:  240:cline_setlens(Cline l, int both)
+        -:  241:{
+    #####:  242:    while (l) {
+    #####:  243:	l->min = cline_sublen(l);
+    #####:  244:	if (both)
+    #####:  245:	    l->max = l->min;
+    #####:  246:	l = l->next;
+        -:  247:    }
+    #####:  248:}
+        -:  249:
+        -:  250:/* This sets the CLF_MATCHED flag in the given clines. */
+        -:  251:
+        -:  252:/**/
+        -:  253:void
+    #####:  254:cline_matched(Cline p)
+        -:  255:{
+    #####:  256:    while (p) {
+    #####:  257:	p->flags |= CLF_MATCHED;
+    #####:  258:	cline_matched(p->prefix);
+    #####:  259:	cline_matched(p->suffix);
+        -:  260:
+    #####:  261:	p = p->next;
+        -:  262:    }
+    #####:  263:}
+        -:  264:
+        -:  265:/* This reverts the order of the elements of the given cline list and
+        -:  266: * returns a pointer to the new head. */
+        -:  267:
+        -:  268:/**/
+        -:  269:Cline
+    #####:  270:revert_cline(Cline p)
+        -:  271:{
+    #####:  272:    Cline r = NULL, n;
+        -:  273:
+    #####:  274:    while (p) {
+    #####:  275:	n = p->next;
+    #####:  276:	p->next = r;
+    #####:  277:	r = p;
+    #####:  278:	p = n;
+        -:  279:    }
+    #####:  280:    return r;
+        -:  281:}
+        -:  282:
+        -:  283:/* Global variables used during matching: a char-buffer for the string to
+        -:  284: * use for the match, and two cline lists for the two levels we use. */
+        -:  285:
+        -:  286:/**/
+        -:  287:char *matchbuf = NULL;
+        -:  288:/**/
+        -:  289:int matchbuflen = 0, matchbufadded;
+        -:  290:
+        -:  291:/**/
+        -:  292:Cline matchparts, matchlastpart;
+        -:  293:/**/
+        -:  294:Cline matchsubs, matchlastsub;
+        -:  295:
+        -:  296:/* This initialises the variables above. */
+        -:  297:
+        -:  298:/**/
+        -:  299:static void
+    #####:  300:start_match(void)
+        -:  301:{
+    #####:  302:    if (matchbuf)
+    #####:  303:	*matchbuf = '\0';
+    #####:  304:    matchbufadded = 0;
+    #####:  305:    matchparts = matchlastpart = matchsubs = matchlastsub = NULL;
+    #####:  306:}
+        -:  307:
+        -:  308:/* This aborts a matching, freeing the cline lists build. */
+        -:  309:
+        -:  310:/**/
+        -:  311:static void
+    #####:  312:abort_match(void)
+        -:  313:{
+    #####:  314:    free_cline(matchparts);
+    #####:  315:    free_cline(matchsubs);
+    #####:  316:    matchparts = matchsubs = NULL;
+    #####:  317:}
+        -:  318:
+        -:  319:/* This adds a new string in the static char buffer. The arguments are
+        -:  320: * the matcher used (if any), the strings from the line and the word
+        -:  321: * and the length of the string from the word. The last argument is
+        -:  322: * non-zero if we are matching a suffix (where the given string has to 
+        -:  323: * be prepended to the contents of the buffer). */
+        -:  324:
+        -:  325:/**/
+        -:  326:static void
+    #####:  327:add_match_str(Cmatcher m, char *l, char *w, int wl, int sfx)
+        -:  328:{
+        -:  329:    /* Get the string and length to insert: either from the line 
+        -:  330:     * or from the match. */
+    #####:  331:    if (m && (m->flags & CMF_LINE)) {
+    #####:  332:	wl = m->llen; w = l;
+        -:  333:    }
+    #####:  334:    if (wl) {
+        -:  335:	/* Probably resize the buffer. */
+    #####:  336:	if (matchbuflen - matchbufadded <= wl) {
+    #####:  337:	    int blen = matchbuflen + wl + 20;
+        -:  338:	    char *buf;
+        -:  339:
+    #####:  340:	    buf = (char *) zalloc(blen);
+    #####:  341:	    if (matchbuf) {
+    #####:  342:		memcpy(buf, matchbuf, matchbuflen);
+    #####:  343:		zfree(matchbuf, matchbuflen);
+        -:  344:	    }
+        -:  345:#ifdef DEBUG
+        -:  346:	    else {
+        -:  347:		DPUTS(matchbuflen, "matchbuflen with no matchbuf");
+        -:  348:	    }
+        -:  349:#endif
+    #####:  350:	    matchbuf = buf;
+    #####:  351:	    matchbuflen = blen;
+        -:  352:	}
+        -:  353:	/* Insert the string. */
+    #####:  354:	if (sfx) {
+    #####:  355:	    memmove(matchbuf + wl, matchbuf, matchbufadded + 1);
+    #####:  356:	    memcpy(matchbuf, w, wl);
+        -:  357:	} else
+    #####:  358:	    memcpy(matchbuf + matchbufadded, w, wl);
+    #####:  359:	matchbufadded += wl;
+    #####:  360:	matchbuf[matchbufadded] = '\0';
+        -:  361:    }
+    #####:  362:}
+        -:  363:
+        -:  364:/* This adds a cline for a word-part during matching. Arguments are the
+        -:  365: * matcher used, pointers to the line and word strings for the anchor,
+        -:  366: * a pointer to the original line string for the whole part, the string
+        -:  367: * before (or after) the anchor that has not yet been added, the length
+        -:  368: * of the line-string for that, and a flag saying if we are matching a 
+        -:  369: * suffix. */
+        -:  370:
+        -:  371:/**/
+        -:  372:static void
+    #####:  373:add_match_part(Cmatcher m, char *l, char *w, int wl,
+        -:  374:	       char *o, int ol, char *s, int sl, int osl, int sfx)
+        -:  375:{
+        -:  376:    Cline p, lp, lprem;
+        -:  377:
+        -:  378:    /* If the anchors are equal, we keep only one. */
+        -:  379:
+    #####:  380:    if (l && !strncmp(l, w, wl))
+    #####:  381:	l = NULL;
+        -:  382:
+        -:  383:    /*
+        -:  384:     * Split the new part into parts and turn the last one into a
+        -:  385:     * `suffix' if we have a left anchor---don't do this if the last one
+        -:  386:     * came from a right anchor before the end of the part we're
+        -:  387:     * splitting.
+        -:  388:     */
+        -:  389:
+    #####:  390:    p = bld_parts(s, sl, osl, &lp, &lprem);
+        -:  391:
+    #####:  392:    if (lprem && m && (m->flags & CMF_LEFT)) {
+    #####:  393:	lprem->flags |= CLF_SUF;
+    #####:  394:	lprem->suffix = lprem->prefix;
+    #####:  395:	lprem->prefix = NULL;
+        -:  396:    }
+        -:  397:    /* cline lists for suffixes are sorted from back to front, so we have
+        -:  398:     * to revert the list we got. */
+    #####:  399:    if (sfx)
+    #####:  400:	p = revert_cline(lp = p);
+        -:  401:    /* Now add the sub-clines we already had. */
+    #####:  402:    if (matchsubs) {
+    #####:  403:	if (sfx) {
+        -:  404:	    Cline q;
+        -:  405:
+    #####:  406:	    if ((q = lp->prefix)) {
+    #####:  407:		while (q->next)
+    #####:  408:		    q = q->next;
+    #####:  409:		q->next = matchsubs;
+        -:  410:	    } else
+    #####:  411:		lp->prefix = matchsubs;
+        -:  412:
+    #####:  413:	    matchlastsub->next = NULL;
+        -:  414:	} else {
+    #####:  415:	    matchlastsub->next = p->prefix;
+    #####:  416:	    p->prefix = matchsubs;
+        -:  417:	}
+    #####:  418:	matchsubs = matchlastsub = NULL;
+        -:  419:    }
+        -:  420:    /* Store the arguments in the last part-cline. */
+    #####:  421:    if (lp->llen || lp->wlen) {
+    #####:  422:	lp->next = get_cline(l, wl, w, wl, o, ol, CLF_NEW);
+    #####:  423:	lp = lp->next;
+        -:  424:    } else {
+    #####:  425:	lp->line = l; lp->llen = wl;
+    #####:  426:	lp->word = w; lp->wlen = wl;
+        -:  427:	DPUTS(wl > 0 && !*w, "Bad word");
+    #####:  428:	lp->orig = o; lp->olen = ol;
+        -:  429:    }
+    #####:  430:    if (o || ol)
+    #####:  431:	lp->flags &= ~CLF_NEW;
+        -:  432:
+        -:  433:    /* Finally, put the new parts on the list. */
+    #####:  434:    if (matchlastpart)
+    #####:  435:	matchlastpart->next = p;
+        -:  436:    else
+    #####:  437:	matchparts = p;
+    #####:  438:    matchlastpart = lp;
+    #####:  439:}
+        -:  440:
+        -:  441:/* This adds a new sub-cline. Arguments are the matcher and the strings from
+        -:  442: * the line and the word. */
+        -:  443:
+        -:  444:/**/
+        -:  445:static void
+    #####:  446:add_match_sub(Cmatcher m, char *l, int ll, char *w, int wl)
+        -:  447:{
+        -:  448:    int flags;
+        -:  449:    Cline n;
+        -:  450:
+        -:  451:    /* Check if we are interested only in the string from the line. */
+    #####:  452:    if (m && (m->flags & CMF_LINE)) {
+    #####:  453:	w = NULL; wl = 0;
+    #####:  454:	flags = CLF_LINE;
+        -:  455:    } else
+    #####:  456:	flags = 0;
+        -:  457:
+        -:  458:    /* And add the cline. */
+    #####:  459:    if (wl || ll) {
+        -:  460:	Cline p, lp;
+        -:  461:
+    #####:  462:	if ((p = n = bld_parts(w, wl, ll, &lp, NULL)) && n != lp) {
+    #####:  463:	    for (; p->next != lp; p = p->next);
+        -:  464:
+    #####:  465:	    if (matchsubs) {
+    #####:  466:		matchlastsub->next = n->prefix;
+    #####:  467:		n->prefix = matchsubs;
+        -:  468:	    }
+    #####:  469:	    matchsubs = matchlastsub = lp;
+        -:  470:
+    #####:  471:	    if (matchlastpart)
+    #####:  472:		matchlastpart->next = n;
+        -:  473:	    else
+    #####:  474:		matchparts = n;
+    #####:  475:	    p->next = 0;
+    #####:  476:	    matchlastpart = p;
+        -:  477:	} else {
+    #####:  478:	    n = get_cline(l, ll, w, wl, NULL, 0,
+    #####:  479:			  flags | ((m && m->wlen == -2) ? CLF_SKIP : 0));
+    #####:  480:	    if (matchlastsub)
+    #####:  481:		matchlastsub->next = n;
+        -:  482:	    else
+    #####:  483:		matchsubs = n;
+    #####:  484:	    matchlastsub = n;
+        -:  485:	}
+        -:  486:    }
+    #####:  487:}
+        -:  488:
+        -:  489:/* This tests if the string from the line l matches the word w. In *bpp
+        -:  490: * the offset for the brace is returned, in rwlp the length of the
+        -:  491: * matched prefix or suffix, not including the stuff before or after
+        -:  492: * the last anchor is given. When sfx is non-zero matching is done from
+        -:  493: * the ends of the strings backward, if test is zero, the global variables
+        -:  494: * above are used to build the string for the match and the cline. If
+        -:  495: * part is non-zero, we are satisfied if only a part of the line-string
+        -:  496: * is used (and return the length used). */
+        -:  497:
+        -:  498:/**/
+        -:  499:int
+    #####:  500:match_str(char *l, char *w, Brinfo *bpp, int bc, int *rwlp,
+        -:  501:	  const int sfx, int test, int part)
+        -:  502:{
+        -:  503:    /* How many characters from the line string and from the word string are
+        -:  504:     * yet to be matched. */
+    #####:  505:    int ll = strlen(l), lw = strlen(w);
+        -:  506:    /* Number of characters from the line string and word string matched. */
+    #####:  507:    int il = 0, iw = 0;
+        -:  508:    /* How many characters were matched exactly in the line and in the word. */
+    #####:  509:    int exact = 0, wexact = 0;
+    #####:  510:    int he = 0;
+        -:  511:    int bslash;
+        -:  512:    char *ow;
+        -:  513:    Cmlist ms; /* loop variable */
+    #####:  514:    Cmatcher mp, lm = NULL;
+    #####:  515:    Brinfo bp = NULL;
+    #####:  516:    const int obc = bc;
+    #####:  517:    const int ind = (sfx ? -1 : 0);
+    #####:  518:    const int add = (sfx ? -1 : 1);
+    #####:  519:    const int original_ll = ll, original_lw = lw;
+        -:  520:
+        -:  521:    /* INVARIANT: il+ll == original_ll; iw+lw == original_lw */
+        -:  522:
+    #####:  523:    if (!test) {
+    #####:  524:	start_match();
+    #####:  525:	bp = *bpp;
+        -:  526:    }
+        -:  527:    /* Adjust the pointers and get the values for subscripting and
+        -:  528:     * incrementing. */
+        -:  529:
+    #####:  530:    if (sfx) {
+    #####:  531:	l += ll; w += lw;
+        -:  532:    }
+        -:  533:    /* ow will always point to the beginning (or end) of that sub-string
+        -:  534:     * in w that wasn't put in the match-variables yet. */
+        -:  535:
+    #####:  536:    ow = w;
+        -:  537:
+        -:  538:    /* If the brace is at the beginning, we have to treat it now. */
+        -:  539:
+    #####:  540:    if (!test && bp && bc >= bp->pos) {
+    #####:  541:	bp->curpos = bc;
+    #####:  542:	bp = bp->next;
+        -:  543:    }
+        -:  544:    /*** This once was: `while (ll && lw)', but then ignored characters at
+        -:  545:     *   the end were not, well, ignored. */
+    #####:  546:    while (ll) {
+        -:  547:
+        -:  548:	/* Hm, we unconditionally first tried the matchers for the cases
+        -:  549:	 * where the beginnings of the line and word patterns match the
+        -:  550:	 * same character(s).
+        -:  551:	 * But first testing if the characters are the same is sooo
+        -:  552:	 * much faster...
+        -:  553:	 * Maybe it's OK to make same-character matching be preferred in
+        -:  554:	 * recursive calls. At least, it /seems/ to work.
+        -:  555:	 *
+        -:  556:	 * Let's try.
+        -:  557:	 *
+        -:  558:	 * Update: this once tested `test && ...' to check for exact
+        -:  559:	 * character matches only in recursive calls.  But then one
+        -:  560:	 * can't complete `nom<TAB>' to `nomatch' with a match spec
+        -:  561:	 * of `B:[nN][oO]=' because that will eat the `no'.
+        -:  562:	 * But that would break completion of strings like `nonomatch'
+        -:  563:	 * because the `B:[nN][oO]=' doesn't match the second `no'.
+        -:  564:	 * For this we added the code below that can remove already
+        -:  565:	 * accepted exact characters and try again, preferring match
+        -:  566:	 * specs.
+        -:  567:	 */
+        -:  568:
+    #####:  569:	bslash = 0;
+    #####:  570:	if (!sfx && lw && (!part || test) &&
+    #####:  571:	    (l[ind] == w[ind] ||
+    #####:  572:	     (bslash = (lw > 1 && w[ind] == '\\' && w[ind+1] == l[0])))) {
+        -:  573:	    /* No matcher could be used, but the strings have the same
+        -:  574:	     * character here, skip over it. */
+    #####:  575:	    l += add; w += (bslash ? (add + add) : add);
+    #####:  576:	    il++; iw += 1 + bslash;
+    #####:  577:	    ll--; lw -= 1 + bslash;
+    #####:  578:	    bc++;
+    #####:  579:	    exact++;
+    #####:  580:	    wexact += 1 + bslash;
+    #####:  581:	    if (!test)
+    #####:  582:		while (bp && bc >= (useqbr ? bp->qpos : bp->pos)) {
+    #####:  583:		    bp->curpos = matchbufadded + (w - ow) + obc;
+    #####:  584:		    bp = bp->next;
+        -:  585:		}
+    #####:  586:	    lm = NULL;
+    #####:  587:	    he = 0;
+        -:  588:
+    #####:  589:	    continue;
+        -:  590:	}
+    #####:  591:    retry:
+        -:  592:	/* First try the matchers. Err... see above. */
+    #####:  593:	for (mp = NULL, ms = mstack; !mp && ms; ms = ms->next) {
+    #####:  594:	    for (mp = ms->matcher; mp; mp = mp->next) {
+    #####:  595:		if ((lm && lm == mp) ||
+    #####:  596:		    ((original_ll == ll || original_lw == lw) &&
+    #####:  597:		     (test == 1 || (test && !mp->left && !mp->right)) &&
+    #####:  598:		     mp->wlen < 0))
+        -:  599:		    /* If we were called recursively, don't use `*' patterns
+        -:  600:		     * at the beginning (avoiding infinite recursion). */
+    #####:  601:		    continue;
+        -:  602:
+    #####:  603:		if (mp->wlen < 0) {
+        -:  604:		    /* `*'-pattern. */
+        -:  605:		    /*
+        -:  606:		     * Similar to the identically-named variable in the 'else'
+        -:  607:		     * block.
+        -:  608:		     */
+        -:  609:		    int t;
+        -:  610:		    /* 
+        -:  611:		     * 1 iff the anchor and the word are on the same side of
+        -:  612:		     * the line pattern; that is: if either
+        -:  613:		     * - the anchor is on the left and we are matching
+        -:  614:		     *   a prefix; or
+        -:  615:		     * - the anchor is on the right and we are matching
+        -:  616:		     *   a suffix.
+        -:  617:		     */
+        -:  618:		    int both;
+        -:  619:		    /*
+        -:  620:		     * Offset from the line pattern pointer ('l') to the start
+        -:  621:		     * of the line pattern.
+        -:  622:		     */
+        -:  623:		    int loff;
+        -:  624:		    /*
+        -:  625:		     * Offset from the line pattern pointer ('l') to the start
+        -:  626:		     * of the anchor.
+        -:  627:		     */
+        -:  628:		    int aoff;
+        -:  629:		    /*
+        -:  630:		     * The length of the line pattern.
+        -:  631:		     */
+        -:  632:		    int llen;
+        -:  633:		    /*
+        -:  634:		     * The length of the anchor.
+        -:  635:		     *
+        -:  636:		     * SEE: ap; aol, aop
+        -:  637:		     */
+        -:  638:		    int alen;
+        -:  639:		    /*
+        -:  640:		     * ### Related to 'zoff', which was removed in 2016.
+        -:  641:		     */
+        -:  642:		    int moff;
+        -:  643:		    /*
+        -:  644:		     * ### These two are related.
+        -:  645:		     *
+        -:  646:		     * ### They may have a relation similar to that of lw/iw
+        -:  647:		     * ### (q.v.), at least during the 'for' loop.  They may be
+        -:  648:		     * ### overloaded/repurposed after it.
+        -:  649:		     */
+        -:  650:		    int ct, ict;
+        -:  651:		    /*
+        -:  652:		     * The length of the OTHER anchor: the left anchor when
+        -:  653:		     * we're anchored on the right, and of the right anchor
+        -:  654:		     * when we're anchored on the left.
+        -:  655:		     */
+        -:  656:		    int aol;
+        -:  657:		    /*
+        -:  658:		     * LOST: Documentation comment.  Last seen 10 years ago in
+        -:  659:		     * the temporal lobe.  Reward promised for its safe return.
+        -:  660:		     * Contact zsh-workers@zsh.org.
+        -:  661:		     */
+        -:  662:		    char *tp;
+        -:  663:		    /* 
+        -:  664:		     * Temporary variable.  Used as temporary storage for a
+        -:  665:		     *
+        -:  666:		     *     {
+        -:  667:		     *         () {
+        -:  668:		     *           local foo="$foo"
+        -:  669:		     *           foo[1]=bar
+        -:  670:		     *           ...
+        -:  671:		     *         }
+        -:  672:		     *         (use original $foo here)
+        -:  673:		     *     }
+        -:  674:		     *
+        -:  675:		     * operation.  Similar to savw.
+        -:  676:		     */
+    #####:  677:		    char savl = 0;
+        -:  678:		    /*
+        -:  679:		     * The anchor on this end.
+        -:  680:		     */
+        -:  681:		    Cpattern ap;
+        -:  682:		    /*
+        -:  683:		     * The anchor on the other end.
+        -:  684:		     */
+        -:  685:		    Cpattern aop;
+        -:  686:
+        -:  687:		    /* This is for `*' patterns, first initialise some
+        -:  688:		     * local variables. */
+    #####:  689:		    llen = mp->llen;
+    #####:  690:		    if (mp->flags & CMF_LEFT) {
+    #####:  691:			alen = mp->lalen; aol = mp->ralen;
+        -:  692:		    } else {
+    #####:  693:			alen = mp->ralen; aol = mp->lalen;
+        -:  694:		    }
+        -:  695:		    /* Give up if we don't have enough characters for the
+        -:  696:		     * line-string and the anchor. */
+    #####:  697:		    if (ll < llen + alen || lw < alen)
+    #####:  698:			continue;
+        -:  699:
+    #####:  700:		    if (mp->flags & CMF_LEFT) {
+    #####:  701:			ap = mp->left; moff = alen; aop = mp->right;
+    #####:  702:			if (sfx) {
+    #####:  703:			    both = 0; loff = -llen; aoff = -(llen + alen);
+        -:  704:			} else {
+    #####:  705:			    both = 1; loff = alen; aoff = 0;
+        -:  706:			}
+        -:  707:		    } else {
+    #####:  708:			ap = mp->right; moff = 0; aop = mp->left;
+    #####:  709:			if (sfx) {
+    #####:  710:			    both = 1; loff = -(llen + alen); aoff = -alen;
+        -:  711:			} else {
+    #####:  712:			    both = 0; loff = 0; aoff = llen;
+        -:  713:			}
+        -:  714:		    }
+        -:  715:		    /* Try to match the line pattern and the anchor. */
+    #####:  716:		    if (!pattern_match(mp->line, l + loff, NULL, NULL))
+    #####:  717:			continue;
+    #####:  718:		    if (ap) {
+    #####:  719:			if (!pattern_match(ap, l + aoff, NULL, NULL) ||
+    #####:  720:			    (both &&
+    #####:  721:			     (!pattern_match(ap, w + aoff, NULL, NULL) ||
+    #####:  722:			      (aol && aol <= aoff + iw &&
+    #####:  723:			       !pattern_match(aop, w + aoff - aol,
+    #####:  724:					      NULL, NULL)) ||
+    #####:  725:			      !match_parts(l + aoff, w + aoff, alen, part))))
+    #####:  726:				continue;
+    #####:  727:		    } else if (!both || ((mp->flags & CMF_INTER) ?
+    #####:  728:					 ((mp->flags & CMF_LINE) ? iw : il) :
+    #####:  729:					 (il || iw)))
+    #####:  730:			continue;
+        -:  731:
+        -:  732:		    /* Fine, now we call ourselves recursively to find the
+        -:  733:		     * string matched by the `*'. */
+    #####:  734:		    if (sfx && (savl = l[-(llen + alen)]))
+    #####:  735:			l[-(llen + alen)] = '\0';
+    #####:  736:		    for (t = 0, tp = w, ct = 0, ict = lw - alen + 1;
+        -:  737:			 ict;
+    #####:  738:			 tp += add, ct++, ict--) {
+    #####:  739:			if ((both &&
+    #####:  740:			     (!ap || !test ||
+    #####:  741:			      !pattern_match(ap, tp + aoff, NULL, NULL) ||
+    #####:  742:			      (aol && aol <= aoff + ct + iw &&
+    #####:  743:			       !pattern_match(aop, tp + aoff - aol,
+    #####:  744:					      NULL, NULL)))) ||
+    #####:  745:			    (!both &&
+    #####:  746:			     pattern_match(ap, tp - moff, NULL, NULL) &&
+    #####:  747:			     (!aol || (aol <= iw + ct - moff &&
+    #####:  748:				       pattern_match(aop, tp - moff - aol,
+    #####:  749:						     NULL, NULL))) &&
+    #####:  750:			     (mp->wlen == -1 ||
+    #####:  751:			      match_parts(l + aoff , tp - moff,
+        -:  752:						      alen, part)))) {
+    #####:  753:			    if (!both && mp->wlen == -1 &&
+    #####:  754:				!match_parts(l + aoff , tp - moff, alen, part))
+    #####:  755:				break;
+    #####:  756:			    if (sfx) {
+        -:  757:				/* Call ourselves recursively with the
+        -:  758:				 * anchor removed. */
+        -:  759:				char savw;
+    #####:  760:				if ((savw = tp[-alen]))
+    #####:  761:				    tp[-alen] = '\0';
+    #####:  762:				t = match_str(l - ll, w - lw,
+        -:  763:					      NULL, 0, NULL, sfx, 2, part);
+    #####:  764:				if (savw)
+    #####:  765:				    tp[-alen] = savw;
+        -:  766:			    } else
+    #####:  767:				t = match_str(l + llen + moff, tp + moff,
+        -:  768:					      NULL, 0, NULL, sfx, 1, part);
+    #####:  769:			    if (t || (mp->wlen == -1 && !both))
+        -:  770:				break;
+        -:  771:			}
+        -:  772:		    }
+    #####:  773:		    ict = ct;
+    #####:  774:		    if (sfx && savl)
+    #####:  775:			l[-(llen + alen)] = savl;
+        -:  776:
+        -:  777:		    /* Have we found a position in w where the rest of l
+        -:  778:		     * matches? */
+    #####:  779:		    if (!t)
+    #####:  780:			continue;
+        -:  781:
+        -:  782:		    /* Yes, add the strings and clines if this is a 
+        -:  783:		     * top-level call. */
+    #####:  784:		    if (!test && (!he || (llen + alen))) {
+        -:  785:			char *op, *lp, *map, *wap, *wmp;
+        -:  786:			int ol;
+        -:  787:
+    #####:  788:			if (sfx) {
+    #####:  789:			    op = w; ol = ow - w; lp = l - (llen + alen);
+    #####:  790:			    map = tp - alen;
+    #####:  791:			    if (mp->flags & CMF_LEFT) {
+    #####:  792:				wap = tp - alen; wmp = tp;
+        -:  793:			    } else {
+    #####:  794:				wap = w - alen; wmp = tp - alen;
+        -:  795:			    }
+        -:  796:			} else {
+    #####:  797:			    op = ow; ol = w - ow; lp = l;
+    #####:  798:			    map = ow;
+    #####:  799:			    if (mp->flags & CMF_LEFT) {
+    #####:  800:				wap = w; wmp = w + alen;
+        -:  801:			    } else {
+    #####:  802:				wap = tp; wmp = ow;
+        -:  803:			    }
+        -:  804:			}
+        -:  805:			/* If the matcher says that we are only interested
+        -:  806:			 * in the line pattern, we just add that and the
+        -:  807:			 * anchor and the string not added yet. Otherwise
+        -:  808:			 * we add a new part. */
+    #####:  809:			if (mp->flags & CMF_LINE) {
+    #####:  810:			    add_match_str(NULL, NULL, op, ol, sfx);
+    #####:  811:			    add_match_str(NULL, NULL, lp, llen + alen, sfx);
+    #####:  812:			    add_match_sub(NULL, NULL, ol, op, ol);
+    #####:  813:			    add_match_sub(NULL, NULL, llen + alen,
+        -:  814:					  lp, llen + alen);
+    #####:  815:			} else if (sfx) {
+    #####:  816:			    add_match_str(NULL, NULL,
+    #####:  817:					  map, ct + ol + alen, sfx);
+    #####:  818:			    add_match_part(mp, l + aoff, wap, alen,
+        -:  819:					   l + loff, llen, op, ol, ol, sfx);
+    #####:  820:			    add_match_sub(NULL, NULL, 0, wmp, ct);
+        -:  821:			} else {
+    #####:  822:			    add_match_str(NULL, NULL,
+    #####:  823:					  map, ct + ol + alen, sfx);
+    #####:  824:			    if (both) {
+    #####:  825:				add_match_sub(NULL, NULL, ol, op, ol);
+    #####:  826:				ol = -1;
+        -:  827:			    } else
+    #####:  828:				ct += ol;
+    #####:  829:			    add_match_part(mp, l + aoff, wap, alen,
+        -:  830:					   l + loff, llen, wmp, ct, ol, sfx);
+        -:  831:			}
+        -:  832:		    }
+        -:  833:		    /* Now skip over the matched portion and the anchor. */
+    #####:  834:		    llen += alen; alen += ict;
+    #####:  835:		    if (sfx) {
+    #####:  836:			l -= llen; w -= alen;
+        -:  837:		    } else {
+    #####:  838:			l += llen; w += alen;
+        -:  839:		    }
+    #####:  840:		    ll -= llen; il += llen;
+    #####:  841:		    lw -= alen; iw += alen;
+    #####:  842:		    bc += llen;
+    #####:  843:		    exact = 0;
+        -:  844:
+    #####:  845:		    if (!test) {
+        -:  846:			int bpc;
+    #####:  847:			while (bp &&
+    #####:  848:			       bc >= (bpc = (useqbr ? bp->qpos : bp->pos))) {
+    #####:  849:			    bp->curpos = matchbufadded + bpc - bc + obc;
+    #####:  850:			    bp = bp->next;
+        -:  851:			}
+        -:  852:		    }
+    #####:  853:		    ow = w;
+        -:  854:
+    #####:  855:		    if (!llen && !alen) {
+    #####:  856:			lm = mp;
+    #####:  857:			if (he) {
+        -:  858:			    /* Signal the outer for loop to continue. */
+    #####:  859:			    mp = NULL;
+        -:  860:			}
+        -:  861:			else
+    #####:  862:			    he = 1;
+        -:  863:		    } else {
+    #####:  864:			lm = NULL; he = 0;
+        -:  865:		    }
+    #####:  866:		    break;
+    #####:  867:		} else if (ll >= mp->llen && lw >= mp->wlen) {
+        -:  868:		    /* Non-`*'-pattern. */
+        -:  869:		    /*
+        -:  870:		     * Similar to the identically-named variable in the 'if'
+        -:  871:		     * block.
+        -:  872:		     */
+    #####:  873:		    int t = 1;
+        -:  874:		    char *tl, *tw;
+        -:  875:		    int tll, tlw, til, tiw;
+        -:  876:
+        -:  877:		    /* We do this only if the line- and word-substrings
+        -:  878:		     * are not equal. */
+    #####:  879:		    if (!(mp->flags & (CMF_LEFT | CMF_RIGHT)) &&
+    #####:  880:			mp->llen == mp->wlen &&
+    #####:  881:			!(sfx ? strncmp(l - mp->llen, w - mp->wlen, mp->llen) :
+    #####:  882:			  strncmp(l, w, mp->llen)))
+    #####:  883:			continue;
+        -:  884:
+        -:  885:		    /* Using local variables to make the following
+        -:  886:		     * independent of whether we match a prefix or a
+        -:  887:		     * suffix. */
+    #####:  888:		    if (sfx) {
+    #####:  889:			tl = l - mp->llen; tw = w - mp->wlen;
+    #####:  890:			til = ll - mp->llen; tiw = lw - mp->wlen;
+    #####:  891:			tll = il + mp->llen; tlw = iw + mp->wlen;
+        -:  892:		    } else {
+    #####:  893:			tl = l; tw = w;
+    #####:  894:			til = il; tiw = iw;
+    #####:  895:			tll = ll; tlw = lw;
+        -:  896:		    }
+    #####:  897:		    if (mp->flags & CMF_LEFT) {
+        -:  898:			/* Try to match the left anchor, if any. */
+    #####:  899:			if (til < mp->lalen || tiw < mp->lalen + mp->ralen)
+    #####:  900:			    continue;
+    #####:  901:			else if (mp->left)
+    #####:  902:			    t = pattern_match(mp->left, tl - mp->lalen,
+    #####:  903:					      NULL, NULL) &&
+    #####:  904:				pattern_match(mp->left, tw - mp->lalen,
+    #####:  905:					      NULL, NULL) &&
+    #####:  906:				(!mp->ralen ||
+    #####:  907:				 pattern_match(mp->right,
+    #####:  908:					       tw - mp->lalen - mp->ralen,
+        -:  909:					       NULL, NULL));
+        -:  910:			else
+    #####:  911:			    t = (!sfx && !((mp->flags & CMF_INTER) ?
+    #####:  912:					   ((mp->flags & CMF_LINE) ? iw : il) :
+    #####:  913:					   (il || iw)));
+        -:  914:		    }
+    #####:  915:		    if (mp->flags & CMF_RIGHT) {
+        -:  916:			/* Try to match the right anchor, if any. */
+    #####:  917:			if (tll < mp->llen + mp->ralen ||
+    #####:  918:			    tlw < mp->wlen + mp->ralen + mp->lalen)
+    #####:  919:			    continue;
+    #####:  920:			else if (mp->right)
+    #####:  921:			    t = pattern_match(mp->right,
+        -:  922:					      /* tl + mp->llen - mp->ralen, */
+    #####:  923:					      tl + mp->llen,
+    #####:  924:					      NULL, NULL) &&
+    #####:  925:				pattern_match(mp->right,
+        -:  926:					      /* tw + mp->wlen - mp->ralen, */
+    #####:  927:					      tw + mp->wlen,
+    #####:  928:					      NULL, NULL) &&
+    #####:  929:				(!mp->lalen ||
+    #####:  930:				 pattern_match(mp->left, tw + mp->wlen -
+    #####:  931:					       mp->ralen - mp->lalen,
+        -:  932:					       NULL, NULL));
+        -:  933:			else
+    #####:  934:			    t = (sfx && !((mp->flags & CMF_INTER) ?
+    #####:  935:					  ((mp->flags & CMF_LINE) ? iw : il) :
+    #####:  936:					  (il || iw)));
+        -:  937:		    }
+        -:  938:		    /* Now try to match the line and word patterns. */
+    #####:  939:		    if (!t || !pattern_match(mp->line, tl, mp->word, tw))
+    #####:  940:			continue;
+        -:  941:
+        -:  942:		    /* Probably add the matched strings. */
+    #####:  943:		    if (!test) {
+    #####:  944:			if (sfx)
+        -:  945:			{
+    #####:  946:			    if (ow >= w)
+    #####:  947:				add_match_str(NULL, NULL, w, ow - w, sfx);
+        -:  948:			}
+        -:  949:			else
+        -:  950:			{
+    #####:  951:			    if (w >= ow)
+    #####:  952:				add_match_str(NULL, NULL, ow, w - ow, sfx);
+        -:  953:			}
+    #####:  954:			add_match_str(mp, tl, tw, mp->wlen, sfx);
+    #####:  955:			if (sfx)
+        -:  956:			{
+    #####:  957:			    if (ow >= w)
+    #####:  958:				add_match_sub(NULL, NULL, 0, w, ow - w);
+        -:  959:			}
+        -:  960:			else
+        -:  961:			{
+    #####:  962:			    if (w >= ow)
+    #####:  963:				add_match_sub(NULL, NULL, 0, ow, w - ow);
+        -:  964:			}
+    #####:  965:			add_match_sub(mp, tl, mp->llen, tw, mp->wlen);
+        -:  966:		    }
+    #####:  967:		    if (sfx) {
+    #####:  968:			l = tl;	w = tw;
+        -:  969:		    } else {
+    #####:  970:			l += mp->llen; w += mp->wlen;
+        -:  971:		    }
+    #####:  972:		    il += mp->llen; iw += mp->wlen;
+    #####:  973:		    ll -= mp->llen; lw -= mp->wlen;
+    #####:  974:		    bc += mp->llen;
+    #####:  975:		    exact = 0;
+        -:  976:
+    #####:  977:		    if (!test) {
+        -:  978:			int bpc;
+    #####:  979:			while (bp &&
+    #####:  980:			       bc >= (bpc = (useqbr ? bp->qpos : bp->pos))) {
+    #####:  981:			    bp->curpos = matchbufadded + bpc - bc + obc;
+    #####:  982:			    bp = bp->next;
+        -:  983:			}
+        -:  984:		    }
+    #####:  985:		    ow = w;
+    #####:  986:		    lm = NULL;
+    #####:  987:		    he = 0;
+    #####:  988:		    break;
+        -:  989:		}
+        -:  990:	    }
+        -:  991:	}
+    #####:  992:	if (mp)
+    #####:  993:	    continue;
+        -:  994:
+        -:  995:	/* Same code as at the beginning, used in top-level calls. */
+        -:  996:
+    #####:  997:	bslash = 0;
+    #####:  998:	if ((!test || sfx) && lw &&
+    #####:  999:	    (l[ind] == w[ind] ||
+    #####: 1000:	     (bslash = (lw > 1 && w[ind] == '\\' && w[ind+1] == l[0])))) {
+        -: 1001:	    /* No matcher could be used, but the strings have the same
+        -: 1002:	     * character here, skip over it. */
+    #####: 1003:	    l += add; w += (bslash ? (add + add ) : add);
+    #####: 1004:	    il++; iw += 1 + bslash;
+    #####: 1005:	    ll--; lw -= 1 + bslash;
+    #####: 1006:	    bc++;
+    #####: 1007:	    if (!test)
+    #####: 1008:		while (bp && bc >= (useqbr ? bp->qpos : bp->pos)) {
+    #####: 1009:		    bp->curpos = matchbufadded + (sfx ? (ow - w) : (w - ow)) + obc;
+    #####: 1010:		    bp = bp->next;
+        -: 1011:		}
+    #####: 1012:	    lm = NULL;
+    #####: 1013:	    he = 0;
+        -: 1014:	} else {
+        -: 1015:
+    #####: 1016:	    if (!lw)
+    #####: 1017:		break;
+        -: 1018:
+    #####: 1019:	    if (exact && !part) {
+        -: 1020:		/* If we just accepted some characters directly (at the
+        -: 1021:		 * beginning of the loop) and now can't match any further,
+        -: 1022:		 * we go back to before those characters and try again,
+        -: 1023:		 * preferring match specs this time. */
+        -: 1024:
+    #####: 1025:		il -= exact; iw -= wexact;
+    #####: 1026:		ll += exact; lw += wexact;
+    #####: 1027:		bc -= exact;
+    #####: 1028:		l -= add * exact; w -= add * wexact;
+        -: 1029:
+    #####: 1030:		exact = wexact = 0;
+        -: 1031:
+    #####: 1032:		goto retry;
+        -: 1033:	    }
+        -: 1034:	    /* No matcher and different characters: l does not match w. */
+    #####: 1035:	    if (test)
+    #####: 1036:		return 0;
+        -: 1037:
+    #####: 1038:	    abort_match();
+        -: 1039:
+    #####: 1040:	    return -1;
+        -: 1041:	}
+        -: 1042:    }
+        -: 1043:    /* If this is a recursive call, we just return if l matched w or not. */
+    #####: 1044:    if (test)
+    #####: 1045:	return (part || !ll);
+        -: 1046:
+        -: 1047:    /* In top-level calls, if ll is non-zero (unmatched portion in l),
+        -: 1048:     * we have to free the collected clines. */
+    #####: 1049:    if (!part && ll) {
+    #####: 1050:	abort_match();
+        -: 1051:
+    #####: 1052:	return -1;
+        -: 1053:    }
+    #####: 1054:    if (rwlp)
+    #####: 1055:	*rwlp = iw - (sfx ? ow - w : w - ow);
+        -: 1056:
+        -: 1057:    /* If we matched a suffix, the anchors stored in the top-clines
+        -: 1058:     * will be in the wrong clines: shifted by one. Adjust this. */
+    #####: 1059:    if (sfx && matchparts) {
+        -: 1060:	Cline t, tn, s;
+        -: 1061:
+    #####: 1062:	if (matchparts->prefix || matchparts->suffix) {
+    #####: 1063:	    t = get_cline(NULL, 0, NULL, 0, NULL, 0, 0);
+    #####: 1064:	    t->next = matchparts;
+    #####: 1065:	    if (matchparts->prefix)
+    #####: 1066:		t->prefix = (Cline) 1;
+        -: 1067:	    else
+    #####: 1068:		t->suffix = (Cline) 1;
+    #####: 1069:	    matchparts = t;
+        -: 1070:	}
+    #####: 1071:	for (t = matchparts; (tn = t->next); t = tn) {
+    #####: 1072:	    s = (tn->prefix ? tn->prefix : tn->suffix);
+    #####: 1073:	    if (t->suffix)
+    #####: 1074:		t->suffix = s;
+        -: 1075:	    else
+    #####: 1076:		t->prefix = s;
+        -: 1077:	}
+    #####: 1078:	t->prefix = t->suffix = NULL;
+        -: 1079:    }
+        -: 1080:    /* Finally, return the number of matched characters. */
+        -: 1081:
+    #####: 1082:    *bpp = bp;
+    #####: 1083:    return (part ? il : iw);
+        -: 1084:}
+        -: 1085:
+        -: 1086:/* Wrapper for match_str(), only for a certain length and only doing
+        -: 1087: * the test. */
+        -: 1088:
+        -: 1089:/**/
+        -: 1090:static int
+    #####: 1091:match_parts(char *l, char *w, int n, int part)
+        -: 1092:{
+    #####: 1093:    char lsav = l[n], wsav = w[n];
+        -: 1094:    int ret;
+        -: 1095:
+    #####: 1096:    if (lsav)
+    #####: 1097:	l[n] = '\0';
+    #####: 1098:    if (wsav)
+    #####: 1099:	w[n] = '\0';
+    #####: 1100:    ret = match_str(l, w, NULL, 0, NULL, 0, 1, part);
+    #####: 1101:    if (lsav)
+    #####: 1102:	l[n] = lsav;
+    #####: 1103:    if (wsav)
+    #####: 1104:	w[n] = wsav;
+        -: 1105:
+    #####: 1106:    return ret;
+        -: 1107:}
+        -: 1108:
+        -: 1109:/* Check if the word w is matched by the strings in pfx and sfx (the prefix
+        -: 1110: * and the suffix from the line) or the pattern cp. In clp a cline list for
+        -: 1111: * w is returned.
+        -: 1112: * qu is non-zero if the words has to be quoted before processed any
+        -: 1113: * further: the value 2 indicates file quoting.
+        -: 1114: * bpl and bsl are used to report the positions where the brace-strings in
+        -: 1115: * the prefix and the suffix have to be re-inserted if this match is inserted
+        -: 1116: * in the line.
+        -: 1117: * The return value is the string to use as a completion or NULL if the prefix
+        -: 1118: * and the suffix don't match the word w. */
+        -: 1119:
+        -: 1120:/**/
+        -: 1121:mod_export char *
+    #####: 1122:comp_match(char *pfx, char *sfx, char *w, Patprog cp, Cline *clp, int qu,
+        -: 1123:	   Brinfo *bpl, int bcp, Brinfo *bsl, int bcs, int *exact)
+        -: 1124:{
+    #####: 1125:    char *r = NULL;
+    #####: 1126:    int onoerrs = noerrs;
+        -: 1127:
+    #####: 1128:    if (cp) {
+        -: 1129:	/* We have a globcomplete-like pattern, just use that. */
+        -: 1130:	int wl;
+        -: 1131:	char *teststr;
+        -: 1132:
+    #####: 1133:	r = w;
+    #####: 1134:	if (!qu) {
+        -: 1135:	    /*
+        -: 1136:	     * If we're not quoting the strings, that means they're
+        -: 1137:	     * already quoted (?) and so when we test them against
+        -: 1138:	     * a pattern we have to remove the quotes else we will
+        -: 1139:	     * end up trying to match against the quote characters.
+        -: 1140:	     *
+        -: 1141:	     * Almost certainly this fails in some complicated cases
+        -: 1142:	     * but it should catch the basic ones.
+        -: 1143:	     */
+    #####: 1144:	    teststr = dupstring(r);
+    #####: 1145:	    tokenize(teststr);
+    #####: 1146:	    noerrs = 1;
+    #####: 1147:	    if (parse_subst_string(teststr))
+    #####: 1148:		teststr = r;
+        -: 1149:	    else {
+    #####: 1150:		remnulargs(teststr);
+    #####: 1151:		untokenize(teststr);
+        -: 1152:	    }
+    #####: 1153:	    noerrs = onoerrs;
+        -: 1154:	} else
+    #####: 1155:	    teststr = r;
+    #####: 1156:	if (!pattry(cp, teststr))
+    #####: 1157:	    return NULL;
+        -: 1158:    
+    #####: 1159:	r = (qu == 2 ? tildequote(r, 0) : multiquote(r, !qu));
+        -: 1160:
+        -: 1161:	/* We still break it into parts here, trying to build a sensible
+        -: 1162:	 * cline list for these matches, too. */
+    #####: 1163:	w = dupstring(w);
+    #####: 1164:	wl = strlen(w);
+    #####: 1165:	*clp = bld_parts(w, wl, wl, NULL, NULL);
+    #####: 1166:	*exact = 0;
+        -: 1167:    } else {
+        -: 1168:	Cline pli, plil;
+        -: 1169:	int mpl, rpl, wl;
+        -: 1170:
+    #####: 1171:	w = (qu == 2 ? tildequote(w, 0) : multiquote(w, !qu));
+    #####: 1172:	wl = strlen(w);
+        -: 1173:
+        -: 1174:	/* Always try to match the prefix. */
+        -: 1175:
+    #####: 1176:	useqbr = qu;
+    #####: 1177:	if ((mpl = match_str(pfx, w, bpl, bcp, &rpl, 0, 0, 0)) < 0)
+    #####: 1178:	    return NULL;
+        -: 1179:
+    #####: 1180:	if (sfx && *sfx) {
+    #####: 1181:	    int wpl = matchbufadded, msl, rsl;
+    #####: 1182:	    VARARR(char, wpfx, wpl);
+        -: 1183:	    Cline mli, mlil;
+        -: 1184:
+        -: 1185:	    /* We also have a suffix to match, so first save the
+        -: 1186:	     * contents of the global matching variables. */
+    #####: 1187:	    memcpy(wpfx, matchbuf, wpl);
+    #####: 1188:	    if (matchsubs) {
+    #####: 1189:		Cline tmp = get_cline(NULL, 0, NULL, 0, NULL, 0, 0);
+        -: 1190:
+    #####: 1191:		tmp->prefix = matchsubs;
+    #####: 1192:		if (matchlastpart)
+    #####: 1193:		    matchlastpart->next = tmp;
+        -: 1194:		else
+    #####: 1195:		    matchparts = tmp;
+        -: 1196:	    }
+    #####: 1197:	    pli = matchparts;
+    #####: 1198:	    plil = matchlastpart;
+        -: 1199:
+        -: 1200:	    /* The try to match the suffix. */
+        -: 1201:
+    #####: 1202:	    if ((msl = match_str(sfx, w + mpl, bsl, bcs, &rsl, 1, 0, 0)) < 0) {
+    #####: 1203:		free_cline(pli);
+        -: 1204:
+    #####: 1205:		return NULL;
+        -: 1206:	    }
+        -: 1207:	    /* Matched, so add the string in the middle and the saved
+        -: 1208:	     * string for the prefix, and build a combined cline list
+        -: 1209:	     * for the prefix and the suffix. */
+    #####: 1210:	    if (matchsubs) {
+    #####: 1211:		Cline tmp = get_cline(NULL, 0, NULL, 0, NULL, 0, CLF_SUF);
+        -: 1212:
+    #####: 1213:		tmp->suffix = matchsubs;
+    #####: 1214:		if (matchlastpart)
+    #####: 1215:		    matchlastpart->next = tmp;
+        -: 1216:		else
+    #####: 1217:		    matchparts = tmp;
+        -: 1218:	    }
+    #####: 1219:	    add_match_str(NULL, NULL, w + rpl, wl - rpl - rsl, 1);
+    #####: 1220:	    add_match_str(NULL, NULL, wpfx, wpl, 1);
+        -: 1221:
+    #####: 1222:	    mli = bld_parts(w + rpl, wl - rpl - rsl,
+    #####: 1223:			    (mpl - rpl) + (msl - rsl), &mlil, NULL);
+    #####: 1224:	    mlil->flags |= CLF_MID;
+    #####: 1225:	    mlil->slen = msl - rsl;
+    #####: 1226:	    mlil->next = revert_cline(matchparts);
+        -: 1227:
+    #####: 1228:	    if (plil)
+    #####: 1229:		plil->next = mli;
+        -: 1230:	    else
+    #####: 1231:		pli = mli;
+        -: 1232:	} else {
+        -: 1233:	    /* Only a prefix, add the string and a part-cline for it. */
+    #####: 1234:	    add_match_str(NULL, NULL, w + rpl, wl - rpl, 0);
+        -: 1235:
+    #####: 1236:	    add_match_part(NULL, NULL, NULL, 0, NULL, 0, w + rpl, wl - rpl,
+        -: 1237:			   mpl - rpl, 0);
+    #####: 1238:	    pli = matchparts;
+        -: 1239:	}
+    #####: 1240:	r = dupstring(matchbuf ? matchbuf : "");
+        -: 1241:
+    #####: 1242:	*clp = pli;
+        -: 1243:
+        -: 1244:	/* Test if the string built is equal to the one from the line. */
+    #####: 1245:	if (sfx && *sfx) {
+    #####: 1246:	    int pl = strlen(pfx);
+        -: 1247:
+    #####: 1248:	    *exact = (!strncmp(pfx, w, pl) && !strcmp(sfx, w + pl));
+        -: 1249:	} else
+    #####: 1250:	    *exact = !strcmp(pfx, w);
+        -: 1251:    }
+    #####: 1252:    if (!qu)
+    #####: 1253:	hasunqu = 1;
+        -: 1254:
+    #####: 1255:    return r;
+        -: 1256:}
+        -: 1257:
+        -: 1258:
+        -: 1259:/*
+        -: 1260: * Guts of a single pattern for pattern_match().
+        -: 1261: * Return non-zero if match successful.
+        -: 1262: * If the class was an equivalence, return 1 + the index into
+        -: 1263: * the equivalence class (see pattern.c for how this is calculated).
+        -: 1264: */
+        -: 1265:
+        -: 1266:/**/
+        -: 1267:mod_export convchar_t
+    #####: 1268:pattern_match1(Cpattern p, convchar_t c, int *mtp)
+        -: 1269:{
+        -: 1270:    convchar_t ind;
+        -: 1271:
+    #####: 1272:    *mtp = 0;
+    #####: 1273:    switch (p->tp) {
+    #####: 1274:    case CPAT_CCLASS:
+    #####: 1275:	return PATMATCHRANGE(p->u.str, CONVCAST(c), NULL, NULL);
+        -: 1276:
+    #####: 1277:    case CPAT_NCLASS:
+    #####: 1278:	return !PATMATCHRANGE(p->u.str, CONVCAST(c), NULL, NULL);
+        -: 1279:
+    #####: 1280:    case CPAT_EQUIV:
+    #####: 1281:	if (PATMATCHRANGE(p->u.str, CONVCAST(c), &ind, mtp))
+    #####: 1282:	    return ind + 1;
+        -: 1283:	else
+    #####: 1284:	    return 0;
+        -: 1285:
+    #####: 1286:    case CPAT_ANY:
+    #####: 1287:	return 1;
+        -: 1288:
+    #####: 1289:    case CPAT_CHAR:
+    #####: 1290:	return (p->u.chr == c);
+        -: 1291:
+    #####: 1292:    default:
+        -: 1293:	DPUTS(1, "bad matcher pattern type");
+    #####: 1294:	return 0;
+        -: 1295:    }
+        -: 1296:}
+        -: 1297:
+        -: 1298:
+        -: 1299:/*
+        -: 1300: * Use an equivalence to deduce the line character from the word, or
+        -: 1301: * vice versa.  (If vice versa, then "line" and "word" are reversed
+        -: 1302: * in what follows.  The logic is symmetric.)
+        -: 1303: * lp is the line pattern.
+        -: 1304: * wind is the index returned by a pattern match on the word pattern,
+        -: 1305: * with type wmtp.
+        -: 1306: * wchr is the word character.
+        -: 1307: * Return CHR_INVALID if no matching character, else the character.
+        -: 1308: *
+        -: 1309: * Only makes sense if lp->tp == CPAT_EQUIV and the (unseen) word
+        -: 1310: * pattern also has that type.
+        -: 1311: */
+        -: 1312:
+        -: 1313:/**/
+        -: 1314:mod_export convchar_t
+    #####: 1315:pattern_match_equivalence(Cpattern lp, convchar_t wind, int wmtp,
+        -: 1316:			  convchar_t wchr)
+        -: 1317:{
+        -: 1318:    convchar_t lchr;
+        -: 1319:    int lmtp;
+        -: 1320:
+    #####: 1321:    if (!PATMATCHINDEX(lp->u.str, wind-1, &lchr, &lmtp)) {
+        -: 1322:	/*
+        -: 1323:	 * No equivalent.  No possible match; give up.
+        -: 1324:	 */
+    #####: 1325:	return CHR_INVALID;
+        -: 1326:    }
+        -: 1327:    /*
+        -: 1328:     * If we matched an exact character rather than a range
+        -: 1329:     * type, return it.
+        -: 1330:     */
+    #####: 1331:    if (lchr != CHR_INVALID)
+    #####: 1332:	return lchr;
+        -: 1333:
+        -: 1334:    /*
+        -: 1335:     * Check the match types.  We may want a case-changed
+        -: 1336:     * version of the word character.
+        -: 1337:     */
+    #####: 1338:    if (wmtp == PP_UPPER && lmtp == PP_LOWER)
+    #####: 1339:	return ZC_tolower(wchr);
+    #####: 1340:    else if (wmtp == PP_LOWER && lmtp == PP_UPPER)
+    #####: 1341:	return ZC_toupper(wchr);
+    #####: 1342:    else if (wmtp == lmtp) {
+        -: 1343:	/*
+        -: 1344:	 * Be lenient and allow identical replacements
+        -: 1345:	 * for character classes, although in fact this
+        -: 1346:	 * doesn't give special functionality for equivalence
+        -: 1347:	 * classes.
+        -: 1348:	 */
+    #####: 1349:	return wchr;
+        -: 1350:    } else {
+        -: 1351:	/*
+        -: 1352:	 * Non-matching generic types; this can't work.
+        -: 1353:	 */
+    #####: 1354:	return CHR_INVALID;
+        -: 1355:    }
+        -: 1356:}
+        -: 1357:
+        -: 1358:/*
+        -: 1359: * Check if the given pattern matches the given string.
+        -: 1360: * p is either an anchor or line pattern and string;
+        -: 1361: * wp and wsc are word (candidate) pattern and string
+        -: 1362: *
+        -: 1363: * Check that characters match for {...} classes by comparing positions in the
+        -: 1364: * strings.
+        -: 1365: *
+        -: 1366: * prestrict is a chain of patterns at least as long
+        -: 1367: * as the line string.  In this case we are still assembling the line at
+        -: 1368: * newline (which has been allocated but doesn't yet contain anything useful)
+        -: 1369: * and must continue to do so as we go along; prestrict gives
+        -: 1370: * restrictions on the line character to be applied along side the other
+        -: 1371: * patterns.  In the simple case a restriction is a character to be put
+        -: 1372: * in place; otherwise it is a set of possible characters and we have to
+        -: 1373: * deduce an actual matching character.  Note prestrict is never an
+        -: 1374: * equivalence class.  In extreme cases we can't deduce a unique
+        -: 1375: * character; then the match fails.
+        -: 1376: *
+        -: 1377: * If prestrict is not NULL, s will be NULL.
+        -: 1378: */
+        -: 1379:
+        -: 1380:/**/
+        -: 1381:static int
+    #####: 1382:pattern_match_restrict(Cpattern p, Cpattern wp, convchar_t *wsc, int wsclen,  
+        -: 1383:		       Cpattern prestrict, ZLE_STRING_T new_line)
+        -: 1384:{
+        -: 1385:    convchar_t c;
+        -: 1386:    convchar_t ind, wind;
+        -: 1387:    int mt, wmt;
+        -: 1388:
+    #####: 1389:    while (p && wp && wsclen && prestrict) {
+        -: 1390:	/* First test the word character */
+    #####: 1391:	wind = pattern_match1(wp, *wsc, &wmt);
+    #####: 1392:	if (!wind)
+    #####: 1393:	    return 0;
+        -: 1394:
+        -: 1395:	/*
+        -: 1396:	 * Now the line character; deal with the case where
+        -: 1397:	 * we don't yet have it, only a restriction on it.
+        -: 1398:	 */
+    #####: 1399:	if (prestrict->tp == CPAT_CHAR) {
+        -: 1400:	    /*
+        -: 1401:	     * Easy case: restricted to an exact character on
+        -: 1402:	     * the line.  Proceed as normal.
+        -: 1403:	     */
+    #####: 1404:	    c = prestrict->u.chr;
+        -: 1405:	} else {
+    #####: 1406:	    if (p->tp == CPAT_CHAR) {
+        -: 1407:		/*
+        -: 1408:		 * Normal line pattern is an exact character:  as
+        -: 1409:		 * long as this matches prestrict, we can proceed
+        -: 1410:		 * as usual.
+        -: 1411:		 */
+    #####: 1412:		c = p->u.chr;
+    #####: 1413:	    } else if (p->tp == CPAT_EQUIV) {
+        -: 1414:		/*
+        -: 1415:		 * An equivalence, so we can deduce the character
+        -: 1416:		 * backwards from the word pattern and see if it
+        -: 1417:		 * matches prestrict.
+        -: 1418:		 */
+    #####: 1419:		if ((c = pattern_match_equivalence(p, wind, wmt, *wsc)) ==
+        -: 1420:		    CHR_INVALID)
+    #####: 1421:		    return 0;
+        -: 1422:	    } else {
+        -: 1423:		/*
+        -: 1424:		 * Not an equivalence, so that means we must match
+        -: 1425:		 * the word (not just the word pattern), so grab it
+        -: 1426:		 * and make sure it fulfills our needs.  I think.
+        -: 1427:		 * Not 100% sure about that, but what else can
+        -: 1428:		 * we do?  We haven't actually been passed a string
+        -: 1429:		 * from the command line.
+        -: 1430:		 */
+    #####: 1431:		c = *wsc;
+        -: 1432:	    }
+        -: 1433:	    /* Character so deduced must match the restriction. */
+    #####: 1434:	    if (!pattern_match1(prestrict, c, &mt))
+    #####: 1435:		return 0;
+        -: 1436:	}
+        -: 1437:
+        -: 1438:	/*
+        -: 1439:	 * If either is "?", they match each other; no further tests.
+        -: 1440:	 * Apply this even if the character wasn't convertable;
+        -: 1441:	 * there's no point trying to be clever in that case.
+        -: 1442:	 */
+    #####: 1443:	if (p->tp != CPAT_ANY || wp->tp != CPAT_ANY)
+        -: 1444:	{
+    #####: 1445:	    ind = pattern_match1(p, c, &mt);
+    #####: 1446:	    if (!ind)
+    #####: 1447:		return 0;
+    #####: 1448:	    if (ind != wind)
+    #####: 1449:		return 0;
+    #####: 1450:	    if (mt != wmt) {
+        -: 1451:		/*
+        -: 1452:		 * Special case if matching lower vs. upper or
+        -: 1453:		 * vice versa.  The transformed characters must match.
+        -: 1454:		 * We don't need to check the transformation is
+        -: 1455:		 * the appropriate one for each character separately,
+        -: 1456:		 * since that was done in pattern_match1(), so just
+        -: 1457:		 * compare lower-cased versions of both.
+        -: 1458:		 */
+    #####: 1459:		if ((mt == PP_LOWER || mt == PP_UPPER) &&
+    #####: 1460:		    (wmt == PP_LOWER || wmt == PP_UPPER)) {
+    #####: 1461:		    if (ZC_tolower(c) != ZC_tolower(*wsc))
+    #####: 1462:			return 0;
+        -: 1463:		} else {
+        -: 1464:		    /* Other different classes can't match. */
+    #####: 1465:		    return 0;
+        -: 1466:		}
+        -: 1467:	    }
+        -: 1468:	}
+        -: 1469:
+        -: 1470:	/* We need to assemble the line */
+    #####: 1471:	*new_line++ = (ZLE_CHAR_T)c;
+    #####: 1472:	prestrict = prestrict->next;
+    #####: 1473:	wsc++;
+    #####: 1474:	wsclen--;
+    #####: 1475:	p = p->next;
+    #####: 1476:	wp = wp->next;
+        -: 1477:    }
+        -: 1478:
+    #####: 1479:    while (p && prestrict) {
+        -: 1480:	/*
+        -: 1481:	 * As above, but with even less info to go on.
+        -: 1482:	 * (Can this happen?)  At least handle the cases where
+        -: 1483:	 * one of our patterns has given us a specific character.
+        -: 1484:	 */
+    #####: 1485:	if (prestrict->tp == CPAT_CHAR) {
+    #####: 1486:	    c = prestrict->u.chr;
+        -: 1487:	} else {
+    #####: 1488:	    if (p->tp == CPAT_CHAR) {
+    #####: 1489:		c = p->u.chr;
+        -: 1490:	    } else {
+        -: 1491:		/*
+        -: 1492:		 * OK.  Here we are in a function with just a line
+        -: 1493:		 * pattern and another pattern to restrict the
+        -: 1494:		 * characters that can go on the line, and no actual
+        -: 1495:		 * characters.  We're matching two patterns against
+        -: 1496:		 * one another to generate a character to insert.
+        -: 1497:		 * This is a bit too psychedelic, so I'm going to
+        -: 1498:		 * bale out now.  See you on the ground.
+        -: 1499:		 */
+    #####: 1500:		return 0;
+        -: 1501:	    }
+    #####: 1502:	    if (!pattern_match1(prestrict, c, &mt))
+    #####: 1503:		return 0;
+        -: 1504:	}
+    #####: 1505:	if (!pattern_match1(p, c, &mt))
+    #####: 1506:	    return 0;
+    #####: 1507:	p = p->next;
+    #####: 1508:	*new_line++ = (ZLE_CHAR_T)c;
+    #####: 1509:	prestrict = prestrict->next;
+        -: 1510:    }
+        -: 1511:
+    #####: 1512:    if (prestrict) {
+        -: 1513:	/* Restriction with nothing to match */
+    #####: 1514:	return 0;
+        -: 1515:    }
+        -: 1516:
+    #####: 1517:    while (wp && wsclen) {
+        -: 1518:	/* No funny business when we only have the word pattern. */
+    #####: 1519:	if (!pattern_match1(wp, *wsc, &wmt))
+    #####: 1520:	    return 0;
+    #####: 1521:	wp = wp->next;
+    #####: 1522:	wsc++;
+    #####: 1523:	wsclen--;
+        -: 1524:    }
+        -: 1525:
+    #####: 1526:    return 1;
+        -: 1527:}
+        -: 1528:
+        -: 1529:
+        -: 1530:/*
+        -: 1531: * The usual version of pattern matching, without the line string
+        -: 1532: * being handled by restriction.
+        -: 1533: *
+        -: 1534: * Check if the given pattern matches the given string.
+        -: 1535: * p and  s are either anchor or line pattern and string;
+        -: 1536: * wp and ws are word (candidate) pattern and string
+        -: 1537: *
+        -: 1538: * If only one pattern is given, we just check if characters match.
+        -: 1539: * If both line and word are given, we check that characters match
+        -: 1540: * for {...} classes by comparing positions in the strings.
+        -: 1541: *
+        -: 1542: * Patterns and strings are always passed in pairs, so it is enough
+        -: 1543: * to check for non-NULL wp. p should always be present.
+        -: 1544: */
+        -: 1545:/**/
+        -: 1546:mod_export int
+    #####: 1547:pattern_match(Cpattern p, char *s, Cpattern wp, char *ws)
+        -: 1548:{
+        -: 1549:    convchar_t c, wc;
+        -: 1550:    convchar_t ind, wind;
+    #####: 1551:    int len = 0, wlen = 0, mt, wmt;
+        -: 1552:
+    #####: 1553:    while (p && wp && *s && *ws) {
+        -: 1554:	/* First test the word character */
+    #####: 1555:	wc = unmeta_one(ws, &wlen);
+    #####: 1556:	wind = pattern_match1(wp, wc, &wmt);
+    #####: 1557:	if (!wind)
+    #####: 1558:	    return 0;
+        -: 1559:
+        -: 1560:	/*
+        -: 1561:	 * Now the line character.
+        -: 1562:	 */
+    #####: 1563:	c = unmeta_one(s, &len);
+        -: 1564:	/*
+        -: 1565:	 * If either is "?", they match each other; no further tests.
+        -: 1566:	 * Apply this even if the character wasn't convertable;
+        -: 1567:	 * there's no point trying to be clever in that case.
+        -: 1568:	 */
+    #####: 1569:	if (p->tp != CPAT_ANY || wp->tp != CPAT_ANY)
+        -: 1570:	{
+    #####: 1571:	    ind = pattern_match1(p, c, &mt);
+    #####: 1572:	    if (!ind)
+    #####: 1573:		return 0;
+    #####: 1574:	    if (ind != wind)
+    #####: 1575:		return 0;
+    #####: 1576:	    if (mt != wmt) {
+        -: 1577:		/*
+        -: 1578:		 * Special case if matching lower vs. upper or
+        -: 1579:		 * vice versa.  The transformed characters must match.
+        -: 1580:		 * We don't need to check the transformation is
+        -: 1581:		 * the appropriate one for each character separately,
+        -: 1582:		 * since that was done in pattern_match1(), so just
+        -: 1583:		 * compare lower-cased versions of both.
+        -: 1584:		 */
+    #####: 1585:		if ((mt == PP_LOWER || mt == PP_UPPER) &&
+    #####: 1586:		    (wmt == PP_LOWER || wmt == PP_UPPER)) {
+    #####: 1587:		    if (ZC_tolower(c) != ZC_tolower(wc))
+    #####: 1588:			return 0;
+        -: 1589:		} else {
+        -: 1590:		    /* Other different classes can't match. */
+    #####: 1591:		    return 0;
+        -: 1592:		}
+        -: 1593:	    }
+        -: 1594:	}
+        -: 1595:
+    #####: 1596:	s += len;
+    #####: 1597:	ws += wlen;
+    #####: 1598:	p = p->next;
+    #####: 1599:	wp = wp->next;
+        -: 1600:    }
+        -: 1601:
+    #####: 1602:    while (p && *s) {
+    #####: 1603:	c = unmeta_one(s, &len);
+    #####: 1604:	if (!pattern_match1(p, c, &mt))
+    #####: 1605:	    return 0;
+    #####: 1606:	p = p->next;
+    #####: 1607:	s += len;
+        -: 1608:    }
+        -: 1609:
+    #####: 1610:    while (wp && *ws) {
+    #####: 1611:	wc = unmeta_one(ws, &wlen);
+    #####: 1612:	if (!pattern_match1(wp, wc, &wmt))
+    #####: 1613:	    return 0;
+    #####: 1614:	wp = wp->next;
+    #####: 1615:	ws += wlen;
+        -: 1616:    }
+        -: 1617:
+    #####: 1618:    return 1;
+        -: 1619:}
+        -: 1620:
+        -: 1621:
+        -: 1622:/* This splits the given string into a list of cline structs, separated
+        -: 1623: * at those places where one of the anchors of an `*' pattern was found.
+        -: 1624: * plen gives the number of characters on the line that matched this
+        -: 1625: * string.
+        -: 1626: *
+        -: 1627: * In *lp, if lp is not NULL, we return a pointer to the last cline struct we
+        -: 1628: * build.
+        -: 1629: *
+        -: 1630: * In *lprem, if lprem is not NULL, we return a pointer to the last
+        -: 1631: * cline struct we build if it came from the remainder of the
+        -: 1632: * line rather than from a right anchor match, else NULL.
+        -: 1633: */
+        -: 1634:
+        -: 1635:/**/
+        -: 1636:Cline
+    #####: 1637:bld_parts(char *str, int len, int plen, Cline *lp, Cline *lprem)
+        -: 1638:{
+    #####: 1639:    Cline ret = NULL, *q = &ret, n = NULL;
+        -: 1640:    Cmlist ms;
+        -: 1641:    Cmatcher mp;
+    #####: 1642:    int t, op = plen;
+    #####: 1643:    char *p = str, *os = str;
+        -: 1644:
+    #####: 1645:    while (len) {
+    #####: 1646:	for (t = 0, ms = bmatchers; ms && !t; ms = ms->next) {
+    #####: 1647:	    mp = ms->matcher;
+    #####: 1648:	    if (mp && mp->flags == CMF_RIGHT && mp->wlen < 0 && mp->ralen &&
+    #####: 1649:		!mp->llen && len >= mp->ralen && (str - os) >= mp->lalen &&
+    #####: 1650:		pattern_match(mp->right, str, NULL, NULL) &&
+    #####: 1651:		(!mp->lalen ||
+    #####: 1652:		 ((str - os) >= mp->lalen &&
+    #####: 1653:		  pattern_match(mp->left, str - mp->lalen, NULL, NULL)))) {
+    #####: 1654:		int olen = str - p, llen;
+        -: 1655:
+        -: 1656:		/* We found an anchor, create a new cline. The NEW flag
+        -: 1657:		 * is set if the characters before the anchor were not
+        -: 1658:		 * on the line. */
+    #####: 1659:		*q = n = get_cline(NULL, mp->ralen, str, mp->ralen, NULL, 0,
+        -: 1660:				   ((plen <= 0) ? CLF_NEW : 0));
+        -: 1661:
+        -: 1662:		/* If there were any characters before the anchor, add
+        -: 1663:		 * them as a cline struct. */
+        -: 1664:
+    #####: 1665:		if (p != str) {
+    #####: 1666:		    llen = (op < 0 ? 0 : op);
+        -: 1667:
+    #####: 1668:		    if (llen > olen)
+    #####: 1669:			llen = olen;
+    #####: 1670:		    n->prefix = get_cline(NULL, llen, p, olen, NULL, 0, 0);
+        -: 1671:		}
+    #####: 1672:		q = &(n->next);
+    #####: 1673:		str += mp->ralen; len -= mp->ralen;
+    #####: 1674:		plen -= mp->ralen;
+    #####: 1675:		op -= olen;
+    #####: 1676:		p = str;
+    #####: 1677:		t = 1;
+        -: 1678:	    }
+        -: 1679:	}
+    #####: 1680:	if (!t) {
+        -: 1681:	    /* No anchor was found here, skip. */
+    #####: 1682:	    str++; len--;
+    #####: 1683:	    plen--;
+        -: 1684:	}
+        -: 1685:    }
+        -: 1686:    /* This is the cline struct for the remaining string at the end. */
+        -: 1687:
+    #####: 1688:    if (p != str) {
+    #####: 1689:	int olen = str - p, llen = (op < 0 ? 0 : op);
+        -: 1690:
+    #####: 1691:        *q = n = get_cline(NULL, 0, NULL, 0, NULL, 0, (plen <= 0 ? CLF_NEW : 0));
+        -: 1692:
+    #####: 1693:	if (llen > olen)
+    #####: 1694:	    llen = olen;
+    #####: 1695:	n->prefix = get_cline(NULL, llen, p, olen, NULL, 0, 0);
+    #####: 1696:	if (lprem)
+    #####: 1697:	    *lprem = n;
+        -: 1698:    }
+    #####: 1699:    else if (!ret) {
+    #####: 1700:        *q = n =
+    #####: 1701:	    get_cline(NULL, 0, NULL, 0, NULL, 0, (plen <= 0 ? CLF_NEW : 0));
+    #####: 1702:	if (lprem)
+    #####: 1703:	    *lprem = n;
+    #####: 1704:    } else if (lprem) {
+    #####: 1705:	*lprem = NULL;
+        -: 1706:    }
+        -: 1707:
+    #####: 1708:    if (n)
+    #####: 1709:        n->next = NULL;
+        -: 1710:
+    #####: 1711:    if (lp)
+    #####: 1712:	*lp = n;
+        -: 1713:
+    #####: 1714:    return ret;
+        -: 1715:}
+        -: 1716:
+        -: 1717:
+        -: 1718:/*
+        -: 1719: * This builds all the possible line patterns for the pattern pat in the
+        -: 1720: * buffer line.  Then we test if this line matches the string given by
+        -: 1721: * wlen and word.
+        -: 1722: *
+        -: 1723: * The matcher  ) wpat, containing pattern that matched previously
+        -: 1724: *   mp gives   ) lpat, containing the pattern for line we build
+        -: 1725: * line is the line we are assembling; it is initially empty
+        -: 1726: * mword is a string that matched wpat before
+        -: 1727: * word is string that we try to match now
+        -: 1728: *
+        -: 1729: * The return value is the length of the string matched in the word, it
+        -: 1730: * is zero if we couldn't build a line that matches the word.
+        -: 1731: */
+        -: 1732:
+        -: 1733:/**/
+        -: 1734:static int
+    #####: 1735:bld_line(Cmatcher mp, ZLE_STRING_T line, char *mword, char *word,
+        -: 1736:	 int wlen, int sfx)
+        -: 1737:{
+    #####: 1738:    Cpattern lpat = mp->line;
+    #####: 1739:    Cpattern wpat = mp->word;
+        -: 1740:    Cpattern curgenpat;
+        -: 1741:    Cmlist ms;
+        -: 1742:    int llen, rl, l;
+        -: 1743:    convchar_t convchr, *wordcp;
+    #####: 1744:    VARARR(convchar_t, wordchars, wlen);
+    #####: 1745:    VARARR(struct cpattern, genpatarr, mp->llen);
+        -: 1746:
+        -: 1747:    /*
+        -: 1748:     * We may need to start the "word" array from the end.  This
+        -: 1749:     * is much easier if we convert it to an array of (possibly wide)
+        -: 1750:     * characters.
+        -: 1751:     */
+    #####: 1752:    MB_METACHARINIT();
+    #####: 1753:    for (l = wlen, wordcp = wordchars; l; l--) {
+    #####: 1754:	int charlen = MB_METACHARLENCONV(word, &convchr);
+        -: 1755:#ifdef MULTIBYTE_SUPPORT
+    #####: 1756:	if (convchr == WEOF)
+    #####: 1757:	    convchr = (*word == Meta) ? word[1] ^ 32 : *word;
+        -: 1758:#endif
+    #####: 1759:	*wordcp++ = convchr;
+    #####: 1760:	word += charlen;
+        -: 1761:    }
+        -: 1762:
+        -: 1763:    /*
+        -: 1764:     * Loop over all characters.  At this stage, line is an empty
+        -: 1765:     * space of length llen (not counting the null byte) which we assemble as
+        -: 1766:     * we go along.
+        -: 1767:     *
+        -: 1768:     * However, first we need to know what characters can appear at each
+        -: 1769:     * point in the line.  For this we assemble an list genpatarr of the
+        -: 1770:     * same length as the line.  (It's convenient to store this as an
+        -: 1771:     * array but it's linked as a list, too.)  If there are equivalences
+        -: 1772:     * we use mword to derive the equivalent character; when we've
+        -: 1773:     * reached the end of mword, equivalences are treated just like
+        -: 1774:     * ordinary character classes.  For character classes we just attach
+        -: 1775:     * the class to the genpatarr list and apply it as a restriction
+        -: 1776:     * when we finally match the line against the set of matchers.
+        -: 1777:     */
+    #####: 1778:    curgenpat = genpatarr;
+    #####: 1779:    MB_METACHARINIT();
+    #####: 1780:    while (lpat) {
+        -: 1781:	convchar_t wchr, wind;
+        -: 1782:	int wmtp, mwordlen;
+        -: 1783:	/*
+        -: 1784:	 * If the line pattern is an equivalence, query wpat to find the
+        -: 1785:	 * word part of the equivalence.  If we don't find one we don't try
+        -: 1786:	 * equivalencing but use lpat as an ordinary match.  (It's not
+        -: 1787:	 * entirely clear to me this is the correct behaviour on a
+        -: 1788:	 * failed character match within the equivalence, but that was
+        -: 1789:	 * the behaviour of the old logic that this replaces.)
+        -: 1790:	 */
+    #####: 1791:	if (lpat->tp == CPAT_EQUIV && wpat && *mword) {
+    #####: 1792:	    mwordlen = MB_METACHARLENCONV(mword, &wchr);
+    #####: 1793:	    wind = pattern_match1(wpat, wchr, &wmtp);
+    #####: 1794:	    wpat = wpat->next;
+    #####: 1795:	    mword += mwordlen;
+        -: 1796:	} else
+    #####: 1797:	    wind = 0;
+    #####: 1798:	if (wind) {
+        -: 1799:	    /*
+        -: 1800:	     * Successful match for word side of equivalence.
+        -: 1801:	     * Find the line equivalent.
+        -: 1802:	     */
+        -: 1803:	    convchar_t lchr;
+    #####: 1804:	    if ((lchr = pattern_match_equivalence(lpat, wind, wmtp, wchr))
+        -: 1805:		== CHR_INVALID) {
+        -: 1806:		/*
+        -: 1807:		 * No equivalent.  No possible match; give up.
+        -: 1808:		 */
+    #####: 1809:		return 0;
+        -: 1810:	    }
+        -: 1811:	    /*
+        -: 1812:	     * We now have an exact character to match,
+        -: 1813:	     * so make up a pattern element for it.
+        -: 1814:	     */
+    #####: 1815:	    curgenpat->tp = CPAT_CHAR;
+    #####: 1816:	    curgenpat->u.chr = lchr;
+        -: 1817:	} else {
+        -: 1818:	    /*
+        -: 1819:	     * Not an equivalence class, so we just keep the
+        -: 1820:	     * test in the lpat as it is.
+        -: 1821:	     */
+    #####: 1822:	    curgenpat->tp = lpat->tp;
+    #####: 1823:	    if (lpat->tp == CPAT_CHAR)
+    #####: 1824:		curgenpat->u.chr = lpat->u.chr;
+    #####: 1825:	    else if (lpat->tp != CPAT_ANY) {
+        -: 1826:		/*
+        -: 1827:		 * The string isn't modified and is only needed in calls from
+        -: 1828:		 * this function, so we don't even need to copy it.
+        -: 1829:		 */
+    #####: 1830:		curgenpat->u.str = lpat->u.str;
+        -: 1831:	    }
+        -: 1832:	}
+    #####: 1833:	lpat = lpat->next;
+        -: 1834:	/*
+        -: 1835:	 * This linked list is defined above as an array.
+        -: 1836:	 * We could get away with just keeping it as an array
+        -: 1837:	 * and passing it down as such, but that's a bit icky
+        -: 1838:	 * since the generic linkage of Cpatterns is as a linked
+        -: 1839:	 * list and we should keep our local memory management
+        -: 1840:	 * problems to ourselvess.
+        -: 1841:	 */
+    #####: 1842:	if (lpat)
+    #####: 1843:	    curgenpat->next = curgenpat+1;
+        -: 1844:	else
+    #####: 1845:	    curgenpat->next = NULL;
+    #####: 1846:	curgenpat++;
+        -: 1847:    }
+        -: 1848:
+        -: 1849:    /*
+        -: 1850:     * We now know how to match the word with the line patterns; let's
+        -: 1851:     * see if it does.  We will use the information in curgenpat if we
+        -: 1852:     * are successful to work out what character goes on the line.  This
+        -: 1853:     * is a bit hairy, as in "the Yeti is a creature that is a bit
+        -: 1854:     * hairy".
+        -: 1855:     */
+    #####: 1856:    llen = mp->llen;
+    #####: 1857:    rl = 0;
+        -: 1858:
+    #####: 1859:    if (sfx)
+        -: 1860:    {
+        -: 1861:	/*
+        -: 1862:	 * We need to work backwards from the end of both the
+        -: 1863:	 * word and the line strings.
+        -: 1864:	 */
+    #####: 1865:	wordcp = wordchars + wlen;
+        -: 1866:
+        -: 1867:	/*
+        -: 1868:	 * We construct the line from the end.
+        -: 1869:	 */
+    #####: 1870:	line += llen;
+    #####: 1871:	curgenpat = genpatarr + llen;
+        -: 1872:    } else {
+    #####: 1873:	wordcp = wordchars;
+    #####: 1874:	curgenpat = genpatarr;
+        -: 1875:    }
+        -: 1876:
+        -: 1877:    /* we now reuse mp, lpat, wpat for the global matchers */
+    #####: 1878:    MB_METACHARINIT();
+    #####: 1879:    while (llen && wlen) {
+        -: 1880:	int wmtp;
+        -: 1881:	convchar_t *wp;
+        -: 1882:	Cpattern tmpgenpat;
+        -: 1883:
+    #####: 1884:	if (sfx) {
+    #####: 1885:	    wp = wordcp - 1;
+    #####: 1886:	    tmpgenpat = curgenpat - 1;
+        -: 1887:	} else {
+    #####: 1888:	    tmpgenpat = curgenpat;
+    #####: 1889:	    wp = wordcp;
+        -: 1890:	}
+    #####: 1891:	if (pattern_match1(tmpgenpat, *wp, &wmtp))
+        -: 1892:	{
+        -: 1893:	    convchar_t lchr;
+        -: 1894:	    /*
+        -: 1895:	     * We can match the line character directly with the word
+        -: 1896:	     * character.  If the line character is a fixed one,
+        -: 1897:	     * keep it, since we went to all that trouble above,
+        -: 1898:	     * else if it's generic, keep the word character,
+        -: 1899:	     * since we have no choice.
+        -: 1900:	     */
+    #####: 1901:	    if (tmpgenpat->tp == CPAT_CHAR)
+    #####: 1902:		lchr = tmpgenpat->u.chr;
+        -: 1903:	    else
+    #####: 1904:		lchr = *wp;
+        -: 1905:
+    #####: 1906:	    if (sfx)
+    #####: 1907:		*--line = lchr;
+        -: 1908:	    else
+    #####: 1909:		*line++ = lchr;
+        -: 1910:
+    #####: 1911:	    llen--;
+    #####: 1912:	    wlen--;
+    #####: 1913:	    rl++;
+        -: 1914:
+    #####: 1915:	    if (sfx) {
+    #####: 1916:		wordcp = wp;
+    #####: 1917:		curgenpat = tmpgenpat;
+        -: 1918:	    } else {
+    #####: 1919:		if (llen)
+    #####: 1920:		    curgenpat++;
+    #####: 1921:		wordcp++;
+        -: 1922:	    }
+        -: 1923:	}
+        -: 1924:	else
+        -: 1925:	{
+        -: 1926:	    ZLE_CHAR_T *lp;
+        -: 1927:	    /*
+        -: 1928:	     * Need to loop over pattern matchers.
+        -: 1929:	     */
+    #####: 1930:	    for (ms = bmatchers; ms; ms = ms->next) {
+    #####: 1931:		mp = ms->matcher;
+        -: 1932:		/*
+        -: 1933:		 * This is the nightmare case: we have line and
+        -: 1934:		 * and word matchers and some pattern which restricts
+        -: 1935:		 * the value on the line without us knowing exactly
+        -: 1936:		 * what it is.  Despatch to the special function
+        -: 1937:		 * for that.
+        -: 1938:		 */
+    #####: 1939:		if (mp && !mp->flags && mp->wlen <= wlen &&
+    #####: 1940:		    mp->llen <= llen)
+        -: 1941:		{
+    #####: 1942:		    lp = line;
+    #####: 1943:		    wp = wordcp;
+    #####: 1944:		    tmpgenpat = curgenpat;
+        -: 1945:
+    #####: 1946:		    if (sfx) {
+    #####: 1947:			lp -= mp->llen;
+    #####: 1948:			wp -= mp->wlen;
+    #####: 1949:			tmpgenpat -= mp->llen;
+        -: 1950:		    }
+        -: 1951:
+    #####: 1952:		    if (pattern_match_restrict(mp->line, mp->word, wp,
+    #####: 1953:					       wlen - (wp - wordchars),
+        -: 1954:					       tmpgenpat, lp)) {
+        -: 1955:			/*
+        -: 1956:			 * Matched: advance over as many characters
+        -: 1957:			 * of the patterns and strings as
+        -: 1958:			 * we've done matches.
+        -: 1959:			 */
+    #####: 1960:			if (sfx) {
+    #####: 1961:			    line = lp;
+    #####: 1962:			    wordcp = wp;
+    #####: 1963:			    curgenpat = tmpgenpat;
+        -: 1964:			} else {
+    #####: 1965:			    line += mp->llen;
+    #####: 1966:			    wordcp += mp->wlen;
+    #####: 1967:			    curgenpat += mp->llen;
+        -: 1968:			}
+    #####: 1969:			llen -= mp->llen;
+    #####: 1970:			wlen -= mp->wlen;
+    #####: 1971:			rl += mp->wlen;
+    #####: 1972:			break;
+        -: 1973:		    }
+        -: 1974:		}
+        -: 1975:	    }
+    #####: 1976:	    if (!ms)
+    #####: 1977:		return 0;	/* Didn't match, give up */
+        -: 1978:	}
+        -: 1979:    }
+    #####: 1980:    if (!llen) {
+        -: 1981:	/* Unmatched portion in the line built, return matched length. */
+    #####: 1982:	return rl;
+        -: 1983:    }
+    #####: 1984:    return 0;
+        -: 1985:}
+        -: 1986:
+        -: 1987:/* This builds a string that may be put on the line that fully matches the
+        -: 1988: * given strings. The return value is NULL if no such string could be built
+        -: 1989: * or that string in local static memory, dup it. */
+        -: 1990:
+        -: 1991:/**/
+        -: 1992:static char *
+    #####: 1993:join_strs(int la, char *sa, int lb, char *sb)
+        -: 1994:{
+        -: 1995:    static char *rs = NULL;
+        -: 1996:    static int rl = 0;
+        -: 1997:
+        -: 1998:    Cmlist ms;
+        -: 1999:    Cmatcher mp;
+        -: 2000:    int t, bl;
+        -: 2001:    /** rr is the remaining length already allocated in rs */
+    #####: 2002:    int rr = rl;
+        -: 2003:    /*
+        -: 2004:     * convlen is the length we need for the string converted to
+        -: 2005:     * char * (possibly multibyte).
+        -: 2006:     */
+        -: 2007:    int convlen;
+    #####: 2008:    char *rp = rs;
+        -: 2009:
+    #####: 2010:    while (la && lb) {
+    #####: 2011:	if (*sa != *sb) {
+        -: 2012:	    /* Different characters, try the matchers. */
+    #####: 2013:	    for (t = 0, ms = bmatchers; ms && !t; ms = ms->next) {
+    #####: 2014:		mp = ms->matcher;
+    #####: 2015:		if (mp && !mp->flags && mp->wlen > 0 && mp->llen > 0 &&
+    #####: 2016:		    mp->wlen <= la && mp->wlen <= lb) {
+        -: 2017:		    /* The pattern has no anchors and the word
+        -: 2018:		     * pattern fits, try it. */
+    #####: 2019:		    if ((t = pattern_match(mp->word, sa, NULL, NULL)) ||
+    #####: 2020:			pattern_match(mp->word, sb, NULL, NULL)) {
+        -: 2021:			/* It matched one of the strings, t says which one. */
+    #####: 2022:			VARARR(ZLE_CHAR_T, line, mp->llen);
+        -: 2023:			char **ap, **bp;
+        -: 2024:			int *alp, *blp;
+        -: 2025:
+    #####: 2026:			if (t) {
+    #####: 2027:			    ap = &sa;
+    #####: 2028:			    alp = &la;
+        -: 2029:
+    #####: 2030:			    bp = &sb;
+    #####: 2031:			    blp = &lb;
+        -: 2032:			} else {
+    #####: 2033:			    ap = &sb;
+    #####: 2034:			    alp = &lb;
+        -: 2035:
+    #####: 2036:			    bp = &sa;
+    #####: 2037:			    blp = &la;
+        -: 2038:			}
+        -: 2039:			/* Now try to build a string that matches the other
+        -: 2040:			 * string. */
+    #####: 2041:			if ((bl = bld_line(mp, line, *ap, *bp, *blp, 0))) {
+        -: 2042:			    /* Found one, put it into the return string. */
+    #####: 2043:			    char *convstr =
+    #####: 2044:				zlelineasstring(line, mp->llen, 0, &convlen,
+        -: 2045:						NULL, 0);
+    #####: 2046:			    if (rr <= convlen) {
+    #####: 2047:				char *or = rs;
+    #####: 2048:				int alloclen = (convlen > 20) ? convlen : 20;
+        -: 2049:
+    #####: 2050:				rs = realloc(rs, (rl += alloclen));
+    #####: 2051:				rr += alloclen;
+    #####: 2052:				rp += rs - or;
+        -: 2053:			    }
+    #####: 2054:			    memcpy(rp, convstr, convlen);
+    #####: 2055:			    rp += convlen;
+    #####: 2056:			    rr -= convlen;
+        -: 2057:			    /* HERE: multibyte chars */
+    #####: 2058:			    *ap += mp->wlen;
+    #####: 2059:			    *alp -= mp->wlen;
+        -: 2060:
+    #####: 2061:			    *bp += bl;
+    #####: 2062:			    *blp -= bl;
+    #####: 2063:			    t = 1;
+    #####: 2064:			    free(convstr);
+        -: 2065:			} else
+    #####: 2066:			    t = 0;
+        -: 2067:		    }
+        -: 2068:		}
+        -: 2069:	    }
+    #####: 2070:	    if (!t)
+    #####: 2071:		break;
+        -: 2072:	} else {
+        -: 2073:	    /* Same character, just take it. */
+    #####: 2074:	    if (rr <= 1 /* HERE charlen */) {
+    #####: 2075:		char *or = rs;
+        -: 2076:
+    #####: 2077:		rs = realloc(rs, (rl += 20));
+    #####: 2078:		rr += 20;
+    #####: 2079:		rp += rs - or;
+        -: 2080:	    }
+        -: 2081:	    /* HERE: multibyte char */
+    #####: 2082:	    *rp++ = *sa;
+    #####: 2083:	    rr--;
+    #####: 2084:	    sa++;
+    #####: 2085:	    sb++;
+    #####: 2086:	    la--;
+    #####: 2087:	    lb--;
+        -: 2088:	}
+        -: 2089:    }
+    #####: 2090:    if (la || lb)
+    #####: 2091:	return NULL;
+        -: 2092:
+    #####: 2093:    *rp = '\0';
+        -: 2094:
+    #####: 2095:    return rs;
+        -: 2096:}
+        -: 2097:
+        -: 2098:/*
+        -: 2099: * This compares the anchors stored in two top-level clines.
+        -: 2100: * It returns 1 if the anchors are the same, 2 if they are
+        -: 2101: * compatible (and have been combined in "o"), 0 otherwise.
+        -: 2102: */
+        -: 2103:
+        -: 2104:/**/
+        -: 2105:static int
+    #####: 2106:cmp_anchors(Cline o, Cline n, int join)
+        -: 2107:{
+    #####: 2108:    int line = 0;
+        -: 2109:    char *j;
+        -: 2110:
+        -: 2111:    /* First try the exact strings. */
+    #####: 2112:    if ((!(o->flags & CLF_LINE) && o->wlen == n->wlen &&
+    #####: 2113:	 (!o->word || !strncmp(o->word, n->word, o->wlen))) ||
+    #####: 2114:	(line = ((!o->line && !n->line && !o->wlen && !n->wlen) ||
+    #####: 2115:		 (o->llen == n->llen && o->line && n->line &&
+    #####: 2116:		  !strncmp(o->line, n->line, o->llen))))) {
+    #####: 2117:	if (line) {
+    #####: 2118:	    o->flags |= CLF_LINE;
+    #####: 2119:	    o->word = NULL;
+    #####: 2120:	    o->wlen = 0;
+        -: 2121:	}
+    #####: 2122:	return 1;
+        -: 2123:    }
+        -: 2124:    /* Didn't work, try to build a string matching both anchors. */
+    #####: 2125:    if (join && !(o->flags & CLF_JOIN) && o->word && n->word &&
+    #####: 2126:	(j = join_strs(o->wlen, o->word, n->wlen, n->word))) {
+    #####: 2127:	o->flags |= CLF_JOIN;
+    #####: 2128:	o->wlen = strlen(j);
+    #####: 2129:	o->word = dupstring(j);
+        -: 2130:
+    #####: 2131:	return 2;
+        -: 2132:    }
+    #####: 2133:    return 0;
+        -: 2134:}
+        -: 2135:
+        -: 2136:/* Below is the code to join two cline lists. This struct is used to walk
+        -: 2137: * through a sub-list. */
+        -: 2138:
+        -: 2139:typedef struct cmdata *Cmdata;
+        -: 2140:
+        -: 2141:struct cmdata {
+        -: 2142:    Cline cl, pcl;
+        -: 2143:    char *str, *astr;
+        -: 2144:    int len, alen, olen, line;
+        -: 2145:};
+        -: 2146:
+        -: 2147:/* This is used to ensure that a cmdata struct contains usable data.
+        -: 2148: * The return value is non-zero if we reached the end. */
+        -: 2149:
+        -: 2150:static int
+    #####: 2151:check_cmdata(Cmdata md, int sfx)
+        -: 2152:{
+        -: 2153:    /* We will use the str and len fields to contain the next sub-string
+        -: 2154:     * in the list. If len is zero, we have to use the next cline. */
+    #####: 2155:    if (!md->len) {
+        -: 2156:	/* If there is none, we reached the end. */
+    #####: 2157:	if (!md->cl)
+    #####: 2158:	    return 1;
+        -: 2159:
+        -: 2160:	/* Otherwise, get the string. Only the line-string or both.
+        -: 2161:	 * We also have to adjust the pointer if this is for a suffix. */
+    #####: 2162:	if (md->cl->flags & CLF_LINE) {
+    #####: 2163:	    md->line = 1;
+    #####: 2164:	    md->len = md->cl->llen;
+    #####: 2165:	    md->str = md->cl->line;
+        -: 2166:	} else {
+    #####: 2167:	    md->line = 0;
+    #####: 2168:	    md->len = md->olen = md->cl->wlen;
+        -: 2169:	    /* HERE: multibyte */
+    #####: 2170:	    if ((md->str = md->cl->word) && sfx)
+    #####: 2171:		md->str += md->len;
+    #####: 2172:	    md->alen = md->cl->llen;
+        -: 2173:	    /* HERE: multibyte */
+    #####: 2174:	    if ((md->astr = md->cl->line) && sfx)
+    #####: 2175:		md->astr += md->alen;
+        -: 2176:	}
+    #####: 2177:	md->pcl = md->cl;
+    #####: 2178:	md->cl = md->cl->next;
+        -: 2179:    }
+    #####: 2180:    return 0;
+        -: 2181:}
+        -: 2182:
+        -: 2183:/* This puts the not-yet-matched portion back into the last cline and 
+        -: 2184: * returns that. */
+        -: 2185:
+        -: 2186:static Cline
+    #####: 2187:undo_cmdata(Cmdata md, int sfx)
+        -: 2188:{
+    #####: 2189:    Cline r = md->pcl;
+        -: 2190:
+    #####: 2191:    if (md->line) {
+    #####: 2192:	r->word = NULL;
+    #####: 2193:	r->wlen = 0;
+    #####: 2194:	r->flags |= CLF_LINE;
+    #####: 2195:	r->llen = md->len;
+        -: 2196:	/* HERE: multibyte */
+    #####: 2197:	r->line = md->str - (sfx ? md->len : 0);
+    #####: 2198:    } else if (md->len != md->olen) {
+    #####: 2199:	r->wlen = md->len;
+        -: 2200:	/* HERE: multibyte */
+    #####: 2201:	r->word = md->str - (sfx ? md->len : 0);
+        -: 2202:	DPUTS(r->wlen > 0 && !*r->word, "Bad word");
+        -: 2203:    }
+    #####: 2204:    return r;
+        -: 2205:}
+        -: 2206:
+        -: 2207:/* This tries to build a string matching a sub-string in a sub-cline
+        -: 2208: * that could not be matched otherwise. */
+        -: 2209:
+        -: 2210:static Cline
+    #####: 2211:join_sub(Cmdata md, char *str, int len, int *mlen, int sfx, int join)
+        -: 2212:{
+    #####: 2213:    if (!check_cmdata(md, sfx)) {
+    #####: 2214:	char *ow = str, *nw = md->str;
+    #####: 2215:	int ol = len, nl = md->len;
+        -: 2216:	Cmlist ms;
+        -: 2217:	Cmatcher mp;
+        -: 2218:	int t;
+        -: 2219:
+    #####: 2220:	if (sfx) {
+    #####: 2221:	    ow += ol; nw += nl;
+        -: 2222:	}
+    #####: 2223:	for (t = 0, ms = bmatchers; ms && !t; ms = ms->next) {
+    #####: 2224:	    mp = ms->matcher;
+        -: 2225:	    /* We use only those patterns that match a non-empty
+        -: 2226:	     * string in both the line and the word and that have
+        -: 2227:	     * no anchors. */
+    #####: 2228:	    if (mp && !mp->flags && mp->wlen > 0 && mp->llen > 0) {
+        -: 2229:		/* We first test, if the old string matches already the
+        -: 2230:		 * new one. */
+    #####: 2231:		if (mp->llen <= ol && mp->wlen <= nl &&
+    #####: 2232:		    pattern_match(mp->line, ow - (sfx ? mp->llen : 0),
+    #####: 2233:				  mp->word, nw - (sfx ? mp->wlen : 0))) {
+        -: 2234:		    /* It did, update the contents of the cmdata struct
+        -: 2235:		     * and return a cline for the matched part. */
+    #####: 2236:		    if (sfx)
+    #####: 2237:			md->str -= mp->wlen;
+        -: 2238:		    else
+    #####: 2239:			md->str += mp->wlen;
+    #####: 2240:		    md->len -= mp->wlen;
+    #####: 2241:		    *mlen = mp->llen;
+        -: 2242:
+    #####: 2243:		    return get_cline(NULL, 0, ow - (sfx ? mp->llen : 0),
+        -: 2244:				     mp->llen, NULL, 0, 0);
+        -: 2245:		}
+        -: 2246:		/* Otherwise we will try to build a string that matches
+        -: 2247:		 * both strings. But try the pattern only if the word-
+        -: 2248:		 * pattern matches one of the strings. */
+    #####: 2249:		if (join && mp->wlen <= ol && mp->wlen <= nl &&
+    #####: 2250:		    ((t = pattern_match(mp->word, ow - (sfx ? mp->wlen : 0),
+    #####: 2251:				       NULL, NULL)) ||
+    #####: 2252:		     pattern_match(mp->word, nw - (sfx ? mp->wlen : 0),
+        -: 2253:				   NULL, NULL))) {
+    #####: 2254:		    VARARR(ZLE_CHAR_T, line, mp->llen);
+        -: 2255:		    int bl;
+        -: 2256:		    char *mw;
+        -: 2257:
+        -: 2258:		    /* Then build all the possible lines and see
+        -: 2259:		     * if one of them matches the other string. */
+        -: 2260:		    /* HERE: they're multibyte */
+    #####: 2261:		    if (t)
+    #####: 2262:			mw = ow - (sfx ? mp->wlen : 0);
+        -: 2263:		    else
+    #####: 2264:			mw = nw - (sfx ? mp->wlen : 0);
+        -: 2265:
+    #####: 2266:		    if ((bl = bld_line(mp, line, mw, (t ? nw : ow),
+        -: 2267:				       (t ? nl : ol), sfx)))  {
+        -: 2268:			/* Yep, one of the lines matched the other
+        -: 2269:			 * string. */
+        -: 2270:
+        -: 2271:			/* HERE: multibyte characters */
+    #####: 2272:			if (t) {
+    #####: 2273:			    ol = mp->wlen; nl = bl;
+        -: 2274:			} else {
+    #####: 2275:			    ol = bl; nl = mp->wlen;
+        -: 2276:			}
+    #####: 2277:			if (sfx)
+    #####: 2278:			    md->str -= nl;
+        -: 2279:			else
+    #####: 2280:			    md->str += nl;
+    #####: 2281:			md->len -= nl;
+    #####: 2282:			*mlen = ol;
+        -: 2283:
+    #####: 2284:			return get_cline(NULL, 0,
+        -: 2285:					 zlelineasstring(line, mp->llen,
+        -: 2286:							 0, NULL, NULL, 1),
+        -: 2287:					 mp->llen, NULL, 0, CLF_JOIN);
+        -: 2288:		    }
+        -: 2289:		}
+        -: 2290:	    }
+        -: 2291:	}
+        -: 2292:    }
+    #####: 2293:    return NULL;
+        -: 2294:}
+        -: 2295:
+        -: 2296:/* This is used to match a sub-string in a sub-cline. The length of the
+        -: 2297: * matched portion is returned. This tests only for exact equality. */
+        -: 2298:
+        -: 2299:static int
+    #####: 2300:sub_match(Cmdata md, char *str, int len, int sfx)
+        -: 2301:{
+    #####: 2302:    int ret = 0, l, ind, add;
+        -: 2303:    char *p, *q;
+        -: 2304:#ifdef MULTIBYTE_SUPPORT
+    #####: 2305:    int fulllen = len;
+    #####: 2306:    char *fullstr = str;
+        -: 2307:    mbstate_t mbs;
+        -: 2308:#endif
+        -: 2309:
+    #####: 2310:    if (sfx) {
+    #####: 2311:	str += len;
+    #####: 2312:	ind = -1; add = -1;
+        -: 2313:    } else {
+    #####: 2314:	ind = 0; add = 1;
+        -: 2315:    }
+        -: 2316:    /* str and len describe the old string, in md we have the new one. */
+    #####: 2317:    while (len) {
+    #####: 2318:	if (check_cmdata(md, sfx))
+    #####: 2319:	    return ret;
+        -: 2320:
+        -: 2321:	/*
+        -: 2322:	 * Look for a common prefix.  If we do include metafied
+        -: 2323:	 * characters, at this stage we still need the overall length
+        -: 2324:	 * including Meta's as separate characters.
+        -: 2325:	 */
+    #####: 2326:	for (l = 0, p = str, q = md->str;
+    #####: 2327:	     l < len && l < md->len && p[ind] == q[ind];
+    #####: 2328:	     l++, p += add, q += add) {}
+        -: 2329:
+        -: 2330:	/* Make sure we don't end in the middle of a Meta sequence. */
+    #####: 2331:	if (add == 1) {
+    #####: 2332:	    if (l && p[-1] == Meta)
+    #####: 2333:		l--;
+        -: 2334:	} else {
+    #####: 2335:	    if (l && ((l < len && p[-1] == Meta)
+    #####: 2336:		   || (l < md->len && q[-1] == Meta)))
+    #####: 2337:		l--;
+        -: 2338:	}
+        -: 2339:#ifdef MULTIBYTE_SUPPORT
+        -: 2340:	/*
+        -: 2341:	 * Make sure we don't end in the middle of a multibyte character.
+        -: 2342:	 * Don't need to do this if the match ended at the start
+        -: 2343:	 * of the original string.
+        -: 2344:	 *
+        -: 2345:	 * Let q be the match point we've found.
+        -: 2346:	 */
+    #####: 2347:	q = sfx ? str - l : str + l;
+    #####: 2348:	if (q != fullstr) {
+    #####: 2349:	    memset(&mbs, 0, sizeof mbs);
+        -: 2350:	    /*
+        -: 2351:	     * Otherwise read characters from the start of the original
+        -: 2352:	     * string until we reach or pass the match point.  This
+        -: 2353:	     * is rather inefficient, but in general only reading
+        -: 2354:	     * the full string can keep track of where we are in
+        -: 2355:	     * a character.  With a prefix we could be more efficient,
+        -: 2356:	     * but it's difficult with a suffix where the match point
+        -: 2357:	     * moves backwards.
+        -: 2358:	     */
+    #####: 2359:	    for (p = fullstr; p < fullstr + fulllen; ) {
+        -: 2360:		wchar_t wc;
+        -: 2361:		/*
+        -: 2362:		 * ret must, in fact, be set by the current logic,
+        -: 2363:		 * but gcc doesn't realise (at least some versions don't).
+        -: 2364:		 */
+    #####: 2365:		size_t cnt = MB_INVALID;
+        -: 2366:		int diff;
+        -: 2367:		char *p2;
+        -: 2368:
+        -: 2369:		/*
+        -: 2370:		 * Because the string is metafied, we need to
+        -: 2371:		 * assembled wide characters a byte at a time.
+        -: 2372:		 */
+    #####: 2373:		for (p2 = p; p2 < fullstr + fulllen; p2++) {
+    #####: 2374:		    char curchar = (*p2 == Meta) ? (*++p2 ^ 32) : *p2;
+    #####: 2375:		    cnt = mbrtowc(&wc, &curchar, 1, &mbs);
+        -: 2376:		    /* Continue while character is incomplete. */
+    #####: 2377:		    if (cnt != MB_INCOMPLETE)
+    #####: 2378:			break;
+        -: 2379:		}
+    #####: 2380:		if (cnt == MB_INVALID || cnt == MB_INCOMPLETE) {
+        -: 2381:		    /* not a valid character, give up test */
+        -: 2382:		    break;
+        -: 2383:		}
+        -: 2384:		/* increment p2 for last byte read */
+    #####: 2385:		diff = ++p2 - q;
+    #####: 2386:		if (diff == 0) {
+        -: 2387:		    /*
+        -: 2388:		     * Prefix or suffix matches at end of multbyte character,
+        -: 2389:		     * so OK.
+        -: 2390:		     */
+    #####: 2391:		    break;
+    #####: 2392:		} else if (diff > 0) {
+        -: 2393:		    /*
+        -: 2394:		     * The prefix or suffix finishes in the middle
+        -: 2395:		     * of a character.  Shorten it until it doesn't.
+        -: 2396:		     */
+    #####: 2397:		    if (sfx) {
+        -: 2398:			/*
+        -: 2399:			 * We need to remove the trailing part of
+        -: 2400:			 * the character from the suffix.
+        -: 2401:			 */
+    #####: 2402:			l -= diff;
+        -: 2403:		    } else {
+        -: 2404:			/*
+        -: 2405:			 * We need to remove the initial part of
+        -: 2406:			 * the character from the prefix.
+        -: 2407:			 */
+    #####: 2408:			l -= (q - p);
+        -: 2409:		    }
+    #####: 2410:		    break;
+        -: 2411:		}
+        -: 2412:		/* Advance over full character */
+    #####: 2413:		p = p2;
+        -: 2414:	    }
+        -: 2415:	}
+        -: 2416:#endif
+    #####: 2417:	if (l) {
+        -: 2418:	    /* There was a common prefix, use it. */
+    #####: 2419:	    md->len -= l; len -= l;
+    #####: 2420:	    if (sfx) {
+    #####: 2421:		md->str -= l; str -= l;
+        -: 2422:	    } else {
+    #####: 2423:		md->str += l; str += l;
+        -: 2424:	    }
+    #####: 2425:	    ret += l;
+    #####: 2426:	} else if (md->line || md->len != md->olen || !md->astr)
+    #####: 2427:	    return ret;
+        -: 2428:	else {
+        -: 2429:	    /* We still have the line string to try. */
+    #####: 2430:	    md->line = 1;
+    #####: 2431:	    md->len = md->alen;
+    #####: 2432:	    md->str = md->astr;
+        -: 2433:	}
+        -: 2434:    }
+    #####: 2435:    return ret;
+        -: 2436:}
+        -: 2437:
+        -: 2438:/* This is used to build a common prefix or suffix sub-list. If requested
+        -: 2439: * it returns the unmatched cline lists in orest and nrest. */
+        -: 2440:
+        -: 2441:/**/
+        -: 2442:static void
+    #####: 2443:join_psfx(Cline ot, Cline nt, Cline *orest, Cline *nrest, int sfx)
+        -: 2444:{
+    #####: 2445:    Cline p = NULL, o, n;
+        -: 2446:    struct cmdata md, omd;
+    #####: 2447:    char **sstr = NULL;
+    #####: 2448:    int len, join = 0, line = 0, *slen = NULL;
+        -: 2449:
+    #####: 2450:    if (sfx) {
+    #####: 2451:	o = ot->suffix; n = nt->suffix;
+        -: 2452:    } else {
+    #####: 2453:	o = ot->prefix;	n = nt->prefix;
+        -: 2454:    }
+    #####: 2455:    if (!o) {
+    #####: 2456:	if (orest)
+    #####: 2457:	    *orest = NULL;
+    #####: 2458:	if (nrest)
+    #####: 2459:	    *nrest = n;
+    #####: 2460:	if (n && n->wlen)
+    #####: 2461:	    ot->flags |= CLF_MISS;
+        -: 2462:
+    #####: 2463:	return;
+        -: 2464:    }
+    #####: 2465:    if (!n) {
+    #####: 2466:	if (sfx)
+    #####: 2467:	    ot->suffix = NULL;
+        -: 2468:	else
+    #####: 2469:	    ot->prefix = NULL;
+        -: 2470:
+    #####: 2471:	if (orest)
+    #####: 2472:	    *orest = o;
+        -: 2473:	else
+    #####: 2474:	    free_cline(o);
+    #####: 2475:	if (nrest)
+    #####: 2476:	    *nrest = NULL;
+    #####: 2477:	return;
+        -: 2478:    }
+    #####: 2479:    md.cl = n;
+    #####: 2480:    md.len = 0;
+        -: 2481:
+        -: 2482:    /* Walk through the old list. */
+    #####: 2483:    while (o) {
+    #####: 2484:	join = 0;
+    #####: 2485:	memcpy(&omd, &md, sizeof(struct cmdata));
+        -: 2486:
+        -: 2487:	/* We first get the length of the prefix equal in both strings. */
+    #####: 2488:	if (o->flags & CLF_LINE) {
+    #####: 2489:	    if ((len = sub_match(&md, o->line, o->llen, sfx)) != o->llen) {
+    #####: 2490:		join = 1; line = 1; slen = &(o->llen); sstr = &(o->line);
+        -: 2491:	    }
+    #####: 2492:	} else if ((len = sub_match(&md, o->word, o->wlen, sfx)) != o->wlen) {
+    #####: 2493:	    if (o->line) {
+    #####: 2494:		memcpy(&md, &omd, sizeof(struct cmdata));
+    #####: 2495:		o->flags |= CLF_LINE | CLF_DIFF;
+        -: 2496:
+    #####: 2497:		continue;
+        -: 2498:	    }
+    #####: 2499:	    o->llen = o->llen - ot->slen;
+    #####: 2500:	    join = 1; line = 0; slen = &(o->wlen); sstr = &(o->word);
+        -: 2501:	}
+    #####: 2502:	if (join) {
+        -: 2503:	    /* There is a rest that is different in the two lists,
+        -: 2504:	     * we try to build a new cline matching both strings. */
+        -: 2505:	    Cline joinl;
+        -: 2506:	    int jlen;
+        -: 2507:
+    #####: 2508:	    if ((joinl = join_sub(&md, *sstr + len, *slen - len,
+    #####: 2509:				  &jlen, sfx, !(o->flags & CLF_JOIN)))) {
+        -: 2510:		/* We have one, insert it into the list. */
+    #####: 2511:		joinl->flags |= CLF_DIFF;
+    #####: 2512:		if (len + jlen != *slen) {
+        -: 2513:		    Cline rest;
+        -: 2514:
+    #####: 2515:		    rest = get_cline(NULL, 0, *sstr + (sfx ? 0 : len + jlen),
+    #####: 2516:				     *slen - len - jlen, NULL, 0, 0);
+        -: 2517:
+    #####: 2518:		    rest->next = o->next;
+    #####: 2519:		    joinl->next = rest;
+        -: 2520:		} else
+    #####: 2521:		    joinl->next = o->next;
+        -: 2522:
+    #####: 2523:		if (len) {
+    #####: 2524:		    if (sfx)
+    #####: 2525:			*sstr += *slen - len;
+    #####: 2526:		    *slen = len;
+    #####: 2527:		    o->next = joinl;
+        -: 2528:		} else {
+    #####: 2529:		    o->next = NULL;
+    #####: 2530:		    free_cline(o);
+    #####: 2531:		    if (p)
+    #####: 2532:			p->next = joinl;
+    #####: 2533:		    else if (sfx)
+    #####: 2534:			ot->suffix = joinl;
+        -: 2535:		    else
+    #####: 2536:			ot->prefix = joinl;
+        -: 2537:		}
+    #####: 2538:		o = joinl;
+    #####: 2539:		join = 0;
+        -: 2540:	    }
+        -: 2541:	}
+    #####: 2542:	if (join) {
+        -: 2543:	    /* We couldn't build a cline for a common string, so we
+        -: 2544:	     * cut the list here. */
+    #####: 2545:	    if (len) {
+        -: 2546:		Cline r;
+        -: 2547:
+    #####: 2548:		if (orest) {
+    #####: 2549:		    if (line)
+    #####: 2550:			r = get_cline(o->line + len, *slen - len,
+        -: 2551:				      NULL, 0, NULL, 0, o->flags);
+        -: 2552:		    else
+    #####: 2553:			r = get_cline(NULL, 0, o->word + len, *slen - len,
+        -: 2554:				      NULL, 0, o->flags);
+        -: 2555:
+    #####: 2556:		    r->next = o->next;
+    #####: 2557:		    *orest = r;
+        -: 2558:
+    #####: 2559:		    *slen = len;
+    #####: 2560:		    o->next = NULL;
+        -: 2561:		} else {
+    #####: 2562:		    if (sfx)
+    #####: 2563:			*sstr += *slen - len;
+    #####: 2564:		    *slen = len;
+    #####: 2565:		    free_cline(o->next);
+    #####: 2566:		    o->next = NULL;
+        -: 2567:		}
+        -: 2568:	    } else {
+    #####: 2569:		if (p)
+    #####: 2570:		    p->next = NULL;
+    #####: 2571:		else if (sfx)
+    #####: 2572:		    ot->suffix = NULL;
+        -: 2573:		else
+    #####: 2574:		    ot->prefix = NULL;
+        -: 2575:
+    #####: 2576:		if (orest)
+    #####: 2577:		    *orest = o;
+        -: 2578:		else
+    #####: 2579:		    free_cline(o);
+        -: 2580:	    }
+    #####: 2581:	    if (!orest || !nrest)
+    #####: 2582:		ot->flags |= CLF_MISS;
+        -: 2583:
+    #####: 2584:	    if (nrest)
+    #####: 2585:		*nrest = undo_cmdata(&md, sfx);
+        -: 2586:
+    #####: 2587:	    return;
+        -: 2588:	}
+    #####: 2589:	p = o;
+    #####: 2590:	o = o->next;
+        -: 2591:    }
+    #####: 2592:    if (md.len || md.cl)
+    #####: 2593:	ot->flags |= CLF_MISS;
+    #####: 2594:    if (orest)
+    #####: 2595:	*orest = NULL;
+    #####: 2596:    if (nrest)
+    #####: 2597:	*nrest = undo_cmdata(&md, sfx);
+        -: 2598:}
+        -: 2599:
+        -: 2600:/* This builds the common prefix and suffix for a mid-cline -- the one
+        -: 2601: * describing the place where the prefix and the suffix meet. */
+        -: 2602:
+        -: 2603:/**/
+        -: 2604:static void
+    #####: 2605:join_mid(Cline o, Cline n)
+        -: 2606:{
+    #####: 2607:    if (o->flags & CLF_JOIN) {
+        -: 2608:	/* The JOIN flag is set in the old cline struct if it was
+        -: 2609:	 * already joined with another one. In this case the suffix
+        -: 2610:	 * field contains the suffix from previous calls. */
+        -: 2611:	Cline nr;
+        -: 2612:
+    #####: 2613:	join_psfx(o, n, NULL, &nr, 0);
+        -: 2614:
+    #####: 2615:	n->suffix = revert_cline(nr);
+        -: 2616:
+    #####: 2617:	join_psfx(o, n, NULL, NULL, 1);
+        -: 2618:    } else {
+        -: 2619:	/* This is the first time for both structs, so the prefix field
+        -: 2620:	 * contains the whole sub-list. */
+        -: 2621:	Cline or, nr;
+        -: 2622:
+    #####: 2623:	o->flags |= CLF_JOIN;
+        -: 2624:
+        -: 2625:	/* We let us give both rests and use them as the suffixes. */
+    #####: 2626:	join_psfx(o, n, &or, &nr, 0);
+        -: 2627:
+    #####: 2628:	if (or)
+    #####: 2629:	    or->llen = (o->slen > or->wlen ? or->wlen : o->slen);
+    #####: 2630:	o->suffix = revert_cline(or);
+    #####: 2631:	n->suffix = revert_cline(nr);
+        -: 2632:
+    #####: 2633:	join_psfx(o, n, NULL, NULL, 1);
+        -: 2634:    }
+    #####: 2635:    n->suffix = NULL;
+    #####: 2636:}
+        -: 2637:
+        -: 2638:/* This turns the sequence of anchor cline structs from b to e into a
+        -: 2639: * prefix sequence, puts it before the prefix of e and then tries to
+        -: 2640: * join that with the prefix of a.
+        -: 2641: * This is needed if some matches had a anchor match spec and others
+        -: 2642: * didn't. */
+        -: 2643:
+        -: 2644:/**/
+        -: 2645:static int
+    #####: 2646:sub_join(Cline a, Cline b, Cline e, int anew)
+        -: 2647:{
+    #####: 2648:    if (!e->suffix && a->prefix) {
+    #####: 2649:	Cline op = e->prefix, n = NULL, *p = &n, t, ca;
+    #####: 2650:	int min = 0, max = 0;
+        -: 2651:
+    #####: 2652:	for (; b != e; b = b->next) {
+    #####: 2653:	    if ((*p = t = b->prefix)) {
+    #####: 2654:		while (t->next)
+    #####: 2655:		    t = t->next;
+    #####: 2656:		p = &(t->next);
+        -: 2657:	    }
+    #####: 2658:	    b->suffix = b->prefix = NULL;
+    #####: 2659:	    b->flags &= ~CLF_SUF;
+    #####: 2660:	    min += b->min;
+    #####: 2661:	    max += b->max;
+    #####: 2662:	    *p = b;
+    #####: 2663:	    p = &(b->next);
+        -: 2664:	}
+    #####: 2665:	*p = e->prefix;
+    #####: 2666:	ca = a->prefix;
+        -: 2667:
+    #####: 2668:	while (n) {
+    #####: 2669:	    e->prefix = cp_cline(n, 1);
+    #####: 2670:	    a->prefix = cp_cline(ca, 1);
+        -: 2671:
+    #####: 2672:	    if (anew) {
+    #####: 2673:		int f = e->flags;
+        -: 2674:
+    #####: 2675:		join_psfx(e, a, NULL, NULL, 0);
+    #####: 2676:		e->flags = f;
+    #####: 2677:		if (e->prefix)
+    #####: 2678:		    return max - min;
+        -: 2679:	    } else {
+    #####: 2680:		int f = e->flags;
+        -: 2681:
+    #####: 2682:		join_psfx(a, e, NULL, NULL, 0);
+    #####: 2683:		e->flags = f;
+    #####: 2684:		if (a->prefix)
+    #####: 2685:		    return max - min;
+        -: 2686:	    }
+    #####: 2687:	    min -= n->min;
+        -: 2688:
+    #####: 2689:	    if (n == op)
+    #####: 2690:		break;
+    #####: 2691:	    n = n->next;
+        -: 2692:	}
+    #####: 2693:	return max - min;
+        -: 2694:    }
+    #####: 2695:    return 0;
+        -: 2696:}
+        -: 2697:
+        -: 2698:/* This simplifies the cline list given as the first argument so that
+        -: 2699: * it also matches the second list. */
+        -: 2700:
+        -: 2701:/**/
+        -: 2702:Cline
+    #####: 2703:join_clines(Cline o, Cline n)
+        -: 2704:{
+    #####: 2705:    cline_setlens(n, 1);
+        -: 2706:
+        -: 2707:    /* First time called, just return the new list. On further invocations
+        -: 2708:     * we will get it as the first argument. */
+    #####: 2709:    if (!o)
+    #####: 2710:	return n;
+        -: 2711:    else {
+    #####: 2712:	Cline oo = o, nn = n, po = NULL, pn = NULL, x;
+        -: 2713:	int diff;
+        -: 2714:
+        -: 2715:	/* Walk through the lists. */
+    #####: 2716:	while (o && n) {
+        -: 2717:	    /* If one of them describes a new part and the other one does
+        -: 2718:	     * not, synchronise them by searching an old part in the
+        -: 2719:	     * other list. */
+    #####: 2720:	    if ((o->flags & CLF_NEW) && !(n->flags & CLF_NEW)) {
+        -: 2721:		Cline t, tn;
+        -: 2722:
+    #####: 2723:		for (t = o; (tn = t->next) &&
+    #####: 2724:			 ((tn->flags & CLF_NEW) || !cmp_anchors(tn, n, 0));
+    #####: 2725:		     t = tn);
+    #####: 2726:		if (tn) {
+    #####: 2727:		    diff = sub_join(n, o, tn, 1);
+        -: 2728:
+    #####: 2729:		    if (po)
+    #####: 2730:			po->next = tn;
+        -: 2731:		    else
+    #####: 2732:			oo = tn;
+        -: 2733:
+    #####: 2734:		    t->next = NULL;
+    #####: 2735:		    free_cline(o);
+    #####: 2736:		    x = o;
+    #####: 2737:		    o = tn;
+        -: 2738:
+    #####: 2739:		    if (po && po->prefix && cmp_anchors(x, po, 0)) {
+    #####: 2740:			po->flags |= CLF_MISS;
+    #####: 2741:			po->max += diff;
+        -: 2742:		    } else {
+    #####: 2743:			o->flags |= CLF_MISS;
+    #####: 2744:			o->max += diff;
+        -: 2745:		    }
+    #####: 2746:		    continue;
+        -: 2747:		}
+        -: 2748:	    }
+    #####: 2749:	    if (!(o->flags & CLF_NEW) && (n->flags & CLF_NEW)) {
+        -: 2750:		Cline t, tn;
+        -: 2751:
+    #####: 2752:		for (t = n; (tn = t->next) &&
+    #####: 2753:			 ((tn->flags & CLF_NEW) || !cmp_anchors(o, tn, 0));
+    #####: 2754:		     t = tn);
+    #####: 2755:		if (tn) {
+    #####: 2756:		    int of = o->flags & CLF_MISS;
+        -: 2757:
+    #####: 2758:		    diff = sub_join(o, n, tn, 0);
+    #####: 2759:		    o->flags = (o->flags & ~CLF_MISS) | of;
+        -: 2760:
+    #####: 2761:		    if (po && po->prefix && cmp_anchors(n, pn, 0)) {
+    #####: 2762:			po->flags |= CLF_MISS;
+    #####: 2763:			po->max += diff;
+        -: 2764:		    } else {
+    #####: 2765:			o->flags |= CLF_MISS;
+    #####: 2766:			o->max += diff;
+        -: 2767:		    }
+    #####: 2768:		    n = tn;
+    #####: 2769:		    continue;
+        -: 2770:		}
+        -: 2771:	    }
+        -: 2772:	    /* Almost the same as above, but for the case that they
+        -: 2773:	     * describe different types of parts (prefix, suffix, or mid). */
+    #####: 2774:	    if ((o->flags & (CLF_SUF | CLF_MID)) !=
+    #####: 2775:		(n->flags & (CLF_SUF | CLF_MID))) {
+        -: 2776:		Cline t, tn;
+        -: 2777:
+    #####: 2778:		for (t = n;
+    #####: 2779:		     (tn = t->next) &&
+    #####: 2780:			 (tn->flags & (CLF_SUF | CLF_MID)) !=
+    #####: 2781:			 (o->flags  & (CLF_SUF | CLF_MID));
+    #####: 2782:		     t = tn);
+    #####: 2783:		if (tn && cmp_anchors(o, tn, 1)) {
+    #####: 2784:		    sub_join(o, n, tn, 0);
+        -: 2785:
+    #####: 2786:		    n = tn;
+    #####: 2787:		    continue;
+        -: 2788:		}
+    #####: 2789:		for (t = o;
+    #####: 2790:		     (tn = t->next) &&
+    #####: 2791:			 (tn->flags & (CLF_SUF | CLF_MID)) !=
+    #####: 2792:			 (n->flags  & (CLF_SUF | CLF_MID));
+    #####: 2793:		     t = tn);
+    #####: 2794:		if (tn && cmp_anchors(tn, n, 1)) {
+    #####: 2795:		    sub_join(n, o, tn, 1);
+        -: 2796:
+    #####: 2797:		    if (po)
+    #####: 2798:			po->next = tn;
+        -: 2799:		    else
+    #####: 2800:			oo = tn;
+    #####: 2801:		    t->next = NULL;
+    #####: 2802:		    free_cline(o);
+    #####: 2803:		    o = tn;
+    #####: 2804:		    continue;
+        -: 2805:		}
+    #####: 2806:		if (o->flags & CLF_MID) {
+    #####: 2807:		    o->flags = (o->flags & ~CLF_MID) | (n->flags & CLF_SUF);
+    #####: 2808:		    if (n->flags & CLF_SUF) {
+    #####: 2809:			free_cline(o->prefix);
+    #####: 2810:			o->prefix = NULL;
+        -: 2811:		    } else {
+    #####: 2812:			free_cline(o->suffix);
+    #####: 2813:			o->suffix = NULL;
+        -: 2814:		    }
+        -: 2815:		}
+    #####: 2816:		break;
+        -: 2817:	    }
+        -: 2818:	    /* Now see if they have matching anchors. If not, cut the list. */
+    #####: 2819:	    if (!(o->flags & CLF_MID) && !cmp_anchors(o, n, 1)) {
+    #####: 2820:		Cline t, tn, tt, to = NULL;
+        -: 2821:
+    #####: 2822:		for (t = n; (tn = t->next); t = tn)
+    #####: 2823:		    if (!(tn->flags & CLF_NEW) && (tn->flags & CLF_SKIP)) {
+    #####: 2824:			for (tt = o; (to = tt->next); tt = to)
+    #####: 2825:			    if (!(to->flags & CLF_NEW) && (to->flags & CLF_SKIP) &&
+    #####: 2826:				cmp_anchors(tn, to, 1))
+    #####: 2827:				break;
+    #####: 2828:			if (to)
+    #####: 2829:			    break;
+        -: 2830:		    }
+    #####: 2831:		if (tn) {
+    #####: 2832:		    if (po)
+    #####: 2833:			po->next = to;
+        -: 2834:		    else
+    #####: 2835:			oo = to;
+    #####: 2836:		    o = to;
+        -: 2837:
+    #####: 2838:		    diff = sub_join(o, n, tn, 0);
+        -: 2839:
+    #####: 2840:		    o->flags |= CLF_MISS;
+    #####: 2841:		    o->max += diff;
+        -: 2842:
+    #####: 2843:		    n = tn;
+    #####: 2844:		    po = o;
+    #####: 2845:		    o = o->next;
+    #####: 2846:		    pn = n;
+    #####: 2847:		    n = n->next;
+    #####: 2848:		    continue;
+        -: 2849:		} else {
+    #####: 2850:		    for (t = o; (to = t->next); t = to)
+    #####: 2851:			if ((to->flags & CLF_SKIP) && cmp_anchors(n, to, 1))
+    #####: 2852:			    break;
+        -: 2853:
+    #####: 2854:		    if (to) {
+    #####: 2855:			diff = sub_join(n, o, to, 1);
+        -: 2856:
+    #####: 2857:			if (po)
+    #####: 2858:			    po->next = to;
+        -: 2859:			else
+    #####: 2860:			    oo = to;
+    #####: 2861:			x = o;
+    #####: 2862:			o = to;
+    #####: 2863:			if (po && po->prefix && cmp_anchors(x, po, 0)) {
+    #####: 2864:			    po->flags |= CLF_MISS;
+    #####: 2865:			    po->max += diff;
+        -: 2866:			} else {
+    #####: 2867:			    o->flags |= CLF_MISS;
+    #####: 2868:			    o->max += diff;
+        -: 2869:			}
+    #####: 2870:			continue;
+        -: 2871:		    } else {
+    #####: 2872:			for (tt = NULL, t = n; (tn = t->next); t = tn) {
+    #####: 2873:			    if (tn->flags & CLF_SKIP)
+    #####: 2874:				for (tt = o; (to = tt->next); tt = to)
+    #####: 2875:				    if ((to->flags & CLF_SKIP) &&
+    #####: 2876:					cmp_anchors(tn, to, 1))
+    #####: 2877:					break;
+    #####: 2878:			    if (to)
+    #####: 2879:				break;
+        -: 2880:			}
+    #####: 2881:			if (to) {
+    #####: 2882:			    diff = sub_join(n, o, to, 1);
+        -: 2883:
+    #####: 2884:			    if (po)
+    #####: 2885:				po->next = to;
+        -: 2886:			    else
+    #####: 2887:				oo = to;
+    #####: 2888:			    x = o;
+    #####: 2889:			    o = to;
+    #####: 2890:			    if (po && po->prefix && cmp_anchors(x, po, 0)) {
+    #####: 2891:				po->flags |= CLF_MISS;
+    #####: 2892:				po->max += diff;
+        -: 2893:			    } else {
+    #####: 2894:				o->flags |= CLF_MISS;
+    #####: 2895:				o->max += diff;
+        -: 2896:			    }
+    #####: 2897:			    continue;
+        -: 2898:			} else {
+    #####: 2899:			    for (tn = n; tn; tn = tn->next)
+    #####: 2900:				if ((tn->flags & CLF_NEW) ==
+    #####: 2901:				    (o->flags & CLF_NEW) &&
+    #####: 2902:				    cmp_anchors(tn, o, 1)) break;
+        -: 2903:
+    #####: 2904:			    if (tn) {
+    #####: 2905:				int of = o->flags & CLF_MISS;
+        -: 2906:
+    #####: 2907:				if ((diff = sub_join(o, n, tn, 0))) {
+    #####: 2908:				    o->flags = (o->flags & ~CLF_MISS) | of;
+    #####: 2909:				    if (po && po->prefix) {
+    #####: 2910:					po->flags |= CLF_MISS;
+    #####: 2911:					po->max += diff;
+        -: 2912:				    }
+        -: 2913:				    else {
+    #####: 2914:					o->flags |= CLF_MISS;
+    #####: 2915:					o->max += diff;
+        -: 2916:				    }
+        -: 2917:				}
+    #####: 2918:				n = tn;
+    #####: 2919:				po = o;
+    #####: 2920:				o = o->next;
+    #####: 2921:				pn = n;
+    #####: 2922:				n = n->next;
+    #####: 2923:				continue;
+        -: 2924:			    }
+    #####: 2925:			    if (o->flags & CLF_SUF)
+    #####: 2926:				break;
+        -: 2927:
+    #####: 2928:			    o->word = o->line = o->orig = NULL;
+    #####: 2929:			    o->wlen = 0;
+    #####: 2930:			    free_cline(o->next);
+    #####: 2931:			    o->next = NULL;
+    #####: 2932:			    o->flags |= CLF_MISS;
+        -: 2933:			}
+        -: 2934:		    }
+        -: 2935:		}
+        -: 2936:	    }
+        -: 2937:	    /* Ok, they are equal, now copy the information about the
+        -: 2938:             * original string if needed, calculate minimum and maximum
+        -: 2939:	     * lengths, and join the sub-lists. */
+    #####: 2940:	    if (!o->orig && !o->olen) {
+    #####: 2941:		o->orig = n->orig;
+    #####: 2942:		o->olen = n->olen;
+        -: 2943:	    }
+    #####: 2944:	    if (n->min < o->min)
+    #####: 2945:		o->min = n->min;
+    #####: 2946:	    if (n->max > o->max)
+    #####: 2947:		o->max = n->max;
+    #####: 2948:	    if (o->flags & CLF_MID)
+    #####: 2949:		join_mid(o, n);
+        -: 2950:	    else
+    #####: 2951:		join_psfx(o, n, NULL, NULL, (o->flags & CLF_SUF));
+        -: 2952:
+    #####: 2953:	    po = o;
+    #####: 2954:	    o = o->next;
+    #####: 2955:	    pn = n;
+    #####: 2956:	    n = n->next;
+        -: 2957:	}
+        -: 2958:	/* Free the rest of the old list. */
+    #####: 2959:	if (o) {
+    #####: 2960:	    if (po)
+    #####: 2961:		po->next = NULL;
+        -: 2962:	    else
+    #####: 2963:		oo = NULL;
+        -: 2964:
+    #####: 2965:	    free_cline(o);
+        -: 2966:	}
+    #####: 2967:	free_cline(nn);
+        -: 2968:
+    #####: 2969:	return oo;
+        -: 2970:    }
+        -: 2971:}

@@ -1,0 +1,2326 @@
+        -:    0:Source:parameter.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * parameter.c - parameter interface to zsh internals
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "parameter.mdh"
+        -:   31:#include "parameter.pro"
+        -:   32:
+        -:   33:/* This says if we are cleaning up when the module is unloaded. */
+        -:   34:
+        -:   35:static int incleanup;
+        -:   36:
+        -:   37:/* Functions for the parameters special parameter. */
+        -:   38:
+        -:   39:/* Return a string describing the type of a parameter. */
+        -:   40:
+        -:   41:/**/
+        -:   42:static char *
+    #####:   43:paramtypestr(Param pm)
+        -:   44:{
+    #####:   45:    char *val = NULL;
+    #####:   46:    int f = pm->node.flags;
+        -:   47:
+    #####:   48:    if (!(f & PM_UNSET)) {
+    #####:   49:	if (pm->node.flags & PM_AUTOLOAD)
+    #####:   50:	    return dupstring("undefined");
+        -:   51:
+    #####:   52:	switch (PM_TYPE(f)) {
+    #####:   53:	case PM_SCALAR:  val = "scalar"; break;
+    #####:   54:	case PM_ARRAY:   val = "array"; break;
+    #####:   55:	case PM_INTEGER: val = "integer"; break;
+    #####:   56:	case PM_EFLOAT:
+    #####:   57:	case PM_FFLOAT:  val = "float"; break;
+    #####:   58:	case PM_HASHED:  val = "association"; break;
+        -:   59:	}
+        -:   60:	DPUTS(!val, "BUG: type not handled in parameter");
+    #####:   61:	val = dupstring(val);
+    #####:   62:	if (pm->level)
+    #####:   63:	    val = dyncat(val, "-local");
+    #####:   64:	if (f & PM_LEFT)
+    #####:   65:	    val = dyncat(val, "-left");
+    #####:   66:	if (f & PM_RIGHT_B)
+    #####:   67:	    val = dyncat(val, "-right_blanks");
+    #####:   68:	if (f & PM_RIGHT_Z)
+    #####:   69:	    val = dyncat(val, "-right_zeros");
+    #####:   70:	if (f & PM_LOWER)
+    #####:   71:	    val = dyncat(val, "-lower");
+    #####:   72:	if (f & PM_UPPER)
+    #####:   73:	    val = dyncat(val, "-upper");
+    #####:   74:	if (f & PM_READONLY)
+    #####:   75:	    val = dyncat(val, "-readonly");
+    #####:   76:	if (f & PM_TAGGED)
+    #####:   77:	    val = dyncat(val, "-tag");
+    #####:   78:	if (f & PM_TIED)
+    #####:   79:	    val = dyncat(val, "-tied");
+    #####:   80:	if (f & PM_EXPORTED)
+    #####:   81:	    val = dyncat(val, "-export");
+    #####:   82:	if (f & PM_UNIQUE)
+    #####:   83:	    val = dyncat(val, "-unique");
+    #####:   84:	if (f & PM_HIDE)
+    #####:   85:	    val = dyncat(val, "-hide");
+    #####:   86:	if (f & PM_HIDEVAL)
+    #####:   87:	    val = dyncat(val, "-hideval");
+    #####:   88:	if (f & PM_SPECIAL)
+    #####:   89:	    val = dyncat(val, "-special");
+        -:   90:    } else
+    #####:   91:	val = dupstring("");
+        -:   92:
+    #####:   93:    return val;
+        -:   94:}
+        -:   95:
+        -:   96:/**/
+        -:   97:static HashNode
+    #####:   98:getpmparameter(UNUSED(HashTable ht), const char *name)
+        -:   99:{
+    #####:  100:    Param rpm, pm = NULL;
+        -:  101:
+    #####:  102:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  103:    pm->node.nam = dupstring(name);
+    #####:  104:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####:  105:    pm->gsu.s = &nullsetscalar_gsu;
+    #####:  106:    if ((rpm = (Param) realparamtab->getnode(realparamtab, name)) &&
+    #####:  107:	!(rpm->node.flags & PM_UNSET))
+    #####:  108:	pm->u.str = paramtypestr(rpm);
+        -:  109:    else {
+    #####:  110:	pm->u.str = dupstring("");
+    #####:  111:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -:  112:    }
+    #####:  113:    return &pm->node;
+        -:  114:}
+        -:  115:
+        -:  116:/**/
+        -:  117:static void
+    #####:  118:scanpmparameters(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -:  119:{
+        -:  120:    struct param pm;
+        -:  121:    int i;
+        -:  122:    HashNode hn;
+        -:  123:
+    #####:  124:    memset((void *)&pm, 0, sizeof(struct param));
+    #####:  125:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####:  126:    pm.gsu.s = &nullsetscalar_gsu;
+        -:  127:
+    #####:  128:    for (i = 0; i < realparamtab->hsize; i++)
+    #####:  129:	for (hn = realparamtab->nodes[i]; hn; hn = hn->next) {
+    #####:  130:	    if (((Param)hn)->node.flags & PM_UNSET)
+    #####:  131:		continue;
+    #####:  132:	    pm.node.nam = hn->nam;
+    #####:  133:	    if (func != scancountparams &&
+    #####:  134:		((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####:  135:		 !(flags & SCANPM_WANTKEYS)))
+    #####:  136:		pm.u.str = paramtypestr((Param) hn);
+    #####:  137:	    func(&pm.node, flags);
+        -:  138:	}
+    #####:  139:}
+        -:  140:
+        -:  141:/* Functions for the commands special parameter. */
+        -:  142:
+        -:  143:/**/
+        -:  144:static void
+    #####:  145:setpmcommand(Param pm, char *value)
+        -:  146:{
+    #####:  147:    if (isset(RESTRICTED)) {
+    #####:  148:	zwarn("restricted: %s", value);
+    #####:  149:	zsfree(value);
+        -:  150:    } else {
+    #####:  151:	Cmdnam cn = zshcalloc(sizeof(*cn));
+        -:  152:
+    #####:  153:	cn->node.flags = HASHED;
+    #####:  154:	cn->u.cmd = value;
+        -:  155:
+    #####:  156:	cmdnamtab->addnode(cmdnamtab, ztrdup(pm->node.nam), &cn->node);
+        -:  157:    }
+    #####:  158:}
+        -:  159:
+        -:  160:/**/
+        -:  161:static void
+    #####:  162:unsetpmcommand(Param pm, UNUSED(int exp))
+        -:  163:{
+    #####:  164:    HashNode hn = cmdnamtab->removenode(cmdnamtab, pm->node.nam);
+        -:  165:
+    #####:  166:    if (hn)
+    #####:  167:	cmdnamtab->freenode(hn);
+    #####:  168:}
+        -:  169:
+        -:  170:/**/
+        -:  171:static void
+    #####:  172:setpmcommands(Param pm, HashTable ht)
+        -:  173:{
+        -:  174:    int i;
+        -:  175:    HashNode hn;
+        -:  176:
+    #####:  177:    if (!ht)
+    #####:  178:	return;
+        -:  179:
+    #####:  180:    for (i = 0; i < ht->hsize; i++)
+    #####:  181:	for (hn = ht->nodes[i]; hn; hn = hn->next) {
+    #####:  182:	    Cmdnam cn = zshcalloc(sizeof(*cn));
+        -:  183:	    struct value v;
+        -:  184:
+    #####:  185:	    v.isarr = v.flags = v.start = 0;
+    #####:  186:	    v.end = -1;
+    #####:  187:	    v.arr = NULL;
+    #####:  188:	    v.pm = (Param) hn;
+        -:  189:
+    #####:  190:	    cn->node.flags = HASHED;
+    #####:  191:	    cn->u.cmd = ztrdup(getstrvalue(&v));
+        -:  192:
+    #####:  193:	    cmdnamtab->addnode(cmdnamtab, ztrdup(hn->nam), &cn->node);
+        -:  194:	}
+        -:  195:    /*
+        -:  196:     * On full-array assignment ht is a temporary hash with the default
+        -:  197:     * get/set functions, whereas pm->u.hash has the special $commands
+        -:  198:     * get/set functions.  Do not assign ht to pm, just delete it.
+        -:  199:     *
+        -:  200:     * On append, ht and pm->u.hash are the same table, don't delete.
+        -:  201:     */
+    #####:  202:    if (ht != pm->u.hash)
+    #####:  203:	deleteparamtable(ht);
+        -:  204:}
+        -:  205:
+        -:  206:static const struct gsu_scalar pmcommand_gsu =
+        -:  207:{ strgetfn, setpmcommand, unsetpmcommand };
+        -:  208:
+        -:  209:
+        -:  210:/**/
+        -:  211:static HashNode
+    #####:  212:getpmcommand(UNUSED(HashTable ht), const char *name)
+        -:  213:{
+        -:  214:    Cmdnam cmd;
+    #####:  215:    Param pm = NULL;
+        -:  216:
+    #####:  217:    if (!(cmd = (Cmdnam) cmdnamtab->getnode(cmdnamtab, name)) &&
+    #####:  218:	isset(HASHLISTALL)) {
+    #####:  219:	cmdnamtab->filltable(cmdnamtab);
+    #####:  220:	cmd = (Cmdnam) cmdnamtab->getnode(cmdnamtab, name);
+        -:  221:    }
+    #####:  222:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  223:    pm->node.nam = dupstring(name);
+    #####:  224:    pm->node.flags = PM_SCALAR;
+    #####:  225:    pm->gsu.s = &pmcommand_gsu;
+    #####:  226:    if (cmd) {
+    #####:  227:	if (cmd->node.flags & HASHED)
+    #####:  228:	    pm->u.str = cmd->u.cmd;
+        -:  229:	else {
+    #####:  230:	    pm->u.str = zhalloc(strlen(*(cmd->u.name)) + strlen(name) + 2);
+    #####:  231:	    strcpy(pm->u.str, *(cmd->u.name));
+    #####:  232:	    strcat(pm->u.str, "/");
+    #####:  233:	    strcat(pm->u.str, name);
+        -:  234:	}
+        -:  235:    } else {
+    #####:  236:	pm->u.str = dupstring("");
+    #####:  237:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -:  238:    }
+    #####:  239:    return &pm->node;
+        -:  240:}
+        -:  241:
+        -:  242:/**/
+        -:  243:static void
+    #####:  244:scanpmcommands(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -:  245:{
+        -:  246:    struct param pm;
+        -:  247:    int i;
+        -:  248:    HashNode hn;
+        -:  249:    Cmdnam cmd;
+        -:  250:
+    #####:  251:    if (isset(HASHLISTALL))
+    #####:  252:	cmdnamtab->filltable(cmdnamtab);
+        -:  253:
+    #####:  254:    memset((void *)&pm, 0, sizeof(struct param));
+    #####:  255:    pm.node.flags = PM_SCALAR;
+    #####:  256:    pm.gsu.s = &pmcommand_gsu;
+        -:  257:
+    #####:  258:    for (i = 0; i < cmdnamtab->hsize; i++)
+    #####:  259:	for (hn = cmdnamtab->nodes[i]; hn; hn = hn->next) {
+    #####:  260:	    pm.node.nam = hn->nam;
+    #####:  261:	    cmd = (Cmdnam) hn;
+    #####:  262:	    if (func != scancountparams &&
+    #####:  263:		((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####:  264:		 !(flags & SCANPM_WANTKEYS))) {
+    #####:  265:		if (cmd->node.flags & HASHED)
+    #####:  266:		    pm.u.str = cmd->u.cmd;
+        -:  267:		else {
+    #####:  268:		    pm.u.str = zhalloc(strlen(*(cmd->u.name)) +
+    #####:  269:				       strlen(cmd->node.nam) + 2);
+    #####:  270:		    strcpy(pm.u.str, *(cmd->u.name));
+    #####:  271:		    strcat(pm.u.str, "/");
+    #####:  272:		    strcat(pm.u.str, cmd->node.nam);
+        -:  273:		}
+        -:  274:	    }
+    #####:  275:	    func(&pm.node, flags);
+        -:  276:	}
+    #####:  277:}
+        -:  278:
+        -:  279:/* Functions for the functions special parameter. */
+        -:  280:
+        -:  281:/**/
+        -:  282:static void
+    #####:  283:setfunction(char *name, char *val, int dis)
+        -:  284:{
+    #####:  285:    char *value = dupstring(val);
+        -:  286:    Shfunc shf;
+        -:  287:    Eprog prog;
+        -:  288:    int sn;
+        -:  289:
+    #####:  290:    val = metafy(val, strlen(val), META_REALLOC);
+        -:  291:
+    #####:  292:    prog = parse_string(val, 1);
+        -:  293:
+    #####:  294:    if (!prog || prog == &dummy_eprog) {
+    #####:  295:	zwarn("invalid function definition", value);
+    #####:  296:	zsfree(val);
+    #####:  297:	return;
+        -:  298:    }
+    #####:  299:    shf = (Shfunc) zshcalloc(sizeof(*shf));
+    #####:  300:    shf->funcdef = dupeprog(prog, 0);
+    #####:  301:    shf->node.flags = dis;
+    #####:  302:    shfunc_set_sticky(shf);
+        -:  303:
+    #####:  304:    if (!strncmp(name, "TRAP", 4) &&
+    #####:  305:	(sn = getsignum(name + 4)) != -1) {
+    #####:  306:	if (settrap(sn, NULL, ZSIG_FUNC)) {
+    #####:  307:	    freeeprog(shf->funcdef);
+    #####:  308:	    zfree(shf, sizeof(*shf));
+    #####:  309:	    zsfree(val);
+    #####:  310:	    return;
+        -:  311:	}
+        -:  312:    }
+    #####:  313:    shfunctab->addnode(shfunctab, ztrdup(name), shf);
+    #####:  314:    zsfree(val);
+        -:  315:}
+        -:  316:
+        -:  317:/**/
+        -:  318:static void
+    #####:  319:setpmfunction(Param pm, char *value)
+        -:  320:{
+    #####:  321:    setfunction(pm->node.nam, value, 0);
+    #####:  322:}
+        -:  323:
+        -:  324:/**/
+        -:  325:static void
+    #####:  326:setpmdisfunction(Param pm, char *value)
+        -:  327:{
+    #####:  328:    setfunction(pm->node.nam, value, DISABLED);
+    #####:  329:}
+        -:  330:
+        -:  331:/**/
+        -:  332:static void
+    #####:  333:unsetpmfunction(Param pm, UNUSED(int exp))
+        -:  334:{
+    #####:  335:    HashNode hn = shfunctab->removenode(shfunctab, pm->node.nam);
+        -:  336:
+    #####:  337:    if (hn)
+    #####:  338:	shfunctab->freenode(hn);
+    #####:  339:}
+        -:  340:
+        -:  341:/**/
+        -:  342:static void
+    #####:  343:setfunctions(Param pm, HashTable ht, int dis)
+        -:  344:{
+        -:  345:    int i;
+        -:  346:    HashNode hn;
+        -:  347:
+    #####:  348:    if (!ht)
+    #####:  349:	return;
+        -:  350:
+    #####:  351:    for (i = 0; i < ht->hsize; i++)
+    #####:  352:	for (hn = ht->nodes[i]; hn; hn = hn->next) {
+        -:  353:	    struct value v;
+        -:  354:
+    #####:  355:	    v.isarr = v.flags = v.start = 0;
+    #####:  356:	    v.end = -1;
+    #####:  357:	    v.arr = NULL;
+    #####:  358:	    v.pm = (Param) hn;
+        -:  359:
+    #####:  360:	    setfunction(hn->nam, ztrdup(getstrvalue(&v)), dis);
+        -:  361:	}
+        -:  362:    /* See setpmcommands() above */
+    #####:  363:    if (ht != pm->u.hash)
+    #####:  364:	deleteparamtable(ht);
+        -:  365:}
+        -:  366:
+        -:  367:/**/
+        -:  368:static void
+    #####:  369:setpmfunctions(Param pm, HashTable ht)
+        -:  370:{
+    #####:  371:    setfunctions(pm, ht, 0);
+    #####:  372:}
+        -:  373:
+        -:  374:/**/
+        -:  375:static void
+    #####:  376:setpmdisfunctions(Param pm, HashTable ht)
+        -:  377:{
+    #####:  378:    setfunctions(pm, ht, DISABLED);
+    #####:  379:}
+        -:  380:
+        -:  381:static const struct gsu_scalar pmfunction_gsu =
+        -:  382:{ strgetfn, setpmfunction, unsetpmfunction };
+        -:  383:static const struct gsu_scalar pmdisfunction_gsu =
+        -:  384:{ strgetfn, setpmdisfunction, unsetpmfunction };
+        -:  385:
+        -:  386:/**/
+        -:  387:static HashNode
+    #####:  388:getfunction(UNUSED(HashTable ht), const char *name, int dis)
+        -:  389:{
+        -:  390:    Shfunc shf;
+    #####:  391:    Param pm = NULL;
+        -:  392:
+    #####:  393:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  394:    pm->node.nam = dupstring(name);
+    #####:  395:    pm->node.flags = PM_SCALAR;
+    #####:  396:    pm->gsu.s = dis ? &pmdisfunction_gsu :  &pmfunction_gsu;
+        -:  397:
+    #####:  398:    if ((shf = (Shfunc) shfunctab->getnode2(shfunctab, name)) &&
+    #####:  399:	(dis ? (shf->node.flags & DISABLED) : !(shf->node.flags & DISABLED))) {
+    #####:  400:	if (shf->node.flags & PM_UNDEFINED) {
+    #####:  401:	    pm->u.str = dyncat("builtin autoload -X",
+    #####:  402:			       ((shf->node.flags & PM_UNALIASED) ?
+    #####:  403:				((shf->node.flags & PM_TAGGED) ? "Ut" : "U") :
+    #####:  404:				((shf->node.flags & PM_TAGGED) ? "t" : "")));
+        -:  405:	} else {
+    #####:  406:	    char *t = getpermtext(shf->funcdef, NULL, 1), *n, *h;
+        -:  407:	    char *start;
+        -:  408:
+    #####:  409:	    if (shf->redir)
+    #####:  410:		start = "{\n\t";
+        -:  411:	    else
+    #####:  412:		start = "\t";
+        -:  413:
+    #####:  414:	    if (shf->funcdef->flags & EF_RUN) {
+    #####:  415:		n = nicedupstring(name);
+    #####:  416:		h = (char *) zhalloc(strlen(start) + strlen(t) + strlen(n) + 8);
+    #####:  417:		strcpy(h, start);
+    #####:  418:		strcat(h, t);
+    #####:  419:		strcat(h, "\n\t");
+    #####:  420:		strcat(h, n);
+    #####:  421:		strcat(h, " \"$@\"");
+        -:  422:	    } else
+    #####:  423:		h = dyncat(start, t);
+    #####:  424:	    zsfree(t);
+        -:  425:
+    #####:  426:	    if (shf->redir) {
+    #####:  427:		t = getpermtext(shf->redir, NULL, 1);
+    #####:  428:		h = zhtricat(h, "\n}", t);
+    #####:  429:		zsfree(t);
+        -:  430:	    }
+        -:  431:
+    #####:  432:	    pm->u.str = h;
+        -:  433:	}
+        -:  434:    } else {
+    #####:  435:	pm->u.str = dupstring("");
+    #####:  436:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -:  437:    }
+    #####:  438:    return &pm->node;
+        -:  439:}
+        -:  440:
+        -:  441:/**/
+        -:  442:static HashNode
+    #####:  443:getpmfunction(HashTable ht, const char *name)
+        -:  444:{
+    #####:  445:    return getfunction(ht, name, 0);
+        -:  446:}
+        -:  447:
+        -:  448:/**/
+        -:  449:static HashNode
+    #####:  450:getpmdisfunction(HashTable ht, const char *name)
+        -:  451:{
+    #####:  452:    return getfunction(ht, name, DISABLED);
+        -:  453:}
+        -:  454:
+        -:  455:/**/
+        -:  456:static void
+    #####:  457:scanfunctions(UNUSED(HashTable ht), ScanFunc func, int flags, int dis)
+        -:  458:{
+        -:  459:    struct param pm;
+        -:  460:    int i;
+        -:  461:    HashNode hn;
+        -:  462:
+    #####:  463:    memset((void *)&pm, 0, sizeof(struct param));
+    #####:  464:    pm.node.flags = PM_SCALAR;
+    #####:  465:    pm.gsu.s = dis ? &pmdisfunction_gsu : &pmfunction_gsu;
+        -:  466:
+    #####:  467:    for (i = 0; i < shfunctab->hsize; i++)
+    #####:  468:	for (hn = shfunctab->nodes[i]; hn; hn = hn->next) {
+    #####:  469:	    if (dis ? (hn->flags & DISABLED) : !(hn->flags & DISABLED)) {
+    #####:  470:		pm.node.nam = hn->nam;
+    #####:  471:		if (func != scancountparams &&
+    #####:  472:		    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####:  473:		     !(flags & SCANPM_WANTKEYS))) {
+    #####:  474:		    if (((Shfunc) hn)->node.flags & PM_UNDEFINED) {
+    #####:  475:			Shfunc shf = (Shfunc) hn;
+    #####:  476:			pm.u.str =
+    #####:  477:			    dyncat("builtin autoload -X",
+    #####:  478:				   ((shf->node.flags & PM_UNALIASED) ?
+    #####:  479:				    ((shf->node.flags & PM_TAGGED) ? "Ut" : "U") :
+    #####:  480:				    ((shf->node.flags & PM_TAGGED) ? "t" : "")));
+        -:  481:		    } else {
+    #####:  482:			Shfunc shf = (Shfunc)hn;
+    #####:  483:			char *t = getpermtext(shf->funcdef, NULL, 1);
+        -:  484:			char *n, *start;
+        -:  485:
+    #####:  486:			if (shf->redir)
+    #####:  487:			    start = "{\n\t";
+        -:  488:			else
+    #####:  489:			    start = "\t";
+        -:  490:
+    #####:  491:			if (shf->funcdef->flags & EF_RUN) {
+    #####:  492:			    n = nicedupstring(hn->nam);
+    #####:  493:			    pm.u.str = (char *) zhalloc(
+    #####:  494:				strlen(start) + strlen(t) + strlen(n) + 8);
+    #####:  495:			    strcpy(pm.u.str, start);
+    #####:  496:			    strcat(pm.u.str, t);
+    #####:  497:			    strcat(pm.u.str, "\n\t");
+    #####:  498:			    strcat(pm.u.str, n);
+    #####:  499:			    strcat(pm.u.str, " \"$@\"");
+        -:  500:			} else
+    #####:  501:			    pm.u.str = dyncat(start, t);
+    #####:  502:			zsfree(t);
+        -:  503:
+    #####:  504:			if (shf->redir) {
+    #####:  505:			    t = getpermtext(shf->redir, NULL, 1);
+    #####:  506:			    pm.u.str = zhtricat(pm.u.str, "\n}", t);
+    #####:  507:			    zsfree(t);
+        -:  508:			}
+        -:  509:		    }
+        -:  510:		}
+    #####:  511:		func(&pm.node, flags);
+        -:  512:	    }
+        -:  513:	}
+    #####:  514:}
+        -:  515:
+        -:  516:/**/
+        -:  517:static void
+    #####:  518:scanpmfunctions(HashTable ht, ScanFunc func, int flags)
+        -:  519:{
+    #####:  520:    scanfunctions(ht, func, flags, 0);
+    #####:  521:}
+        -:  522:
+        -:  523:/**/
+        -:  524:static void
+    #####:  525:scanpmdisfunctions(HashTable ht, ScanFunc func, int flags)
+        -:  526:{
+    #####:  527:    scanfunctions(ht, func, flags, DISABLED);
+    #####:  528:}
+        -:  529:
+        -:  530:/* Functions for the functions_source special parameter. */
+        -:  531:
+        -:  532:/* Retrieve the source file for a function by explicit name */
+        -:  533:
+        -:  534:/**/
+        -:  535:static HashNode
+    #####:  536:getfunction_source(UNUSED(HashTable ht), const char *name, int dis)
+        -:  537:{
+        -:  538:    Shfunc shf;
+    #####:  539:    Param pm = NULL;
+        -:  540:
+    #####:  541:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  542:    pm->node.nam = dupstring(name);
+    #####:  543:    pm->node.flags = PM_SCALAR|PM_READONLY;
+    #####:  544:    pm->gsu.s = dis ? &pmdisfunction_gsu :  &pmfunction_gsu;
+        -:  545:
+    #####:  546:    if ((shf = (Shfunc) shfunctab->getnode2(shfunctab, name)) &&
+    #####:  547:	(dis ? (shf->node.flags & DISABLED) : !(shf->node.flags & DISABLED))) {
+    #####:  548:	pm->u.str = getshfuncfile(shf);
+    #####:  549:	if (!pm->u.str)
+    #####:  550:	    pm->u.str = dupstring("");
+        -:  551:    }
+    #####:  552:    return &pm->node;
+        -:  553:}
+        -:  554:
+        -:  555:/* Retrieve the source file for functions by scanning the table */
+        -:  556:
+        -:  557:/**/
+        -:  558:static void
+    #####:  559:scanfunctions_source(UNUSED(HashTable ht), ScanFunc func, int flags, int dis)
+        -:  560:{
+        -:  561:    struct param pm;
+        -:  562:    int i;
+        -:  563:    HashNode hn;
+        -:  564:
+    #####:  565:    memset((void *)&pm, 0, sizeof(struct param));
+    #####:  566:    pm.node.flags = PM_SCALAR|PM_READONLY;
+    #####:  567:    pm.gsu.s = dis ? &pmdisfunction_gsu : &pmfunction_gsu;
+        -:  568:
+    #####:  569:    for (i = 0; i < shfunctab->hsize; i++) {
+    #####:  570:	for (hn = shfunctab->nodes[i]; hn; hn = hn->next) {
+    #####:  571:	    if (dis ? (hn->flags & DISABLED) : !(hn->flags & DISABLED)) {
+    #####:  572:		pm.node.nam = hn->nam;
+    #####:  573:		if (func != scancountparams &&
+    #####:  574:		    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####:  575:		     !(flags & SCANPM_WANTKEYS))) {
+    #####:  576:		    pm.u.str = getshfuncfile((Shfunc)hn);
+    #####:  577:		    if (!pm.u.str)
+    #####:  578:			pm.u.str = dupstring("");
+        -:  579:		}
+    #####:  580:		func(&pm.node, flags);
+        -:  581:	    }
+        -:  582:	}
+        -:  583:    }
+    #####:  584:}
+        -:  585:
+        -:  586:/* Param table entry for retrieving functions_source element */
+        -:  587:
+        -:  588:/**/
+        -:  589:static HashNode
+    #####:  590:getpmfunction_source(HashTable ht, const char *name)
+        -:  591:{
+    #####:  592:    return getfunction_source(ht, name, 0);
+        -:  593:}
+        -:  594:
+        -:  595:/* Param table entry for retrieving ds_functions_source element */
+        -:  596:
+        -:  597:/**/
+        -:  598:static HashNode
+    #####:  599:getpmdisfunction_source(HashTable ht, const char *name)
+        -:  600:{
+    #####:  601:    return getfunction_source(ht, name, 1);
+        -:  602:}
+        -:  603:
+        -:  604:/* Param table entry for scanning functions_source table */
+        -:  605:
+        -:  606:/**/
+        -:  607:static void
+    #####:  608:scanpmfunction_source(HashTable ht, ScanFunc func, int flags)
+        -:  609:{
+    #####:  610:    scanfunctions_source(ht, func, flags, 0);
+    #####:  611:}
+        -:  612:
+        -:  613:/* Param table entry for scanning dis_functions_source table */
+        -:  614:
+        -:  615:/**/
+        -:  616:static void
+    #####:  617:scanpmdisfunction_source(HashTable ht, ScanFunc func, int flags)
+        -:  618:{
+    #####:  619:    scanfunctions_source(ht, func, flags, 1);
+    #####:  620:}
+        -:  621:
+        -:  622:/* Functions for the funcstack special parameter. */
+        -:  623:
+        -:  624:/**/
+        -:  625:static char **
+    #####:  626:funcstackgetfn(UNUSED(Param pm))
+        -:  627:{
+        -:  628:    Funcstack f;
+        -:  629:    int num;
+        -:  630:    char **ret, **p;
+        -:  631:
+    #####:  632:    for (f = funcstack, num = 0; f; f = f->prev, num++);
+        -:  633:
+    #####:  634:    ret = (char **) zhalloc((num + 1) * sizeof(char *));
+        -:  635:
+    #####:  636:    for (f = funcstack, p = ret; f; f = f->prev, p++)
+    #####:  637:	*p = f->name;
+    #####:  638:    *p = NULL;
+        -:  639:
+    #####:  640:    return ret;
+        -:  641:}
+        -:  642:
+        -:  643:/* Functions for the functrace special parameter. */
+        -:  644:
+        -:  645:/**/
+        -:  646:static char **
+    #####:  647:functracegetfn(UNUSED(Param pm))
+        -:  648:{
+        -:  649:    Funcstack f;
+        -:  650:    int num;
+        -:  651:    char **ret, **p;
+        -:  652:
+    #####:  653:    for (f = funcstack, num = 0; f; f = f->prev, num++);
+        -:  654:
+    #####:  655:    ret = (char **) zhalloc((num + 1) * sizeof(char *));
+        -:  656:
+    #####:  657:    for (f = funcstack, p = ret; f; f = f->prev, p++) {
+        -:  658:	char *colonpair;
+        -:  659:
+    #####:  660:	colonpair = zhalloc(strlen(f->caller) + (f->lineno > 9999 ? 24 : 6));
+        -:  661:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  662:	sprintf(colonpair, "%s:%lld", f->caller, f->lineno);
+        -:  663:#else
+    #####:  664:	sprintf(colonpair, "%s:%ld", f->caller, (long)f->lineno);
+        -:  665:#endif
+        -:  666:
+    #####:  667:	*p = colonpair;
+        -:  668:    }
+    #####:  669:    *p = NULL;
+        -:  670:
+    #####:  671:    return ret;
+        -:  672:}
+        -:  673:
+        -:  674:/* Functions for the funcsourcetrace special parameter. */
+        -:  675:
+        -:  676:/**/
+        -:  677:static char **
+    #####:  678:funcsourcetracegetfn(UNUSED(Param pm))
+        -:  679:{
+        -:  680:    Funcstack f;
+        -:  681:    int num;
+        -:  682:    char **ret, **p;
+        -:  683:
+    #####:  684:    for (f = funcstack, num = 0; f; f = f->prev, num++);
+        -:  685:
+    #####:  686:    ret = (char **) zhalloc((num + 1) * sizeof(char *));
+        -:  687:
+    #####:  688:    for (f = funcstack, p = ret; f; f = f->prev, p++) {
+        -:  689:	char *colonpair;
+    #####:  690:	char *fname = f->filename ? f->filename : "";
+        -:  691:
+    #####:  692:	colonpair = zhalloc(strlen(fname) + (f->flineno > 9999 ? 24 : 6));
+        -:  693:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  694:	sprintf(colonpair, "%s:%lld", fname, f->flineno);
+        -:  695:#else
+    #####:  696:	sprintf(colonpair, "%s:%ld", fname, (long)f->flineno);
+        -:  697:#endif
+        -:  698:
+    #####:  699:	*p = colonpair;
+        -:  700:    }
+    #####:  701:    *p = NULL;
+        -:  702:
+    #####:  703:    return ret;
+        -:  704:}
+        -:  705:
+        -:  706:/* Functions for the funcfiletrace special parameter. */
+        -:  707:
+        -:  708:/**/
+        -:  709:static char **
+    #####:  710:funcfiletracegetfn(UNUSED(Param pm))
+        -:  711:{
+        -:  712:    Funcstack f;
+        -:  713:    int num;
+        -:  714:    char **ret, **p;
+        -:  715:
+    #####:  716:    for (f = funcstack, num = 0; f; f = f->prev, num++);
+        -:  717:
+    #####:  718:    ret = (char **) zhalloc((num + 1) * sizeof(char *));
+        -:  719:
+    #####:  720:    for (f = funcstack, p = ret; f; f = f->prev, p++) {
+        -:  721:	char *colonpair, *fname;
+        -:  722:
+    #####:  723:	if (!f->prev || f->prev->tp == FS_SOURCE) {
+        -:  724:	    /*
+        -:  725:	     * Calling context is a file---either the parent
+        -:  726:	     * script or interactive shell, or a sourced
+        -:  727:	     * script.  Just print the file information for the caller
+        -:  728:	     * (same as $functrace)
+        -:  729:	     */
+    #####:  730:	    colonpair = zhalloc(strlen(f->caller) +
+    #####:  731:				(f->lineno > 9999 ? 24 : 6));
+        -:  732:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  733:	    sprintf(colonpair, "%s:%lld", f->caller, f->lineno);
+        -:  734:#else
+    #####:  735:	    sprintf(colonpair, "%s:%ld", f->caller, (long)f->lineno);
+        -:  736:#endif
+        -:  737:	} else {
+        -:  738:	    /*
+        -:  739:	     * Calling context is a function or eval; we need to find
+        -:  740:	     * the line number in the file where that function was
+        -:  741:	     * defined or the eval was called.  For this we need the
+        -:  742:	     * $funcsourcetrace information for the context above,
+        -:  743:	     * together with the $functrace line number for the current
+        -:  744:	     * context.
+        -:  745:	     */
+    #####:  746:	    zlong flineno = f->prev->flineno + f->lineno;
+        -:  747:	    /*
+        -:  748:	     * Line numbers in eval start from 1, not zero,
+        -:  749:	     * so offset by one to get line in file.
+        -:  750:	     */
+    #####:  751:	    if (f->prev->tp == FS_EVAL)
+    #####:  752:		flineno--;
+    #####:  753:	    fname = f->prev->filename ? f->prev->filename : "";
+        -:  754:
+    #####:  755:	    colonpair = zhalloc(strlen(fname) + (flineno > 9999 ? 24 : 6));
+        -:  756:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -:  757:	    sprintf(colonpair, "%s:%lld", fname, flineno);
+        -:  758:#else
+    #####:  759:	    sprintf(colonpair, "%s:%ld", fname, (long)flineno);
+        -:  760:#endif
+        -:  761:	}
+        -:  762:
+    #####:  763:	*p = colonpair;
+        -:  764:    }
+    #####:  765:    *p = NULL;
+        -:  766:
+    #####:  767:    return ret;
+        -:  768:}
+        -:  769:
+        -:  770:/* Functions for the builtins special parameter. */
+        -:  771:
+        -:  772:/**/
+        -:  773:static HashNode
+    #####:  774:getbuiltin(UNUSED(HashTable ht), const char *name, int dis)
+        -:  775:{
+    #####:  776:    Param pm = NULL;
+        -:  777:    Builtin bn;
+        -:  778:
+    #####:  779:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  780:    pm->node.nam = dupstring(name);
+    #####:  781:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####:  782:    pm->gsu.s = &nullsetscalar_gsu;
+    #####:  783:    if ((bn = (Builtin) builtintab->getnode2(builtintab, name)) &&
+    #####:  784:	(dis ? (bn->node.flags & DISABLED) : !(bn->node.flags & DISABLED))) {
+    #####:  785:	char *t = ((bn->handlerfunc || (bn->node.flags & BINF_PREFIX)) ?
+    #####:  786:		   "defined" : "undefined");
+        -:  787:
+    #####:  788:	pm->u.str = dupstring(t);
+        -:  789:    } else {
+    #####:  790:	pm->u.str = dupstring("");
+    #####:  791:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -:  792:    }
+    #####:  793:    return &pm->node;
+        -:  794:}
+        -:  795:
+        -:  796:/**/
+        -:  797:static HashNode
+    #####:  798:getpmbuiltin(HashTable ht, const char *name)
+        -:  799:{
+    #####:  800:    return getbuiltin(ht, name, 0);
+        -:  801:}
+        -:  802:
+        -:  803:/**/
+        -:  804:static HashNode
+    #####:  805:getpmdisbuiltin(HashTable ht, const char *name)
+        -:  806:{
+    #####:  807:    return getbuiltin(ht, name, DISABLED);
+        -:  808:}
+        -:  809:
+        -:  810:/**/
+        -:  811:static void
+    #####:  812:scanbuiltins(UNUSED(HashTable ht), ScanFunc func, int flags, int dis)
+        -:  813:{
+        -:  814:    struct param pm;
+        -:  815:    int i;
+        -:  816:    HashNode hn;
+        -:  817:
+    #####:  818:    memset((void *)&pm, 0, sizeof(struct param));
+    #####:  819:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####:  820:    pm.gsu.s = &nullsetscalar_gsu;
+        -:  821:
+    #####:  822:    for (i = 0; i < builtintab->hsize; i++)
+    #####:  823:	for (hn = builtintab->nodes[i]; hn; hn = hn->next) {
+    #####:  824:	    if (dis ? (hn->flags & DISABLED) : !(hn->flags & DISABLED)) {
+    #####:  825:		pm.node.nam = hn->nam;
+    #####:  826:		if (func != scancountparams &&
+    #####:  827:		    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####:  828:		     !(flags & SCANPM_WANTKEYS))) {
+    #####:  829:		    char *t = ((((Builtin) hn)->handlerfunc ||
+    #####:  830:				(hn->flags & BINF_PREFIX)) ?
+    #####:  831:			       "defined" : "undefined");
+        -:  832:
+    #####:  833:		    pm.u.str = dupstring(t);
+        -:  834:		}
+    #####:  835:		func(&pm.node, flags);
+        -:  836:	    }
+        -:  837:	}
+    #####:  838:}
+        -:  839:
+        -:  840:/**/
+        -:  841:static void
+    #####:  842:scanpmbuiltins(HashTable ht, ScanFunc func, int flags)
+        -:  843:{
+    #####:  844:    scanbuiltins(ht, func, flags, 0);
+    #####:  845:}
+        -:  846:
+        -:  847:/**/
+        -:  848:static void
+    #####:  849:scanpmdisbuiltins(HashTable ht, ScanFunc func, int flags)
+        -:  850:{
+    #####:  851:    scanbuiltins(ht, func, flags, DISABLED);
+    #####:  852:}
+        -:  853:
+        -:  854:/* Functions for the reswords special parameter. */
+        -:  855:
+        -:  856:/**/
+        -:  857:static char **
+    #####:  858:getreswords(int dis)
+        -:  859:{
+        -:  860:    int i;
+        -:  861:    HashNode hn;
+        -:  862:    char **ret, **p;
+        -:  863:
+    #####:  864:    p = ret = (char **) zhalloc((reswdtab->ct + 1) * sizeof(char *));
+        -:  865:
+    #####:  866:    for (i = 0; i < reswdtab->hsize; i++)
+    #####:  867:	for (hn = reswdtab->nodes[i]; hn; hn = hn->next)
+    #####:  868:	    if (dis ? (hn->flags & DISABLED) : !(hn->flags & DISABLED))
+    #####:  869:		*p++ = dupstring(hn->nam);
+    #####:  870:    *p = NULL;
+        -:  871:
+    #####:  872:    return ret;
+        -:  873:}
+        -:  874:
+        -:  875:/**/
+        -:  876:static char **
+    #####:  877:reswordsgetfn(UNUSED(Param pm))
+        -:  878:{
+    #####:  879:    return getreswords(0);
+        -:  880:}
+        -:  881:
+        -:  882:/**/
+        -:  883:static char **
+    #####:  884:disreswordsgetfn(UNUSED(Param pm))
+        -:  885:{
+    #####:  886:    return getreswords(DISABLED);
+        -:  887:}
+        -:  888:
+        -:  889:/* Functions for the patchars special parameter. */
+        -:  890:
+        -:  891:/**/
+        -:  892:static char **
+    #####:  893:getpatchars(int dis)
+        -:  894:{
+        -:  895:    int i;
+        -:  896:    char **ret, **p;
+        -:  897:
+    #####:  898:    p = ret = (char **) zhalloc(ZPC_COUNT * sizeof(char *));
+        -:  899:
+    #####:  900:    for (i = 0; i < ZPC_COUNT; i++)
+    #####:  901:	if (zpc_strings[i] && !dis == !zpc_disables[i])
+    #####:  902:	    *p++ = dupstring(zpc_strings[i]);
+        -:  903:
+    #####:  904:    *p = NULL;
+        -:  905:
+    #####:  906:    return ret;
+        -:  907:}
+        -:  908:
+        -:  909:static char **
+    #####:  910:patcharsgetfn(UNUSED(Param pm))
+        -:  911:{
+    #####:  912:    return getpatchars(0);
+        -:  913:}
+        -:  914:
+        -:  915:static char **
+    #####:  916:dispatcharsgetfn(UNUSED(Param pm))
+        -:  917:{
+    #####:  918:    return getpatchars(1);
+        -:  919:}
+        -:  920:
+        -:  921:/* Functions for the options special parameter. */
+        -:  922:
+        -:  923:/**/
+        -:  924:static void
+    #####:  925:setpmoption(Param pm, char *value)
+        -:  926:{
+        -:  927:    int n;
+        -:  928:
+    #####:  929:    if (!value || (strcmp(value, "on") && strcmp(value, "off")))
+    #####:  930:	zwarn("invalid value: %s", value);
+    #####:  931:    else if (!(n = optlookup(pm->node.nam)))
+    #####:  932:	zwarn("no such option: %s", pm->node.nam);
+    #####:  933:    else if (dosetopt(n, (value && strcmp(value, "off")), 0, opts))
+    #####:  934:	zwarn("can't change option: %s", pm->node.nam);
+    #####:  935:    zsfree(value);
+    #####:  936:}
+        -:  937:
+        -:  938:/**/
+        -:  939:static void
+    #####:  940:unsetpmoption(Param pm, UNUSED(int exp))
+        -:  941:{
+        -:  942:    int n;
+        -:  943:
+    #####:  944:    if (!(n = optlookup(pm->node.nam)))
+    #####:  945:	zwarn("no such option: %s", pm->node.nam);
+    #####:  946:    else if (dosetopt(n, 0, 0, opts))
+    #####:  947:	zwarn("can't change option: %s", pm->node.nam);
+    #####:  948:}
+        -:  949:
+        -:  950:/**/
+        -:  951:static void
+       42:  952:setpmoptions(Param pm, HashTable ht)
+        -:  953:{
+        -:  954:    int i;
+        -:  955:    HashNode hn;
+        -:  956:
+       42:  957:    if (!ht)
+    #####:  958:	return;
+        -:  959:
+    11466:  960:    for (i = 0; i < ht->hsize; i++)
+    19698:  961:	for (hn = ht->nodes[i]; hn; hn = hn->next) {
+        -:  962:	    struct value v;
+        -:  963:	    char *val;
+        -:  964:
+     8274:  965:	    v.isarr = v.flags = v.start = 0;
+     8274:  966:	    v.end = -1;
+     8274:  967:	    v.arr = NULL;
+     8274:  968:	    v.pm = (Param) hn;
+        -:  969:
+     8274:  970:	    val = getstrvalue(&v);
+     8274:  971:	    if (!val || (strcmp(val, "on") && strcmp(val, "off")))
+    #####:  972:		zwarn("invalid value: %s", val);
+    16548:  973:	    else if (dosetopt(optlookup(hn->nam),
+     8274:  974:			      (val && strcmp(val, "off")), 0, opts))
+    #####:  975:		zwarn("can't change option: %s", hn->nam);
+        -:  976:	}
+        -:  977:    /* See setpmcommands() above */
+       42:  978:    if (ht != pm->u.hash)
+       42:  979:	deleteparamtable(ht);
+        -:  980:}
+        -:  981:
+        -:  982:static const struct gsu_scalar pmoption_gsu =
+        -:  983:{ strgetfn, setpmoption, unsetpmoption };
+        -:  984:
+        -:  985:/**/
+        -:  986:static HashNode
+    #####:  987:getpmoption(UNUSED(HashTable ht), const char *name)
+        -:  988:{
+    #####:  989:    Param pm = NULL;
+        -:  990:    int n;
+        -:  991:
+    #####:  992:    pm = (Param) hcalloc(sizeof(struct param));
+    #####:  993:    pm->node.nam = dupstring(name);
+    #####:  994:    pm->node.flags = PM_SCALAR;
+    #####:  995:    pm->gsu.s = &pmoption_gsu;
+        -:  996:
+    #####:  997:    if ((n = optlookup(name)))
+        -:  998:    {
+        -:  999:	int ison;
+    #####: 1000:	if (n > 0)
+    #####: 1001:	    ison = opts[n];
+        -: 1002:	else
+    #####: 1003:	    ison = !opts[-n];
+    #####: 1004:	pm->u.str = dupstring(ison ? "on" : "off");
+        -: 1005:    }
+        -: 1006:    else {
+    #####: 1007:	pm->u.str = dupstring("");
+    #####: 1008:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1009:    }
+    #####: 1010:    return &pm->node;
+        -: 1011:}
+        -: 1012:
+        -: 1013:/**/
+        -: 1014:static void
+       46: 1015:scanpmoptions(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1016:{
+        -: 1017:    struct param pm;
+        -: 1018:    int i;
+        -: 1019:    HashNode hn;
+        -: 1020:
+       46: 1021:    memset((void *)&pm, 0, sizeof(struct param));
+       46: 1022:    pm.node.flags = PM_SCALAR;
+       46: 1023:    pm.gsu.s = &pmoption_gsu;
+        -: 1024:
+     4692: 1025:    for (i = 0; i < optiontab->hsize; i++)
+    13708: 1026:	for (hn = optiontab->nodes[i]; hn; hn = hn->next) {
+     9062: 1027:	    int optno = ((Optname) hn)->optno, ison;
+     9062: 1028:	    pm.node.nam = hn->nam;
+     9062: 1029:	    ison = optno < 0 ? !opts[-optno] : opts[optno];
+     9062: 1030:	    pm.u.str = dupstring(ison ? "on" : "off");
+     9062: 1031:	    func(&pm.node, flags);
+        -: 1032:	}
+       46: 1033:}
+        -: 1034:
+        -: 1035:/* Functions for the modules special parameter. */
+        -: 1036:
+        -: 1037:/**/
+        -: 1038:static HashNode
+    #####: 1039:getpmmodule(UNUSED(HashTable ht), const char *name)
+        -: 1040:{
+    #####: 1041:    Param pm = NULL;
+    #####: 1042:    char *type = NULL;
+        -: 1043:    Module m;
+        -: 1044:
+    #####: 1045:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1046:    pm->node.nam = dupstring(name);
+    #####: 1047:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1048:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 1049:
+    #####: 1050:    m = (Module)modulestab->getnode2(modulestab, name);
+        -: 1051:
+    #####: 1052:    if (!m)
+    #####: 1053:	return NULL;
+    #####: 1054:    if (m->u.handle && !(m->node.flags & MOD_UNLOAD)) {
+    #####: 1055:	type = ((m->node.flags & MOD_ALIAS) ?
+    #####: 1056:		dyncat("alias:", m->u.alias) : "loaded");
+        -: 1057:    }
+    #####: 1058:    if (!type) {
+    #####: 1059:	if (m->autoloads && firstnode(m->autoloads))
+    #####: 1060:	    type = "autoloaded";
+        -: 1061:    }
+    #####: 1062:    if (type)
+    #####: 1063:	pm->u.str = dupstring(type);
+        -: 1064:    else {
+    #####: 1065:	pm->u.str = dupstring("");
+    #####: 1066:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1067:    }
+    #####: 1068:    return &pm->node;
+        -: 1069:}
+        -: 1070:
+        -: 1071:/**/
+        -: 1072:static void
+    #####: 1073:scanpmmodules(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1074:{
+        -: 1075:    struct param pm;
+        -: 1076:    int i;
+        -: 1077:    HashNode hn;
+    #####: 1078:    LinkList done = newlinklist();
+        -: 1079:    Module m;
+        -: 1080:    Conddef p;
+    #####: 1081:    char *loaded = dupstring("loaded");
+        -: 1082:
+    #####: 1083:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1084:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1085:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1086:
+    #####: 1087:    for (i = 0; i < modulestab->hsize; i++) {
+    #####: 1088:	for (hn = modulestab->nodes[i]; hn; hn = hn->next) {
+    #####: 1089:	    m = (Module) hn;
+    #####: 1090:	    if (m->u.handle && !(m->node.flags & MOD_UNLOAD)) {
+    #####: 1091:		pm.node.nam = m->node.nam;
+    #####: 1092:		pm.u.str = ((m->node.flags & MOD_ALIAS) ?
+    #####: 1093:			    dyncat("alias:", m->u.alias) : loaded);
+    #####: 1094:		addlinknode(done, pm.node.nam);
+    #####: 1095:		func(&pm.node, flags);
+        -: 1096:	    }
+        -: 1097:	}
+        -: 1098:    }
+    #####: 1099:    pm.u.str = dupstring("autoloaded");
+    #####: 1100:    for (i = 0; i < builtintab->hsize; i++)
+    #####: 1101:	for (hn = builtintab->nodes[i]; hn; hn = hn->next) {
+    #####: 1102:	    if (!(((Builtin) hn)->node.flags & BINF_ADDED) &&
+    #####: 1103:		!linknodebystring(done, ((Builtin) hn)->optstr)) {
+    #####: 1104:		pm.node.nam = ((Builtin) hn)->optstr;
+    #####: 1105:		addlinknode(done, pm.node.nam);
+    #####: 1106:		func(&pm.node, flags);
+        -: 1107:	    }
+        -: 1108:	}
+    #####: 1109:    for (p = condtab; p; p = p->next)
+    #####: 1110:	if (p->module && !linknodebystring(done, p->module)) {
+    #####: 1111:	    pm.node.nam = p->module;
+    #####: 1112:	    addlinknode(done, pm.node.nam);
+    #####: 1113:	    func(&pm.node, flags);
+        -: 1114:	}
+    #####: 1115:    for (i = 0; i < realparamtab->hsize; i++)
+    #####: 1116:	for (hn = realparamtab->nodes[i]; hn; hn = hn->next) {
+    #####: 1117:	    if ((((Param) hn)->node.flags & PM_AUTOLOAD) &&
+    #####: 1118:		!linknodebystring(done, ((Param) hn)->u.str)) {
+    #####: 1119:		pm.node.nam = ((Param) hn)->u.str;
+    #####: 1120:		addlinknode(done, pm.node.nam);
+    #####: 1121:		func(&pm.node, flags);
+        -: 1122:	    }
+        -: 1123:	}
+    #####: 1124:}
+        -: 1125:
+        -: 1126:/* Functions for the dirstack special parameter. */
+        -: 1127:
+        -: 1128:/**/
+        -: 1129:static void
+    #####: 1130:dirssetfn(UNUSED(Param pm), char **x)
+        -: 1131:{
+    #####: 1132:    char **ox = x;
+        -: 1133:
+    #####: 1134:    if (!incleanup) {
+    #####: 1135:	freelinklist(dirstack, freestr);
+    #####: 1136:	dirstack = znewlinklist();
+    #####: 1137:	while (x && *x)
+    #####: 1138:	    zaddlinknode(dirstack, ztrdup(*x++));
+        -: 1139:    }
+    #####: 1140:    if (ox)
+    #####: 1141:	freearray(ox);
+    #####: 1142:}
+        -: 1143:
+        -: 1144:/**/
+        -: 1145:static char **
+    #####: 1146:dirsgetfn(UNUSED(Param pm))
+        -: 1147:{
+    #####: 1148:    return hlinklist2array(dirstack, 1);
+        -: 1149:}
+        -: 1150:
+        -: 1151:/* Functions for the history special parameter. */
+        -: 1152:
+        -: 1153:/**/
+        -: 1154:static HashNode
+    #####: 1155:getpmhistory(UNUSED(HashTable ht), const char *name)
+        -: 1156:{
+    #####: 1157:    Param pm = NULL;
+        -: 1158:    Histent he;
+        -: 1159:    const char *p;
+    #####: 1160:    int ok = 1;
+        -: 1161:
+    #####: 1162:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1163:    pm->node.nam = dupstring(name);
+    #####: 1164:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1165:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 1166:
+    #####: 1167:    if (*name != '0' || name[1]) {
+    #####: 1168:	if (*name == '0')
+    #####: 1169:	    ok = 0;
+        -: 1170:	else {
+    #####: 1171:	    for (p = name; *p && idigit(*p); p++);
+    #####: 1172:	    if (*p)
+    #####: 1173:		ok = 0;
+        -: 1174:	}
+        -: 1175:    }
+    #####: 1176:    if (ok && (he = quietgethist(atoi(name))))
+    #####: 1177:	pm->u.str = dupstring(he->node.nam);
+        -: 1178:    else {
+    #####: 1179:	pm->u.str = dupstring("");
+    #####: 1180:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1181:    }
+    #####: 1182:    return &pm->node;
+        -: 1183:}
+        -: 1184:
+        -: 1185:/**/
+        -: 1186:static void
+    #####: 1187:scanpmhistory(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1188:{
+        -: 1189:    struct param pm;
+    #####: 1190:    int i = addhistnum(curhist, -1, HIST_FOREIGN);
+    #####: 1191:    Histent he = gethistent(i, GETHIST_UPWARD);
+        -: 1192:    char buf[40];
+        -: 1193:
+    #####: 1194:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1195:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1196:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1197:
+    #####: 1198:    while (he) {
+    #####: 1199:	if (func != scancountparams) {
+    #####: 1200:	    convbase(buf, he->histnum, 10);
+    #####: 1201:	    pm.node.nam = dupstring(buf);
+    #####: 1202:	    if ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1203:		!(flags & SCANPM_WANTKEYS))
+    #####: 1204:		pm.u.str = dupstring(he->node.nam);
+        -: 1205:	}
+    #####: 1206:	func(&pm.node, flags);
+        -: 1207:
+    #####: 1208:	he = up_histent(he);
+        -: 1209:    }
+    #####: 1210:}
+        -: 1211:
+        -: 1212:/* Function for the historywords special parameter. */
+        -: 1213:
+        -: 1214:/**/
+        -: 1215:static char **
+    #####: 1216:histwgetfn(UNUSED(Param pm))
+        -: 1217:{
+        -: 1218:    char *h, *e, sav;
+    #####: 1219:    LinkList l = newlinklist(), ll;
+        -: 1220:    LinkNode n;
+    #####: 1221:    int i = addhistnum(curhist, -1, HIST_FOREIGN), iw;
+    #####: 1222:    Histent he = gethistent(i, GETHIST_UPWARD);
+        -: 1223:
+    #####: 1224:    if ((ll = bufferwords(NULL, NULL, NULL, 0)))
+    #####: 1225:        for (n = firstnode(ll); n; incnode(n))
+    #####: 1226:            pushnode(l, getdata(n));
+        -: 1227:
+    #####: 1228:    while (he) {
+    #####: 1229:	for (iw = he->nwords - 1; iw >= 0; iw--) {
+    #####: 1230:	    h = he->node.nam + he->words[iw * 2];
+    #####: 1231:	    e = he->node.nam + he->words[iw * 2 + 1];
+    #####: 1232:	    sav = *e;
+    #####: 1233:	    *e = '\0';
+    #####: 1234:	    addlinknode(l, dupstring(h));
+    #####: 1235:	    *e = sav;
+        -: 1236:	}
+    #####: 1237:	he = up_histent(he);
+        -: 1238:    }
+        -: 1239:
+    #####: 1240:    return hlinklist2array(l, 0);
+        -: 1241:}
+        -: 1242:
+        -: 1243:/* Functions for the jobtexts special parameter. */
+        -: 1244:
+        -: 1245:/**/
+        -: 1246:static char *
+    #####: 1247:pmjobtext(int job)
+        -: 1248:{
+        -: 1249:    Process pn;
+    #####: 1250:    int len = 1;
+        -: 1251:    char *ret;
+        -: 1252:
+    #####: 1253:    for (pn = jobtab[job].procs; pn; pn = pn->next)
+    #####: 1254:	len += strlen(pn->text) + 3;
+        -: 1255:
+    #####: 1256:    ret = (char *) zhalloc(len);
+    #####: 1257:    ret[0] = '\0';
+        -: 1258:
+    #####: 1259:    for (pn = jobtab[job].procs; pn; pn = pn->next) {
+    #####: 1260:	strcat(ret, pn->text);
+    #####: 1261:	if (pn->next)
+    #####: 1262:	    strcat(ret, " | ");
+        -: 1263:    }
+    #####: 1264:    return ret;
+        -: 1265:}
+        -: 1266:
+        -: 1267:/**/
+        -: 1268:static HashNode
+    #####: 1269:getpmjobtext(UNUSED(HashTable ht), const char *name)
+        -: 1270:{
+    #####: 1271:    Param pm = NULL;
+        -: 1272:    int job;
+        -: 1273:    char *pend;
+        -: 1274:
+    #####: 1275:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1276:    pm->node.nam = dupstring(name);
+    #####: 1277:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1278:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 1279:
+    #####: 1280:    job = strtod(name, &pend);
+        -: 1281:    /* Non-numeric keys are looked up by job name */
+    #####: 1282:    if (*pend)
+    #####: 1283:	job = getjob(name, NULL);
+    #####: 1284:    if (job >= 1 && job <= maxjob &&
+    #####: 1285:	jobtab[job].stat && jobtab[job].procs &&
+    #####: 1286:	!(jobtab[job].stat & STAT_NOPRINT))
+    #####: 1287:	pm->u.str = pmjobtext(job);
+        -: 1288:    else {
+    #####: 1289:	pm->u.str = dupstring("");
+    #####: 1290:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1291:    }
+    #####: 1292:    return &pm->node;
+        -: 1293:}
+        -: 1294:
+        -: 1295:/**/
+        -: 1296:static void
+    #####: 1297:scanpmjobtexts(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1298:{
+        -: 1299:    struct param pm;
+        -: 1300:    int job;
+        -: 1301:    char buf[40];
+        -: 1302:
+    #####: 1303:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1304:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1305:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1306:
+    #####: 1307:    for (job = 1; job <= maxjob; job++) {
+    #####: 1308:	if (jobtab[job].stat && jobtab[job].procs &&
+    #####: 1309:	    !(jobtab[job].stat & STAT_NOPRINT)) {
+    #####: 1310:	    if (func != scancountparams) {
+    #####: 1311:		sprintf(buf, "%d", job);
+    #####: 1312:		pm.node.nam = dupstring(buf);
+    #####: 1313:		if ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1314:		    !(flags & SCANPM_WANTKEYS))
+    #####: 1315:		    pm.u.str = pmjobtext(job);
+        -: 1316:	    }
+    #####: 1317:	    func(&pm.node, flags);
+        -: 1318:	}
+        -: 1319:    }
+    #####: 1320:}
+        -: 1321:
+        -: 1322:/* Functions for the jobstates special parameter. */
+        -: 1323:
+        -: 1324:/**/
+        -: 1325:static char *
+    #####: 1326:pmjobstate(int job)
+        -: 1327:{
+        -: 1328:    Process pn;
+        -: 1329:    char buf[256], buf2[128], *ret, *state, *cp;
+        -: 1330:
+    #####: 1331:    if (job == curjob)
+    #####: 1332:	cp = ":+";
+    #####: 1333:    else if (job == prevjob)
+    #####: 1334:	cp = ":-";
+        -: 1335:    else
+    #####: 1336:	cp = ":";
+        -: 1337:
+    #####: 1338:    if (jobtab[job].stat & STAT_DONE)
+    #####: 1339:	ret = dyncat("done", cp);
+    #####: 1340:    else if (jobtab[job].stat & STAT_STOPPED)
+    #####: 1341:	ret = dyncat("suspended", cp);
+        -: 1342:    else
+    #####: 1343:	ret = dyncat("running", cp);
+        -: 1344:
+    #####: 1345:    for (pn = jobtab[job].procs; pn; pn = pn->next) {
+        -: 1346:
+    #####: 1347:	if (pn->status == SP_RUNNING)
+    #####: 1348:	    state = "running";
+    #####: 1349:	else if (WIFEXITED(pn->status)) {
+    #####: 1350:	    if (WEXITSTATUS(pn->status))
+    #####: 1351:		sprintf((state = buf2), "exit %d", (pn->status));
+        -: 1352:	    else
+    #####: 1353:		state = "done";
+    #####: 1354:	} else if (WIFSTOPPED(pn->status))
+    #####: 1355:	    state = sigmsg(WSTOPSIG(pn->status));
+    #####: 1356:	else if (WCOREDUMP(pn->status))
+    #####: 1357:	    sprintf((state = buf2), "%s (core dumped)",
+    #####: 1358:		    sigmsg(WTERMSIG(pn->status)));
+        -: 1359:	else
+    #####: 1360:	    state = sigmsg(WTERMSIG(pn->status));
+        -: 1361:
+    #####: 1362:	sprintf(buf, ":%d=%s", (int)pn->pid, state);
+        -: 1363:
+    #####: 1364:	ret = dyncat(ret, buf);
+        -: 1365:    }
+    #####: 1366:    return ret;
+        -: 1367:}
+        -: 1368:
+        -: 1369:/**/
+        -: 1370:static HashNode
+    #####: 1371:getpmjobstate(UNUSED(HashTable ht), const char *name)
+        -: 1372:{
+    #####: 1373:    Param pm = NULL;
+        -: 1374:    int job;
+        -: 1375:    char *pend;
+        -: 1376:
+    #####: 1377:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1378:    pm->node.nam = dupstring(name);
+    #####: 1379:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1380:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 1381:
+    #####: 1382:    job = strtod(name, &pend);
+    #####: 1383:    if (*pend)
+    #####: 1384:	job = getjob(name, NULL);
+    #####: 1385:    if (job >= 1 && job <= maxjob &&
+    #####: 1386:	jobtab[job].stat && jobtab[job].procs &&
+    #####: 1387:	!(jobtab[job].stat & STAT_NOPRINT))
+    #####: 1388:	pm->u.str = pmjobstate(job);
+        -: 1389:    else {
+    #####: 1390:	pm->u.str = dupstring("");
+    #####: 1391:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1392:    }
+    #####: 1393:    return &pm->node;
+        -: 1394:}
+        -: 1395:
+        -: 1396:/**/
+        -: 1397:static void
+    #####: 1398:scanpmjobstates(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1399:{
+        -: 1400:    struct param pm;
+        -: 1401:    int job;
+        -: 1402:    char buf[40];
+        -: 1403:
+    #####: 1404:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1405:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1406:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1407:
+    #####: 1408:    for (job = 1; job <= maxjob; job++) {
+    #####: 1409:	if (jobtab[job].stat && jobtab[job].procs &&
+    #####: 1410:	    !(jobtab[job].stat & STAT_NOPRINT)) {
+    #####: 1411:	    if (func != scancountparams) {
+    #####: 1412:		sprintf(buf, "%d", job);
+    #####: 1413:		pm.node.nam = dupstring(buf);
+    #####: 1414:		if ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1415:		    !(flags & SCANPM_WANTKEYS))
+    #####: 1416:		    pm.u.str = pmjobstate(job);
+        -: 1417:	    }
+    #####: 1418:	    func(&pm.node, flags);
+        -: 1419:	}
+        -: 1420:    }
+    #####: 1421:}
+        -: 1422:
+        -: 1423:/* Functions for the jobdirs special parameter. */
+        -: 1424:
+        -: 1425:/**/
+        -: 1426:static char *
+    #####: 1427:pmjobdir(int job)
+        -: 1428:{
+        -: 1429:    char *ret;
+        -: 1430:
+    #####: 1431:    ret = dupstring(jobtab[job].pwd ? jobtab[job].pwd : pwd);
+    #####: 1432:    return ret;
+        -: 1433:}
+        -: 1434:
+        -: 1435:/**/
+        -: 1436:static HashNode
+    #####: 1437:getpmjobdir(UNUSED(HashTable ht), const char *name)
+        -: 1438:{
+    #####: 1439:    Param pm = NULL;
+        -: 1440:    int job;
+        -: 1441:    char *pend;
+        -: 1442:
+    #####: 1443:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1444:    pm->node.nam = dupstring(name);
+    #####: 1445:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1446:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 1447:
+    #####: 1448:    job = strtod(name, &pend);
+    #####: 1449:    if (*pend)
+    #####: 1450:	job = getjob(name, NULL);
+    #####: 1451:    if (job >= 1 && job <= maxjob &&
+    #####: 1452:	jobtab[job].stat && jobtab[job].procs &&
+    #####: 1453:	!(jobtab[job].stat & STAT_NOPRINT))
+    #####: 1454:	pm->u.str = pmjobdir(job);
+        -: 1455:    else {
+    #####: 1456:	pm->u.str = dupstring("");
+    #####: 1457:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1458:    }
+    #####: 1459:    return &pm->node;
+        -: 1460:}
+        -: 1461:
+        -: 1462:/**/
+        -: 1463:static void
+    #####: 1464:scanpmjobdirs(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1465:{
+        -: 1466:    struct param pm;
+        -: 1467:    int job;
+        -: 1468:    char buf[40];
+        -: 1469:
+    #####: 1470:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1471:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1472:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1473:
+    #####: 1474:    for (job = 1; job <= maxjob; job++) {
+    #####: 1475:       if (jobtab[job].stat && jobtab[job].procs &&
+    #####: 1476:           !(jobtab[job].stat & STAT_NOPRINT)) {
+    #####: 1477:           if (func != scancountparams) {
+    #####: 1478:	       sprintf(buf, "%d", job);
+    #####: 1479:	       pm.node.nam = dupstring(buf);
+    #####: 1480:               if ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1481:		   !(flags & SCANPM_WANTKEYS))
+    #####: 1482:		   pm.u.str = pmjobdir(job);
+        -: 1483:	   }
+    #####: 1484:           func(&pm.node, flags);
+        -: 1485:       }
+        -: 1486:    }
+    #####: 1487:}
+        -: 1488:
+        -: 1489:/* Functions for the nameddirs special parameter. */
+        -: 1490:
+        -: 1491:/**/
+        -: 1492:static void
+    #####: 1493:setpmnameddir(Param pm, char *value)
+        -: 1494:{
+    #####: 1495:    if (!value)
+    #####: 1496:	zwarn("invalid value: ''");
+        -: 1497:    else {
+    #####: 1498:	Nameddir nd = (Nameddir) zshcalloc(sizeof(*nd));
+        -: 1499:
+    #####: 1500:	nd->node.flags = 0;
+    #####: 1501:	nd->dir = value;
+    #####: 1502:	nameddirtab->addnode(nameddirtab, ztrdup(pm->node.nam), nd);
+        -: 1503:    }
+    #####: 1504:}
+        -: 1505:
+        -: 1506:/**/
+        -: 1507:static void
+    #####: 1508:unsetpmnameddir(Param pm, UNUSED(int exp))
+        -: 1509:{
+    #####: 1510:    HashNode hd = nameddirtab->removenode(nameddirtab, pm->node.nam);
+        -: 1511:
+    #####: 1512:    if (hd)
+    #####: 1513:	nameddirtab->freenode(hd);
+    #####: 1514:}
+        -: 1515:
+        -: 1516:/**/
+        -: 1517:static void
+    #####: 1518:setpmnameddirs(Param pm, HashTable ht)
+        -: 1519:{
+        -: 1520:    int i;
+        -: 1521:    HashNode hn, next, hd;
+        -: 1522:
+    #####: 1523:    if (!ht)
+    #####: 1524:	return;
+        -: 1525:
+    #####: 1526:    for (i = 0; i < nameddirtab->hsize; i++)
+    #####: 1527:	for (hn = nameddirtab->nodes[i]; hn; hn = next) {
+    #####: 1528:	    next = hn->next;
+    #####: 1529:	    if (!(((Nameddir) hn)->node.flags & ND_USERNAME) &&
+    #####: 1530:		(hd = nameddirtab->removenode(nameddirtab, hn->nam)))
+    #####: 1531:		nameddirtab->freenode(hd);
+        -: 1532:	}
+        -: 1533:
+    #####: 1534:    for (i = 0; i < ht->hsize; i++)
+    #####: 1535:	for (hn = ht->nodes[i]; hn; hn = hn->next) {
+        -: 1536:	    struct value v;
+        -: 1537:	    char *val;
+        -: 1538:
+    #####: 1539:	    v.isarr = v.flags = v.start = 0;
+    #####: 1540:	    v.end = -1;
+    #####: 1541:	    v.arr = NULL;
+    #####: 1542:	    v.pm = (Param) hn;
+        -: 1543:
+    #####: 1544:	    if (!(val = getstrvalue(&v)))
+    #####: 1545:		zwarn("invalid value: ''");
+        -: 1546:	    else {
+    #####: 1547:		Nameddir nd = (Nameddir) zshcalloc(sizeof(*nd));
+        -: 1548:
+    #####: 1549:		nd->node.flags = 0;
+    #####: 1550:		nd->dir = ztrdup(val);
+    #####: 1551:		nameddirtab->addnode(nameddirtab, ztrdup(hn->nam), nd);
+        -: 1552:	    }
+        -: 1553:	}
+        -: 1554:
+        -: 1555:    /* The INTERACTIVE stuff ensures that the dirs are not immediately removed
+        -: 1556:     * when the sub-pms are deleted. */
+        -: 1557:
+    #####: 1558:    i = opts[INTERACTIVE];
+    #####: 1559:    opts[INTERACTIVE] = 0;
+        -: 1560:    /* See setpmcommands() above */
+    #####: 1561:    if (ht != pm->u.hash)
+    #####: 1562:	deleteparamtable(ht);
+    #####: 1563:    opts[INTERACTIVE] = i;
+        -: 1564:}
+        -: 1565:
+        -: 1566:static const struct gsu_scalar pmnamedir_gsu =
+        -: 1567:{ strgetfn, setpmnameddir, unsetpmnameddir };
+        -: 1568:
+        -: 1569:/**/
+        -: 1570:static HashNode
+    #####: 1571:getpmnameddir(UNUSED(HashTable ht), const char *name)
+        -: 1572:{
+    #####: 1573:    Param pm = NULL;
+        -: 1574:    Nameddir nd;
+        -: 1575:
+    #####: 1576:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1577:    pm->node.nam = dupstring(name);
+    #####: 1578:    pm->node.flags = PM_SCALAR;
+    #####: 1579:    pm->gsu.s = &pmnamedir_gsu;
+    #####: 1580:    if ((nd = (Nameddir) nameddirtab->getnode(nameddirtab, name)) &&
+    #####: 1581:	!(nd->node.flags & ND_USERNAME))
+    #####: 1582:	pm->u.str = dupstring(nd->dir);
+        -: 1583:    else {
+    #####: 1584:	pm->u.str = dupstring("");
+    #####: 1585:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1586:    }
+    #####: 1587:    return &pm->node;
+        -: 1588:}
+        -: 1589:
+        -: 1590:/**/
+        -: 1591:static void
+    #####: 1592:scanpmnameddirs(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1593:{
+        -: 1594:    struct param pm;
+        -: 1595:    int i;
+        -: 1596:    HashNode hn;
+        -: 1597:    Nameddir nd;
+        -: 1598:
+    #####: 1599:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1600:    pm.node.flags = PM_SCALAR;
+    #####: 1601:    pm.gsu.s = &pmnamedir_gsu;
+        -: 1602:
+    #####: 1603:    for (i = 0; i < nameddirtab->hsize; i++)
+    #####: 1604:	for (hn = nameddirtab->nodes[i]; hn; hn = hn->next) {
+    #####: 1605:	    if (!((nd = (Nameddir) hn)->node.flags & ND_USERNAME)) {
+    #####: 1606:		pm.node.nam = hn->nam;
+    #####: 1607:		if (func != scancountparams &&
+    #####: 1608:		    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1609:		     !(flags & SCANPM_WANTKEYS)))
+    #####: 1610:		    pm.u.str = dupstring(nd->dir);
+    #####: 1611:		func(&pm.node, flags);
+        -: 1612:	    }
+        -: 1613:	}
+    #####: 1614:}
+        -: 1615:
+        -: 1616:/* Functions for the userdirs special parameter. */
+        -: 1617:
+        -: 1618:/**/
+        -: 1619:static HashNode
+    #####: 1620:getpmuserdir(UNUSED(HashTable ht), const char *name)
+        -: 1621:{
+    #####: 1622:    Param pm = NULL;
+        -: 1623:    Nameddir nd;
+        -: 1624:
+    #####: 1625:    nameddirtab->filltable(nameddirtab);
+        -: 1626:
+    #####: 1627:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1628:    pm->node.nam = dupstring(name);
+    #####: 1629:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1630:    pm->gsu.s = &nullsetscalar_gsu;
+    #####: 1631:    if ((nd = (Nameddir) nameddirtab->getnode(nameddirtab, name)) &&
+    #####: 1632:	(nd->node.flags & ND_USERNAME))
+    #####: 1633:	pm->u.str = dupstring(nd->dir);
+        -: 1634:    else {
+    #####: 1635:	pm->u.str = dupstring("");
+    #####: 1636:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1637:    }
+    #####: 1638:    return &pm->node;
+        -: 1639:}
+        -: 1640:
+        -: 1641:/**/
+        -: 1642:static void
+    #####: 1643:scanpmuserdirs(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 1644:{
+        -: 1645:    struct param pm;
+        -: 1646:    int i;
+        -: 1647:    HashNode hn;
+        -: 1648:    Nameddir nd;
+        -: 1649:
+    #####: 1650:    nameddirtab->filltable(nameddirtab);
+        -: 1651:
+    #####: 1652:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1653:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 1654:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 1655:
+    #####: 1656:    for (i = 0; i < nameddirtab->hsize; i++)
+    #####: 1657:	for (hn = nameddirtab->nodes[i]; hn; hn = hn->next) {
+    #####: 1658:	    if ((nd = (Nameddir) hn)->node.flags & ND_USERNAME) {
+    #####: 1659:		pm.node.nam = hn->nam;
+    #####: 1660:		if (func != scancountparams &&
+    #####: 1661:		    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1662:		     !(flags & SCANPM_WANTKEYS)))
+    #####: 1663:		    pm.u.str = dupstring(nd->dir);
+    #####: 1664:		func(&pm.node, flags);
+        -: 1665:	    }
+        -: 1666:	}
+    #####: 1667:}
+        -: 1668:
+        -: 1669:/* Functions for the raliases, galiases and saliases special parameters. */
+        -: 1670:
+        -: 1671:/**/
+        -: 1672:static void
+    #####: 1673:setalias(HashTable ht, Param pm, char *value, int flags)
+        -: 1674:{
+    #####: 1675:    ht->addnode(ht, ztrdup(pm->node.nam),
+    #####: 1676:		createaliasnode(value, flags));
+    #####: 1677:}
+        -: 1678:
+        -: 1679:/**/
+        -: 1680:static void
+    #####: 1681:setpmralias(Param pm, char *value)
+        -: 1682:{
+    #####: 1683:    setalias(aliastab, pm, value, 0);
+    #####: 1684:}
+        -: 1685:
+        -: 1686:/**/
+        -: 1687:static void
+    #####: 1688:setpmdisralias(Param pm, char *value)
+        -: 1689:{
+    #####: 1690:    setalias(aliastab, pm, value, DISABLED);
+    #####: 1691:}
+        -: 1692:
+        -: 1693:/**/
+        -: 1694:static void
+    #####: 1695:setpmgalias(Param pm, char *value)
+        -: 1696:{
+    #####: 1697:    setalias(aliastab, pm, value, ALIAS_GLOBAL);
+    #####: 1698:}
+        -: 1699:
+        -: 1700:/**/
+        -: 1701:static void
+    #####: 1702:setpmdisgalias(Param pm, char *value)
+        -: 1703:{
+    #####: 1704:    setalias(aliastab, pm, value, ALIAS_GLOBAL|DISABLED);
+    #####: 1705:}
+        -: 1706:
+        -: 1707:/**/
+        -: 1708:static void
+    #####: 1709:setpmsalias(Param pm, char *value)
+        -: 1710:{
+    #####: 1711:    setalias(sufaliastab, pm, value, ALIAS_SUFFIX);
+    #####: 1712:}
+        -: 1713:
+        -: 1714:/**/
+        -: 1715:static void
+    #####: 1716:setpmdissalias(Param pm, char *value)
+        -: 1717:{
+    #####: 1718:    setalias(sufaliastab, pm, value, ALIAS_SUFFIX|DISABLED);
+    #####: 1719:}
+        -: 1720:
+        -: 1721:/**/
+        -: 1722:static void
+    #####: 1723:unsetpmalias(Param pm, UNUSED(int exp))
+        -: 1724:{
+    #####: 1725:    HashNode hd = aliastab->removenode(aliastab, pm->node.nam);
+        -: 1726:
+    #####: 1727:    if (hd)
+    #####: 1728:	aliastab->freenode(hd);
+    #####: 1729:}
+        -: 1730:
+        -: 1731:/**/
+        -: 1732:static void
+    #####: 1733:unsetpmsalias(Param pm, UNUSED(int exp))
+        -: 1734:{
+    #####: 1735:    HashNode hd = sufaliastab->removenode(sufaliastab, pm->node.nam);
+        -: 1736:
+    #####: 1737:    if (hd)
+    #####: 1738:	sufaliastab->freenode(hd);
+    #####: 1739:}
+        -: 1740:
+        -: 1741:/**/
+        -: 1742:static void
+    #####: 1743:setaliases(HashTable alht, Param pm, HashTable ht, int flags)
+        -: 1744:{
+        -: 1745:    int i;
+        -: 1746:    HashNode hn, next, hd;
+        -: 1747:
+    #####: 1748:    if (!ht)
+    #####: 1749:	return;
+        -: 1750:
+    #####: 1751:    for (i = 0; i < alht->hsize; i++)
+    #####: 1752:	for (hn = alht->nodes[i]; hn; hn = next) {
+    #####: 1753:	    next = hn->next;
+        -: 1754:	    /*
+        -: 1755:	     * The following respects the DISABLED flag, e.g.
+        -: 1756:	     * we get a different behaviour for raliases and dis_raliases.
+        -: 1757:	     * The predecessor to this code didn't do that; presumably
+        -: 1758:	     * that was a bug.
+        -: 1759:	     */
+    #####: 1760:	    if (flags == ((Alias)hn)->node.flags &&
+    #####: 1761:		(hd = alht->removenode(alht, hn->nam)))
+    #####: 1762:		alht->freenode(hd);
+        -: 1763:	}
+        -: 1764:
+    #####: 1765:    for (i = 0; i < ht->hsize; i++)
+    #####: 1766:	for (hn = ht->nodes[i]; hn; hn = hn->next) {
+        -: 1767:	    struct value v;
+        -: 1768:	    char *val;
+        -: 1769:
+    #####: 1770:	    v.isarr = v.flags = v.start = 0;
+    #####: 1771:	    v.end = -1;
+    #####: 1772:	    v.arr = NULL;
+    #####: 1773:	    v.pm = (Param) hn;
+        -: 1774:
+    #####: 1775:	    if ((val = getstrvalue(&v)))
+    #####: 1776:		alht->addnode(alht, ztrdup(hn->nam),
+    #####: 1777:			      createaliasnode(ztrdup(val), flags));
+        -: 1778:	}
+        -: 1779:    /* See setpmcommands() above */
+    #####: 1780:    if (ht != pm->u.hash)
+    #####: 1781:	deleteparamtable(ht);
+        -: 1782:}
+        -: 1783:
+        -: 1784:/**/
+        -: 1785:static void
+    #####: 1786:setpmraliases(Param pm, HashTable ht)
+        -: 1787:{
+    #####: 1788:    setaliases(aliastab, pm, ht, 0);
+    #####: 1789:}
+        -: 1790:
+        -: 1791:/**/
+        -: 1792:static void
+    #####: 1793:setpmdisraliases(Param pm, HashTable ht)
+        -: 1794:{
+    #####: 1795:    setaliases(aliastab, pm, ht, DISABLED);
+    #####: 1796:}
+        -: 1797:
+        -: 1798:/**/
+        -: 1799:static void
+    #####: 1800:setpmgaliases(Param pm, HashTable ht)
+        -: 1801:{
+    #####: 1802:    setaliases(aliastab, pm, ht, ALIAS_GLOBAL);
+    #####: 1803:}
+        -: 1804:
+        -: 1805:/**/
+        -: 1806:static void
+    #####: 1807:setpmdisgaliases(Param pm, HashTable ht)
+        -: 1808:{
+    #####: 1809:    setaliases(aliastab, pm, ht, ALIAS_GLOBAL|DISABLED);
+    #####: 1810:}
+        -: 1811:
+        -: 1812:/**/
+        -: 1813:static void
+    #####: 1814:setpmsaliases(Param pm, HashTable ht)
+        -: 1815:{
+    #####: 1816:    setaliases(sufaliastab, pm, ht, ALIAS_SUFFIX);
+    #####: 1817:}
+        -: 1818:
+        -: 1819:/**/
+        -: 1820:static void
+    #####: 1821:setpmdissaliases(Param pm, HashTable ht)
+        -: 1822:{
+    #####: 1823:    setaliases(sufaliastab, pm, ht, ALIAS_SUFFIX|DISABLED);
+    #####: 1824:}
+        -: 1825:
+        -: 1826:static const struct gsu_scalar pmralias_gsu =
+        -: 1827:{ strgetfn, setpmralias, unsetpmalias };
+        -: 1828:static const struct gsu_scalar pmgalias_gsu =
+        -: 1829:{ strgetfn, setpmgalias, unsetpmalias };
+        -: 1830:static const struct gsu_scalar pmsalias_gsu =
+        -: 1831:{ strgetfn, setpmsalias, unsetpmsalias };
+        -: 1832:static const struct gsu_scalar pmdisralias_gsu =
+        -: 1833:{ strgetfn, setpmdisralias, unsetpmalias };
+        -: 1834:static const struct gsu_scalar pmdisgalias_gsu =
+        -: 1835:{ strgetfn, setpmdisgalias, unsetpmalias };
+        -: 1836:static const struct gsu_scalar pmdissalias_gsu =
+        -: 1837:{ strgetfn, setpmdissalias, unsetpmsalias };
+        -: 1838:
+        -: 1839:/**/
+        -: 1840:static void
+    #####: 1841:assignaliasdefs(Param pm, int flags)
+        -: 1842:{
+    #####: 1843:    pm->node.flags = PM_SCALAR;
+        -: 1844:
+        -: 1845:    /* we really need to squirrel the flags away somewhere... */
+    #####: 1846:    switch (flags) {
+    #####: 1847:    case 0:
+    #####: 1848:	pm->gsu.s = &pmralias_gsu;
+    #####: 1849:	break;
+        -: 1850:
+    #####: 1851:    case ALIAS_GLOBAL:
+    #####: 1852:	pm->gsu.s = &pmgalias_gsu;
+    #####: 1853:	break;
+        -: 1854:
+    #####: 1855:    case ALIAS_SUFFIX:
+    #####: 1856:	pm->gsu.s = &pmsalias_gsu;
+    #####: 1857:	break;
+        -: 1858:
+    #####: 1859:    case DISABLED:
+    #####: 1860:	pm->gsu.s = &pmdisralias_gsu;
+    #####: 1861:	break;
+        -: 1862:
+    #####: 1863:    case ALIAS_GLOBAL|DISABLED:
+    #####: 1864:	pm->gsu.s = &pmdisgalias_gsu;
+    #####: 1865:	break;
+        -: 1866:
+    #####: 1867:    case ALIAS_SUFFIX|DISABLED:
+    #####: 1868:	pm->gsu.s = &pmdissalias_gsu;
+    #####: 1869:	break;
+        -: 1870:    }
+    #####: 1871:}
+        -: 1872:
+        -: 1873:/**/
+        -: 1874:static HashNode
+    #####: 1875:getalias(HashTable alht, UNUSED(HashTable ht), const char *name, int flags)
+        -: 1876:{
+    #####: 1877:    Param pm = NULL;
+        -: 1878:    Alias al;
+        -: 1879:
+    #####: 1880:    pm = (Param) hcalloc(sizeof(struct param));
+    #####: 1881:    pm->node.nam = dupstring(name);
+        -: 1882:
+    #####: 1883:    assignaliasdefs(pm, flags);
+        -: 1884:
+    #####: 1885:    if ((al = (Alias) alht->getnode2(alht, name)) &&
+    #####: 1886:	flags == al->node.flags)
+    #####: 1887:	pm->u.str = dupstring(al->text);
+        -: 1888:    else {
+    #####: 1889:	pm->u.str = dupstring("");
+    #####: 1890:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+        -: 1891:    }
+    #####: 1892:    return &pm->node;
+        -: 1893:}
+        -: 1894:
+        -: 1895:/**/
+        -: 1896:static HashNode
+    #####: 1897:getpmralias(HashTable ht, const char *name)
+        -: 1898:{
+    #####: 1899:    return getalias(aliastab, ht, name, 0);
+        -: 1900:}
+        -: 1901:
+        -: 1902:/**/
+        -: 1903:static HashNode
+    #####: 1904:getpmdisralias(HashTable ht, const char *name)
+        -: 1905:{
+    #####: 1906:    return getalias(aliastab, ht, name, DISABLED);
+        -: 1907:}
+        -: 1908:
+        -: 1909:/**/
+        -: 1910:static HashNode
+    #####: 1911:getpmgalias(HashTable ht, const char *name)
+        -: 1912:{
+    #####: 1913:    return getalias(aliastab, ht, name, ALIAS_GLOBAL);
+        -: 1914:}
+        -: 1915:
+        -: 1916:/**/
+        -: 1917:static HashNode
+    #####: 1918:getpmdisgalias(HashTable ht, const char *name)
+        -: 1919:{
+    #####: 1920:    return getalias(aliastab, ht, name, ALIAS_GLOBAL|DISABLED);
+        -: 1921:}
+        -: 1922:
+        -: 1923:/**/
+        -: 1924:static HashNode
+    #####: 1925:getpmsalias(HashTable ht, const char *name)
+        -: 1926:{
+    #####: 1927:    return getalias(sufaliastab, ht, name, ALIAS_SUFFIX);
+        -: 1928:}
+        -: 1929:
+        -: 1930:/**/
+        -: 1931:static HashNode
+    #####: 1932:getpmdissalias(HashTable ht, const char *name)
+        -: 1933:{
+    #####: 1934:    return getalias(sufaliastab, ht, name, ALIAS_SUFFIX|DISABLED);
+        -: 1935:} 
+        -: 1936:
+        -: 1937:/**/
+        -: 1938:static void
+    #####: 1939:scanaliases(HashTable alht, UNUSED(HashTable ht), ScanFunc func,
+        -: 1940:	    int pmflags, int alflags)
+        -: 1941:{
+        -: 1942:    struct param pm;
+        -: 1943:    int i;
+        -: 1944:    Alias al;
+        -: 1945:
+    #####: 1946:    memset((void *)&pm, 0, sizeof(struct param));
+    #####: 1947:    assignaliasdefs(&pm, alflags);
+        -: 1948:
+    #####: 1949:    for (i = 0; i < alht->hsize; i++)
+    #####: 1950:	for (al = (Alias) alht->nodes[i]; al; al = (Alias) al->node.next) {
+    #####: 1951:	    if (alflags == al->node.flags) {
+    #####: 1952:		pm.node.nam = al->node.nam;
+    #####: 1953:		if (func != scancountparams &&
+    #####: 1954:		    ((pmflags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 1955:		     !(pmflags & SCANPM_WANTKEYS)))
+    #####: 1956:		    pm.u.str = dupstring(al->text);
+    #####: 1957:		func(&pm.node, pmflags);
+        -: 1958:	    }
+        -: 1959:	}
+    #####: 1960:}
+        -: 1961:
+        -: 1962:/**/
+        -: 1963:static void
+    #####: 1964:scanpmraliases(HashTable ht, ScanFunc func, int flags)
+        -: 1965:{
+    #####: 1966:    scanaliases(aliastab, ht, func, flags, 0);
+    #####: 1967:}
+        -: 1968:
+        -: 1969:/**/
+        -: 1970:static void
+    #####: 1971:scanpmdisraliases(HashTable ht, ScanFunc func, int flags)
+        -: 1972:{
+    #####: 1973:    scanaliases(aliastab, ht, func, flags, DISABLED);
+    #####: 1974:}
+        -: 1975:
+        -: 1976:/**/
+        -: 1977:static void
+    #####: 1978:scanpmgaliases(HashTable ht, ScanFunc func, int flags)
+        -: 1979:{
+    #####: 1980:    scanaliases(aliastab, ht, func, flags, ALIAS_GLOBAL);
+    #####: 1981:}
+        -: 1982:
+        -: 1983:/**/
+        -: 1984:static void
+    #####: 1985:scanpmdisgaliases(HashTable ht, ScanFunc func, int flags)
+        -: 1986:{
+    #####: 1987:    scanaliases(aliastab, ht, func, flags, ALIAS_GLOBAL|DISABLED);
+    #####: 1988:}
+        -: 1989:
+        -: 1990:/**/
+        -: 1991:static void
+    #####: 1992:scanpmsaliases(HashTable ht, ScanFunc func, int flags)
+        -: 1993:{
+    #####: 1994:    scanaliases(sufaliastab, ht, func, flags, ALIAS_SUFFIX);
+    #####: 1995:}
+        -: 1996:
+        -: 1997:/**/
+        -: 1998:static void
+    #####: 1999:scanpmdissaliases(HashTable ht, ScanFunc func, int flags)
+        -: 2000:{
+    #####: 2001:    scanaliases(sufaliastab, ht, func, flags, ALIAS_SUFFIX|DISABLED);
+    #####: 2002:}
+        -: 2003:
+        -: 2004:
+        -: 2005:/* Functions for the usergroups special parameter */
+        -: 2006:
+        -: 2007:/*
+        -: 2008: * Get GID and names for groups of which the current user is a member.
+        -: 2009: */
+        -: 2010:
+        -: 2011:/**/
+    #####: 2012:static Groupset get_all_groups(void)
+        -: 2013:{
+    #####: 2014:    Groupset gs = zhalloc(sizeof(*gs));
+        -: 2015:    Groupmap gaptr;
+        -: 2016:    gid_t *list, *lptr, egid;
+        -: 2017:    int add_egid;
+        -: 2018:    struct group *grptr;
+        -: 2019:
+    #####: 2020:    egid = getegid();
+    #####: 2021:    add_egid = 1;
+    #####: 2022:    gs->num = getgroups(0, NULL);
+    #####: 2023:    if (gs->num > 0) {
+    #####: 2024:	list = zhalloc(gs->num * sizeof(*list));
+    #####: 2025:	if (getgroups(gs->num, list) < 0) {
+    #####: 2026:	    return NULL;
+        -: 2027:	}
+        -: 2028:
+        -: 2029:	/*
+        -: 2030:	 * It's unspecified whether $EGID is included in the
+        -: 2031:	 * group set, so check.
+        -: 2032:	 */
+    #####: 2033:	for (lptr = list; lptr < list + gs->num; lptr++) {
+    #####: 2034:	    if (*lptr == egid) {
+    #####: 2035:		add_egid = 0;
+    #####: 2036:		break;
+        -: 2037:	    }
+        -: 2038:	}
+    #####: 2039:	gs->array = zhalloc((gs->num + add_egid) * sizeof(*gs->array));
+        -: 2040:	/* Put EGID if needed first */
+    #####: 2041:	gaptr = gs->array + add_egid;
+    #####: 2042:	for (lptr = list; lptr < list + gs->num; lptr++) {
+    #####: 2043:	    gaptr->gid = *lptr;
+    #####: 2044:	    gaptr++;
+        -: 2045:	}
+    #####: 2046:	gs->num += add_egid;
+        -: 2047:    } else {
+        -: 2048:	/* Just use effective GID */
+    #####: 2049:	gs->num = 1;
+    #####: 2050:	gs->array = zhalloc(sizeof(*gs->array));
+        -: 2051:    }
+    #####: 2052:    if (add_egid) {
+    #####: 2053:	gs->array->gid = egid;
+        -: 2054:    }
+        -: 2055:
+        -: 2056:    /* Get group names */
+    #####: 2057:    for (gaptr = gs->array; gaptr < gs->array + gs->num; gaptr++) {
+    #####: 2058:	grptr = getgrgid(gaptr->gid);
+    #####: 2059:	if (!grptr) {
+    #####: 2060:	    return NULL;
+        -: 2061:	}
+    #####: 2062:	gaptr->name = dupstring(grptr->gr_name);
+        -: 2063:    }
+        -: 2064:
+    #####: 2065:    return gs;
+        -: 2066:}
+        -: 2067:
+        -: 2068:/* Standard hash element lookup. */
+        -: 2069:
+        -: 2070:/**/
+        -: 2071:static HashNode
+    #####: 2072:getpmusergroups(UNUSED(HashTable ht), const char *name)
+        -: 2073:{
+    #####: 2074:    Param pm = NULL;
+    #####: 2075:    Groupset gs = get_all_groups();
+        -: 2076:    Groupmap gaptr;
+        -: 2077:
+    #####: 2078:    pm = (Param)hcalloc(sizeof(struct param));
+    #####: 2079:    pm->node.nam = dupstring(name);
+    #####: 2080:    pm->node.flags = PM_SCALAR | PM_READONLY;
+    #####: 2081:    pm->gsu.s = &nullsetscalar_gsu;
+        -: 2082:
+    #####: 2083:    if (!gs) {
+    #####: 2084:	zerr("failed to retrieve groups for user: %e", errno);
+    #####: 2085:	pm->u.str = dupstring("");
+    #####: 2086:	pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+    #####: 2087:	return &pm->node;
+        -: 2088:    }
+        -: 2089:
+    #####: 2090:    for (gaptr = gs->array; gaptr < gs->array + gs->num; gaptr++) {
+    #####: 2091:	if (!strcmp(name, gaptr->name)) {
+        -: 2092:	    char buf[DIGBUFSIZE];
+        -: 2093:
+    #####: 2094:	    sprintf(buf, "%d", (int)gaptr->gid);
+    #####: 2095:	    pm->u.str = dupstring(buf);
+    #####: 2096:	    return &pm->node;
+        -: 2097:	}
+        -: 2098:    }
+        -: 2099:
+    #####: 2100:    pm->u.str = dupstring("");
+    #####: 2101:    pm->node.flags |= (PM_UNSET|PM_SPECIAL);
+    #####: 2102:    return &pm->node;
+        -: 2103:}
+        -: 2104:
+        -: 2105:/* Standard hash scan. */
+        -: 2106:
+        -: 2107:/**/
+        -: 2108:static void
+    #####: 2109:scanpmusergroups(UNUSED(HashTable ht), ScanFunc func, int flags)
+        -: 2110:{
+        -: 2111:    struct param pm;
+    #####: 2112:    Groupset gs = get_all_groups();
+        -: 2113:    Groupmap gaptr;
+        -: 2114:
+    #####: 2115:    if (!gs) {
+    #####: 2116:	zerr("failed to retrieve groups for user: %e", errno);
+    #####: 2117:	return;
+        -: 2118:    }
+        -: 2119:
+    #####: 2120:    memset((void *)&pm, 0, sizeof(pm));
+    #####: 2121:    pm.node.flags = PM_SCALAR | PM_READONLY;
+    #####: 2122:    pm.gsu.s = &nullsetscalar_gsu;
+        -: 2123:
+    #####: 2124:    for (gaptr = gs->array; gaptr < gs->array + gs->num; gaptr++) {
+    #####: 2125:	pm.node.nam = gaptr->name;
+    #####: 2126:	if (func != scancountparams &&
+    #####: 2127:	    ((flags & (SCANPM_WANTVALS|SCANPM_MATCHVAL)) ||
+    #####: 2128:	     !(flags & SCANPM_WANTKEYS))) {
+        -: 2129:	    char buf[DIGBUFSIZE];
+        -: 2130:
+    #####: 2131:	    sprintf(buf, "%d", (int)gaptr->gid);
+    #####: 2132:	    pm.u.str = dupstring(buf);
+        -: 2133:	}
+    #####: 2134:	func(&pm.node, flags);
+        -: 2135:    }
+        -: 2136:}
+        -: 2137:
+        -: 2138:
+        -: 2139:/* Table for defined parameters. */
+        -: 2140:
+        -: 2141:struct pardef {
+        -: 2142:    char *name;
+        -: 2143:    int flags;
+        -: 2144:    GetNodeFunc getnfn;
+        -: 2145:    ScanTabFunc scantfn;
+        -: 2146:    GsuHash hash_gsu;
+        -: 2147:    GsuArray array_gsu;
+        -: 2148:    Param pm;
+        -: 2149:};
+        -: 2150:
+        -: 2151:static const struct gsu_hash pmcommands_gsu =
+        -: 2152:{ hashgetfn, setpmcommands, stdunsetfn };
+        -: 2153:static const struct gsu_hash pmfunctions_gsu =
+        -: 2154:{ hashgetfn, setpmfunctions, stdunsetfn };
+        -: 2155:static const struct gsu_hash pmdisfunctions_gsu =
+        -: 2156:{ hashgetfn, setpmdisfunctions, stdunsetfn };
+        -: 2157:static const struct gsu_hash pmoptions_gsu =
+        -: 2158:{ hashgetfn, setpmoptions, stdunsetfn };
+        -: 2159:static const struct gsu_hash pmnameddirs_gsu =
+        -: 2160:{ hashgetfn, setpmnameddirs, stdunsetfn };
+        -: 2161:static const struct gsu_hash pmraliases_gsu =
+        -: 2162:{ hashgetfn, setpmraliases, stdunsetfn };
+        -: 2163:static const struct gsu_hash pmgaliases_gsu =
+        -: 2164:{ hashgetfn, setpmgaliases, stdunsetfn };
+        -: 2165:static const struct gsu_hash pmsaliases_gsu =
+        -: 2166:{ hashgetfn, setpmsaliases, stdunsetfn };
+        -: 2167:static const struct gsu_hash pmdisraliases_gsu =
+        -: 2168:{ hashgetfn, setpmdisraliases, stdunsetfn };
+        -: 2169:static const struct gsu_hash pmdisgaliases_gsu =
+        -: 2170:{ hashgetfn, setpmdisgaliases, stdunsetfn };
+        -: 2171:static const struct gsu_hash pmdissaliases_gsu =
+        -: 2172:{ hashgetfn, setpmdissaliases, stdunsetfn };
+        -: 2173:
+        -: 2174:static const struct gsu_array funcstack_gsu =
+        -: 2175:{ funcstackgetfn, arrsetfn, stdunsetfn };
+        -: 2176:static const struct gsu_array functrace_gsu =
+        -: 2177:{ functracegetfn, arrsetfn, stdunsetfn };
+        -: 2178:static const struct gsu_array funcsourcetrace_gsu =
+        -: 2179:{ funcsourcetracegetfn, arrsetfn, stdunsetfn };
+        -: 2180:static const struct gsu_array funcfiletrace_gsu =
+        -: 2181:{ funcfiletracegetfn, arrsetfn, stdunsetfn };
+        -: 2182:static const struct gsu_array reswords_gsu =
+        -: 2183:{ reswordsgetfn, arrsetfn, stdunsetfn };
+        -: 2184:static const struct gsu_array disreswords_gsu =
+        -: 2185:{ disreswordsgetfn, arrsetfn, stdunsetfn };
+        -: 2186:static const struct gsu_array patchars_gsu =
+        -: 2187:{ patcharsgetfn, arrsetfn, stdunsetfn };
+        -: 2188:static const struct gsu_array dispatchars_gsu =
+        -: 2189:{ dispatcharsgetfn, arrsetfn, stdunsetfn };
+        -: 2190:static const struct gsu_array dirs_gsu =
+        -: 2191:{ dirsgetfn, dirssetfn, stdunsetfn };
+        -: 2192:static const struct gsu_array historywords_gsu =
+        -: 2193:{ histwgetfn, arrsetfn, stdunsetfn };
+        -: 2194:
+        -: 2195:/* Make sure to update autofeatures in parameter.mdd if necessary */
+        -: 2196:static struct paramdef partab[] = {
+        -: 2197:    SPECIALPMDEF("aliases", 0,
+        -: 2198:	    &pmraliases_gsu, getpmralias, scanpmraliases),
+        -: 2199:    SPECIALPMDEF("builtins", PM_READONLY_SPECIAL, NULL, getpmbuiltin, scanpmbuiltins),
+        -: 2200:    SPECIALPMDEF("commands", 0, &pmcommands_gsu, getpmcommand, scanpmcommands),
+        -: 2201:    SPECIALPMDEF("dirstack", PM_ARRAY,
+        -: 2202:	    &dirs_gsu, NULL, NULL),
+        -: 2203:    SPECIALPMDEF("dis_aliases", 0,
+        -: 2204:	    &pmdisraliases_gsu, getpmdisralias, scanpmdisraliases),
+        -: 2205:    SPECIALPMDEF("dis_builtins", PM_READONLY_SPECIAL,
+        -: 2206:	    NULL, getpmdisbuiltin, scanpmdisbuiltins),
+        -: 2207:    SPECIALPMDEF("dis_functions", 0, 
+        -: 2208:	    &pmdisfunctions_gsu, getpmdisfunction, scanpmdisfunctions),
+        -: 2209:    SPECIALPMDEF("dis_functions_source", PM_READONLY_SPECIAL, NULL,
+        -: 2210:		 getpmdisfunction_source, scanpmdisfunction_source),
+        -: 2211:    SPECIALPMDEF("dis_galiases", 0,
+        -: 2212:	    &pmdisgaliases_gsu, getpmdisgalias, scanpmdisgaliases),
+        -: 2213:    SPECIALPMDEF("dis_patchars", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2214:	    &dispatchars_gsu, NULL, NULL),
+        -: 2215:    SPECIALPMDEF("dis_reswords", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2216:	    &disreswords_gsu, NULL, NULL),
+        -: 2217:    SPECIALPMDEF("dis_saliases", 0,
+        -: 2218:	    &pmdissaliases_gsu, getpmdissalias, scanpmdissaliases),
+        -: 2219:    SPECIALPMDEF("funcfiletrace", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2220:	    &funcfiletrace_gsu, NULL, NULL),
+        -: 2221:    SPECIALPMDEF("funcsourcetrace", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2222:	    &funcsourcetrace_gsu, NULL, NULL),
+        -: 2223:    SPECIALPMDEF("funcstack", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2224:	    &funcstack_gsu, NULL, NULL),
+        -: 2225:    SPECIALPMDEF("functions", 0, &pmfunctions_gsu, getpmfunction,
+        -: 2226:		 scanpmfunctions),
+        -: 2227:    SPECIALPMDEF("functions_source", PM_READONLY_SPECIAL, NULL,
+        -: 2228:		 getpmfunction_source, scanpmfunction_source),
+        -: 2229:    SPECIALPMDEF("functrace", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2230:	    &functrace_gsu, NULL, NULL),
+        -: 2231:    SPECIALPMDEF("galiases", 0,
+        -: 2232:	    &pmgaliases_gsu, getpmgalias, scanpmgaliases),
+        -: 2233:    SPECIALPMDEF("history", PM_READONLY_SPECIAL,
+        -: 2234:	    NULL, getpmhistory, scanpmhistory),
+        -: 2235:    SPECIALPMDEF("historywords", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2236:	    &historywords_gsu, NULL, NULL),
+        -: 2237:    SPECIALPMDEF("jobdirs", PM_READONLY_SPECIAL,
+        -: 2238:	    NULL, getpmjobdir, scanpmjobdirs),
+        -: 2239:    SPECIALPMDEF("jobstates", PM_READONLY_SPECIAL,
+        -: 2240:	    NULL, getpmjobstate, scanpmjobstates),
+        -: 2241:    SPECIALPMDEF("jobtexts", PM_READONLY_SPECIAL,
+        -: 2242:	    NULL, getpmjobtext, scanpmjobtexts),
+        -: 2243:    SPECIALPMDEF("modules", PM_READONLY_SPECIAL,
+        -: 2244:	    NULL, getpmmodule, scanpmmodules),
+        -: 2245:    SPECIALPMDEF("nameddirs", 0,
+        -: 2246:	    &pmnameddirs_gsu, getpmnameddir, scanpmnameddirs),
+        -: 2247:    SPECIALPMDEF("options", 0,
+        -: 2248:	    &pmoptions_gsu, getpmoption, scanpmoptions),
+        -: 2249:    SPECIALPMDEF("parameters", PM_READONLY_SPECIAL,
+        -: 2250:	    NULL, getpmparameter, scanpmparameters),
+        -: 2251:    SPECIALPMDEF("patchars", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2252:	    &patchars_gsu, NULL, NULL),
+        -: 2253:    SPECIALPMDEF("reswords", PM_ARRAY|PM_READONLY_SPECIAL,
+        -: 2254:	    &reswords_gsu, NULL, NULL),
+        -: 2255:    SPECIALPMDEF("saliases", 0,
+        -: 2256:	    &pmsaliases_gsu, getpmsalias, scanpmsaliases),
+        -: 2257:    SPECIALPMDEF("userdirs", PM_READONLY_SPECIAL,
+        -: 2258:	    NULL, getpmuserdir, scanpmuserdirs),
+        -: 2259:    SPECIALPMDEF("usergroups", PM_READONLY_SPECIAL,
+        -: 2260:	    NULL, getpmusergroups, scanpmusergroups)
+        -: 2261:};
+        -: 2262:
+        -: 2263:static struct features module_features = {
+        -: 2264:    NULL, 0,
+        -: 2265:    NULL, 0,
+        -: 2266:    NULL, 0,
+        -: 2267:    partab, sizeof(partab)/sizeof(*partab),
+        -: 2268:    0
+        -: 2269:};
+        -: 2270:
+        -: 2271:/**/
+        -: 2272:int
+        1: 2273:setup_(UNUSED(Module m))
+        -: 2274:{
+        1: 2275:    return 0;
+        -: 2276:}
+        -: 2277:
+        -: 2278:/**/
+        -: 2279:int
+        1: 2280:features_(Module m, char ***features)
+        -: 2281:{
+        1: 2282:    *features = featuresarray(m, &module_features);
+        1: 2283:    return 0;
+        -: 2284:}
+        -: 2285:
+        -: 2286:/**/
+        -: 2287:int
+        2: 2288:enables_(Module m, int **enables)
+        -: 2289:{
+        -: 2290:    int ret;
+        -: 2291:    /*
+        -: 2292:     * If we remove features, we shouldn't have an effect
+        -: 2293:     * on the main shell, so set the flag to indicate.
+        -: 2294:     */
+        2: 2295:    incleanup = 1;
+        2: 2296:    ret = handlefeatures(m, &module_features, enables);
+        2: 2297:    incleanup = 0;
+        2: 2298:    return ret;
+        -: 2299:}
+        -: 2300:
+        -: 2301:/**/
+        -: 2302:int
+        1: 2303:boot_(UNUSED(Module m))
+        -: 2304:{
+        1: 2305:    return 0;
+        -: 2306:}
+        -: 2307:
+        -: 2308:/**/
+        -: 2309:int
+    #####: 2310:cleanup_(Module m)
+        -: 2311:{
+        -: 2312:    int ret;
+    #####: 2313:    incleanup = 1;
+    #####: 2314:    ret = setfeatureenables(m, &module_features, NULL);
+    #####: 2315:    incleanup = 0;
+    #####: 2316:    return ret;
+        -: 2317:}
+        -: 2318:
+        -: 2319:/**/
+        -: 2320:int
+    #####: 2321:finish_(UNUSED(Module m))
+        -: 2322:{
+    #####: 2323:    return 0;
+        -: 2324:}

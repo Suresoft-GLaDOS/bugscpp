@@ -1,0 +1,3644 @@
+        -:    0:Source:module.c
+        -:    0:Graph:/home/workspace/Src/module.gcno
+        -:    0:Data:/home/workspace/Src/module.gcda
+        -:    0:Runs:9
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * module.c - deal with dynamic modules
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1996-1997 Zoltán Hidvégi
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Zoltán Hidvégi or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Zoltán Hidvégi and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Zoltán Hidvégi and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Zoltán Hidvégi and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: */
+        -:   28:
+        -:   29:#include "zsh.mdh"
+        -:   30:#include "module.pro"
+        -:   31:
+        -:   32:/*
+        -:   33: * List of linked-in modules.
+        -:   34: * This is set up at boot and remains for the life of the shell;
+        -:   35: * entries do not appear in "zmodload" listings.
+        -:   36: */
+        -:   37:
+        -:   38:/**/
+        -:   39:LinkList linkedmodules;
+        -:   40:
+        -:   41:/* $module_path ($MODULE_PATH) */
+        -:   42:
+        -:   43:/**/
+        -:   44:char **module_path;
+        -:   45:
+        -:   46:/* Hash of modules */
+        -:   47:
+        -:   48:/**/
+        -:   49:mod_export HashTable modulestab;
+        -:   50:
+        -:   51:/*
+        -:   52: * Bit flags passed as the "flags" argument of a autofeaturefn_t.
+        -:   53: * Used in other places, such as the final argument to
+        -:   54: * do_module_features().
+        -:   55: */
+        -:   56:enum {
+        -:   57:    /*
+        -:   58:     * `-i' option: ignore errors pertaining to redefinitions,
+        -:   59:     * or indicate to do_module_features() that it should be
+        -:   60:     * silent.
+        -:   61:     */
+        -:   62:    FEAT_IGNORE = 0x0001,
+        -:   63:    /* If a condition, condition is infix rather than prefix */
+        -:   64:    FEAT_INFIX = 0x0002,
+        -:   65:    /*
+        -:   66:     * Enable all features in the module when autoloading.
+        -:   67:     * This is the traditional zmodload -a behaviour;
+        -:   68:     * zmodload -Fa only enables features explicitly marked for
+        -:   69:     * autoloading.
+        -:   70:     */
+        -:   71:    FEAT_AUTOALL = 0x0004,
+        -:   72:    /*
+        -:   73:     * Remove feature:  alternative to "-X:NAME" used if
+        -:   74:     * X is passed separately from NAME.
+        -:   75:     */
+        -:   76:    FEAT_REMOVE = 0x0008,
+        -:   77:    /*
+        -:   78:     * For do_module_features().  Check that any autoloads
+        -:   79:     * for the module are actually provided.
+        -:   80:     */
+        -:   81:    FEAT_CHECKAUTO = 0x0010
+        -:   82:};
+        -:   83:
+        -:   84:/*
+        -:   85: * All functions to add or remove autoloadable features fit
+        -:   86: * the following prototype.
+        -:   87: *
+        -:   88: * "module" is the name of the module.
+        -:   89: *
+        -:   90: * "feature" is the name of the feature, minus any type prefix.
+        -:   91: *
+        -:   92: * "flags" is a set of the bits above.
+        -:   93: *
+        -:   94: * The return value is 0 for success, -1 for failure with no
+        -:   95: * message needed, and one of the following to indicate the calling
+        -:   96: * function should print a message:
+        -:   97: *
+        -:   98: * 1:  failed to add [type] `[feature]'
+        -:   99: * 2:  [feature]: no such [type]
+        -:  100: * 3:  [feature]: [type] is already defined
+        -:  101: */
+        -:  102:typedef int (*autofeaturefn_t)(const char *module, const char *feature,
+        -:  103:			       int flags);
+        -:  104:
+        -:  105:/* Bits in the second argument to find_module. */
+        -:  106:enum {
+        -:  107:    /*
+        -:  108:     * Resolve any aliases to the underlying module.
+        -:  109:     */
+        -:  110:    FINDMOD_ALIASP = 0x0001,
+        -:  111:    /*
+        -:  112:     * Create an element for the module in the list if
+        -:  113:     * it is not found.
+        -:  114:     */
+        -:  115:    FINDMOD_CREATE = 0x0002,
+        -:  116:};
+        -:  117:
+        -:  118:static void
+    #####:  119:freemodulenode(HashNode hn)
+        -:  120:{
+    #####:  121:    Module m = (Module) hn;
+        -:  122:
+    #####:  123:    if (m->node.flags & MOD_ALIAS)
+    #####:  124:	zsfree(m->u.alias);
+    #####:  125:    zsfree(m->node.nam);
+    #####:  126:    if (m->autoloads)
+    #####:  127:	freelinklist(m->autoloads, freestr);
+    #####:  128:    if (m->deps)
+    #####:  129:	freelinklist(m->deps, freestr);
+    #####:  130:    zfree(m, sizeof(*m));
+    #####:  131:}
+        -:  132:
+        -:  133:/* flags argument to printmodulenode */
+        -:  134:enum {
+        -:  135:    /* -L flag, output zmodload commands */
+        -:  136:    PRINTMOD_LIST = 0x0001,
+        -:  137:    /* -e flag */
+        -:  138:    PRINTMOD_EXIST = 0x0002,
+        -:  139:    /* -A flag */
+        -:  140:    PRINTMOD_ALIAS = 0x0004,
+        -:  141:    /* -d flag */
+        -:  142:    PRINTMOD_DEPS = 0x0008,
+        -:  143:    /* -F flag */
+        -:  144:    PRINTMOD_FEATURES = 0x0010,
+        -:  145:    /* -l flag in combination with -L flag */
+        -:  146:    PRINTMOD_LISTALL = 0x0020,
+        -:  147:    /* -a flag */
+        -:  148:    PRINTMOD_AUTO = 0x0040
+        -:  149:};
+        -:  150:
+        -:  151:/* Scan function for printing module details */
+        -:  152:
+        -:  153:static void
+    #####:  154:printmodulenode(HashNode hn, int flags)
+        -:  155:{
+    #####:  156:    Module m = (Module)hn;
+        -:  157:    /*
+        -:  158:     * If we check for a module loaded under an alias, we
+        -:  159:     * need the name of the alias.  We can use it in other
+        -:  160:     * cases, too.
+        -:  161:     */
+    #####:  162:    const char *modname = m->node.nam;
+        -:  163:
+    #####:  164:    if (flags & PRINTMOD_DEPS) {
+        -:  165:	/*
+        -:  166:	 * Print the module's dependencies.
+        -:  167:	 */
+        -:  168:	LinkNode n;
+        -:  169:
+    #####:  170:	if (!m->deps)
+    #####:  171:	    return;
+        -:  172:
+    #####:  173:	if (flags & PRINTMOD_LIST) {
+    #####:  174:	    printf("zmodload -d ");
+    #####:  175:	    if (modname[0] == '-')
+    #####:  176:		fputs("-- ", stdout);
+    #####:  177:	    quotedzputs(modname, stdout);
+        -:  178:	} else {
+    #####:  179:	    nicezputs(modname, stdout);
+    #####:  180:	    putchar(':');
+        -:  181:	}
+    #####:  182:	for (n = firstnode(m->deps); n; incnode(n)) {
+    #####:  183:	    putchar(' ');
+    #####:  184:	    if (flags & PRINTMOD_LIST)
+    #####:  185:		quotedzputs((char *) getdata(n), stdout);
+        -:  186:	    else
+    #####:  187:		nicezputs((char *) getdata(n), stdout);
+        -:  188:	}
+    #####:  189:    } else if (flags & PRINTMOD_EXIST) {
+        -:  190:	/*
+        -:  191:	 * Just print the module name, provided the module is
+        -:  192:	 * present under an alias or otherwise.
+        -:  193:	 */
+    #####:  194:	if (m->node.flags & MOD_ALIAS) {
+    #####:  195:	    if (!(flags & PRINTMOD_ALIAS) ||
+    #####:  196:		!(m = find_module(m->u.alias, FINDMOD_ALIASP, NULL)))
+    #####:  197:		return;
+        -:  198:	}
+    #####:  199:	if (!m->u.handle || (m->node.flags & MOD_UNLOAD))
+    #####:  200:	    return;
+    #####:  201:	nicezputs(modname, stdout);
+    #####:  202:   } else if (m->node.flags & MOD_ALIAS) {
+        -:  203:	/*
+        -:  204:	 * Normal listing, but for aliases.
+        -:  205:	 */
+    #####:  206:	if (flags & PRINTMOD_LIST) {
+    #####:  207:	    printf("zmodload -A ");
+    #####:  208:	    if (modname[0] == '-')
+    #####:  209:		fputs("-- ", stdout);
+    #####:  210:	    quotedzputs(modname, stdout);
+    #####:  211:	    putchar('=');
+    #####:  212:	    quotedzputs(m->u.alias, stdout);
+        -:  213:	} else {
+    #####:  214:	    nicezputs(modname, stdout);
+    #####:  215:	    fputs(" -> ", stdout);
+    #####:  216:	    nicezputs(m->u.alias, stdout);
+        -:  217:	}
+    #####:  218:    } else if (m->u.handle || (flags & PRINTMOD_AUTO)) {
+        -:  219:	/*
+        -:  220:	 * Loaded module.
+        -:  221:	 */
+    #####:  222:	if (flags & PRINTMOD_LIST) {
+        -:  223:	    /*
+        -:  224:	     * List with -L format.  Possibly we are printing
+        -:  225:	     * features, either enables or autoloads.
+        -:  226:	     */
+    #####:  227:	    char **features = NULL;
+    #####:  228:	    int *enables = NULL;
+    #####:  229:	    if (flags & PRINTMOD_AUTO) {
+    #####:  230:		if (!m->autoloads || !firstnode(m->autoloads))
+    #####:  231:		    return;
+    #####:  232:	    } else if (flags & PRINTMOD_FEATURES) {
+    #####:  233:		if (features_module(m, &features) ||
+    #####:  234:		    enables_module(m, &enables) ||
+    #####:  235:		    !*features)
+    #####:  236:		    return;
+        -:  237:	    }
+    #####:  238:	    printf("zmodload ");
+    #####:  239:	    if (flags & PRINTMOD_AUTO) {
+    #####:  240:		fputs("-Fa ", stdout);
+    #####:  241:	    } else if (features)
+    #####:  242:		fputs("-F ", stdout);
+    #####:  243:	    if(modname[0] == '-')
+    #####:  244:		fputs("-- ", stdout);
+    #####:  245:	    quotedzputs(modname, stdout);
+    #####:  246:	    if (flags & PRINTMOD_AUTO) {
+        -:  247:		LinkNode an;
+    #####:  248:		for (an = firstnode(m->autoloads); an; incnode(an)) {
+    #####:  249:		    putchar(' ');
+    #####:  250:		    quotedzputs((char *)getdata(an), stdout);
+        -:  251:		}
+    #####:  252:	    } else if (features) {
+        -:  253:		const char *f;
+    #####:  254:		while ((f = *features++)) {
+    #####:  255:		    int on = *enables++;
+    #####:  256:		    if (flags & PRINTMOD_LISTALL)
+    #####:  257:			printf(" %s", on ? "+" : "-");
+    #####:  258:		    else if (!on)
+    #####:  259:			continue;
+        -:  260:		    else
+    #####:  261:			putchar(' ');
+    #####:  262:		    quotedzputs(f, stdout);
+        -:  263:		}
+        -:  264:	    }
+        -:  265:	} else /* -l */
+    #####:  266:	    nicezputs(modname, stdout);
+        -:  267:    } else
+    #####:  268:	return;
+    #####:  269:    putchar('\n');
+        -:  270:}
+        -:  271:
+        -:  272:/**/
+        -:  273:HashTable
+        9:  274:newmoduletable(int size, char const *name)
+        -:  275:{
+        -:  276:    HashTable ht;
+        9:  277:    ht = newhashtable(size, name, NULL);
+        -:  278:
+        9:  279:    ht->hash        = hasher;
+        9:  280:    ht->emptytable  = emptyhashtable;
+        9:  281:    ht->filltable   = NULL;
+        9:  282:    ht->cmpnodes    = strcmp;
+        9:  283:    ht->addnode     = addhashnode;
+        -:  284:    /* DISABLED is not supported */
+        9:  285:    ht->getnode     = gethashnode2;
+        9:  286:    ht->getnode2    = gethashnode2;
+        9:  287:    ht->removenode  = removehashnode;
+        9:  288:    ht->disablenode = NULL;
+        9:  289:    ht->enablenode  = NULL;
+        9:  290:    ht->freenode    = freemodulenode;
+        9:  291:    ht->printnode   = printmodulenode;
+        -:  292:
+        9:  293:    return ht;
+        -:  294:}
+        -:  295:
+        -:  296:/************************************************************************
+        -:  297: * zsh/main standard module functions
+        -:  298: ************************************************************************/
+        -:  299:
+        -:  300:/* The `zsh/main' module contains all the base code that can't actually be *
+        -:  301: * built as a separate module.  It is initialised by main(), so there's    *
+        -:  302: * nothing for the boot function to do.                                    */
+        -:  303:
+        -:  304:/**/
+        -:  305:int
+        9:  306:setup_(UNUSED(Module m))
+        -:  307:{
+        9:  308:    return 0;
+        -:  309:}
+        -:  310:
+        -:  311:/**/
+        -:  312:int
+        9:  313:features_(UNUSED(Module m), UNUSED(char ***features))
+        -:  314:{
+        -:  315:    /*
+        -:  316:     * There are lots and lots of features, but they're not
+        -:  317:     * handled here.
+        -:  318:     */
+        9:  319:    return 1;
+        -:  320:}
+        -:  321:
+        -:  322:/**/
+        -:  323:int
+    #####:  324:enables_(UNUSED(Module m), UNUSED(int **enables))
+        -:  325:{
+    #####:  326:    return 1;
+        -:  327:}
+        -:  328:
+        -:  329:/**/
+        -:  330:int
+        9:  331:boot_(UNUSED(Module m))
+        -:  332:{
+        9:  333:    return 0;
+        -:  334:}
+        -:  335:
+        -:  336:/**/
+        -:  337:int
+    #####:  338:cleanup_(UNUSED(Module m))
+        -:  339:{
+    #####:  340:    return 0;
+        -:  341:}
+        -:  342:
+        -:  343:/**/
+        -:  344:int
+    #####:  345:finish_(UNUSED(Module m))
+        -:  346:{
+    #####:  347:    return 0;
+        -:  348:}
+        -:  349:
+        -:  350:
+        -:  351:/************************************************************************
+        -:  352: * Module utility functions
+        -:  353: ************************************************************************/
+        -:  354:
+        -:  355:/* This registers a builtin module.                                   */
+        -:  356:
+        -:  357:/**/
+        -:  358:void
+      144:  359:register_module(char *n, Module_void_func setup,
+        -:  360:		Module_features_func features,
+        -:  361:		Module_enables_func enables,
+        -:  362:		Module_void_func boot,
+        -:  363:		Module_void_func cleanup,
+        -:  364:		Module_void_func finish)
+        -:  365:{
+        -:  366:    Linkedmod m;
+        -:  367:
+      144:  368:    m = (Linkedmod) zalloc(sizeof(*m));
+        -:  369:
+      144:  370:    m->name = ztrdup(n);
+      144:  371:    m->setup = setup;
+      144:  372:    m->features = features;
+      144:  373:    m->enables = enables;
+      144:  374:    m->boot = boot;
+      144:  375:    m->cleanup = cleanup;
+      144:  376:    m->finish = finish;
+        -:  377:
+      144:  378:    zaddlinknode(linkedmodules, m);
+      144:  379:}
+        -:  380:
+        -:  381:/* Check if a module is linked in. */
+        -:  382:
+        -:  383:/**/
+        -:  384:Linkedmod
+       10:  385:module_linked(char const *name)
+        -:  386:{
+        -:  387:    LinkNode node;
+        -:  388:
+       15:  389:    for (node = firstnode(linkedmodules); node; incnode(node))
+       15:  390:	if (!strcmp(((Linkedmod) getdata(node))->name, name))
+       10:  391:	    return (Linkedmod) getdata(node);
+        -:  392:
+    #####:  393:    return NULL;
+        -:  394:}
+        -:  395:
+        -:  396:
+        -:  397:/************************************************************************
+        -:  398: * Support for the various feature types.
+        -:  399: * First, builtins.
+        -:  400: ************************************************************************/
+        -:  401:
+        -:  402:/* addbuiltin() can be used to add a new builtin.  It returns zero on *
+        -:  403: * success, 1 on failure.  The only possible type of failure is that  *
+        -:  404: * a builtin with the specified name already exists.  An autoloaded   *
+        -:  405: * builtin can be replaced using this function.                       */
+        -:  406:
+        -:  407:/**/
+        -:  408:static int
+      750:  409:addbuiltin(Builtin b)
+        -:  410:{
+      750:  411:    Builtin bn = (Builtin) builtintab->getnode2(builtintab, b->node.nam);
+      750:  412:    if (bn && (bn->node.flags & BINF_ADDED))
+    #####:  413:	return 1;
+      750:  414:    if (bn)
+    #####:  415:	builtintab->freenode(builtintab->removenode(builtintab, b->node.nam));
+      750:  416:    builtintab->addnode(builtintab, b->node.nam, b);
+      750:  417:    return 0;
+        -:  418:}
+        -:  419:
+        -:  420:/* Define an autoloadable builtin.  It returns 0 on success, or 1 on *
+        -:  421: * failure.  The only possible cause of failure is that a builtin    *
+        -:  422: * with the specified name already exists.                           */
+        -:  423:
+        -:  424:/**/
+        -:  425:static int
+       57:  426:add_autobin(const char *module, const char *bnam, int flags)
+        -:  427:{
+        -:  428:    Builtin bn;
+        -:  429:    int ret;
+        -:  430:
+       57:  431:    bn = zshcalloc(sizeof(*bn));
+       57:  432:    bn->node.nam = ztrdup(bnam);
+       57:  433:    bn->optstr = ztrdup(module);
+       57:  434:    if (flags & FEAT_AUTOALL)
+    #####:  435:	bn->node.flags |= BINF_AUTOALL;
+       57:  436:    if ((ret = addbuiltin(bn))) {
+    #####:  437:	builtintab->freenode(&bn->node);
+    #####:  438:	if (!(flags & FEAT_IGNORE))
+    #####:  439:	    return 1;
+        -:  440:    }
+       57:  441:    return 0;
+        -:  442:}
+        -:  443:
+        -:  444:/* Remove the builtin added previously by addbuiltin().  Returns *
+        -:  445: * zero on success and -1 if there is no builtin with that name. */
+        -:  446:
+        -:  447:/**/
+        -:  448:int
+    #####:  449:deletebuiltin(const char *nam)
+        -:  450:{
+        -:  451:    Builtin bn;
+        -:  452:
+    #####:  453:    bn = (Builtin) builtintab->removenode(builtintab, nam);
+    #####:  454:    if (!bn)
+    #####:  455:	return -1;
+    #####:  456:    builtintab->freenode(&bn->node);
+    #####:  457:    return 0;
+        -:  458:}
+        -:  459:
+        -:  460:/* Remove an autoloaded added by add_autobin */
+        -:  461:
+        -:  462:/**/
+        -:  463:static int
+    #####:  464:del_autobin(UNUSED(const char *module), const char *bnam, int flags)
+        -:  465:{
+    #####:  466:    Builtin bn = (Builtin) builtintab->getnode2(builtintab, bnam);
+    #####:  467:    if (!bn) {
+    #####:  468:	if(!(flags & FEAT_IGNORE))
+    #####:  469:	    return 2;
+    #####:  470:    } else if (bn->node.flags & BINF_ADDED) {
+    #####:  471:	if (!(flags & FEAT_IGNORE))
+    #####:  472:	    return 3;
+        -:  473:    } else
+    #####:  474:	deletebuiltin(bnam);
+        -:  475:
+    #####:  476:    return 0;
+        -:  477:}
+        -:  478:
+        -:  479:/*
+        -:  480: * Manipulate a set of builtins.  This should be called
+        -:  481: * via setfeatureenables() (or, usually, via the next level up,
+        -:  482: * handlefeatures()).
+        -:  483: *
+        -:  484: * "nam" is the name of the calling code builtin, probably "zmodload".
+        -:  485: *
+        -:  486: * "binl" is the builtin table containing an array of "size" builtins.
+        -:  487: *
+        -:  488: * "e" is either NULL, in which case all builtins in the
+        -:  489: * table are removed, or else an array corresponding to "binl"
+        -:  490: * with a 1 for builtins that are to be added and a 0 for builtins
+        -:  491: * that are to be removed.  Any builtin already in the appropriate
+        -:  492: * state is left alone.
+        -:  493: *
+        -:  494: * Returns 1 on any error, 0 for success.  The recommended way
+        -:  495: * of handling errors is to compare the enables passed down
+        -:  496: * with the set retrieved after the error to find what failed.
+        -:  497: */
+        -:  498:
+        -:  499:/**/
+        -:  500:static int
+    #####:  501:setbuiltins(char const *nam, Builtin binl, int size, int *e)
+        -:  502:{
+    #####:  503:    int ret = 0, n;
+        -:  504:
+    #####:  505:    for(n = 0; n < size; n++) {
+    #####:  506:	Builtin b = &binl[n];
+    #####:  507:	if (e && *e++) {
+    #####:  508:	    if (b->node.flags & BINF_ADDED)
+    #####:  509:		continue;
+    #####:  510:	    if (addbuiltin(b)) {
+    #####:  511:		zwarnnam(nam,
+        -:  512:			 "name clash when adding builtin `%s'", b->node.nam);
+    #####:  513:		ret = 1;
+        -:  514:	    } else {
+    #####:  515:		b->node.flags |= BINF_ADDED;
+        -:  516:	    }
+        -:  517:	} else {
+    #####:  518:	    if (!(b->node.flags & BINF_ADDED))
+    #####:  519:		continue;
+    #####:  520:	    if (deletebuiltin(b->node.nam)) {
+    #####:  521:		zwarnnam(nam, "builtin `%s' already deleted", b->node.nam);
+    #####:  522:		ret = 1;
+        -:  523:	    } else {
+    #####:  524:		b->node.flags &= ~BINF_ADDED;
+        -:  525:	    }
+        -:  526:	}
+        -:  527:    }
+    #####:  528:    return ret;
+        -:  529:}
+        -:  530:
+        -:  531:/*
+        -:  532: * Add multiple builtins.  binl points to a table of `size' builtin
+        -:  533: * structures.  Those for which (.flags & BINF_ADDED) is false are to be
+        -:  534: * added; that flag is set if they succeed.
+        -:  535: *
+        -:  536: * If any fail, an error message is printed, using nam as the leading name.
+        -:  537: * Returns 0 on success, 1 for any failure.
+        -:  538: *
+        -:  539: * This should not be used from a module; instead, use handlefeatures().
+        -:  540: */
+        -:  541:
+        -:  542:/**/
+        -:  543:mod_export int
+        9:  544:addbuiltins(char const *nam, Builtin binl, int size)
+        -:  545:{
+        9:  546:    int ret = 0, n;
+        -:  547:
+      702:  548:    for(n = 0; n < size; n++) {
+      693:  549:	Builtin b = &binl[n];
+      693:  550:	if(b->node.flags & BINF_ADDED)
+    #####:  551:	    continue;
+      693:  552:	if(addbuiltin(b)) {
+    #####:  553:	    zwarnnam(nam, "name clash when adding builtin `%s'", b->node.nam);
+    #####:  554:	    ret = 1;
+        -:  555:	} else {
+      693:  556:	    b->node.flags |= BINF_ADDED;
+        -:  557:	}
+        -:  558:    }
+        9:  559:    return ret;
+        -:  560:}
+        -:  561:
+        -:  562:
+        -:  563:/************************************************************************
+        -:  564: * Function wrappers.
+        -:  565: ************************************************************************/
+        -:  566:
+        -:  567:/* The list of function wrappers defined. */
+        -:  568:
+        -:  569:/**/
+        -:  570:FuncWrap wrappers;
+        -:  571:
+        -:  572:/* This adds a definition for a wrapper. Return value is one in case of *
+        -:  573: * error and zero if all went fine. */
+        -:  574:
+        -:  575:/**/
+        -:  576:mod_export int
+    #####:  577:addwrapper(Module m, FuncWrap w)
+        -:  578:{
+        -:  579:    FuncWrap p, q;
+        -:  580:
+        -:  581:    /*
+        -:  582:     * We can't add a wrapper to an alias, since it's supposed
+        -:  583:     * to behave identically to the resolved module.  This shouldn't
+        -:  584:     * happen since we usually add wrappers when a real module is
+        -:  585:     * loaded.
+        -:  586:     */
+    #####:  587:    if (m->node.flags & MOD_ALIAS)
+    #####:  588:	return 1;
+        -:  589:
+    #####:  590:    if (w->flags & WRAPF_ADDED)
+    #####:  591:	return 1;
+    #####:  592:    for (p = wrappers, q = NULL; p; q = p, p = p->next);
+    #####:  593:    if (q)
+    #####:  594:	q->next = w;
+        -:  595:    else
+    #####:  596:	wrappers = w;
+    #####:  597:    w->next = NULL;
+    #####:  598:    w->flags |= WRAPF_ADDED;
+    #####:  599:    w->module = m;
+        -:  600:
+    #####:  601:    return 0;
+        -:  602:}
+        -:  603:
+        -:  604:/* This removes the given wrapper definition from the list. Returned is *
+        -:  605: * one in case of error and zero otherwise. */
+        -:  606:
+        -:  607:/**/
+        -:  608:mod_export int
+    #####:  609:deletewrapper(Module m, FuncWrap w)
+        -:  610:{
+        -:  611:    FuncWrap p, q;
+        -:  612:
+    #####:  613:    if (m->node.flags & MOD_ALIAS)
+    #####:  614:	return 1;
+        -:  615:
+    #####:  616:    if (w->flags & WRAPF_ADDED) {
+    #####:  617:	for (p = wrappers, q = NULL; p && p != w; q = p, p = p->next);
+        -:  618:
+    #####:  619:	if (p) {
+    #####:  620:	    if (q)
+    #####:  621:		q->next = p->next;
+        -:  622:	    else
+    #####:  623:		wrappers = p->next;
+    #####:  624:	    p->flags &= ~WRAPF_ADDED;
+        -:  625:
+    #####:  626:	    return 0;
+        -:  627:	}
+        -:  628:    }
+    #####:  629:    return 1;
+        -:  630:}
+        -:  631:
+        -:  632:
+        -:  633:/************************************************************************
+        -:  634: * Conditions.
+        -:  635: ************************************************************************/
+        -:  636:
+        -:  637:/* The list of module-defined conditions. */
+        -:  638:
+        -:  639:/**/
+        -:  640:mod_export Conddef condtab;
+        -:  641:
+        -:  642:/* This gets a condition definition with the given name. The first        *
+        -:  643: * argument says if we have to look for an infix condition. The last      *
+        -:  644: * argument is non-zero if we should autoload modules if needed. */
+        -:  645:
+        -:  646:/**/
+        -:  647:Conddef
+        8:  648:getconddef(int inf, const char *name, int autol)
+        -:  649:{
+        -:  650:    Conddef p;
+        8:  651:    int f = 1;
+        -:  652:    char *lookup, *s;
+        -:  653:
+        -:  654:    /* detokenize the Dash to the form encoded in lookup tables */
+        8:  655:    lookup = dupstring(name);
+        8:  656:    if (!lookup)
+    #####:  657:	return NULL;
+       56:  658:    for (s = lookup; *s != '\0'; s++) {
+       48:  659:	if (*s == Dash)
+    #####:  660:	    *s = '-';
+        -:  661:    }
+        -:  662:
+        -:  663:    do {
+       20:  664:	for (p = condtab; p; p = p->next) {
+       24:  665:	    if ((!!inf == !!(p->flags & CONDF_INFIX)) &&
+       12:  666:		!strcmp(lookup, p->name))
+    #####:  667:		break;
+        -:  668:	}
+        8:  669:	if (autol && p && p->module) {
+        -:  670:	    /*
+        -:  671:	     * This is a definition for an autoloaded condition; load the
+        -:  672:	     * module if we haven't tried that already.
+        -:  673:	     */
+    #####:  674:	    if (f) {
+    #####:  675:		(void)ensurefeature(p->module,
+    #####:  676:				    (p->flags & CONDF_INFIX) ? "C:" : "c:",
+    #####:  677:				    (p->flags & CONDF_AUTOALL) ? NULL : lookup);
+    #####:  678:		f = 0;
+    #####:  679:		p = NULL;
+        -:  680:	    } else {
+    #####:  681:		deleteconddef(p);
+    #####:  682:		return NULL;
+        -:  683:	    }
+        -:  684:	} else
+        -:  685:	    break;
+    #####:  686:    } while (!p);
+        -:  687:
+        8:  688:    return p;
+        -:  689:}
+        -:  690:
+        -:  691:/*
+        -:  692: * This adds the given condition definition. The return value is zero on *
+        -:  693: * success and 1 on failure. If there is a matching definition for an    *
+        -:  694: * autoloaded condition, it is removed.
+        -:  695: *
+        -:  696: * This is used for adding both an autoload definition or
+        -:  697: * a real condition.  In the latter case the caller is responsible
+        -:  698: * for setting the CONDF_ADDED flag.
+        -:  699: */
+        -:  700:
+        -:  701:/**/
+        -:  702:static int
+        8:  703:addconddef(Conddef c)
+        -:  704:{
+        8:  705:    Conddef p = getconddef((c->flags & CONDF_INFIX), c->name, 0);
+        -:  706:
+        8:  707:    if (p) {
+    #####:  708:	if (!p->module || (p->flags & CONDF_ADDED))
+    #####:  709:	    return 1;
+        -:  710:	/* There is an autoload definition. */
+        -:  711:
+    #####:  712:	deleteconddef(p);
+        -:  713:    }
+        8:  714:    c->next = condtab;
+        8:  715:    condtab = c;
+        8:  716:    return 0;
+        -:  717:}
+        -:  718:
+        -:  719:/* This removes the given condition definition from the list(s). If this *
+        -:  720: * is a definition for a autoloaded condition, the memory is freed. */
+        -:  721:
+        -:  722:/**/
+        -:  723:int
+    #####:  724:deleteconddef(Conddef c)
+        -:  725:{
+        -:  726:    Conddef p, q;
+        -:  727:
+    #####:  728:    for (p = condtab, q = NULL; p && p != c; q = p, p = p->next);
+        -:  729:
+    #####:  730:    if (p) {
+    #####:  731:	if (q)
+    #####:  732:	    q->next = p->next;
+        -:  733:	else
+    #####:  734:	    condtab = p->next;
+        -:  735:
+    #####:  736:	if (p->module) {
+        -:  737:	    /* autoloaded, free it */
+    #####:  738:	    zsfree(p->name);
+    #####:  739:	    zsfree(p->module);
+    #####:  740:	    zfree(p, sizeof(*p));
+        -:  741:	}
+    #####:  742:	return 0;
+        -:  743:    }
+    #####:  744:    return -1;
+        -:  745:}
+        -:  746:
+        -:  747:/*
+        -:  748: * Add or remove sets of conditions.  The interface is
+        -:  749: * identical to setbuiltins().
+        -:  750: */
+        -:  751:
+        -:  752:/**/
+        -:  753:static int
+    #####:  754:setconddefs(char const *nam, Conddef c, int size, int *e)
+        -:  755:{
+    #####:  756:    int ret = 0;
+        -:  757:
+    #####:  758:    while (size--) {
+    #####:  759:	if (e && *e++) {
+    #####:  760:	    if (c->flags & CONDF_ADDED) {
+    #####:  761:		c++;
+    #####:  762:		continue;
+        -:  763:	    }
+    #####:  764:	    if (addconddef(c)) {
+    #####:  765:		zwarnnam(nam, "name clash when adding condition `%s'",
+        -:  766:			 c->name);
+    #####:  767:		ret = 1;
+        -:  768:	    } else {
+    #####:  769:		c->flags |= CONDF_ADDED;
+        -:  770:	    }
+        -:  771:	} else {
+    #####:  772:	    if (!(c->flags & CONDF_ADDED)) {
+    #####:  773:		c++;
+    #####:  774:		continue;
+        -:  775:	    }
+    #####:  776:	    if (deleteconddef(c)) {
+    #####:  777:		zwarnnam(nam, "condition `%s' already deleted", c->name);
+    #####:  778:		ret = 1;
+        -:  779:	    } else {
+    #####:  780:		c->flags &= ~CONDF_ADDED;
+        -:  781:	    }
+        -:  782:	}
+    #####:  783:	c++;
+        -:  784:    }
+    #####:  785:    return ret;
+        -:  786:}
+        -:  787:
+        -:  788:/* This adds a definition for autoloading a module for a condition. */
+        -:  789:
+        -:  790:/**/
+        -:  791:static int
+        8:  792:add_autocond(const char *module, const char *cnam, int flags)
+        -:  793:{
+        -:  794:    Conddef c;
+        -:  795:
+        8:  796:    c = (Conddef) zalloc(sizeof(*c));
+        -:  797:
+        8:  798:    c->name = ztrdup(cnam);
+        8:  799:    c->flags = ((flags & FEAT_INFIX) ? CONDF_INFIX : 0);
+        8:  800:    if (flags & FEAT_AUTOALL)
+    #####:  801:	c->flags |= CONDF_AUTOALL;
+        8:  802:    c->module = ztrdup(module);
+        -:  803:
+        8:  804:    if (addconddef(c)) {
+    #####:  805:	zsfree(c->name);
+    #####:  806:	zsfree(c->module);
+    #####:  807:	zfree(c, sizeof(*c));
+        -:  808:
+    #####:  809:	if (!(flags & FEAT_IGNORE))
+    #####:  810:	    return 1;
+        -:  811:    }
+        8:  812:    return 0;
+        -:  813:}
+        -:  814:
+        -:  815:/* Remove a condition added with add_autocond */
+        -:  816:
+        -:  817:/**/
+        -:  818:static int
+    #####:  819:del_autocond(UNUSED(const char *modnam), const char *cnam, int flags)
+        -:  820:{
+    #####:  821:    Conddef cd = getconddef((flags & FEAT_INFIX) ? 1 : 0, cnam, 0);
+        -:  822:
+    #####:  823:    if (!cd) {
+    #####:  824:	if (!(flags & FEAT_IGNORE)) {
+    #####:  825:	    return 2;
+        -:  826:	}
+    #####:  827:    } else if (cd->flags & CONDF_ADDED) {
+    #####:  828:	if (!(flags & FEAT_IGNORE))
+    #####:  829:	    return 3;
+        -:  830:    } else
+    #####:  831:	deleteconddef(cd);
+        -:  832:
+    #####:  833:    return 0;
+        -:  834:}
+        -:  835:
+        -:  836:/************************************************************************
+        -:  837: * Hook functions.
+        -:  838: ************************************************************************/
+        -:  839:
+        -:  840:/* This list of hook functions defined. */
+        -:  841:
+        -:  842:/**/
+        -:  843:Hookdef hooktab;
+        -:  844:
+        -:  845:/* Find a hook definition given the name. */
+        -:  846:
+        -:  847:/**/
+        -:  848:Hookdef
+       36:  849:gethookdef(char *n)
+        -:  850:{
+        -:  851:    Hookdef p;
+        -:  852:
+       90:  853:    for (p = hooktab; p; p = p->next)
+       54:  854:	if (!strcmp(n, p->name))
+    #####:  855:	    return p;
+       36:  856:    return NULL;
+        -:  857:}
+        -:  858:
+        -:  859:/* This adds the given hook definition. The return value is zero on      *
+        -:  860: * success and 1 on failure.                                             */
+        -:  861:
+        -:  862:/**/
+        -:  863:int
+       36:  864:addhookdef(Hookdef h)
+        -:  865:{
+       36:  866:    if (gethookdef(h->name))
+    #####:  867:	return 1;
+        -:  868:
+       36:  869:    h->next = hooktab;
+       36:  870:    hooktab = h;
+       36:  871:    h->funcs = znewlinklist();
+        -:  872:
+       36:  873:    return 0;
+        -:  874:}
+        -:  875:
+        -:  876:/*
+        -:  877: * This adds multiple hook definitions. This is like addbuiltins().
+        -:  878: * This allows a NULL module because we call it from init.c.
+        -:  879: */
+        -:  880:
+        -:  881:/**/
+        -:  882:mod_export int
+        9:  883:addhookdefs(Module m, Hookdef h, int size)
+        -:  884:{
+        9:  885:    int ret = 0;
+        -:  886:
+       54:  887:    while (size--) {
+       36:  888:	if (addhookdef(h)) {
+    #####:  889:	    zwarnnam(m ? m->node.nam : NULL,
+        -:  890:		     "name clash when adding hook `%s'", h->name);
+    #####:  891:	    ret = 1;
+        -:  892:	}
+       36:  893:	h++;
+        -:  894:    }
+        9:  895:    return ret;
+        -:  896:}
+        -:  897:
+        -:  898:/* Delete hook definitions. */
+        -:  899:
+        -:  900:/**/
+        -:  901:int
+    #####:  902:deletehookdef(Hookdef h)
+        -:  903:{
+        -:  904:    Hookdef p, q;
+        -:  905:
+    #####:  906:    for (p = hooktab, q = NULL; p && p != h; q = p, p = p->next);
+        -:  907:
+    #####:  908:    if (!p)
+    #####:  909:	return 1;
+        -:  910:
+    #####:  911:    if (q)
+    #####:  912:	q->next = p->next;
+        -:  913:    else
+    #####:  914:	hooktab = p->next;
+    #####:  915:    freelinklist(p->funcs, NULL);
+    #####:  916:    return 0;
+        -:  917:}
+        -:  918:
+        -:  919:/* Remove multiple hook definitions. */
+        -:  920:
+        -:  921:/**/
+        -:  922:mod_export int
+    #####:  923:deletehookdefs(UNUSED(Module m), Hookdef h, int size)
+        -:  924:{
+    #####:  925:    int ret = 0;
+        -:  926:
+    #####:  927:    while (size--) {
+    #####:  928:	if (deletehookdef(h))
+    #####:  929:	    ret = 1;
+    #####:  930:	h++;
+        -:  931:    }
+    #####:  932:    return ret;
+        -:  933:}
+        -:  934:
+        -:  935:/* Add a function to a hook. */
+        -:  936:
+        -:  937:/**/
+        -:  938:int
+    #####:  939:addhookdeffunc(Hookdef h, Hookfn f)
+        -:  940:{
+    #####:  941:    zaddlinknode(h->funcs, (void *) f);
+        -:  942:
+    #####:  943:    return 0;
+        -:  944:}
+        -:  945:
+        -:  946:/**/
+        -:  947:mod_export int
+    #####:  948:addhookfunc(char *n, Hookfn f)
+        -:  949:{
+    #####:  950:    Hookdef h = gethookdef(n);
+        -:  951:
+    #####:  952:    if (h)
+    #####:  953:	return addhookdeffunc(h, f);
+    #####:  954:    return 1;
+        -:  955:}
+        -:  956:
+        -:  957:/* Delete a function from a hook. */
+        -:  958:
+        -:  959:/**/
+        -:  960:int
+    #####:  961:deletehookdeffunc(Hookdef h, Hookfn f)
+        -:  962:{
+        -:  963:    LinkNode p;
+        -:  964:
+    #####:  965:    for (p = firstnode(h->funcs); p; incnode(p))
+    #####:  966:	if (f == (Hookfn) getdata(p)) {
+    #####:  967:	    remnode(h->funcs, p);
+    #####:  968:	    return 0;
+        -:  969:	}
+    #####:  970:    return 1;
+        -:  971:}
+        -:  972:
+        -:  973:/* Delete a hook. */
+        -:  974:
+        -:  975:/**/
+        -:  976:mod_export int
+    #####:  977:deletehookfunc(char *n, Hookfn f)
+        -:  978:{
+    #####:  979:    Hookdef h = gethookdef(n);
+        -:  980:
+    #####:  981:    if (h)
+    #####:  982:	return deletehookdeffunc(h, f);
+    #####:  983:    return 1;
+        -:  984:}
+        -:  985:
+        -:  986:/* Run the function(s) for a hook. */
+        -:  987:
+        -:  988:/**/
+        -:  989:mod_export int
+        9:  990:runhookdef(Hookdef h, void *d)
+        -:  991:{
+        9:  992:    if (empty(h->funcs)) {
+        9:  993:	if (h->def)
+    #####:  994:	    return h->def(h, d);
+        9:  995:	return 0;
+    #####:  996:    } else if (h->flags & HOOKF_ALL) {
+        -:  997:	LinkNode p;
+        -:  998:	int r;
+        -:  999:
+    #####: 1000:	for (p = firstnode(h->funcs); p; incnode(p))
+    #####: 1001:	    if ((r = ((Hookfn) getdata(p))(h, d)))
+    #####: 1002:		return r;
+    #####: 1003:	if (h->def)
+    #####: 1004:	    return h->def(h, d);
+    #####: 1005:	return 0;
+        -: 1006:    } else
+    #####: 1007:	return ((Hookfn) getdata(lastnode(h->funcs)))(h, d);
+        -: 1008:}
+        -: 1009:
+        -: 1010:
+        -: 1011:
+        -: 1012:/************************************************************************
+        -: 1013: * Shell parameters.
+        -: 1014: ************************************************************************/
+        -: 1015:
+        -: 1016:/*
+        -: 1017: * Check that it's possible to add a parameter.  This
+        -: 1018: * requires that either there's no parameter already present,
+        -: 1019: * or it's a global parameter marked for autoloading.
+        -: 1020: *
+        -: 1021: * The special status 2 is to indicate it didn't work but
+        -: 1022: * -i was in use so we didn't print a warning.
+        -: 1023: */
+        -: 1024:
+        -: 1025:static int
+      109: 1026:checkaddparam(const char *nam, int opt_i)
+        -: 1027:{
+        -: 1028:    Param pm;
+        -: 1029:
+      109: 1030:    if (!(pm = (Param) gethashnode2(paramtab, nam)))
+       76: 1031:	return 0;
+        -: 1032:
+       33: 1033:    if (pm->level || !(pm->node.flags & PM_AUTOLOAD)) {
+        -: 1034:	/*
+        -: 1035:	 * -i suppresses "it's already that way" warnings,
+        -: 1036:	 * but not "this can't possibly work" warnings, so we print
+        -: 1037:	 * the message anyway if there's a local parameter blocking
+        -: 1038:	 * the parameter we want to add, not if there's a
+        -: 1039:	 * non-autoloadable parameter already there.  This
+        -: 1040:	 * is consistent with the way add_auto* functions work.
+        -: 1041:	 */
+    #####: 1042:	if (!opt_i || !pm->level) {
+    #####: 1043:	    zwarn("Can't add module parameter `%s': %s",
+    #####: 1044:		  nam, pm->level ?
+        -: 1045:		  "local parameter exists" :
+        -: 1046:		  "parameter already exists");
+    #####: 1047:	    return 1;
+        -: 1048:	}
+    #####: 1049:	return 2;
+        -: 1050:    }
+        -: 1051:
+       33: 1052:    unsetparam_pm(pm, 0, 1);
+       33: 1053:    return 0;
+        -: 1054:}
+        -: 1055:
+        -: 1056:/* This adds the given parameter definition. The return value is zero on *
+        -: 1057: * success and 1 on failure. */
+        -: 1058:
+        -: 1059:/**/
+        -: 1060:int
+       33: 1061:addparamdef(Paramdef d)
+        -: 1062:{
+        -: 1063:    Param pm;
+        -: 1064:
+       33: 1065:    if (checkaddparam(d->name, 0))
+    #####: 1066:	return 1;
+        -: 1067:
+       33: 1068:    if (d->getnfn) {
+       23: 1069:	if (!(pm = createspecialhash(d->name, d->getnfn,
+        -: 1070:				     d->scantfn, d->flags)))
+    #####: 1071:	    return 1;
+        -: 1072:    }
+       10: 1073:    else if (!(pm = createparam(d->name, d->flags)) &&
+    #####: 1074:	!(pm = (Param) paramtab->getnode(paramtab, d->name)))
+    #####: 1075:	return 1;
+        -: 1076:
+       33: 1077:    d->pm = pm;
+       33: 1078:    pm->level = 0;
+       33: 1079:    if (d->var)
+    #####: 1080:	pm->u.data = d->var;
+       33: 1081:    if (d->var || d->gsu) {
+        -: 1082:	/*
+        -: 1083:	 * If no get/set/unset class, use the appropriate
+        -: 1084:	 * variable type, else use the one supplied.
+        -: 1085:	 */
+       21: 1086:	switch (PM_TYPE(pm->node.flags)) {
+    #####: 1087:	case PM_SCALAR:
+    #####: 1088:	    pm->gsu.s = d->gsu ? (GsuScalar)d->gsu : &varscalar_gsu;
+    #####: 1089:	    break;
+        -: 1090:
+    #####: 1091:	case PM_INTEGER:
+    #####: 1092:	    pm->gsu.i = d->gsu ? (GsuInteger)d->gsu : &varinteger_gsu;
+    #####: 1093:	    break;
+        -: 1094:
+    #####: 1095:	case PM_FFLOAT:
+        -: 1096:	case PM_EFLOAT:
+    #####: 1097:	    pm->gsu.f = d->gsu;
+    #####: 1098:	    break;
+        -: 1099:
+       10: 1100:	case PM_ARRAY:
+       10: 1101:	    pm->gsu.a = d->gsu ? (GsuArray)d->gsu : &vararray_gsu;
+       10: 1102:	    break;
+        -: 1103:
+       11: 1104:	case PM_HASHED:
+        -: 1105:	    /* hashes may behave like standard hashes */
+       11: 1106:	    if (d->gsu)
+       11: 1107:		pm->gsu.h = (GsuHash)d->gsu;
+       11: 1108:	    break;
+        -: 1109:
+    #####: 1110:	default:
+    #####: 1111:	    unsetparam_pm(pm, 0, 1);
+    #####: 1112:	    return 1;
+        -: 1113:	}
+       12: 1114:    }
+        -: 1115:
+       33: 1116:    return 0;
+        -: 1117:}
+        -: 1118:
+        -: 1119:/* Delete parameters defined. No error checking yet. */
+        -: 1120:
+        -: 1121:/**/
+        -: 1122:int
+    #####: 1123:deleteparamdef(Paramdef d)
+        -: 1124:{
+    #####: 1125:    Param pm = (Param) paramtab->getnode(paramtab, d->name);
+        -: 1126:
+    #####: 1127:    if (!pm)
+    #####: 1128:	return 1;
+    #####: 1129:    if (pm != d->pm) {
+        -: 1130:	/*
+        -: 1131:	 * See if the parameter has been hidden.  If so,
+        -: 1132:	 * bring it to the front to unset it.
+        -: 1133:	 */
+        -: 1134:	Param prevpm, searchpm;
+    #####: 1135:	for (prevpm = pm, searchpm = pm->old;
+        -: 1136:	     searchpm;
+    #####: 1137:	     prevpm = searchpm, searchpm = searchpm->old)
+    #####: 1138:	    if (searchpm == d->pm)
+    #####: 1139:		break;
+        -: 1140:
+    #####: 1141:	if (!searchpm)
+    #####: 1142:	    return 1;
+        -: 1143:
+    #####: 1144:	paramtab->removenode(paramtab, pm->node.nam);
+    #####: 1145:	prevpm->old = searchpm->old;
+    #####: 1146:	searchpm->old = pm;
+    #####: 1147:	paramtab->addnode(paramtab, searchpm->node.nam, searchpm);
+        -: 1148:
+    #####: 1149:	pm = searchpm;
+        -: 1150:    }
+    #####: 1151:    pm->node.flags = (pm->node.flags & ~PM_READONLY) | PM_REMOVABLE;
+    #####: 1152:    unsetparam_pm(pm, 0, 1);
+    #####: 1153:    d->pm = NULL;
+    #####: 1154:    return 0;
+        -: 1155:}
+        -: 1156:
+        -: 1157:/*
+        -: 1158: * Add or remove sets of parameters.  The interface is
+        -: 1159: * identical to setbuiltins().
+        -: 1160: */
+        -: 1161:
+        -: 1162:/**/
+        -: 1163:static int
+        1: 1164:setparamdefs(char const *nam, Paramdef d, int size, int *e)
+        -: 1165:{
+        1: 1166:    int ret = 0;
+        -: 1167:
+       35: 1168:    while (size--) {
+       33: 1169:	if (e && *e++) {
+       33: 1170:	    if (d->pm) {
+    #####: 1171:		d++;
+    #####: 1172:		continue;
+        -: 1173:	    }
+       66: 1174:	    if (addparamdef(d)) {
+    #####: 1175:		zwarnnam(nam, "error when adding parameter `%s'", d->name);
+    #####: 1176:		ret = 1;
+        -: 1177:	    }
+        -: 1178:	} else {
+    #####: 1179:	    if (!d->pm) {
+    #####: 1180:		d++;
+    #####: 1181:		continue;
+        -: 1182:	    }
+    #####: 1183:	    if (deleteparamdef(d)) {
+    #####: 1184:		zwarnnam(nam, "parameter `%s' already deleted", d->name);
+    #####: 1185:		ret = 1;
+        -: 1186:	    }
+        -: 1187:	}
+       33: 1188:	d++;
+        -: 1189:    }
+        1: 1190:    return ret;
+        -: 1191:}
+        -: 1192:
+        -: 1193:/* This adds a definition for autoloading a module for a parameter. */
+        -: 1194:
+        -: 1195:/**/
+        -: 1196:static int
+       76: 1197:add_autoparam(const char *module, const char *pnam, int flags)
+        -: 1198:{
+        -: 1199:    Param pm;
+        -: 1200:    int ret;
+        -: 1201:
+       76: 1202:    queue_signals();
+       76: 1203:    if ((ret = checkaddparam(pnam, (flags & FEAT_IGNORE)))) {
+    #####: 1204:	unqueue_signals();
+        -: 1205:	/*
+        -: 1206:	 * checkaddparam() has already printed a message if one was
+        -: 1207:	 * needed.  If it wasn't owing to the presence of -i, ret is 2;
+        -: 1208:	 * for consistency with other add_auto* functions we return
+        -: 1209:	 * status 0 to indicate there's already such a parameter and
+        -: 1210:	 * we've been told not to worry if so.
+        -: 1211:	 */
+    #####: 1212:	return ret == 2 ? 0 : -1;
+        -: 1213:    }
+        -: 1214:
+       76: 1215:    pm = setsparam(dupstring(pnam), ztrdup(module));
+        -: 1216:
+       76: 1217:    pm->node.flags |= PM_AUTOLOAD;
+       76: 1218:    if (flags & FEAT_AUTOALL)
+    #####: 1219:	pm->node.flags |= PM_AUTOALL;
+       76: 1220:    unqueue_signals();
+        -: 1221:
+       76: 1222:    return 0;
+        -: 1223:}
+        -: 1224:
+        -: 1225:/* Remove a parameter added with add_autoparam() */
+        -: 1226:
+        -: 1227:/**/
+        -: 1228:static int
+    #####: 1229:del_autoparam(UNUSED(const char *modnam), const char *pnam, int flags)
+        -: 1230:{
+    #####: 1231:    Param pm = (Param) gethashnode2(paramtab, pnam);
+        -: 1232:
+    #####: 1233:    if (!pm) {
+    #####: 1234:	if (!(flags & FEAT_IGNORE))
+    #####: 1235:	    return 2;
+    #####: 1236:    } else if (!(pm->node.flags & PM_AUTOLOAD)) {
+    #####: 1237:	if (!(flags & FEAT_IGNORE))
+    #####: 1238:	    return 3;
+        -: 1239:    } else
+    #####: 1240:	unsetparam_pm(pm, 0, 1);
+        -: 1241:
+    #####: 1242:    return 0;
+        -: 1243:}
+        -: 1244:
+        -: 1245:/************************************************************************
+        -: 1246: * Math functions.
+        -: 1247: ************************************************************************/
+        -: 1248:
+        -: 1249:/* List of math functions. */
+        -: 1250:
+        -: 1251:/**/
+        -: 1252:MathFunc mathfuncs;
+        -: 1253:
+        -: 1254:/*
+        -: 1255: * Remove a single math function form the list (utility function).
+        -: 1256: * This does not delete a module math function, that's deletemathfunc().
+        -: 1257: */
+        -: 1258:
+        -: 1259:/**/
+        -: 1260:void
+    #####: 1261:removemathfunc(MathFunc previous, MathFunc current)
+        -: 1262:{
+    #####: 1263:    if (previous)
+    #####: 1264:	previous->next = current->next;
+        -: 1265:    else
+    #####: 1266:	mathfuncs = current->next;
+        -: 1267:
+    #####: 1268:    zsfree(current->name);
+    #####: 1269:    zsfree(current->module);
+    #####: 1270:    zfree(current, sizeof(*current));
+    #####: 1271:}
+        -: 1272:
+        -: 1273:/* Find a math function in the list, handling autoload if necessary. */
+        -: 1274:
+        -: 1275:/**/
+        -: 1276:MathFunc
+    #####: 1277:getmathfunc(const char *name, int autol)
+        -: 1278:{
+    #####: 1279:    MathFunc p, q = NULL;
+        -: 1280:
+    #####: 1281:    for (p = mathfuncs; p; q = p, p = p->next)
+    #####: 1282:	if (!strcmp(name, p->name)) {
+    #####: 1283:	    if (autol && p->module && !(p->flags & MFF_USERFUNC)) {
+    #####: 1284:		char *n = dupstring(p->module);
+    #####: 1285:		int flags = p->flags;
+        -: 1286:
+    #####: 1287:		removemathfunc(q, p);
+        -: 1288:
+    #####: 1289:		(void)ensurefeature(n, "f:", (flags & MFF_AUTOALL) ? NULL :
+        -: 1290:				    name);
+        -: 1291:
+    #####: 1292:	       p = getmathfunc(name, 0);
+    #####: 1293:	       if (!p) {
+    #####: 1294:		   zerr("autoloading module %s failed to define math function: %s", n, name);
+        -: 1295:	       }
+        -: 1296:	    }
+    #####: 1297:	    return p;
+        -: 1298:	}
+        -: 1299:
+    #####: 1300:    return NULL;
+        -: 1301:}
+        -: 1302:
+        -: 1303:/* Add a single math function */
+        -: 1304:
+        -: 1305:/**/
+        -: 1306:static int
+    #####: 1307:addmathfunc(MathFunc f)
+        -: 1308:{
+    #####: 1309:    MathFunc p, q = NULL;
+        -: 1310:
+    #####: 1311:    if (f->flags & MFF_ADDED)
+    #####: 1312:	return 1;
+        -: 1313:
+    #####: 1314:    for (p = mathfuncs; p; q = p, p = p->next)
+    #####: 1315:	if (!strcmp(f->name, p->name)) {
+    #####: 1316:	    if (p->module && !(p->flags & MFF_USERFUNC)) {
+        -: 1317:		/*
+        -: 1318:		 * Autoloadable, replace.
+        -: 1319:		 */
+    #####: 1320:		removemathfunc(q, p);
+    #####: 1321:		break;
+        -: 1322:	    }
+    #####: 1323:	    return 1;
+        -: 1324:	}
+        -: 1325:
+    #####: 1326:    f->next = mathfuncs;
+    #####: 1327:    mathfuncs = f;
+        -: 1328:
+    #####: 1329:    return 0;
+        -: 1330:}
+        -: 1331:
+        -: 1332:/* Delete a single math function */
+        -: 1333:
+        -: 1334:/**/
+        -: 1335:mod_export int
+    #####: 1336:deletemathfunc(MathFunc f)
+        -: 1337:{
+        -: 1338:    MathFunc p, q;
+        -: 1339:
+    #####: 1340:    for (p = mathfuncs, q = NULL; p && p != f; q = p, p = p->next);
+        -: 1341:
+    #####: 1342:    if (p) {
+    #####: 1343:	if (q)
+    #####: 1344:	    q->next = f->next;
+        -: 1345:	else
+    #####: 1346:	    mathfuncs = f->next;
+        -: 1347:
+        -: 1348:	/* the following applies to both unloaded and user-defined functions */
+    #####: 1349:	if (f->module) {
+    #####: 1350:	    zsfree(f->name);
+    #####: 1351:	    zsfree(f->module);
+    #####: 1352:	    zfree(f, sizeof(*f));
+        -: 1353:	} else
+    #####: 1354:	    f->flags &= ~MFF_ADDED;
+        -: 1355:
+    #####: 1356:	return 0;
+        -: 1357:    }
+    #####: 1358:    return -1;
+        -: 1359:}
+        -: 1360:
+        -: 1361:/*
+        -: 1362: * Add or remove sets of math functions.  The interface is
+        -: 1363: * identical to setbuiltins().
+        -: 1364: */
+        -: 1365:
+        -: 1366:/**/
+        -: 1367:static int
+    #####: 1368:setmathfuncs(char const *nam, MathFunc f, int size, int *e)
+        -: 1369:{
+    #####: 1370:    int ret = 0;
+        -: 1371:
+    #####: 1372:    while (size--) {
+    #####: 1373:	if (e && *e++) {
+    #####: 1374:	    if (f->flags & MFF_ADDED) {
+    #####: 1375:		f++;
+    #####: 1376:		continue;
+        -: 1377:	    }
+    #####: 1378:	    if (addmathfunc(f)) {
+    #####: 1379:		zwarnnam(nam, "name clash when adding math function `%s'",
+        -: 1380:			 f->name);
+    #####: 1381:		ret = 1;
+        -: 1382:	    } else {
+    #####: 1383:		f->flags |= MFF_ADDED;
+        -: 1384:	    }
+        -: 1385:	} else {
+    #####: 1386:	    if (!(f->flags & MFF_ADDED)) {
+    #####: 1387:		f++;
+    #####: 1388:		continue;
+        -: 1389:	    }
+    #####: 1390:	    if (deletemathfunc(f)) {
+    #####: 1391:		zwarnnam(nam, "math function `%s' already deleted", f->name);
+    #####: 1392:		ret = 1;
+        -: 1393:	    }
+        -: 1394:	}
+    #####: 1395:	f++;
+        -: 1396:    }
+    #####: 1397:    return ret;
+        -: 1398:}
+        -: 1399:
+        -: 1400:/* Add an autoload definition for a math function. */
+        -: 1401:
+        -: 1402:/**/
+        -: 1403:static int
+    #####: 1404:add_automathfunc(const char *module, const char *fnam, int flags)
+        -: 1405:{
+        -: 1406:    MathFunc f;
+        -: 1407:
+    #####: 1408:    f = (MathFunc) zalloc(sizeof(*f));
+        -: 1409:
+    #####: 1410:    f->name = ztrdup(fnam);
+    #####: 1411:    f->module = ztrdup(module);
+    #####: 1412:    f->flags = 0;
+        -: 1413:
+    #####: 1414:    if (addmathfunc(f)) {
+    #####: 1415:	zsfree(f->name);
+    #####: 1416:	zsfree(f->module);
+    #####: 1417:	zfree(f, sizeof(*f));
+        -: 1418:
+    #####: 1419:	if (!(flags & FEAT_IGNORE))
+    #####: 1420:	    return 1;
+        -: 1421:    }
+        -: 1422:
+    #####: 1423:    return 0;
+        -: 1424:}
+        -: 1425:
+        -: 1426:/* Remove a math function added with add_automathfunc() */
+        -: 1427:
+        -: 1428:/**/
+        -: 1429:static int
+    #####: 1430:del_automathfunc(UNUSED(const char *modnam), const char *fnam, int flags)
+        -: 1431:{
+    #####: 1432:    MathFunc f = getmathfunc(fnam, 0);
+        -: 1433:    
+    #####: 1434:    if (!f) {
+    #####: 1435:	if (!(flags & FEAT_IGNORE))
+    #####: 1436:	    return 2;
+    #####: 1437:    } else if (f->flags & MFF_ADDED) {
+    #####: 1438:	if (!(flags & FEAT_IGNORE))
+    #####: 1439:	    return 3;
+        -: 1440:    } else
+    #####: 1441:	deletemathfunc(f);
+        -: 1442:
+    #####: 1443:    return 0;
+        -: 1444:}
+        -: 1445:
+        -: 1446:/************************************************************************
+        -: 1447: * Now support for dynamical loading and the fallback functions
+        -: 1448: * we use for loading if dynamical loading is not available.
+        -: 1449: ************************************************************************/
+        -: 1450:
+        -: 1451:/**/
+        -: 1452:#ifdef DYNAMIC
+        -: 1453:
+        -: 1454:/**/
+        -: 1455:#ifdef AIXDYNAMIC
+        -: 1456:
+        -: 1457:#include <sys/ldr.h>
+        -: 1458:
+        -: 1459:static char *dlerrstr[256];
+        -: 1460:
+        -: 1461:static void *
+        -: 1462:load_and_bind(const char *fn)
+        -: 1463:{
+        -: 1464:    void *ret = (void *) load((char *) fn, L_NOAUTODEFER, NULL);
+        -: 1465:
+        -: 1466:    if (ret) {
+        -: 1467:	Module m;
+        -: 1468:	int i, err = loadbind(0, (void *) addbuiltin, ret);
+        -: 1469:	for (i = 0; i < modulestab->hsize && !err; i++) {
+        -: 1470:	    for (m = (Module)modulestab->nodes[i]; m && !err;
+        -: 1471:		 m = (Module)m->node.next) {
+        -: 1472:		if (!(m->node.flags & MOD_ALIAS) &&
+        -: 1473:		    m->u.handle && !(m->node.flags & MOD_LINKED))
+        -: 1474:		    err |= loadbind(0, m->u.handle, ret);
+        -: 1475:	    }
+        -: 1476:	}
+        -: 1477:
+        -: 1478:	if (err) {
+        -: 1479:	    loadquery(L_GETMESSAGES, dlerrstr, sizeof(dlerrstr));
+        -: 1480:	    unload(ret);
+        -: 1481:	    ret = NULL;
+        -: 1482:	}
+        -: 1483:    } else
+        -: 1484:	loadquery(L_GETMESSAGES, dlerrstr, sizeof(dlerrstr));
+        -: 1485:
+        -: 1486:    return ret;
+        -: 1487:}
+        -: 1488:
+        -: 1489:#define dlopen(X,Y) load_and_bind(X)
+        -: 1490:#define dlclose(X)  unload(X)
+        -: 1491:#define dlerror()   (dlerrstr[0])
+        -: 1492:#ifndef HAVE_DLERROR
+        -: 1493:# define HAVE_DLERROR 1
+        -: 1494:#endif
+        -: 1495:
+        -: 1496:/**/
+        -: 1497:#else
+        -: 1498:
+        -: 1499:#ifdef HAVE_DLFCN_H
+        -: 1500:# if defined(HAVE_DL_H) && defined(HPUX10DYNAMIC)
+        -: 1501:#  include <dl.h>
+        -: 1502:# else
+        -: 1503:#  include <dlfcn.h>
+        -: 1504:# endif
+        -: 1505:#else
+        -: 1506:# ifdef HAVE_DL_H
+        -: 1507:#  include <dl.h>
+        -: 1508:#  define RTLD_LAZY BIND_DEFERRED
+        -: 1509:#  define RTLD_GLOBAL DYNAMIC_PATH
+        -: 1510:# else
+        -: 1511:#  include <sys/types.h>
+        -: 1512:#  include <nlist.h>
+        -: 1513:#  include <link.h>
+        -: 1514:# endif
+        -: 1515:#endif
+        -: 1516:
+        -: 1517:/**/
+        -: 1518:#ifdef HPUX10DYNAMIC
+        -: 1519:# define dlopen(file,mode) (void *)shl_load((file), (mode), (long) 0)
+        -: 1520:# define dlclose(handle) shl_unload((shl_t)(handle))
+        -: 1521:
+        -: 1522:static
+        -: 1523:void *
+        -: 1524:hpux_dlsym(void *handle, char *name)
+        -: 1525:{
+        -: 1526:    void *sym_addr;
+        -: 1527:    if (!shl_findsym((shl_t *)&handle, name, TYPE_UNDEFINED, &sym_addr))
+        -: 1528:	return sym_addr;
+        -: 1529:    return NULL;
+        -: 1530:}
+        -: 1531:
+        -: 1532:# define dlsym(handle,name) hpux_dlsym(handle,name)
+        -: 1533:# ifdef HAVE_DLERROR		/* paranoia */
+        -: 1534:#  undef HAVE_DLERROR
+        -: 1535:# endif
+        -: 1536:#else
+        -: 1537:# ifndef HAVE_DLCLOSE
+        -: 1538:#  define dlclose(X) ((X), 0)
+        -: 1539:# endif
+        -: 1540:/**/
+        -: 1541:#endif
+        -: 1542:
+        -: 1543:#ifdef DLSYM_NEEDS_UNDERSCORE
+        -: 1544:# define STR_SETUP     "_setup_"
+        -: 1545:# define STR_FEATURES  "_features_"
+        -: 1546:# define STR_ENABLES   "_enables_"
+        -: 1547:# define STR_BOOT      "_boot_"
+        -: 1548:# define STR_CLEANUP   "_cleanup_"
+        -: 1549:# define STR_FINISH    "_finish_"
+        -: 1550:#else /* !DLSYM_NEEDS_UNDERSCORE */
+        -: 1551:# define STR_SETUP     "setup_"
+        -: 1552:# define STR_FEATURES  "features_"
+        -: 1553:# define STR_ENABLES   "enables_"
+        -: 1554:# define STR_BOOT      "boot_"
+        -: 1555:# define STR_CLEANUP   "cleanup_"
+        -: 1556:# define STR_FINISH    "finish_"
+        -: 1557:#endif /* !DLSYM_NEEDS_UNDERSCORE */
+        -: 1558:
+        -: 1559:/**/
+        -: 1560:#endif /* !AIXDYNAMIC */
+        -: 1561:
+        -: 1562:#ifndef RTLD_LAZY
+        -: 1563:# define RTLD_LAZY 1
+        -: 1564:#endif
+        -: 1565:#ifndef RTLD_GLOBAL
+        -: 1566:# define RTLD_GLOBAL 0
+        -: 1567:#endif
+        -: 1568:
+        -: 1569:/*
+        -: 1570: * Attempt to load a module.  This is the lowest level of
+        -: 1571: * zsh function for dynamical modules.  Returns the handle
+        -: 1572: * from the dynamic loader.
+        -: 1573: */
+        -: 1574:
+        -: 1575:/**/
+        -: 1576:static void *
+        -: 1577:try_load_module(char const *name)
+        -: 1578:{
+        -: 1579:    char buf[PATH_MAX + 1];
+        -: 1580:    char **pp;
+        -: 1581:    void *ret = NULL;
+        -: 1582:    int l;
+        -: 1583:
+        -: 1584:    l = 1 + strlen(name) + 1 + strlen(DL_EXT);
+        -: 1585:    for (pp = module_path; !ret && *pp; pp++) {
+        -: 1586:	if (l + (**pp ? strlen(*pp) : 1) > PATH_MAX)
+        -: 1587:	    continue;
+        -: 1588:	sprintf(buf, "%s/%s.%s", **pp ? *pp : ".", name, DL_EXT);
+        -: 1589:	unmetafy(buf, NULL);
+        -: 1590:	if (*buf) /* dlopen(NULL) returns a handle to the main binary */
+        -: 1591:	    ret = dlopen(buf, RTLD_LAZY | RTLD_GLOBAL);
+        -: 1592:    }
+        -: 1593:
+        -: 1594:    return ret;
+        -: 1595:}
+        -: 1596:
+        -: 1597:/*
+        -: 1598: * Load a module, with option to complain or not.
+        -: 1599: * Returns the handle from the dynamic loader.
+        -: 1600: */
+        -: 1601:
+        -: 1602:/**/
+        -: 1603:static void *
+        -: 1604:do_load_module(char const *name, int silent)
+        -: 1605:{
+        -: 1606:    void *ret;
+        -: 1607:
+        -: 1608:    ret = try_load_module(name);
+        -: 1609:    if (!ret && !silent) {
+        -: 1610:#ifdef HAVE_DLERROR
+        -: 1611:	char *errstr = dlerror();
+        -: 1612:	zwarn("failed to load module `%s': %s", name,
+        -: 1613:	      errstr ? metafy(errstr, -1, META_HEAPDUP) : "empty module path");
+        -: 1614:#else
+        -: 1615:	zwarn("failed to load module: %s", name);
+        -: 1616:#endif
+        -: 1617:    }
+        -: 1618:    return ret;
+        -: 1619:}
+        -: 1620:
+        -: 1621:/**/
+        -: 1622:#else /* !DYNAMIC */
+        -: 1623:
+        -: 1624:/*
+        -: 1625: * Dummy loader when no dynamic loading available; always fails.
+        -: 1626: */
+        -: 1627:
+        -: 1628:/**/
+        -: 1629:static void *
+    #####: 1630:do_load_module(char const *name, int silent)
+        -: 1631:{
+    #####: 1632:    if (!silent)
+    #####: 1633:	zwarn("failed to load module: %s", name);
+        -: 1634:
+    #####: 1635:    return NULL;
+        -: 1636:}
+        -: 1637:
+        -: 1638:/**/
+        -: 1639:#endif /* !DYNAMIC */
+        -: 1640:
+        -: 1641:/*
+        -: 1642: * Find a module in the list.
+        -: 1643: * flags is a set of bits defined in the enum above.
+        -: 1644: * If namep is set, this is set to point to the last alias value resolved,
+        -: 1645: *   even if that module was not loaded. or the module name if no aliases.
+        -: 1646: *   Hence this is always the physical module to load in a chain of aliases.
+        -: 1647: * Return NULL if the module named is not stored as a structure, or if we were
+        -: 1648: * resolving aliases and the final module named is not stored as a
+        -: 1649: * structure.
+        -: 1650: */
+        -: 1651:/**/
+        -: 1652:static Module
+      121: 1653:find_module(const char *name, int flags, const char **namep)
+        -: 1654:{
+        -: 1655:    Module m;
+        -: 1656:
+      121: 1657:    m = (Module)modulestab->getnode2(modulestab, name);
+      121: 1658:    if (m) {
+       39: 1659:	if ((flags & FINDMOD_ALIASP) && (m->node.flags & MOD_ALIAS)) {
+    #####: 1660:	    if (namep)
+    #####: 1661:		*namep = m->u.alias;
+    #####: 1662:	    return find_module(m->u.alias, flags, namep);
+        -: 1663:	}
+       39: 1664:	if (namep)
+       39: 1665:	    *namep = m->node.nam;
+       39: 1666:	return m;
+        -: 1667:    }
+       82: 1668:    if (!(flags & FINDMOD_CREATE))
+        9: 1669:	return NULL;
+       73: 1670:    m = zshcalloc(sizeof(*m));
+       73: 1671:    modulestab->addnode(modulestab, ztrdup(name), m);
+       73: 1672:    return m;
+        -: 1673:}
+        -: 1674:
+        -: 1675:/*
+        -: 1676: * Unlink and free a module node from the linked list.
+        -: 1677: */
+        -: 1678:
+        -: 1679:/**/
+        -: 1680:static void
+    #####: 1681:delete_module(Module m)
+        -: 1682:{
+    #####: 1683:    modulestab->removenode(modulestab, m->node.nam);
+        -: 1684:
+    #####: 1685:    modulestab->freenode(&m->node);
+    #####: 1686:}
+        -: 1687:
+        -: 1688:/*
+        -: 1689: * Return 1 if a module is fully loaded else zero.
+        -: 1690: * A linked module may be marked as unloaded even though
+        -: 1691: * we can't fully unload it; this returns 0 to try to
+        -: 1692: * make that state transparently like an unloaded module.
+        -: 1693: */
+        -: 1694:
+        -: 1695:/**/
+        -: 1696:mod_export int
+    #####: 1697:module_loaded(const char *name)
+        -: 1698:{
+        -: 1699:    Module m;
+        -: 1700:
+    #####: 1701:    return ((m = find_module(name, FINDMOD_ALIASP, NULL)) &&
+    #####: 1702:	    m->u.handle &&
+    #####: 1703:	    !(m->node.flags & MOD_UNLOAD));
+        -: 1704:}
+        -: 1705:
+        -: 1706:/*
+        -: 1707: * Setup and cleanup functions:  we don't search for aliases here,
+        -: 1708: * since they should have been resolved before we try to load or unload
+        -: 1709: * the module.
+        -: 1710: */
+        -: 1711:
+        -: 1712:/**/
+        -: 1713:#ifdef DYNAMIC
+        -: 1714:
+        -: 1715:/**/
+        -: 1716:#ifdef AIXDYNAMIC
+        -: 1717:
+        -: 1718:/**/
+        -: 1719:static int
+        -: 1720:dyn_setup_module(Module m)
+        -: 1721:{
+        -: 1722:    return ((int (*)_((int,Module, void*))) m->u.handle)(0, m, NULL);
+        -: 1723:}
+        -: 1724:
+        -: 1725:/**/
+        -: 1726:static int
+        -: 1727:dyn_features_module(Module m, char ***features)
+        -: 1728:{
+        -: 1729:    return ((int (*)_((int,Module, void*))) m->u.handle)(4, m, features);
+        -: 1730:}
+        -: 1731:
+        -: 1732:/**/
+        -: 1733:static int
+        -: 1734:dyn_enables_module(Module m, int **enables)
+        -: 1735:{
+        -: 1736:    return ((int (*)_((int,Module, void*))) m->u.handle)(5, m, enables);
+        -: 1737:}
+        -: 1738:
+        -: 1739:/**/
+        -: 1740:static int
+        -: 1741:dyn_boot_module(Module m)
+        -: 1742:{
+        -: 1743:    return ((int (*)_((int,Module, void*))) m->u.handle)(1, m, NULL);
+        -: 1744:}
+        -: 1745:
+        -: 1746:/**/
+        -: 1747:static int
+        -: 1748:dyn_cleanup_module(Module m)
+        -: 1749:{
+        -: 1750:    return ((int (*)_((int,Module, void*))) m->u.handle)(2, m, NULL);
+        -: 1751:}
+        -: 1752:
+        -: 1753:/**/
+        -: 1754:static int
+        -: 1755:dyn_finish_module(Module m)
+        -: 1756:{
+        -: 1757:    return ((int (*)_((int,Module,void *))) m->u.handle)(3, m, NULL);
+        -: 1758:}
+        -: 1759:
+        -: 1760:/**/
+        -: 1761:#else
+        -: 1762:
+        -: 1763:static Module_generic_func
+        -: 1764:module_func(Module m, char *name)
+        -: 1765:{
+        -: 1766:#ifdef DYNAMIC_NAME_CLASH_OK
+        -: 1767:    return (Module_generic_func) dlsym(m->u.handle, name);
+        -: 1768:#else /* !DYNAMIC_NAME_CLASH_OK */
+        -: 1769:    VARARR(char, buf, strlen(name) + strlen(m->node.nam)*2 + 1);
+        -: 1770:    char const *p;
+        -: 1771:    char *q;
+        -: 1772:    strcpy(buf, name);
+        -: 1773:    q = strchr(buf, 0);
+        -: 1774:    for(p = m->node.nam; *p; p++) {
+        -: 1775:	if(*p == '/') {
+        -: 1776:	    *q++ = 'Q';
+        -: 1777:	    *q++ = 's';
+        -: 1778:	} else if(*p == '_') {
+        -: 1779:	    *q++ = 'Q';
+        -: 1780:	    *q++ = 'u';
+        -: 1781:	} else if(*p == 'Q') {
+        -: 1782:	    *q++ = 'Q';
+        -: 1783:	    *q++ = 'q';
+        -: 1784:	} else
+        -: 1785:	    *q++ = *p;
+        -: 1786:    }
+        -: 1787:    *q = 0;
+        -: 1788:    return (Module_generic_func) dlsym(m->u.handle, buf);
+        -: 1789:#endif /* !DYNAMIC_NAME_CLASH_OK */
+        -: 1790:}
+        -: 1791:
+        -: 1792:/**/
+        -: 1793:static int
+        -: 1794:dyn_setup_module(Module m)
+        -: 1795:{
+        -: 1796:    Module_void_func fn = (Module_void_func)module_func(m, STR_SETUP);
+        -: 1797:
+        -: 1798:    if (fn)
+        -: 1799:	return fn(m);
+        -: 1800:    zwarnnam(m->node.nam, "no setup function");
+        -: 1801:    return 1;
+        -: 1802:}
+        -: 1803:
+        -: 1804:/**/
+        -: 1805:static int
+        -: 1806:dyn_features_module(Module m, char ***features)
+        -: 1807:{
+        -: 1808:    Module_features_func fn =
+        -: 1809:	(Module_features_func)module_func(m, STR_FEATURES);
+        -: 1810:
+        -: 1811:    if (fn)
+        -: 1812:	return fn(m, features);
+        -: 1813:    /* not a user-visible error if no features function */
+        -: 1814:    return 1;
+        -: 1815:}
+        -: 1816:
+        -: 1817:/**/
+        -: 1818:static int
+        -: 1819:dyn_enables_module(Module m, int **enables)
+        -: 1820:{
+        -: 1821:    Module_enables_func fn = (Module_enables_func)module_func(m, STR_ENABLES);
+        -: 1822:
+        -: 1823:    if (fn)
+        -: 1824:	return fn(m, enables);
+        -: 1825:    /* not a user-visible error if no enables function */
+        -: 1826:    return 1;
+        -: 1827:}
+        -: 1828:
+        -: 1829:/**/
+        -: 1830:static int
+        -: 1831:dyn_boot_module(Module m)
+        -: 1832:{
+        -: 1833:    Module_void_func fn = (Module_void_func)module_func(m, STR_BOOT);
+        -: 1834:
+        -: 1835:    if(fn)
+        -: 1836:	return fn(m);
+        -: 1837:    zwarnnam(m->node.nam, "no boot function");
+        -: 1838:    return 1;
+        -: 1839:}
+        -: 1840:
+        -: 1841:/**/
+        -: 1842:static int
+        -: 1843:dyn_cleanup_module(Module m)
+        -: 1844:{
+        -: 1845:    Module_void_func fn = (Module_void_func)module_func(m, STR_CLEANUP);
+        -: 1846:
+        -: 1847:    if(fn)
+        -: 1848:	return fn(m);
+        -: 1849:    zwarnnam(m->node.nam, "no cleanup function");
+        -: 1850:    return 1;
+        -: 1851:}
+        -: 1852:
+        -: 1853:/* Note that this function does more than just calling finish_foo(), *
+        -: 1854: * it really unloads the module. */
+        -: 1855:
+        -: 1856:/**/
+        -: 1857:static int
+        -: 1858:dyn_finish_module(Module m)
+        -: 1859:{
+        -: 1860:    Module_void_func fn = (Module_void_func)module_func(m, STR_FINISH);
+        -: 1861:    int r;
+        -: 1862:
+        -: 1863:    if (fn)
+        -: 1864:	r = fn(m);
+        -: 1865:    else {
+        -: 1866:	zwarnnam(m->node.nam, "no finish function");
+        -: 1867:	r = 1;
+        -: 1868:    }
+        -: 1869:    dlclose(m->u.handle);
+        -: 1870:    return r;
+        -: 1871:}
+        -: 1872:
+        -: 1873:/**/
+        -: 1874:#endif /* !AIXDYNAMIC */
+        -: 1875:
+        -: 1876:/**/
+        -: 1877:static int
+        -: 1878:setup_module(Module m)
+        -: 1879:{
+        -: 1880:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1881:	    (m->u.linked->setup)(m) : dyn_setup_module(m));
+        -: 1882:}
+        -: 1883:
+        -: 1884:/**/
+        -: 1885:static int
+        -: 1886:features_module(Module m, char ***features)
+        -: 1887:{
+        -: 1888:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1889:	    (m->u.linked->features)(m, features) :
+        -: 1890:	    dyn_features_module(m, features));
+        -: 1891:}
+        -: 1892:
+        -: 1893:/**/
+        -: 1894:static int
+        -: 1895:enables_module(Module m, int **enables)
+        -: 1896:{
+        -: 1897:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1898:	    (m->u.linked->enables)(m, enables) :
+        -: 1899:	    dyn_enables_module(m, enables));
+        -: 1900:}
+        -: 1901:
+        -: 1902:/**/
+        -: 1903:static int
+        -: 1904:boot_module(Module m)
+        -: 1905:{
+        -: 1906:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1907:	    (m->u.linked->boot)(m) : dyn_boot_module(m));
+        -: 1908:}
+        -: 1909:
+        -: 1910:/**/
+        -: 1911:static int
+        -: 1912:cleanup_module(Module m)
+        -: 1913:{
+        -: 1914:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1915:	    (m->u.linked->cleanup)(m) : dyn_cleanup_module(m));
+        -: 1916:}
+        -: 1917:
+        -: 1918:/**/
+        -: 1919:static int
+        -: 1920:finish_module(Module m)
+        -: 1921:{
+        -: 1922:    return ((m->node.flags & MOD_LINKED) ?
+        -: 1923:	    (m->u.linked->finish)(m) : dyn_finish_module(m));
+        -: 1924:}
+        -: 1925:
+        -: 1926:/**/
+        -: 1927:#else /* !DYNAMIC */
+        -: 1928:
+        -: 1929:/**/
+        -: 1930:static int
+       10: 1931:setup_module(Module m)
+        -: 1932:{
+       10: 1933:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->setup)(m) : 1);
+        -: 1934:}
+        -: 1935:
+        -: 1936:/**/
+        -: 1937:static int
+       10: 1938:features_module(Module m, char ***features)
+        -: 1939:{
+       20: 1940:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->features)(m, features)
+       20: 1941:	    : 1);
+        -: 1942:}
+        -: 1943:
+        -: 1944:/**/
+        -: 1945:static int
+        2: 1946:enables_module(Module m, int **enables)
+        -: 1947:{
+        4: 1948:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->enables)(m, enables)
+        4: 1949:	    : 1);
+        -: 1950:}
+        -: 1951:
+        -: 1952:/**/
+        -: 1953:static int
+       10: 1954:boot_module(Module m)
+        -: 1955:{
+       10: 1956:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->boot)(m) : 1);
+        -: 1957:}
+        -: 1958:
+        -: 1959:/**/
+        -: 1960:static int
+    #####: 1961:cleanup_module(Module m)
+        -: 1962:{
+    #####: 1963:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->cleanup)(m) : 1);
+        -: 1964:}
+        -: 1965:
+        -: 1966:/**/
+        -: 1967:static int
+    #####: 1968:finish_module(Module m)
+        -: 1969:{
+    #####: 1970:    return ((m->node.flags & MOD_LINKED) ? (m->u.linked->finish)(m) : 1);
+        -: 1971:}
+        -: 1972:
+        -: 1973:/**/
+        -: 1974:#endif /* !DYNAMIC */
+        -: 1975:
+        -: 1976:
+        -: 1977:/************************************************************************
+        -: 1978: * Functions called when manipulating modules
+        -: 1979: ************************************************************************/
+        -: 1980:
+        -: 1981:/*
+        -: 1982: * Set the features for the module, which must be loaded
+        -: 1983: * by now (though may not be fully set up).
+        -: 1984: *
+        -: 1985: * Return 0 for success, 1 for failure, 2 if some features
+        -: 1986: * couldn't be set by the module itself (non-existent features
+        -: 1987: * are tested here and cause 1 to be returned).
+        -: 1988: */
+        -: 1989:
+        -: 1990:/**/
+        -: 1991:static int
+       10: 1992:do_module_features(Module m, Feature_enables enablesarr, int flags)
+        -: 1993:{
+        -: 1994:    char **features;
+       10: 1995:    int ret = 0;
+        -: 1996:
+       10: 1997:    if (features_module(m, &features) == 0) {
+        -: 1998:	/*
+        -: 1999:	 * Features are supported.  If we were passed
+        -: 2000:	 * a NULL array, enable all features, else
+        -: 2001:	 * enable only the features listed.
+        -: 2002:	 * (This may in principle be an empty array,
+        -: 2003:	 * although that's not very pointful.)
+        -: 2004:	 */
+        1: 2005:	int *enables = NULL;
+        1: 2006:	if (enables_module(m, &enables)) {
+        -: 2007:	    /* If features are supported, enables should be, too */
+    #####: 2008:	    if (!(flags & FEAT_IGNORE))
+    #####: 2009:		zwarn("error getting enabled features for module `%s'",
+        -: 2010:		      m->node.nam);
+    #####: 2011:	    return 1;
+        -: 2012:	}
+        -: 2013:
+        1: 2014:	if ((flags & FEAT_CHECKAUTO) && m->autoloads) {
+        -: 2015:	    /*
+        -: 2016:	     * Check autoloads are available.  Since these
+        -: 2017:	     * have been requested at some other point, they
+        -: 2018:	     * don't affect the return status unless something
+        -: 2019:	     * in enablesstr doesn't work.
+        -: 2020:	     */
+        -: 2021:	    LinkNode an, nextn;
+       34: 2022:	    for (an = firstnode(m->autoloads); an; an = nextn) {
+       33: 2023:		char *al = (char *)getdata(an), **ptr;
+        -: 2024:		/* careful, we can delete the current node */
+       33: 2025:		nextn = nextnode(an);
+      561: 2026:		for (ptr = features; *ptr; ptr++)
+      561: 2027:		    if (!strcmp(al, *ptr))
+       33: 2028:			break;
+       33: 2029:		if (!*ptr) {
+        -: 2030:		    char *arg[2];
+    #####: 2031:		    if (!(flags & FEAT_IGNORE))
+    #####: 2032:			zwarn(
+        -: 2033:		    "module `%s' has no such feature: `%s': autoload cancelled",
+        -: 2034:		    m->node.nam, al);
+        -: 2035:		    /*
+        -: 2036:		     * This shouldn't happen, so it's not worth optimising
+        -: 2037:		     * the call to autofeatures...
+        -: 2038:		     */
+    #####: 2039:		    arg[0] = al = dupstring(al);
+    #####: 2040:		    arg[1] = NULL;
+    #####: 2041:		    (void)autofeatures(NULL, m->node.nam, arg, 0,
+        -: 2042:				       FEAT_IGNORE|FEAT_REMOVE);
+        -: 2043:		    /*
+        -: 2044:		     * don't want to try to enable *that*...
+        -: 2045:		     * expunge it from the enable string.
+        -: 2046:		     */
+    #####: 2047:		    if (enablesarr) {
+        -: 2048:			Feature_enables fep;
+    #####: 2049:			for (fep = enablesarr; fep->str; fep++) {
+    #####: 2050:			    char *str = fep->str;
+    #####: 2051:			    if (*str == '+' || *str == '-')
+    #####: 2052:				str++;
+    #####: 2053:			    if (fep->pat ? pattry(fep->pat, al) :
+    #####: 2054:				!strcmp(al, str)) {
+        -: 2055:				/* can't enable it after all, so return 1 */
+    #####: 2056:				ret = 1;
+    #####: 2057:				while (fep->str) {
+    #####: 2058:				    fep->str = fep[1].str;
+    #####: 2059:				    fep->pat = fep[1].pat;
+    #####: 2060:				    fep++;
+        -: 2061:				}
+    #####: 2062:				if (!fep->pat)
+    #####: 2063:				    break;
+        -: 2064:			    }
+        -: 2065:			}
+        -: 2066:		    }
+        -: 2067:		}
+        -: 2068:	    }
+        -: 2069:	}
+        -: 2070:
+        1: 2071:	if (enablesarr) {
+        -: 2072:	    Feature_enables fep;
+    #####: 2073:	    for (fep = enablesarr; fep->str; fep++) {
+    #####: 2074:		char **fp, *esp = fep->str;
+    #####: 2075:		int on = 1, found = 0;
+    #####: 2076:		if (*esp == '+')
+    #####: 2077:		    esp++;
+    #####: 2078:		else if (*esp == '-') {
+    #####: 2079:		    on = 0;
+    #####: 2080:		    esp++;
+        -: 2081:		}
+    #####: 2082:		for (fp = features; *fp; fp++)
+    #####: 2083:		    if (fep->pat ? pattry(fep->pat, *fp) : !strcmp(*fp, esp)) {
+    #####: 2084:			enables[fp - features] = on;
+    #####: 2085:			found++;
+    #####: 2086:			if (!fep->pat)
+    #####: 2087:			    break;
+        -: 2088:		    }
+    #####: 2089:		if (!found) {
+    #####: 2090:		    if (!(flags & FEAT_IGNORE))
+    #####: 2091:			zwarn(fep->pat ?
+        -: 2092:			      "module `%s' has no feature matching: `%s'" :
+        -: 2093:			      "module `%s' has no such feature: `%s'",
+        -: 2094:			      m->node.nam, esp);
+    #####: 2095:		    return 1;
+        -: 2096:		}
+        -: 2097:	    }
+        -: 2098:	} else {
+        -: 2099:	    /*
+        -: 2100:	     * Enable all features.  This is used when loading
+        -: 2101:	     * without using zmodload -F.
+        -: 2102:	     */
+        1: 2103:	    int n_features = arrlen(features);
+        -: 2104:	    int *ep;
+       34: 2105:	    for (ep = enables; n_features--; ep++)
+       33: 2106:		*ep = 1;
+        -: 2107:	}
+        -: 2108:
+        1: 2109:	if (enables_module(m, &enables))
+    #####: 2110:	    return 2;
+        9: 2111:    } else if (enablesarr) {
+    #####: 2112:	if (!(flags & FEAT_IGNORE))
+    #####: 2113:	    zwarn("module `%s' does not support features", m->node.nam);
+    #####: 2114:	return 1;
+        -: 2115:    }
+        -: 2116:    /* Else it doesn't support features but we don't care. */
+        -: 2117:
+       10: 2118:    return ret;
+        -: 2119:}
+        -: 2120:
+        -: 2121:/*
+        -: 2122: * Boot the module, including setting up features.
+        -: 2123: * As we've only just loaded the module, we don't yet
+        -: 2124: * know what features it supports, so we get them passed
+        -: 2125: * as a string.
+        -: 2126: *
+        -: 2127: * Returns 0 if OK, 1 if completely failed, 2 if some features
+        -: 2128: * couldn't be set up.
+        -: 2129: */
+        -: 2130:
+        -: 2131:/**/
+        -: 2132:static int
+       10: 2133:do_boot_module(Module m, Feature_enables enablesarr, int silent)
+        -: 2134:{
+       10: 2135:    int ret = do_module_features(m, enablesarr,
+        -: 2136:				 silent ? FEAT_IGNORE|FEAT_CHECKAUTO :
+        -: 2137:				 FEAT_CHECKAUTO);
+        -: 2138:
+       10: 2139:    if (ret == 1)
+    #####: 2140:	return 1;
+        -: 2141:
+       10: 2142:    if (boot_module(m))
+    #####: 2143:	return 1;
+       10: 2144:    return ret;
+        -: 2145:}
+        -: 2146:
+        -: 2147:/*
+        -: 2148: * Cleanup the module.
+        -: 2149: */
+        -: 2150:
+        -: 2151:/**/
+        -: 2152:static int
+    #####: 2153:do_cleanup_module(Module m)
+        -: 2154:{
+    #####: 2155:    return (m->node.flags & MOD_LINKED) ?
+    #####: 2156:	(m->u.linked && m->u.linked->cleanup(m)) :
+    #####: 2157:	(m->u.handle && cleanup_module(m));
+        -: 2158:}
+        -: 2159:
+        -: 2160:/*
+        -: 2161: * Test a module name contains only valid characters: those
+        -: 2162: * allowed in a shell identifier plus slash.  Return 1 if so.
+        -: 2163: */
+        -: 2164:
+        -: 2165:/**/
+        -: 2166:static int
+       20: 2167:modname_ok(char const *p)
+        -: 2168:{
+        -: 2169:    do {
+       20: 2170:	p = itype_end(p, IIDENT, 0);
+       20: 2171:	if (!*p)
+       10: 2172:	    return 1;
+       10: 2173:    } while(*p++ == '/');
+    #####: 2174:    return 0;
+        -: 2175:}
+        -: 2176:
+        -: 2177:/*
+        -: 2178: * High level function to load a module, encapsulating
+        -: 2179: * all the handling of module functions.
+        -: 2180: *
+        -: 2181: * "*enablesstr" is NULL if the caller is not feature-aware;
+        -: 2182: * then the module should turn on all features.  If it
+        -: 2183: * is not NULL it points to an array of features to be
+        -: 2184: * turned on.  This function is responsible for testing whether
+        -: 2185: * the module supports those features.
+        -: 2186: *
+        -: 2187: * If "silent" is 1, don't issue warnings for errors.
+        -: 2188: *
+        -: 2189: * Now returns 0 for success (changed post-4.3.4),
+        -: 2190: * 1 for complete failure, 2 if some features couldn't be set.
+        -: 2191: */
+        -: 2192:
+        -: 2193:/**/
+        -: 2194:mod_export int
+       10: 2195:load_module(char const *name, Feature_enables enablesarr, int silent)
+        -: 2196:{
+        -: 2197:    Module m;
+       10: 2198:    void *handle = NULL;
+        -: 2199:    Linkedmod linked;
+        -: 2200:    int set, bootret;
+        -: 2201:
+       10: 2202:    if (!modname_ok(name)) {
+    #####: 2203:	if (!silent)
+    #####: 2204:	    zerr("invalid module name `%s'", name);
+    #####: 2205:	return 1;
+        -: 2206:    }
+        -: 2207:    /*
+        -: 2208:     * The following function call may alter name to the final name in a
+        -: 2209:     * chain of aliases.  This makes sure the actual module loaded
+        -: 2210:     * is the right one.
+        -: 2211:     */
+       10: 2212:    queue_signals();
+       10: 2213:    if (!(m = find_module(name, FINDMOD_ALIASP, &name))) {
+        9: 2214:	if (!(linked = module_linked(name)) &&
+    #####: 2215:	    !(handle = do_load_module(name, silent))) {
+    #####: 2216:	    unqueue_signals();
+    #####: 2217:	    return 1;
+        -: 2218:	}
+        9: 2219:	m = zshcalloc(sizeof(*m));
+        9: 2220:	if (handle) {
+    #####: 2221:	    m->u.handle = handle;
+    #####: 2222:	    m->node.flags |= MOD_SETUP;
+        -: 2223:	} else {
+        9: 2224:	    m->u.linked = linked;
+        9: 2225:	    m->node.flags |= MOD_SETUP | MOD_LINKED;
+        -: 2226:	}
+        9: 2227:	modulestab->addnode(modulestab, ztrdup(name), m);
+        -: 2228:
+        9: 2229:	if ((set = setup_module(m)) ||
+        -: 2230:	    (bootret = do_boot_module(m, enablesarr, silent)) == 1) {
+    #####: 2231:	    if (!set)
+    #####: 2232:		do_cleanup_module(m);
+    #####: 2233:	    finish_module(m);
+    #####: 2234:	    delete_module(m);
+    #####: 2235:	    unqueue_signals();
+    #####: 2236:	    return 1;
+        -: 2237:	}
+        9: 2238:	m->node.flags |= MOD_INIT_S | MOD_INIT_B;
+        9: 2239:	m->node.flags &= ~MOD_SETUP;
+        9: 2240:	unqueue_signals();
+        9: 2241:	return bootret;
+        -: 2242:    }
+        1: 2243:    if (m->node.flags & MOD_SETUP) {
+    #####: 2244:	unqueue_signals();
+    #####: 2245:	return 0;
+        -: 2246:    }
+        1: 2247:    if (m->node.flags & MOD_UNLOAD)
+    #####: 2248:	m->node.flags &= ~MOD_UNLOAD;
+        1: 2249:    else if ((m->node.flags & MOD_LINKED) ? m->u.linked : m->u.handle) {
+    #####: 2250:	unqueue_signals();
+    #####: 2251:	return 0;
+        -: 2252:    }
+        1: 2253:    if (m->node.flags & MOD_BUSY) {
+    #####: 2254:	unqueue_signals();
+    #####: 2255:	zerr("circular dependencies for module ;%s", name);
+    #####: 2256:	return 1;
+        -: 2257:    }
+        1: 2258:    m->node.flags |= MOD_BUSY;
+        -: 2259:    /*
+        -: 2260:     * TODO: shouldn't we unload the module if one of
+        -: 2261:     * its dependencies fails?
+        -: 2262:     */
+        1: 2263:    if (m->deps) {
+        -: 2264:	LinkNode n;
+    #####: 2265:	for (n = firstnode(m->deps); n; incnode(n))
+    #####: 2266:	    if (load_module((char *) getdata(n), NULL, silent) == 1) {
+    #####: 2267:		m->node.flags &= ~MOD_BUSY;
+    #####: 2268:		unqueue_signals();
+    #####: 2269:		return 1;
+        -: 2270:	    }
+        -: 2271:    }
+        1: 2272:    m->node.flags &= ~MOD_BUSY;
+        1: 2273:    if (!m->u.handle) {
+        1: 2274:	handle = NULL;
+        1: 2275:	if (!(linked = module_linked(name)) &&
+    #####: 2276:	    !(handle = do_load_module(name, silent))) {
+    #####: 2277:	    unqueue_signals();
+    #####: 2278:	    return 1;
+        -: 2279:	}
+        1: 2280:	if (handle) {
+    #####: 2281:	    m->u.handle = handle;
+    #####: 2282:	    m->node.flags |= MOD_SETUP;
+        -: 2283:	} else {
+        1: 2284:	    m->u.linked = linked;
+        1: 2285:	    m->node.flags |= MOD_SETUP | MOD_LINKED;
+        -: 2286:	}
+        1: 2287:	if (setup_module(m)) {
+    #####: 2288:	    finish_module(m);
+    #####: 2289:	    if (handle)
+    #####: 2290:		m->u.handle = NULL;
+        -: 2291:	    else
+    #####: 2292:		m->u.linked = NULL;
+    #####: 2293:	    m->node.flags &= ~MOD_SETUP;
+    #####: 2294:	    unqueue_signals();
+    #####: 2295:	    return 1;
+        -: 2296:	}
+        1: 2297:	m->node.flags |= MOD_INIT_S;
+        -: 2298:    }
+        1: 2299:    m->node.flags |= MOD_SETUP;
+        1: 2300:    if ((bootret = do_boot_module(m, enablesarr, silent)) == 1) {
+    #####: 2301:	do_cleanup_module(m);
+    #####: 2302:	finish_module(m);
+    #####: 2303:	if (m->node.flags & MOD_LINKED)
+    #####: 2304:	    m->u.linked = NULL;
+        -: 2305:	else
+    #####: 2306:	    m->u.handle = NULL;
+    #####: 2307:	m->node.flags &= ~MOD_SETUP;
+    #####: 2308:	unqueue_signals();
+    #####: 2309:	return 1;
+        -: 2310:    }
+        1: 2311:    m->node.flags |= MOD_INIT_B;
+        1: 2312:    m->node.flags &= ~MOD_SETUP;
+        1: 2313:    unqueue_signals();
+        1: 2314:    return bootret;
+        -: 2315:}
+        -: 2316:
+        -: 2317:/* This ensures that the module with the name given as the first argument
+        -: 2318: * is loaded.
+        -: 2319: * The other argument is the array of features to set.  If this is NULL
+        -: 2320: * all features are enabled (even if the module was already loaded).
+        -: 2321: *
+        -: 2322: * If this is non-NULL the module features are set accordingly
+        -: 2323: * whether or not the module is loaded; it is an error if the
+        -: 2324: * module does not support the features passed (even if the feature
+        -: 2325: * is to be turned off) or if the module does not support features
+        -: 2326: * at all.
+        -: 2327: * The return value is 0 if the module was found or loaded
+        -: 2328: * (this changed post-4.3.4, because I got so confused---pws),
+        -: 2329: * 1 if loading failed completely, 2 if some features couldn't be set.
+        -: 2330: *
+        -: 2331: * This function behaves like load_module() except that it
+        -: 2332: * handles the case where the module was already loaded, and
+        -: 2333: * sets features accordingly.
+        -: 2334: */
+        -: 2335:
+        -: 2336:/**/
+        -: 2337:mod_export int
+        1: 2338:require_module(const char *module, Feature_enables features, int silent)
+        -: 2339:{
+        1: 2340:    Module m = NULL;
+        1: 2341:    int ret = 0;
+        -: 2342:
+        -: 2343:    /* Resolve aliases and actual loadable module as for load_module */
+        1: 2344:    queue_signals();
+        1: 2345:    m = find_module(module, FINDMOD_ALIASP, &module);
+        1: 2346:    if (!m || !m->u.handle ||
+    #####: 2347:	(m->node.flags & MOD_UNLOAD))
+        1: 2348:	ret = load_module(module, features, silent);
+        -: 2349:    else
+    #####: 2350:	ret = do_module_features(m, features, 0);
+        1: 2351:    unqueue_signals();
+        -: 2352:
+        1: 2353:    return ret;
+        -: 2354:}
+        -: 2355:
+        -: 2356:/*
+        -: 2357: * Indicate that the module named "name" depends on the module
+        -: 2358: * named "from".
+        -: 2359: */
+        -: 2360:
+        -: 2361:/**/
+        -: 2362:void
+       81: 2363:add_dep(const char *name, char *from)
+        -: 2364:{
+        -: 2365:    LinkNode node;
+        -: 2366:    Module m;
+        -: 2367:
+        -: 2368:    /*
+        -: 2369:     * If we were passed an alias, we must resolve it to a final
+        -: 2370:     * module name (and maybe add the corresponding struct), since otherwise
+        -: 2371:     * we would need to check all modules to see if they happen
+        -: 2372:     * to be aliased to the same thing to implement dependencies properly.
+        -: 2373:     *
+        -: 2374:     * This should mean that an attempt to add an alias which would
+        -: 2375:     * have the same name as a module which has dependencies is correctly
+        -: 2376:     * rejected, because then the module named already exists as a non-alias.
+        -: 2377:     * Better make sure.  (There's no problem making a an alias which
+        -: 2378:     * *points* to a module with dependencies, of course.)
+        -: 2379:     */
+       81: 2380:    m = find_module(name, FINDMOD_ALIASP|FINDMOD_CREATE, &name);
+       81: 2381:    if (!m->deps)
+       54: 2382:	m->deps = znewlinklist();
+      189: 2383:    for (node = firstnode(m->deps);
+       27: 2384:	 node && strcmp((char *) getdata(node), from);
+       27: 2385:	 incnode(node));
+       81: 2386:    if (!node)
+       81: 2387:	zaddlinknode(m->deps, ztrdup(from));
+       81: 2388:}
+        -: 2389:
+        -: 2390:/*
+        -: 2391: * Function to be used when scanning the builtins table to
+        -: 2392: * find and print autoloadable builtins.
+        -: 2393: */
+        -: 2394:
+        -: 2395:/**/
+        -: 2396:static void
+    #####: 2397:autoloadscan(HashNode hn, int printflags)
+        -: 2398:{
+    #####: 2399:    Builtin bn = (Builtin) hn;
+        -: 2400:
+    #####: 2401:    if(bn->node.flags & BINF_ADDED)
+    #####: 2402:	return;
+    #####: 2403:    if(printflags & PRINT_LIST) {
+    #####: 2404:	fputs("zmodload -ab ", stdout);
+    #####: 2405:	if(bn->optstr[0] == '-')
+    #####: 2406:	    fputs("-- ", stdout);
+    #####: 2407:	quotedzputs(bn->optstr, stdout);
+    #####: 2408:	if(strcmp(bn->node.nam, bn->optstr)) {
+    #####: 2409:	    putchar(' ');
+    #####: 2410:	    quotedzputs(bn->node.nam, stdout);
+        -: 2411:	}
+        -: 2412:    } else {
+    #####: 2413:	nicezputs(bn->node.nam, stdout);
+    #####: 2414:	if(strcmp(bn->node.nam, bn->optstr)) {
+    #####: 2415:	    fputs(" (", stdout);
+    #####: 2416:	    nicezputs(bn->optstr, stdout);
+    #####: 2417:	    putchar(')');
+        -: 2418:	}
+        -: 2419:    }
+    #####: 2420:    putchar('\n');
+        -: 2421:}
+        -: 2422:
+        -: 2423:
+        -: 2424:/************************************************************************
+        -: 2425: * Handling for the zmodload builtin and its various options.
+        -: 2426: ************************************************************************/
+        -: 2427:
+        -: 2428:/*
+        -: 2429: * Main builtin entry point for zmodload.
+        -: 2430: */
+        -: 2431:
+        -: 2432:/**/
+        -: 2433:int
+        1: 2434:bin_zmodload(char *nam, char **args, Options ops, UNUSED(int func))
+        -: 2435:{
+        4: 2436:    int ops_bcpf = OPT_ISSET(ops,'b') || OPT_ISSET(ops,'c') || 
+        3: 2437:	OPT_ISSET(ops,'p') || OPT_ISSET(ops,'f');
+        1: 2438:    int ops_au = OPT_ISSET(ops,'a') || OPT_ISSET(ops,'u');
+        1: 2439:    int ret = 1, autoopts;
+        -: 2440:    /* options only allowed with -F */
+        1: 2441:    char *fonly = "lP", *fp;
+        -: 2442:
+        1: 2443:    if (ops_bcpf && !ops_au) {
+    #####: 2444:	zwarnnam(nam, "-b, -c, -f, and -p must be combined with -a or -u");
+    #####: 2445:	return 1;
+        -: 2446:    }
+        1: 2447:    if (OPT_ISSET(ops,'F') && (ops_bcpf || OPT_ISSET(ops,'u'))) {
+    #####: 2448:	zwarnnam(nam, "-b, -c, -f, -p and -u cannot be combined with -F");
+    #####: 2449:	return 1;
+        -: 2450:    }
+        1: 2451:    if (OPT_ISSET(ops,'A') || OPT_ISSET(ops,'R')) {
+    #####: 2452:	if (ops_bcpf || ops_au || OPT_ISSET(ops,'d') || 
+    #####: 2453:	    (OPT_ISSET(ops,'R') && OPT_ISSET(ops,'e'))) {
+    #####: 2454:	    zwarnnam(nam, "illegal flags combined with -A or -R");
+    #####: 2455:	    return 1;
+        -: 2456:	}
+    #####: 2457:	if (!OPT_ISSET(ops,'e'))
+    #####: 2458:	    return bin_zmodload_alias(nam, args, ops);
+        -: 2459:    }
+        1: 2460:    if (OPT_ISSET(ops,'d') && OPT_ISSET(ops,'a')) {
+    #####: 2461:	zwarnnam(nam, "-d cannot be combined with -a");
+    #####: 2462:	return 1;
+        -: 2463:    }
+        1: 2464:    if (OPT_ISSET(ops,'u') && !*args) {
+    #####: 2465:	zwarnnam(nam, "what do you want to unload?");
+    #####: 2466:	return 1;
+        -: 2467:    }
+        1: 2468:    if (OPT_ISSET(ops,'e') && (OPT_ISSET(ops,'I') || OPT_ISSET(ops,'L') || 
+    #####: 2469:			       (OPT_ISSET(ops,'a') && !OPT_ISSET(ops,'F'))
+    #####: 2470:			       || OPT_ISSET(ops,'d') ||
+    #####: 2471:			       OPT_ISSET(ops,'i') || OPT_ISSET(ops,'u'))) {
+    #####: 2472:	zwarnnam(nam, "-e cannot be combined with other options");
+        -: 2473:	/* except -F ... */
+    #####: 2474:	return 1;
+        -: 2475:    }
+        3: 2476:    for (fp = fonly; *fp; fp++) {
+        2: 2477:	if (OPT_ISSET(ops,STOUC(*fp)) && !OPT_ISSET(ops,'F')) {
+    #####: 2478:	    zwarnnam(nam, "-%c is only allowed with -F", *fp);
+    #####: 2479:	    return 1;
+        -: 2480:	}
+        -: 2481:    }
+        1: 2482:    queue_signals();
+        1: 2483:    if (OPT_ISSET(ops, 'F'))
+    #####: 2484:	ret = bin_zmodload_features(nam, args, ops);
+        1: 2485:    else if (OPT_ISSET(ops,'e'))
+    #####: 2486:	ret = bin_zmodload_exist(nam, args, ops);
+        1: 2487:    else if (OPT_ISSET(ops,'d'))
+    #####: 2488:	ret = bin_zmodload_dep(nam, args, ops);
+        3: 2489:    else if ((autoopts = OPT_ISSET(ops, 'b') + OPT_ISSET(ops, 'c') +
+        3: 2490:	      OPT_ISSET(ops, 'p') + OPT_ISSET(ops, 'f')) ||
+        -: 2491:	     /* zmodload -a is equivalent to zmodload -ab, annoyingly */
+        1: 2492:	     OPT_ISSET(ops, 'a')) {
+    #####: 2493:	if (autoopts > 1) {
+    #####: 2494:	    zwarnnam(nam, "use only one of -b, -c, or -p");
+    #####: 2495:	    ret = 1;
+        -: 2496:	} else
+    #####: 2497:	    ret = bin_zmodload_auto(nam, args, ops);
+        -: 2498:    } else
+        1: 2499:	ret = bin_zmodload_load(nam, args, ops);
+        1: 2500:    unqueue_signals();
+        -: 2501:
+        1: 2502:    return ret;
+        -: 2503:}
+        -: 2504:
+        -: 2505:/* zmodload -A */
+        -: 2506:
+        -: 2507:/**/
+        -: 2508:static int
+    #####: 2509:bin_zmodload_alias(char *nam, char **args, Options ops)
+        -: 2510:{
+        -: 2511:    /*
+        -: 2512:     * TODO: while it would be too nasty to have aliases, as opposed
+        -: 2513:     * to real loadable modules, with dependencies --- just what would
+        -: 2514:     * we need to load when, exactly? --- there is in principle no objection
+        -: 2515:     * to making it possible to force an alias onto an existing unloaded
+        -: 2516:     * module which has dependencies.  This would simply transfer
+        -: 2517:     * the dependencies down the line to the aliased-to module name.
+        -: 2518:     * This is actually useful, since then you can alias zsh/zle=mytestzle
+        -: 2519:     * to load another version of zle.  But then what happens when the
+        -: 2520:     * alias is removed?  Do you transfer the dependencies back? And
+        -: 2521:     * suppose other names are aliased to the same file?  It might be
+        -: 2522:     * kettle of fish best left unwormed.
+        -: 2523:     */
+        -: 2524:    Module m;
+        -: 2525:
+    #####: 2526:    if (!*args) {
+    #####: 2527:	if (OPT_ISSET(ops,'R')) {
+    #####: 2528:	    zwarnnam(nam, "no module alias to remove");
+    #####: 2529:	    return 1;
+        -: 2530:	}
+    #####: 2531:	scanhashtable(modulestab, 1, MOD_ALIAS, 0,
+    #####: 2532:		      modulestab->printnode,
+    #####: 2533:		      OPT_ISSET(ops,'L') ? PRINTMOD_LIST : 0);
+    #####: 2534:	return 0;
+        -: 2535:    }
+        -: 2536:
+    #####: 2537:    for (; *args; args++) {
+    #####: 2538:	char *eqpos = strchr(*args, '=');
+    #####: 2539:	char *aliasname = eqpos ? eqpos+1 : NULL;
+    #####: 2540:	if (eqpos)
+    #####: 2541:	    *eqpos = '\0';
+    #####: 2542:	if (!modname_ok(*args)) {
+    #####: 2543:	    zwarnnam(nam, "invalid module name `%s'", *args);
+    #####: 2544:	    return 1;
+        -: 2545:	}
+    #####: 2546:	if (OPT_ISSET(ops,'R')) {
+    #####: 2547:	    if (aliasname) {
+    #####: 2548:		zwarnnam(nam, "bad syntax for removing module alias: %s",
+        -: 2549:			 *args);
+    #####: 2550:		return 1;
+        -: 2551:	    }
+    #####: 2552:	    m = find_module(*args, 0, NULL);
+    #####: 2553:	    if (m) {
+    #####: 2554:		if (!(m->node.flags & MOD_ALIAS)) {
+    #####: 2555:		    zwarnnam(nam, "module is not an alias: %s", *args);
+    #####: 2556:		    return 1;
+        -: 2557:		}
+    #####: 2558:		delete_module(m);
+        -: 2559:	    } else {
+    #####: 2560:		zwarnnam(nam, "no such module alias: %s", *args);
+    #####: 2561:		return 1;
+        -: 2562:	    }
+        -: 2563:	} else {
+    #####: 2564:	    if (aliasname) {
+    #####: 2565:		const char *mname = aliasname;
+    #####: 2566:		if (!modname_ok(aliasname)) {
+    #####: 2567:		    zwarnnam(nam, "invalid module name `%s'", aliasname);
+    #####: 2568:		    return 1;
+        -: 2569:		}
+        -: 2570:		do {
+    #####: 2571:		    if (!strcmp(mname, *args)) {
+    #####: 2572:			zwarnnam(nam, "module alias would refer to itself: %s",
+        -: 2573:				 *args);
+    #####: 2574:			return 1;
+        -: 2575:		    }
+        -: 2576:		} while ((m = find_module(mname, 0, NULL))
+    #####: 2577:			 && (m->node.flags & MOD_ALIAS)
+    #####: 2578:			 && (mname = m->u.alias));
+    #####: 2579:		m = find_module(*args, 0, NULL);
+    #####: 2580:		if (m) {
+    #####: 2581:		    if (!(m->node.flags & MOD_ALIAS)) {
+    #####: 2582:			zwarnnam(nam, "module is not an alias: %s", *args);
+    #####: 2583:			return 1;
+        -: 2584:		    }
+    #####: 2585:		    zsfree(m->u.alias);
+        -: 2586:		} else {
+    #####: 2587:		    m = (Module) zshcalloc(sizeof(*m));
+    #####: 2588:		    m->node.flags = MOD_ALIAS;
+    #####: 2589:		    modulestab->addnode(modulestab, ztrdup(*args), m);
+        -: 2590:		}
+    #####: 2591:		m->u.alias = ztrdup(aliasname);
+        -: 2592:	    } else {
+    #####: 2593:		if ((m = find_module(*args, 0, NULL))) {
+    #####: 2594:		    if (m->node.flags & MOD_ALIAS)
+    #####: 2595:			modulestab->printnode(&m->node,
+    #####: 2596:					      OPT_ISSET(ops,'L') ?
+        -: 2597:					      PRINTMOD_LIST : 0);
+        -: 2598:		    else {
+    #####: 2599:			zwarnnam(nam, "module is not an alias: %s", *args);
+    #####: 2600:			return 1;
+        -: 2601:		    }
+        -: 2602:		} else {
+    #####: 2603:		    zwarnnam(nam, "no such module alias: %s", *args);
+    #####: 2604:		    return 1;
+        -: 2605:		}
+        -: 2606:	    }
+        -: 2607:	}
+        -: 2608:    }
+        -: 2609:
+    #####: 2610:    return 0;
+        -: 2611:}
+        -: 2612:
+        -: 2613:/* zmodload -e (without -F) */
+        -: 2614:
+        -: 2615:/**/
+        -: 2616:static int
+    #####: 2617:bin_zmodload_exist(UNUSED(char *nam), char **args, Options ops)
+        -: 2618:{
+        -: 2619:    Module m;
+        -: 2620:
+    #####: 2621:    if (!*args) {
+    #####: 2622:	scanhashtable(modulestab, 1, 0, 0, modulestab->printnode,
+    #####: 2623:		      OPT_ISSET(ops,'A') ? PRINTMOD_EXIST|PRINTMOD_ALIAS :
+        -: 2624:		      PRINTMOD_EXIST);
+    #####: 2625:	return 0;
+        -: 2626:    } else {
+    #####: 2627:	int ret = 0;
+        -: 2628:
+    #####: 2629:	for (; !ret && *args; args++) {
+    #####: 2630:	    if (!(m = find_module(*args, FINDMOD_ALIASP, NULL))
+    #####: 2631:		|| !m->u.handle
+    #####: 2632:		|| (m->node.flags & MOD_UNLOAD))
+    #####: 2633:		ret = 1;
+        -: 2634:	}
+    #####: 2635:	return ret;
+        -: 2636:    }
+        -: 2637:}
+        -: 2638:
+        -: 2639:/* zmodload -d */
+        -: 2640:
+        -: 2641:/**/
+        -: 2642:static int
+    #####: 2643:bin_zmodload_dep(UNUSED(char *nam), char **args, Options ops)
+        -: 2644:{
+        -: 2645:    Module m;
+    #####: 2646:    if (OPT_ISSET(ops,'u')) {
+        -: 2647:	/* remove dependencies, which can't pertain to aliases */
+    #####: 2648:	const char *tnam = *args++;
+    #####: 2649:	m = find_module(tnam, FINDMOD_ALIASP, &tnam);
+    #####: 2650:	if (!m)
+    #####: 2651:	    return 0;
+    #####: 2652:	if (*args && m->deps) {
+        -: 2653:	    do {
+        -: 2654:		LinkNode dnode;
+    #####: 2655:		for (dnode = firstnode(m->deps); dnode; incnode(dnode))
+    #####: 2656:		    if (!strcmp(*args, getdata(dnode))) {
+    #####: 2657:			zsfree(getdata(dnode));
+    #####: 2658:			remnode(m->deps, dnode);
+    #####: 2659:			break;
+        -: 2660:		    }
+    #####: 2661:	    } while(*++args);
+    #####: 2662:	    if (empty(m->deps)) {
+    #####: 2663:		freelinklist(m->deps, freestr);
+    #####: 2664:		m->deps = NULL;
+        -: 2665:	    }
+        -: 2666:	} else {
+    #####: 2667:	    if (m->deps) {
+    #####: 2668:		freelinklist(m->deps, freestr);
+    #####: 2669:		m->deps = NULL;
+        -: 2670:	    }
+        -: 2671:	}
+    #####: 2672:	if (!m->deps && !m->u.handle)
+    #####: 2673:	    delete_module(m);
+    #####: 2674:	return 0;
+    #####: 2675:    } else if (!args[0] || !args[1]) {
+        -: 2676:	/* list dependencies */
+    #####: 2677:	int depflags = OPT_ISSET(ops,'L') ?
+    #####: 2678:	    PRINTMOD_DEPS|PRINTMOD_LIST : PRINTMOD_DEPS;
+    #####: 2679:	if (args[0]) {
+    #####: 2680:	    if ((m = (Module)modulestab->getnode2(modulestab, args[0])))
+    #####: 2681:		modulestab->printnode(&m->node, depflags);
+        -: 2682:	} else {
+    #####: 2683:	    scanhashtable(modulestab, 1, 0, 0, modulestab->printnode,
+        -: 2684:			  depflags);
+        -: 2685:	}
+    #####: 2686:	return 0;
+        -: 2687:    } else {
+        -: 2688:	/* add dependencies */
+    #####: 2689:	int ret = 0;
+    #####: 2690:	char *tnam = *args++;
+        -: 2691:
+    #####: 2692:	for (; *args; args++)
+    #####: 2693:	    add_dep(tnam, *args);
+    #####: 2694:	return ret;
+        -: 2695:    }
+        -: 2696:}
+        -: 2697:
+        -: 2698:/*
+        -: 2699: * Function for scanning the parameter table to find and print
+        -: 2700: * out autoloadable parameters.
+        -: 2701: */
+        -: 2702:
+        -: 2703:static void
+    #####: 2704:printautoparams(HashNode hn, int lon)
+        -: 2705:{
+    #####: 2706:    Param pm = (Param) hn;
+        -: 2707:
+    #####: 2708:    if (pm->node.flags & PM_AUTOLOAD) {
+    #####: 2709:	if (lon)
+    #####: 2710:	    printf("zmodload -ap %s %s\n", pm->u.str, pm->node.nam);
+        -: 2711:	else
+    #####: 2712:	    printf("%s (%s)\n", pm->node.nam, pm->u.str);
+        -: 2713:    }
+    #####: 2714:}
+        -: 2715:
+        -: 2716:/* zmodload -a/u [bcpf] */
+        -: 2717:
+        -: 2718:/**/
+        -: 2719:static int
+    #####: 2720:bin_zmodload_auto(char *nam, char **args, Options ops)
+        -: 2721:{
+        -: 2722:    int fchar, flags;
+        -: 2723:    char *modnam;
+        -: 2724:
+    #####: 2725:    if (OPT_ISSET(ops,'c')) {
+    #####: 2726:	if (!*args) {
+        -: 2727:	    /* list autoloaded conditions */
+        -: 2728:	    Conddef p;
+        -: 2729:
+    #####: 2730:	    for (p = condtab; p; p = p->next) {
+    #####: 2731:		if (p->module) {
+    #####: 2732:		    if (OPT_ISSET(ops,'L')) {
+    #####: 2733:			fputs("zmodload -ac", stdout);
+    #####: 2734:			if (p->flags & CONDF_INFIX)
+    #####: 2735:			    putchar('I');
+    #####: 2736:			printf(" %s %s\n", p->module, p->name);
+        -: 2737:		    } else {
+    #####: 2738:			if (p->flags & CONDF_INFIX)
+    #####: 2739:			    fputs("infix ", stdout);
+        -: 2740:			else
+    #####: 2741:			    fputs("post ", stdout);
+    #####: 2742:			printf("%s (%s)\n",p->name, p->module);
+        -: 2743:		    }
+        -: 2744:		}
+        -: 2745:	    }
+    #####: 2746:	    return 0;
+        -: 2747:	}
+    #####: 2748:	fchar = OPT_ISSET(ops,'I') ? 'C' : 'c';
+    #####: 2749:    } else if (OPT_ISSET(ops,'p')) {
+    #####: 2750:	if (!*args) {
+        -: 2751:	    /* list autoloaded parameters */
+    #####: 2752:	    scanhashtable(paramtab, 1, 0, 0, printautoparams,
+    #####: 2753:			  OPT_ISSET(ops,'L'));
+    #####: 2754:	    return 0;
+        -: 2755:	}
+    #####: 2756:	fchar = 'p';
+    #####: 2757:    } else if (OPT_ISSET(ops,'f')) {
+    #####: 2758:	if (!*args) {
+        -: 2759:	    /* list autoloaded math functions */
+        -: 2760:	    MathFunc p;
+        -: 2761:
+    #####: 2762:	    for (p = mathfuncs; p; p = p->next) {
+    #####: 2763:		if (!(p->flags & MFF_USERFUNC) && p->module) {
+    #####: 2764:		    if (OPT_ISSET(ops,'L')) {
+    #####: 2765:			fputs("zmodload -af", stdout);
+    #####: 2766:			printf(" %s %s\n", p->module, p->name);
+        -: 2767:		    } else
+    #####: 2768:			printf("%s (%s)\n",p->name, p->module);
+        -: 2769:		}
+        -: 2770:	    }
+    #####: 2771:	    return 0;
+        -: 2772:	}
+    #####: 2773:	fchar = 'f';
+        -: 2774:    } else {
+        -: 2775:	/* builtins are the default; zmodload -ab or just zmodload -a */
+    #####: 2776:	if (!*args) {
+        -: 2777:	    /* list autoloaded builtins */
+    #####: 2778:	    scanhashtable(builtintab, 1, 0, 0,
+    #####: 2779:			  autoloadscan, OPT_ISSET(ops,'L') ? PRINT_LIST : 0);
+    #####: 2780:	    return 0;
+        -: 2781:	}
+    #####: 2782:	fchar = 'b';
+        -: 2783:    }
+        -: 2784:
+    #####: 2785:    flags = FEAT_AUTOALL;
+    #####: 2786:    if (OPT_ISSET(ops,'i'))
+    #####: 2787:	flags |= FEAT_IGNORE;
+    #####: 2788:    if (OPT_ISSET(ops,'u')) {
+        -: 2789:	/* remove autoload */
+    #####: 2790:	flags |= FEAT_REMOVE;
+    #####: 2791:	modnam = NULL;
+        -: 2792:    } else {
+        -: 2793:	/* add autoload */
+    #####: 2794:	modnam = *args;
+        -: 2795:
+    #####: 2796:	if (args[1])
+    #####: 2797:	    args++;
+        -: 2798:    }
+    #####: 2799:    return autofeatures(nam, modnam, args, fchar, flags);
+        -: 2800:}
+        -: 2801:
+        -: 2802:/* Backend handler for zmodload -u */
+        -: 2803:
+        -: 2804:/**/
+        -: 2805:int
+    #####: 2806:unload_module(Module m)
+        -: 2807:{
+        -: 2808:    int del;
+        -: 2809:
+        -: 2810:    /*
+        -: 2811:     * Only unload the real module, so resolve aliases.
+        -: 2812:     */
+    #####: 2813:    if (m->node.flags & MOD_ALIAS) {
+    #####: 2814:	m = find_module(m->u.alias, FINDMOD_ALIASP, NULL);
+    #####: 2815:	if (!m)
+    #####: 2816:	    return 1;
+        -: 2817:    }
+        -: 2818:    /*
+        -: 2819:     * We may need to clean up the module any time setup_ has been
+        -: 2820:     * called.  After cleanup_ is successful we are no longer in the
+        -: 2821:     * booted state (because features etc. are deregistered), so remove
+        -: 2822:     * MOD_INIT_B, and also MOD_INIT_S since we won't need to cleanup
+        -: 2823:     * again if this succeeded.
+        -: 2824:     */
+    #####: 2825:    if ((m->node.flags & MOD_INIT_S) &&
+    #####: 2826:	!(m->node.flags & MOD_UNLOAD) &&
+    #####: 2827:	do_cleanup_module(m))
+    #####: 2828:	return 1;
+    #####: 2829:    m->node.flags &= ~(MOD_INIT_B|MOD_INIT_S);
+        -: 2830:
+    #####: 2831:    del = (m->node.flags & MOD_UNLOAD);
+        -: 2832:
+    #####: 2833:    if (m->wrapper) {
+    #####: 2834:	m->node.flags |= MOD_UNLOAD;
+    #####: 2835:	return 0;
+        -: 2836:    }
+    #####: 2837:    m->node.flags &= ~MOD_UNLOAD;
+        -: 2838:
+        -: 2839:    /*
+        -: 2840:     * We always need to finish the module (and unload it)
+        -: 2841:     * if it is present.
+        -: 2842:     */
+    #####: 2843:    if (m->node.flags & MOD_LINKED) {
+    #####: 2844:	if (m->u.linked) {
+    #####: 2845:	    m->u.linked->finish(m);
+    #####: 2846:	    m->u.linked = NULL;
+        -: 2847:	}
+        -: 2848:    } else {
+    #####: 2849:	if (m->u.handle) {
+    #####: 2850:	    finish_module(m);
+    #####: 2851:	    m->u.handle = NULL;
+        -: 2852:	}
+        -: 2853:    }
+        -: 2854:
+    #####: 2855:    if (del && m->deps) {
+        -: 2856:	/* The module was unloaded delayed, unload all modules *
+        -: 2857:	 * on which it depended. */
+        -: 2858:	LinkNode n;
+        -: 2859:
+    #####: 2860:	for (n = firstnode(m->deps); n; incnode(n)) {
+    #####: 2861:	    Module dm = find_module((char *) getdata(n),
+        -: 2862:				    FINDMOD_ALIASP, NULL);
+        -: 2863:
+    #####: 2864:	    if (dm &&
+    #####: 2865:		(dm->node.flags & MOD_UNLOAD)) {
+        -: 2866:		/* See if this is the only module depending on it. */
+        -: 2867:		Module am;
+    #####: 2868:		int du = 1, i;
+        -: 2869:		/* Scan hash table the hard way */
+    #####: 2870:		for (i = 0; du && i < modulestab->hsize; i++) {
+    #####: 2871:		    for (am = (Module)modulestab->nodes[i]; du && am;
+    #####: 2872:			 am = (Module)am->node.next) {
+        -: 2873:			LinkNode sn;
+        -: 2874:			/*
+        -: 2875:			 * Don't scan the module we're unloading;
+        -: 2876:			 * ignore if no dependencies.
+        -: 2877:			 */
+    #####: 2878:			if (am == m || !am->deps)
+    #####: 2879:			    continue;
+        -: 2880:			/* Don't scan if not loaded nor linked */
+    #####: 2881:			if ((am->node.flags & MOD_LINKED) ?
+    #####: 2882:			    !am->u.linked : !am->u.handle)
+    #####: 2883:			    continue;
+    #####: 2884:			for (sn = firstnode(am->deps); du && sn;
+    #####: 2885:			     incnode(sn)) {
+    #####: 2886:			    if (!strcmp((char *) getdata(sn),
+    #####: 2887:					dm->node.nam))
+    #####: 2888:				du = 0;
+        -: 2889:			}
+        -: 2890:		    }
+        -: 2891:		}
+    #####: 2892:		if (du)
+    #####: 2893:		    unload_module(dm);
+        -: 2894:	    }
+        -: 2895:	}
+        -: 2896:    }
+    #####: 2897:    if (m->autoloads && firstnode(m->autoloads)) {
+        -: 2898:	/*
+        -: 2899:	 * Module has autoloadable features.  Restore them
+        -: 2900:	 * so that the module will be reloaded when needed.
+        -: 2901:	 */
+    #####: 2902:	autofeatures("zsh", m->node.nam,
+        -: 2903:		     hlinklist2array(m->autoloads, 0), 0, FEAT_IGNORE);
+    #####: 2904:    } else if (!m->deps) {
+    #####: 2905:	delete_module(m);
+        -: 2906:    }
+    #####: 2907:    return 0;
+        -: 2908:}
+        -: 2909:
+        -: 2910:/*
+        -: 2911: * Unload a module by name (modname); nam is the command name.
+        -: 2912: * Optionally don't print some error messages (always print
+        -: 2913: * dependency errors).
+        -: 2914: */
+        -: 2915:
+        -: 2916:/**/
+        -: 2917:int
+    #####: 2918:unload_named_module(char *modname, char *nam, int silent)
+        -: 2919:{
+        -: 2920:    const char *mname;
+        -: 2921:    Module m;
+    #####: 2922:    int ret = 0;
+        -: 2923:
+    #####: 2924:    m = find_module(modname, FINDMOD_ALIASP, &mname);
+    #####: 2925:    if (m) {
+    #####: 2926:	int i, del = 0;
+        -: 2927:	Module dm;
+        -: 2928:
+    #####: 2929:	for (i = 0; i < modulestab->hsize; i++) {
+    #####: 2930:	    for (dm = (Module)modulestab->nodes[i]; dm;
+    #####: 2931:		 dm = (Module)dm->node.next) {
+        -: 2932:		LinkNode dn;
+    #####: 2933:		if (!dm->deps || !dm->u.handle)
+    #####: 2934:		    continue;
+    #####: 2935:		for (dn = firstnode(dm->deps); dn; incnode(dn)) {
+    #####: 2936:		    if (!strcmp((char *) getdata(dn), mname)) {
+    #####: 2937:			if (dm->node.flags & MOD_UNLOAD)
+    #####: 2938:			    del = 1;
+        -: 2939:			else {
+    #####: 2940:			    zwarnnam(nam, "module %s is in use by another module and cannot be unloaded", mname);
+    #####: 2941:			    return 1;
+        -: 2942:			}
+        -: 2943:		    }
+        -: 2944:		}
+        -: 2945:	    }
+        -: 2946:	}
+    #####: 2947:	if (del)
+    #####: 2948:	    m->wrapper++;
+    #####: 2949:	if (unload_module(m))
+    #####: 2950:	    ret = 1;
+    #####: 2951:	if (del)
+    #####: 2952:	    m->wrapper--;
+    #####: 2953:    } else if (!silent) {
+    #####: 2954:	zwarnnam(nam, "no such module %s", modname);
+    #####: 2955:	ret = 1;
+        -: 2956:    }
+        -: 2957:
+    #####: 2958:    return ret;
+        -: 2959:}
+        -: 2960:
+        -: 2961:/* zmodload -u without -d */
+        -: 2962:
+        -: 2963:/**/
+        -: 2964:static int
+        1: 2965:bin_zmodload_load(char *nam, char **args, Options ops)
+        -: 2966:{
+        1: 2967:    int ret = 0;
+        1: 2968:    if(OPT_ISSET(ops,'u')) {
+        -: 2969:	/* unload modules */
+    #####: 2970:	for(; *args; args++) {
+    #####: 2971:	    if (unload_named_module(*args, nam, OPT_ISSET(ops,'i')))
+    #####: 2972:		ret = 1;
+        -: 2973:	}
+    #####: 2974:	return ret;
+        1: 2975:    } else if(!*args) {
+        -: 2976:	/* list modules */
+    #####: 2977:	scanhashtable(modulestab, 1, 0, MOD_UNLOAD|MOD_ALIAS,
+    #####: 2978:		      modulestab->printnode,
+    #####: 2979:		      OPT_ISSET(ops,'L') ? PRINTMOD_LIST : 0);
+    #####: 2980:	return 0;
+        -: 2981:    } else {
+        -: 2982:	/* load modules */
+        2: 2983:	for (; *args; args++) {
+        1: 2984:	    int tmpret = require_module(*args, NULL, OPT_ISSET(ops,'s'));
+        1: 2985:	    if (tmpret && ret != 1)
+    #####: 2986:		ret = tmpret;
+        -: 2987:	}
+        -: 2988:
+        1: 2989:	return ret;
+        -: 2990:    }
+        -: 2991:}
+        -: 2992:
+        -: 2993:/* zmodload -F */
+        -: 2994:
+        -: 2995:/**/
+        -: 2996:static int
+    #####: 2997:bin_zmodload_features(const char *nam, char **args, Options ops)
+        -: 2998:{
+        -: 2999:    int iarg;
+    #####: 3000:    char *modname = *args;
+        -: 3001:    Patprog *patprogs;
+        -: 3002:    Feature_enables features, fep;
+        -: 3003:
+    #####: 3004:    if (modname)
+    #####: 3005:	args++;
+    #####: 3006:    else if (OPT_ISSET(ops,'L')) {
+    #####: 3007:	int printflags = PRINTMOD_LIST|PRINTMOD_FEATURES;
+    #####: 3008:	if (OPT_ISSET(ops,'P')) {
+    #####: 3009:	    zwarnnam(nam, "-P is only allowed with a module name");
+    #####: 3010:	    return 1;
+        -: 3011:	}
+    #####: 3012:	if (OPT_ISSET(ops,'l'))
+    #####: 3013:	    printflags |= PRINTMOD_LISTALL;
+    #####: 3014:	if (OPT_ISSET(ops,'a'))
+    #####: 3015:	    printflags |= PRINTMOD_AUTO;
+    #####: 3016:	scanhashtable(modulestab, 1, 0, MOD_ALIAS,
+    #####: 3017:		      modulestab->printnode, printflags);
+    #####: 3018:	return 0;
+        -: 3019:    }
+        -: 3020:
+    #####: 3021:    if (!modname) {
+    #####: 3022:	zwarnnam(nam, "-F requires a module name");
+    #####: 3023:	return 1;
+        -: 3024:    }
+        -: 3025:
+    #####: 3026:    if (OPT_ISSET(ops,'m')) {
+        -: 3027:	char **argp;
+        -: 3028:	Patprog *patprogp;
+        -: 3029:
+        -: 3030:	/* not NULL terminated */
+    #####: 3031:	patprogp = patprogs =
+    #####: 3032:	    (Patprog *)zhalloc(arrlen(args)*sizeof(Patprog));
+    #####: 3033:	for (argp = args; *argp; argp++, patprogp++) {
+    #####: 3034:	    char *arg = *argp;
+    #####: 3035:	    if (*arg == '+' || *arg == '-')
+    #####: 3036:		arg++;
+    #####: 3037:	    tokenize(arg);
+    #####: 3038:	    *patprogp = patcompile(arg, 0, 0);
+        -: 3039:	}
+        -: 3040:    } else
+    #####: 3041:	patprogs = NULL;
+        -: 3042:
+    #####: 3043:    if (OPT_ISSET(ops,'l') || OPT_ISSET(ops,'L') || OPT_ISSET(ops,'e')) {
+        -: 3044:	/*
+        -: 3045:	 * With option 'l', list all features one per line with + or -.
+        -: 3046:	 * With option 'L', list as zmodload statement showing
+        -: 3047:	 * only options turned on.
+        -: 3048:	 * With both options, list as zmodload showing options
+        -: 3049:	 * to be turned both on and off.
+        -: 3050:	 */
+        -: 3051:	Module m;
+    #####: 3052:	char **features, **fp, **arrset = NULL, **arrp = NULL;
+    #####: 3053:	int *enables = NULL, *ep;
+    #####: 3054:	char *param = OPT_ARG_SAFE(ops,'P');
+        -: 3055:
+    #####: 3056:	m = find_module(modname, FINDMOD_ALIASP, NULL);
+    #####: 3057:	if (OPT_ISSET(ops,'a')) {
+        -: 3058:	    LinkNode ln;
+        -: 3059:	    /*
+        -: 3060:	     * If there are no autoloads defined, return status 1.
+        -: 3061:	     */
+    #####: 3062:	    if (!m || !m->autoloads)
+    #####: 3063:		return 1;
+    #####: 3064:	    if (OPT_ISSET(ops,'e')) {
+    #####: 3065:		for (fp = args; *fp; fp++) {
+    #####: 3066:		    char *fstr = *fp;
+    #####: 3067:		    int sense = 1;
+    #####: 3068:		    if (*fstr == '+')
+    #####: 3069:			fstr++;
+    #####: 3070:		    else if (*fstr == '-') {
+    #####: 3071:			fstr++;
+    #####: 3072:			sense = 0;
+        -: 3073:		    }
+    #####: 3074:		    if ((linknodebystring(m->autoloads, fstr) != NULL) !=
+        -: 3075:			sense)
+    #####: 3076:			return 1;
+        -: 3077:		}
+    #####: 3078:		return 0;
+        -: 3079:	    }
+    #####: 3080:	    if (param) {
+    #####: 3081:		arrp = arrset = (char **)zalloc(sizeof(char*) *
+    #####: 3082:				 (countlinknodes(m->autoloads)+1));
+    #####: 3083:	    } else if (OPT_ISSET(ops,'L')) {
+    #####: 3084:		printf("zmodload -aF %s%c", m->node.nam,
+    #####: 3085:		       m->autoloads && firstnode(m->autoloads) ? ' ' : '\n');
+    #####: 3086:		arrp = NULL;
+        -: 3087:	    }
+    #####: 3088:	    for (ln = firstnode(m->autoloads); ln; incnode(ln)) {
+    #####: 3089:		char *al = (char *)getdata(ln);
+    #####: 3090:		if (param)
+    #####: 3091:		    *arrp++ = ztrdup(al);
+        -: 3092:		else
+    #####: 3093:		    printf("%s%c", al,
+    #####: 3094:			   OPT_ISSET(ops,'L') && nextnode(ln) ? ' ' : '\n');
+        -: 3095:	    }
+    #####: 3096:	    if (param) {
+    #####: 3097:		*arrp = NULL;
+    #####: 3098:		if (!setaparam(param, arrset))
+    #####: 3099:		    return 1;
+        -: 3100:	    }
+    #####: 3101:	    return 0;
+        -: 3102:	}
+    #####: 3103:	if (!m || !m->u.handle || (m->node.flags & MOD_UNLOAD)) {
+    #####: 3104:	    if (!OPT_ISSET(ops,'e'))
+    #####: 3105:		zwarnnam(nam, "module `%s' is not yet loaded", modname);
+    #####: 3106:	    return 1;
+        -: 3107:	}
+    #####: 3108:	if (features_module(m, &features)) {
+    #####: 3109:	    if (!OPT_ISSET(ops,'e'))
+    #####: 3110:		zwarnnam(nam, "module `%s' does not support features",
+        -: 3111:			 m->node.nam);
+    #####: 3112:	    return 1;
+        -: 3113:	}
+    #####: 3114:	if (enables_module(m, &enables)) {
+        -: 3115:	    /* this shouldn't ever happen, so don't silence this error */
+    #####: 3116:	    zwarnnam(nam, "error getting enabled features for module `%s'",
+        -: 3117:		     m->node.nam);
+    #####: 3118:	    return 1;
+        -: 3119:	}
+    #####: 3120:	for (arrp = args, iarg = 0; *arrp; arrp++, iarg++) {
+    #####: 3121:	    char *arg = *arrp;
+    #####: 3122:	    int on, found = 0;
+    #####: 3123:	    if (*arg == '-') {
+    #####: 3124:		on = 0;
+    #####: 3125:		arg++;
+    #####: 3126:	    } else if (*arg == '+') {
+    #####: 3127:		on = 1;
+    #####: 3128:		arg++;
+        -: 3129:	    } else
+    #####: 3130:		on = -1;
+    #####: 3131:	    for (fp = features, ep = enables; *fp; fp++, ep++) {
+    #####: 3132:		if (patprogs ? pattry(patprogs[iarg], *fp) :
+    #####: 3133:		    !strcmp(arg, *fp)) {
+        -: 3134:		    /* for -e, check given state, if any */
+    #####: 3135:		    if (OPT_ISSET(ops,'e') && on != -1 &&
+    #####: 3136:			on != (*ep & 1))
+    #####: 3137:			return 1;
+    #####: 3138:		    found++;
+    #####: 3139:		    if (!patprogs)
+    #####: 3140:			break;
+        -: 3141:		}
+        -: 3142:	    }
+    #####: 3143:	    if (!found) {
+    #####: 3144:		if (!OPT_ISSET(ops,'e'))
+    #####: 3145:		    zwarnnam(nam, patprogs ?
+        -: 3146:			     "module `%s' has no feature matching: `%s'" :
+        -: 3147:			     "module `%s' has no such feature: `%s'",
+        -: 3148:			     modname, *arrp);
+    #####: 3149:		return 1;
+        -: 3150:	    }
+        -: 3151:	}
+    #####: 3152:	if (OPT_ISSET(ops,'e'))		/* yep, everything we want exists */
+    #####: 3153:	    return 0;
+    #####: 3154:	if (param) {
+    #####: 3155:	    int arrlen = 0;
+    #####: 3156:	    for (fp = features, ep = enables; *fp; fp++, ep++) {
+    #####: 3157:		if (OPT_ISSET(ops, 'L') && !OPT_ISSET(ops, 'l') &&
+    #####: 3158:		    !*ep)
+    #####: 3159:		    continue;
+    #####: 3160:		if (*args) {
+        -: 3161:		    char **argp;
+    #####: 3162:		    for (argp = args, iarg = 0; *argp; argp++, iarg++) {
+    #####: 3163:			char *arg = *argp;
+        -: 3164:			/* ignore +/- for consistency */
+    #####: 3165:			if (*arg == '+' || *arg == '-')
+    #####: 3166:			    arg++;
+    #####: 3167:			if (patprogs ? pattry(patprogs[iarg], *fp) :
+    #####: 3168:			    !strcmp(*fp, arg))
+    #####: 3169:			    break;
+        -: 3170:		    }
+    #####: 3171:		    if (!*argp)
+    #####: 3172:			continue;
+        -: 3173:		}
+    #####: 3174:		arrlen++;
+        -: 3175:	    }
+    #####: 3176:	    arrp = arrset = zalloc(sizeof(char *) * (arrlen+1));
+    #####: 3177:	} else if (OPT_ISSET(ops, 'L'))
+    #####: 3178:	    printf("zmodload -F %s ", m->node.nam);
+    #####: 3179:	for (fp = features, ep = enables; *fp; fp++, ep++) {
+        -: 3180:	    char *onoff;
+        -: 3181:	    int term;
+    #####: 3182:	    if (*args) {
+        -: 3183:		char **argp;
+    #####: 3184:		for (argp = args, iarg = 0; *argp; argp++, iarg++) {
+    #####: 3185:		    char *arg = *argp;
+    #####: 3186:		    if (*arg == '+' || *arg == '-')
+    #####: 3187:			arg++;
+    #####: 3188:		    if (patprogs ? pattry(patprogs[iarg], *fp) :
+    #####: 3189:			!strcmp(*fp, *argp))
+    #####: 3190:			break;
+        -: 3191:		}
+    #####: 3192:		if (!*argp)
+    #####: 3193:		    continue;
+        -: 3194:	    }
+    #####: 3195:	    if (OPT_ISSET(ops, 'L') && !OPT_ISSET(ops, 'l')) {
+    #####: 3196:		if (!*ep)
+    #####: 3197:		    continue;
+    #####: 3198:		onoff = "";
+    #####: 3199:	    } else if (*ep) {
+    #####: 3200:		onoff = "+";
+        -: 3201:	    } else {
+    #####: 3202:		onoff = "-";
+        -: 3203:	    }
+    #####: 3204:	    if (param) {
+    #####: 3205:		*arrp++ = bicat(onoff, *fp);
+        -: 3206:	    } else {
+    #####: 3207:		if (OPT_ISSET(ops, 'L') && fp[1]) {
+    #####: 3208:		    term = ' ';
+        -: 3209:		} else {
+    #####: 3210:		    term = '\n';
+        -: 3211:		}
+    #####: 3212:		printf("%s%s%c", onoff, *fp, term);
+        -: 3213:	    }
+        -: 3214:	}
+    #####: 3215:	if (param) {
+    #####: 3216:	    *arrp = NULL;
+    #####: 3217:	    if (!setaparam(param, arrset))
+    #####: 3218:		return 1;
+        -: 3219:	}
+    #####: 3220:	return 0;
+    #####: 3221:    } else if (OPT_ISSET(ops,'P')) {
+    #####: 3222:	zwarnnam(nam, "-P can only be used with -l or -L");
+    #####: 3223:	return 1;
+    #####: 3224:    } else if (OPT_ISSET(ops,'a')) {
+    #####: 3225:	if (OPT_ISSET(ops,'m')) {
+    #####: 3226:	    zwarnnam(nam, "-m cannot be used with -a");
+    #####: 3227:	    return 1;
+        -: 3228:	}
+        -: 3229:	/*
+        -: 3230:	 * With zmodload -aF, we always use the effect of -i.
+        -: 3231:	 * The thinking is that marking a feature for
+        -: 3232:	 * autoload is separate from enabling or disabling it.
+        -: 3233:	 * Arguably we could do this with the zmodload -ab method
+        -: 3234:	 * but I've kept it there for old time's sake.
+        -: 3235:	 * The decoupling has meant FEAT_IGNORE/-i also
+        -: 3236:	 * suppresses an error for attempting to remove an
+        -: 3237:	 * autoload when the feature is enabled, which used
+        -: 3238:	 * to be a hard error before.
+        -: 3239:	 */
+    #####: 3240:	return autofeatures(nam, modname, args, 0, FEAT_IGNORE);
+        -: 3241:    }
+        -: 3242:
+    #####: 3243:    fep = features =
+    #####: 3244:	(Feature_enables)zhalloc((arrlen(args)+1)*sizeof(*fep));
+        -: 3245:
+    #####: 3246:    while (*args) {
+    #####: 3247:	fep->str = *args++;
+    #####: 3248:	fep->pat = patprogs ? *patprogs++ : NULL;
+    #####: 3249:	fep++;
+        -: 3250:    }
+    #####: 3251:    fep->str = NULL;
+    #####: 3252:    fep->pat = NULL;
+        -: 3253:
+    #####: 3254:    return require_module(modname, features, OPT_ISSET(ops,'s'));
+        -: 3255:}
+        -: 3256:
+        -: 3257:
+        -: 3258:/************************************************************************
+        -: 3259: * Generic feature support.
+        -: 3260: * These functions are designed to be called by modules.
+        -: 3261: ************************************************************************/
+        -: 3262:
+        -: 3263:/*
+        -: 3264: * Construct a features array out of the list of concrete
+        -: 3265: * features given, leaving space for any abstract features
+        -: 3266: * to be added by the module itself.
+        -: 3267: *
+        -: 3268: * Note the memory is from the heap.
+        -: 3269: */
+        -: 3270:
+        -: 3271:/**/
+        -: 3272:mod_export char **
+        1: 3273:featuresarray(UNUSED(Module m), Features f)
+        -: 3274:{
+        1: 3275:    int bn_size = f->bn_size, cd_size = f->cd_size;
+        1: 3276:    int mf_size = f->mf_size, pd_size = f->pd_size;
+        1: 3277:    int features_size = bn_size + cd_size + pd_size + mf_size + f->n_abstract;
+        1: 3278:    Builtin bnp = f->bn_list;
+        1: 3279:    Conddef cdp = f->cd_list;
+        1: 3280:    MathFunc mfp = f->mf_list;
+        1: 3281:    Paramdef pdp = f->pd_list;
+        1: 3282:    char **features = (char **)zhalloc((features_size + 1) * sizeof(char *));
+        1: 3283:    char **featurep = features;
+        -: 3284:
+        2: 3285:    while (bn_size--)
+    #####: 3286:	*featurep++ = dyncat("b:", (bnp++)->node.nam);
+        2: 3287:    while (cd_size--) {
+    #####: 3288:	*featurep++ = dyncat((cdp->flags & CONDF_INFIX) ? "C:" : "c:",
+    #####: 3289:			     cdp->name);
+    #####: 3290:	cdp++;
+        -: 3291:    }
+        2: 3292:    while (mf_size--)
+    #####: 3293:	*featurep++ = dyncat("f:", (mfp++)->name);
+       35: 3294:    while (pd_size--)
+       33: 3295:	*featurep++ = dyncat("p:", (pdp++)->name);
+        -: 3296:
+        1: 3297:    features[features_size] = NULL;
+        1: 3298:    return features;
+        -: 3299:}
+        -: 3300:
+        -: 3301:/*
+        -: 3302: * Return the current set of enables for the features in a
+        -: 3303: * module using heap memory.  Leave space for abstract
+        -: 3304: * features.  The array is not zero terminated.
+        -: 3305: */
+        -: 3306:/**/
+        -: 3307:mod_export int *
+        1: 3308:getfeatureenables(UNUSED(Module m), Features f)
+        -: 3309:{
+        1: 3310:    int bn_size = f->bn_size, cd_size = f->cd_size;
+        1: 3311:    int mf_size = f->mf_size, pd_size = f->pd_size;
+        1: 3312:    int features_size = bn_size + cd_size + mf_size + pd_size + f->n_abstract;
+        1: 3313:    Builtin bnp = f->bn_list;
+        1: 3314:    Conddef cdp = f->cd_list;
+        1: 3315:    MathFunc mfp = f->mf_list;
+        1: 3316:    Paramdef pdp = f->pd_list;
+        1: 3317:    int *enables = zhalloc(sizeof(int) * features_size);
+        1: 3318:    int *enablep = enables;
+        -: 3319:
+        2: 3320:    while (bn_size--)
+    #####: 3321:	*enablep++ = ((bnp++)->node.flags & BINF_ADDED) ? 1 : 0;
+        2: 3322:    while (cd_size--)
+    #####: 3323:	*enablep++ = ((cdp++)->flags & CONDF_ADDED) ? 1 : 0;
+        2: 3324:    while (mf_size--)
+    #####: 3325:	*enablep++ = ((mfp++)->flags & MFF_ADDED) ? 1 : 0;
+       35: 3326:    while (pd_size--)
+       33: 3327:	*enablep++ = (pdp++)->pm ? 1 : 0;
+        -: 3328:
+        1: 3329:    return enables;
+        -: 3330:}
+        -: 3331:
+        -: 3332:/*
+        -: 3333: * Add or remove the concrete features passed in arguments,
+        -: 3334: * depending on the corresponding element of the array e.
+        -: 3335: * If e is NULL, disable everything.
+        -: 3336: * Return 0 for success, 1 for failure; does not attempt
+        -: 3337: * to imitate the return values of addbuiltins() etc.
+        -: 3338: * Any failure in adding a requested feature is an
+        -: 3339: * error.
+        -: 3340: */
+        -: 3341:
+        -: 3342:/**/
+        -: 3343:mod_export int
+        1: 3344:setfeatureenables(Module m, Features f, int *e)
+        -: 3345:{
+        1: 3346:    int ret = 0;
+        -: 3347:
+        1: 3348:    if (f->bn_size) {
+    #####: 3349:	if (setbuiltins(m->node.nam, f->bn_list, f->bn_size, e))
+    #####: 3350:	    ret = 1;
+    #####: 3351:	if (e)
+    #####: 3352:	    e += f->bn_size;
+        -: 3353:    }
+        1: 3354:    if (f->cd_size) {
+    #####: 3355:	if (setconddefs(m->node.nam, f->cd_list, f->cd_size, e))
+    #####: 3356:	    ret = 1;
+    #####: 3357:	if (e)
+    #####: 3358:	    e += f->cd_size;
+        -: 3359:    }
+        1: 3360:    if (f->mf_size) {
+    #####: 3361:	if (setmathfuncs(m->node.nam, f->mf_list, f->mf_size, e))
+    #####: 3362:	    ret = 1;
+    #####: 3363:	if (e)
+    #####: 3364:	    e += f->mf_size;
+        -: 3365:    }
+        1: 3366:    if (f->pd_size) {
+        1: 3367:	if (setparamdefs(m->node.nam, f->pd_list, f->pd_size, e))
+    #####: 3368:	    ret = 1;
+        1: 3369:	if (e)
+        1: 3370:	    e += f->pd_size;
+        -: 3371:    }
+        1: 3372:    return ret;
+        -: 3373:}
+        -: 3374:
+        -: 3375:/*
+        -: 3376: * Convenient front-end to get or set features which
+        -: 3377: * can be used in a module enables_() function.
+        -: 3378: */
+        -: 3379:
+        -: 3380:/**/
+        -: 3381:mod_export int
+        2: 3382:handlefeatures(Module m, Features f, int **enables)
+        -: 3383:{
+        2: 3384:    if (!enables || *enables)
+        1: 3385:	return setfeatureenables(m, f, enables ? *enables : NULL);
+        1: 3386:    *enables = getfeatureenables(m, f);
+        1: 3387:    return 0;
+        -: 3388:}
+        -: 3389:
+        -: 3390:/*
+        -: 3391: * Ensure module "modname" is providing feature with "prefix"
+        -: 3392: * and "feature" (e.g. "b:", "limit").  If feature is NULL,
+        -: 3393: * ensure all features are loaded (used for compatibility
+        -: 3394: * with the pre-feature autoloading behaviour).
+        -: 3395: *
+        -: 3396: * This will usually be called from the main shell to handle
+        -: 3397: * loading of an autoloadable feature.
+        -: 3398: *
+        -: 3399: * Returns 0 on success, 1 for error in module, 2 for error
+        -: 3400: * setting the feature.  However, this isn't actually all
+        -: 3401: * that useful for testing immediately on an autoload since
+        -: 3402: * it could be a failure to autoload a different feature
+        -: 3403: * from the one we want.  We could fix this but it's
+        -: 3404: * possible to test other ways.
+        -: 3405: */
+        -: 3406:
+        -: 3407:/**/
+        -: 3408:mod_export int
+    #####: 3409:ensurefeature(const char *modname, const char *prefix, const char *feature)
+        -: 3410:{
+        -: 3411:    char *f;
+        -: 3412:    struct feature_enables features[2];
+        -: 3413:
+    #####: 3414:    if (!feature)
+    #####: 3415:	return require_module(modname, NULL, 0);
+    #####: 3416:    f = dyncat(prefix, feature);
+        -: 3417:
+    #####: 3418:    features[0].str = f;
+    #####: 3419:    features[0].pat = NULL;
+    #####: 3420:    features[1].str = NULL;
+    #####: 3421:    features[1].pat = NULL;
+    #####: 3422:    return require_module(modname, features, 0);
+        -: 3423:}
+        -: 3424:
+        -: 3425:/*
+        -: 3426: * Add autoloadable features for a given module.
+        -: 3427: */
+        -: 3428:
+        -: 3429:/**/
+        -: 3430:int
+       29: 3431:autofeatures(const char *cmdnam, const char *module, char **features,
+        -: 3432:	     int prefchar, int defflags)
+        -: 3433:{
+       29: 3434:    int ret = 0, subret;
+        -: 3435:    Module defm, m;
+       29: 3436:    char **modfeatures = NULL;
+       29: 3437:    int *modenables = NULL;
+       29: 3438:    if (module) {
+       29: 3439:	defm = (Module)find_module(module,
+        -: 3440:				   FINDMOD_ALIASP|FINDMOD_CREATE, NULL);
+       58: 3441:	if ((defm->node.flags & MOD_LINKED) ? defm->u.linked :
+       29: 3442:	    defm->u.handle) {
+    #####: 3443:	    (void)features_module(defm, &modfeatures);
+    #####: 3444:	    (void)enables_module(defm, &modenables);
+        -: 3445:	}
+        -: 3446:    } else
+    #####: 3447:	defm = NULL;
+        -: 3448:
+      170: 3449:    for (; *features; features++) {
+        -: 3450:	char *fnam, *typnam, *feature;
+      141: 3451:	int add, fchar, flags = defflags;
+        -: 3452:	autofeaturefn_t fn;
+        -: 3453:
+      141: 3454:	if (prefchar) {
+        -: 3455:	    /*
+        -: 3456:	     * "features" is list of bare features with no
+        -: 3457:	     * type prefix; prefchar gives type character.
+        -: 3458:	     */
+    #####: 3459:	    add = 1; 		/* unless overridden by flag */
+    #####: 3460:	    fchar = prefchar;
+    #####: 3461:	    fnam = *features;
+    #####: 3462:	    feature = zhalloc(strlen(fnam) + 3);
+    #####: 3463:	    sprintf(feature, "%c:%s", fchar, fnam);
+        -: 3464:	} else {
+      141: 3465:	    feature = *features;
+      141: 3466:	    if (*feature == '-') {
+    #####: 3467:		add = 0;
+    #####: 3468:		feature++;
+        -: 3469:	    } else {
+      141: 3470:		add = 1;
+      141: 3471:		if (*feature == '+')
+    #####: 3472:		    feature++;
+        -: 3473:	    }
+        -: 3474:
+      141: 3475:	    if (!*feature || feature[1] != ':') {
+    #####: 3476:		zwarnnam(cmdnam, "bad format for autoloadable feature: `%s'",
+        -: 3477:			 feature);
+    #####: 3478:		ret = 1;
+    #####: 3479:		continue;
+        -: 3480:	    }
+      141: 3481:	    fnam = feature + 2;
+      141: 3482:	    fchar = feature[0];
+        -: 3483:	}
+      141: 3484:	if (flags & FEAT_REMOVE)
+    #####: 3485:	    add = 0;
+        -: 3486:
+      141: 3487:	switch (fchar) {
+       57: 3488:	case 'b':
+       57: 3489:	    fn = add ? add_autobin : del_autobin;
+       57: 3490:	    typnam = "builtin";
+       57: 3491:	    break;
+        -: 3492:
+    #####: 3493:	case 'C':
+    #####: 3494:	    flags |= FEAT_INFIX;
+        -: 3495:	    /* FALLTHROUGH */
+        8: 3496:	case 'c':
+        8: 3497:	    fn = add ? add_autocond : del_autocond;
+        8: 3498:	    typnam = "condition";
+        8: 3499:	    break;
+        -: 3500:
+    #####: 3501:	case 'f':
+    #####: 3502:	    fn = add ? add_automathfunc : del_automathfunc;
+    #####: 3503:	    typnam = "math function";
+    #####: 3504:	    break;
+        -: 3505:
+       76: 3506:	case 'p':
+       76: 3507:	    fn = add ? add_autoparam : del_autoparam;
+       76: 3508:	    typnam = "parameter";
+       76: 3509:	    break;
+        -: 3510:
+    #####: 3511:	default:
+    #####: 3512:	    zwarnnam(cmdnam, "bad autoloadable feature type: `%c'",
+        -: 3513:		     fchar);
+    #####: 3514:	    ret = 1;
+    #####: 3515:	    continue;
+        -: 3516:	}
+        -: 3517:
+      141: 3518:	if (strchr(fnam, '/')) {
+    #####: 3519:	    zwarnnam(cmdnam, "%s: `/' is illegal in a %s", fnam, typnam);
+    #####: 3520:	    ret = 1;
+    #####: 3521:	    continue;
+        -: 3522:	}
+        -: 3523:
+      141: 3524:	if (!module) {
+        -: 3525:	    /*
+        -: 3526:	     * Traditional un-autoload syntax doesn't tell us
+        -: 3527:	     * which module this came from.
+        -: 3528:	     */
+        -: 3529:	    int i;
+    #####: 3530:	    for (i = 0, m = NULL; !m && i < modulestab->hsize; i++) {
+    #####: 3531:		for (m = (Module)modulestab->nodes[i]; m;
+    #####: 3532:		     m = (Module)m->node.next) {
+    #####: 3533:		    if (m->autoloads &&
+    #####: 3534:			linknodebystring(m->autoloads, feature))
+    #####: 3535:			break;
+        -: 3536:		}
+        -: 3537:	    }
+    #####: 3538:	    if (!m) {
+    #####: 3539:		if (!(flags & FEAT_IGNORE)) {
+    #####: 3540:		    ret = 1;
+    #####: 3541:		    zwarnnam(cmdnam, "%s: no such %s", fnam, typnam);
+        -: 3542:		}
+    #####: 3543:		continue;
+        -: 3544:	    }
+        -: 3545:	} else
+      141: 3546:	    m = defm;
+        -: 3547:
+      141: 3548:	subret = 0;
+      141: 3549:	if (add) {
+        -: 3550:	    char **ptr;
+      141: 3551:	    if (modfeatures) {
+        -: 3552:		/*
+        -: 3553:		 * If the module is already available, check that
+        -: 3554:		 * it does in fact provide the necessary feature.
+        -: 3555:		 */
+    #####: 3556:		for (ptr = modfeatures; *ptr; ptr++)
+    #####: 3557:		    if (!strcmp(*ptr, feature))
+    #####: 3558:			break;
+    #####: 3559:		if (!*ptr) {
+    #####: 3560:		    zwarnnam(cmdnam, "module `%s' has no such feature: `%s'",
+        -: 3561:			     m->node.nam, feature);
+    #####: 3562:		    ret = 1;
+    #####: 3563:		    continue;
+        -: 3564:		}
+        -: 3565:		/*
+        -: 3566:		 * If the feature is already provided by the module, there's
+        -: 3567:		 * nothing more to do.
+        -: 3568:		 */
+    #####: 3569:		if (modenables[ptr-modfeatures])
+    #####: 3570:		    continue;
+        -: 3571:		/*
+        -: 3572:		 * Otherwise, marking it for autoload will do the
+        -: 3573:		 * right thing when the feature is eventually used.
+        -: 3574:		 */
+        -: 3575:	    }
+      141: 3576:	    if (!m->autoloads) {
+       29: 3577:		m->autoloads = znewlinklist();
+       29: 3578:		zaddlinknode(m->autoloads, ztrdup(feature));
+        -: 3579:	    } else {
+        -: 3580:		/* Insert in lexical order */
+      112: 3581:		LinkNode ln, prev = (LinkNode)m->autoloads;
+      918: 3582:		while ((ln = nextnode(prev))) {
+      776: 3583:		    int cmp = strcmp(feature, (char *)getdata(ln));
+      776: 3584:		    if (cmp == 0) {
+        -: 3585:			/* Already there.  Never an error. */
+    #####: 3586:			break;
+        -: 3587:		    }
+      776: 3588:		    if (cmp < 0) {
+       82: 3589:			zinsertlinknode(m->autoloads, prev,
+       82: 3590:					ztrdup(feature));
+       82: 3591:			break;
+        -: 3592:		    }
+      694: 3593:		    prev = ln;
+        -: 3594:		}
+      112: 3595:		if (!ln)
+       30: 3596:		    zaddlinknode(m->autoloads, ztrdup(feature));
+        -: 3597:	    }
+    #####: 3598:	} else if (m->autoloads) {
+        -: 3599:	    LinkNode ln;
+    #####: 3600:	    if ((ln = linknodebystring(m->autoloads, feature)))
+    #####: 3601:		zsfree((char *)remnode(m->autoloads, ln));
+        -: 3602:	    else {
+        -: 3603:		/*
+        -: 3604:		 * With -i (or zmodload -Fa), removing an autoload
+        -: 3605:		 * that's not there is not an error.
+        -: 3606:		 */
+    #####: 3607:		subret = (flags & FEAT_IGNORE) ? -2 : 2;
+        -: 3608:	    }
+        -: 3609:	}
+        -: 3610:
+      141: 3611:	if (subret == 0)
+      141: 3612:	    subret = fn(module, fnam, flags);
+        -: 3613:
+      141: 3614:	if (subret != 0) {
+        -: 3615:	    /* -2 indicates not an error, just skip running fn() */
+    #####: 3616:	    if (subret != -2)
+    #####: 3617:		ret = 1;
+    #####: 3618:	    switch (subret) {
+    #####: 3619:	    case 1:
+    #####: 3620:		zwarnnam(cmdnam, "failed to add %s `%s'", typnam, fnam);
+    #####: 3621:		break;
+        -: 3622:
+    #####: 3623:	    case 2:
+    #####: 3624:		zwarnnam(cmdnam, "%s: no such %s", fnam, typnam);
+    #####: 3625:		break;
+        -: 3626:
+    #####: 3627:	    case 3:
+    #####: 3628:		zwarnnam(cmdnam, "%s: %s is already defined", fnam, typnam);
+    #####: 3629:		break;
+        -: 3630:
+    #####: 3631:	    default:
+        -: 3632:		/* no (further) message needed */
+    #####: 3633:		break;
+        -: 3634:	    }
+      141: 3635:	}
+        -: 3636:    }
+        -: 3637:
+       29: 3638:    return ret;
+        -: 3639:}

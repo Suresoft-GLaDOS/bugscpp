@@ -1,0 +1,3599 @@
+        -:    0:Source:complist.c
+        -:    0:Graph:/home/workspace/Src/Zle/complist.gcno
+        -:    0:Data:/home/workspace/Src/Zle/complist.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * complist.c - completion listing enhancements
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "complist.mdh"
+        -:   31:#include "complist.pro"
+        -:   32:
+        -:   33:
+        -:   34:/* Information about the list shown. */
+        -:   35:
+        -:   36:/*
+        -:   37: * noselect: 1 if complistmatches indicated we shouldn't do selection;
+        -:   38: *           -1 if interactive mode needs to reset the selection list.
+        -:   39: *           Tested in domenuselect, and in complistmatches to skip redraw.
+        -:   40: * mselect:  Local copy of the index of the currently selected match.
+        -:   41: *           Initialised to the gnum entry of the current match for
+        -:   42: *           each completion.
+        -:   43: * inselect: 1 if we already selecting matches; tested in complistmatches()
+        -:   44: * mcol:     The column for the selected completion.  As we never scroll
+        -:   45: *           horizontally this applies both the screen and the logical array.
+        -:   46: * mline:    The line for the selected completion in the logical array of
+        -:   47: *           all matches, not all of which may be on screen at once.
+        -:   48: * mcols:    Local copy of columns used in sizing arrays. 
+        -:   49: * mlines:   The number of lines in the logical array of all matches,
+        -:   50: *           initialised from listdat.nlines.
+        -:   51: */
+        -:   52:static int noselect, mselect, inselect, mcol, mline, mcols, mlines;
+        -:   53:/*
+        -:   54: * selected: Used to signal between domenucomplete() and menuselect()
+        -:   55: *           that a selected entry has been found.  Or something.
+        -:   56: * mlbeg:    The first line of the logical array of all matches that
+        -:   57: *           fits on screen.  Setting this to -1 forces a redraw.
+        -:   58: * mlend:    The line after the last that fits on screen.
+        -:   59: * mscroll:  1 if the scrolling prompt is shown on screen.
+        -:   60: * mrestlines: The number of screen lines remaining to be processed.
+        -:   61: */
+        -:   62:static int selected, mlbeg = -1, mlend = 9999999, mscroll, mrestlines;
+        -:   63:/*
+        -:   64: * mnew: 1 if a new selection menu is being displayed.
+        -:   65: * mlastcols: stored value of mcols for use in calculating mnew.
+        -:   66: * mlastlines: stored value of mlines for use in calculating mnew.
+        -:   67: * mhasstat: Indicates if the status line is present (but maybe not
+        -:   68: *           yet printed).
+        -:   69: * mfirstl: The first line of the logical array of all matches to
+        -:   70: *          be shown on screen, -1 if this has not yet been determined.
+        -:   71: * mlastm: The index of the selected match in some circumstances; used
+        -:   72: *         if an explicit number for a match is passed to compprintfmt();
+        -:   73: *         initialised from the total number of matches.  I realise this
+        -:   74: *         isn't very illuminating.
+        -:   75: */
+        -:   76:static int mnew, mlastcols, mlastlines, mhasstat, mfirstl, mlastm;
+        -:   77:/*
+        -:   78: * mlprinted: Used to signal the number of additional lines printed
+        -:   79: *            when outputting matches (as argument passing is a bit
+        -:   80: *            screwy within the completion system).
+        -:   81: * molbeg:    The last value of mlbeg; -1 if invalid, -42 if, er, very
+        -:   82: *            invalid.  Used in calculations of how much to draw.
+        -:   83: * mocol:     The last value of mcol.
+        -:   84: * moline:    The last value of mline.
+        -:   85: * mstatprinted: Indicates that the status line has now been printed,
+        -:   86: *               c.f. mhasstat.
+        -:   87: */
+        -:   88:static int mlprinted, molbeg = -2, mocol = 0, moline = 0, mstatprinted;
+        -:   89:/*
+        -:   90: * mstatus: The message printed when scrolling.
+        -:   91: * mlistp: The message printed when merely listing.
+        -:   92: */
+        -:   93:static char *mstatus, *mlistp;
+        -:   94:/*
+        -:   95: * mtab is the logical array of all matches referred to above.  It
+        -:   96: * contains mcols*mlines entries.  These entries contain a pointer to
+        -:   97: * the match structure which is in use at a particular point.  Note
+        -:   98: * that for multiple line entries lines after the first contain NULL.
+        -:   99: *
+        -:  100: * mmtabp is a pointer to the selected entry in mtab.
+        -:  101: */
+        -:  102:static Cmatch **mtab, **mmtabp;
+        -:  103:/*
+        -:  104: * Used to indicate that the list has changed and needs redisplaying.
+        -:  105: */
+        -:  106:static int mtab_been_reallocated;
+        -:  107:/*
+        -:  108: * Array and pointer for the match group in exactly the same layout
+        -:  109: * as mtab and mmtabp.
+        -:  110: */
+        -:  111:static Cmgroup *mgtab, *mgtabp;
+        -:  112:#ifdef DEBUG
+        -:  113:/*
+        -:  114: * Allow us to keep track of pointer arithmetic for mgtab; could
+        -:  115: * just as well have been for mtab but wasn't.
+        -:  116: */
+        -:  117:static int mgtabsize;
+        -:  118:#endif
+        -:  119:
+        -:  120:/*
+        -:  121: * Used in mtab/mgtab, for explanations.
+        -:  122: *
+        -:  123: * UUUUUUUUUUUUUUURRRRGHHHHHHHHHH!!!!!!!!! --- pws
+        -:  124: */
+        -:  125:
+        -:  126:#define MMARK       ((unsigned long) 1)
+        -:  127:#define mmarked(v)  (((unsigned long) (v)) & MMARK)
+        -:  128:#define mtmark(v)   ((Cmatch *) (((unsigned long) (v)) | MMARK))
+        -:  129:#define mtunmark(v) ((Cmatch *) (((unsigned long) (v)) & ~MMARK))
+        -:  130:#define mgmark(v)   ((Cmgroup)  (((unsigned long) (v)) | MMARK))
+        -:  131:#define mgunmark(v) ((Cmgroup)  (((unsigned long) (v)) & ~MMARK))
+        -:  132:
+        -:  133:/* Information for in-string colours. */
+        -:  134:
+        -:  135:/* Maximum number of in-string colours supported. */
+        -:  136:
+        -:  137:#define MAX_POS 11
+        -:  138:
+        -:  139:static int nrefs;
+        -:  140:static int begpos[MAX_POS], curisbeg;
+        -:  141:static int endpos[MAX_POS];
+        -:  142:static int sendpos[MAX_POS], curissend; /* sorted end positions */
+        -:  143:static char **patcols, *curiscols[MAX_POS];
+        -:  144:static int curiscol;
+        -:  145:
+        -:  146:/* The last color used. */
+        -:  147:
+        -:  148:static char *last_cap;
+        -:  149:
+        -:  150:
+        -:  151:/* We use the parameters ZLS_COLORS and ZLS_COLOURS in the same way as
+        -:  152: * the color ls does. It's just that we don't support the `or' file
+        -:  153: * type. */
+        -:  154:
+        -:  155:
+        -:  156:/*
+        -:  157: * menu-select widget: used to test if it's already loaded.
+        -:  158: */
+        -:  159:static Widget w_menuselect;
+        -:  160:/*
+        -:  161: * Similarly for the menuselect and listscroll keymaps.
+        -:  162: */
+        -:  163:static Keymap mskeymap, lskeymap;
+        -:  164:
+        -:  165:/* Indixes into the terminal string arrays. */
+        -:  166:
+        -:  167:#define COL_NO  0
+        -:  168:#define COL_FI  1
+        -:  169:#define COL_DI  2
+        -:  170:#define COL_LN  3
+        -:  171:#define COL_PI  4
+        -:  172:#define COL_SO  5
+        -:  173:#define COL_BD  6
+        -:  174:#define COL_CD  7
+        -:  175:#define COL_OR  8
+        -:  176:#define COL_MI  9
+        -:  177:#define COL_SU 10
+        -:  178:#define COL_SG 11
+        -:  179:#define COL_TW 12
+        -:  180:#define COL_OW 13
+        -:  181:#define COL_ST 14
+        -:  182:#define COL_EX 15
+        -:  183:#define COL_LC 16
+        -:  184:#define COL_RC 17
+        -:  185:#define COL_EC 18
+        -:  186:#define COL_TC 19
+        -:  187:#define COL_SP 20
+        -:  188:#define COL_MA 21
+        -:  189:#define COL_HI 22
+        -:  190:#define COL_DU 23
+        -:  191:#define COL_SA 24
+        -:  192:
+        -:  193:#define NUM_COLS 25
+        -:  194:
+        -:  195:/* Names of the terminal strings. */
+        -:  196:
+        -:  197:static char *colnames[] = {
+        -:  198:    "no", "fi", "di", "ln", "pi", "so", "bd", "cd", "or", "mi",
+        -:  199:    "su", "sg", "tw", "ow", "st", "ex",
+        -:  200:    "lc", "rc", "ec", "tc", "sp", "ma", "hi", "du", "sa", NULL
+        -:  201:};
+        -:  202:
+        -:  203:/* Default values. */
+        -:  204:
+        -:  205:static char *defcols[] = {
+        -:  206:    "0", "0", "1;31", "1;36", "33", "1;35", "1;33", "1;33", NULL, NULL,
+        -:  207:    "37;41", "30;43", "30;42", "34;42", "37;44", "1;32", 
+        -:  208:    "\033[", "m", NULL, "0", "0", "7", NULL, NULL, "0"
+        -:  209:};
+        -:  210:
+        -:  211:/* This describes a terminal string for a file type. */
+        -:  212:
+        -:  213:typedef struct filecol *Filecol;
+        -:  214:
+        -:  215:struct filecol {
+        -:  216:    Patprog prog;		/* group pattern */
+        -:  217:    char *col;			/* color string */
+        -:  218:    Filecol next;		/* next one */
+        -:  219:};
+        -:  220:
+        -:  221:/* This describes a terminal string for a pattern. */
+        -:  222:
+        -:  223:typedef struct patcol *Patcol;
+        -:  224:
+        -:  225:struct patcol {
+        -:  226:    Patprog prog;
+        -:  227:    Patprog pat;		/* pattern for match */
+        -:  228:    char *cols[MAX_POS + 1];
+        -:  229:    Patcol next;
+        -:  230:};
+        -:  231:
+        -:  232:/* This describes a terminal string for a filename extension. */
+        -:  233:
+        -:  234:typedef struct extcol *Extcol;
+        -:  235:
+        -:  236:struct extcol {
+        -:  237:    Patprog prog;		/* group pattern or NULL */
+        -:  238:    char *ext;			/* the extension */
+        -:  239:    char *col;			/* the terminal color string */
+        -:  240:    Extcol next;		/* the next one in the list */
+        -:  241:};
+        -:  242:
+        -:  243:/* This holds all terminal strings. */
+        -:  244:
+        -:  245:typedef struct listcols *Listcols;
+        -:  246:
+        -:  247:/* values for listcol flags */
+        -:  248:enum {
+        -:  249:    /* ln=target:  follow symlinks to determine highlighting */
+        -:  250:    LC_FOLLOW_SYMLINKS = 0x0001
+        -:  251:};
+        -:  252:
+        -:  253:struct listcols {
+        -:  254:    Filecol files[NUM_COLS];	/* strings for file types */
+        -:  255:    Patcol pats;		/* strings for patterns */
+        -:  256:    Extcol exts;		/* strings for extensions */
+        -:  257:    int flags;			/* special settings, see above */
+        -:  258:};
+        -:  259:
+        -:  260:/*
+        -:  261: * Contains information about the colours to be used for entries.
+        -:  262: * Sometimes mcolors is passed as an argument even though it's
+        -:  263: * available to all the functions.
+        -:  264: */
+        -:  265:static struct listcols mcolors;
+        -:  266:
+        -:  267:/* Combined length of LC and RC, maximum length of capability strings. */
+        -:  268:
+        -:  269:static int lr_caplen, max_caplen;
+        -:  270:
+        -:  271:/* This parses the value of a definition (the part after the `=').
+        -:  272: * The return value is a pointer to the character after it. */
+        -:  273:
+        -:  274:static char *
+      885:  275:getcolval(char *s, int multi)
+        -:  276:{
+      885:  277:    char *p, *o = s;
+        -:  278:
+     4484:  279:    for (p = s; *s && *s != ':' && (!multi || *s != '='); p++, s++) {
+     3599:  280:	if (*s == '\\' && s[1]) {
+       59:  281:	    switch (*++s) {
+    #####:  282:	    case 'a': *p = '\007'; break;
+       59:  283:	    case 'n': *p = '\n'; break;
+    #####:  284:	    case 'b': *p = '\b'; break;
+    #####:  285:	    case 't': *p = '\t'; break;
+    #####:  286:	    case 'v': *p = '\v'; break;
+    #####:  287:	    case 'f': *p = '\f'; break;
+    #####:  288:	    case 'r': *p = '\r'; break;
+    #####:  289:	    case 'e': *p = '\033'; break;
+    #####:  290:	    case '_': *p = ' '; break;
+    #####:  291:	    case '?': *p = '\177'; break;
+    #####:  292:	    default:
+    #####:  293:		if (*s >= '0' && *s <= '7') {
+    #####:  294:		    int i = STOUC(*s);
+        -:  295:
+    #####:  296:		    if (*++s >= '0' && *s <= '7') {
+    #####:  297:			i = (i * 8) + STOUC(*s);
+    #####:  298:			if (*++s >= '0' && *s <= '7')
+    #####:  299:			    i = (i * 8) + STOUC(*s);
+        -:  300:		    }
+    #####:  301:		    *p = (char) i;
+        -:  302:		} else
+    #####:  303:		    *p = *s;
+        -:  304:	    }
+       59:  305:	} else if (*s == '^') {
+    #####:  306:	    if ((s[1] >= '@' && s[1] <= '_') ||
+    #####:  307:		(s[1] >= 'a' && s[1] <= 'z'))
+    #####:  308:		*p = (char) (STOUC(*s) & ~0x60);
+    #####:  309:	    else if (s[1] == '?')
+    #####:  310:		*p = '\177';
+        -:  311:	    else {
+    #####:  312:		*p++ = *s;
+    #####:  313:		*p = s[1];
+        -:  314:	    }
+    #####:  315:	    s++;
+        -:  316:	} else
+     3540:  317:	    *p = *s;
+        -:  318:    }
+      885:  319:    if (p != s)
+       59:  320:	*p = '\0';
+      885:  321:    if ((s - o) > max_caplen)
+      118:  322:	max_caplen = s - o;
+      885:  323:    return s;
+        -:  324:}
+        -:  325:
+        -:  326:/* This parses one definition. Return value is a pointer to the
+        -:  327: * character after it. */
+        -:  328:
+        -:  329:static char *
+      885:  330:getcoldef(char *s)
+        -:  331:{
+      885:  332:    Patprog gprog = NULL;
+        -:  333:
+      885:  334:    if (*s == '(') {
+        -:  335:	char *p;
+    #####:  336:	int l = 0;
+        -:  337:
+    #####:  338:	for (p = s + 1, l = 0; *p && (*p != ')' || l); p++)
+    #####:  339:	    if (*p == '\\' && p[1])
+    #####:  340:		p++;
+    #####:  341:	    else if (*p == '(')
+    #####:  342:		l++;
+    #####:  343:	    else if (*p == ')')
+    #####:  344:		l--;
+        -:  345:
+    #####:  346:	if (*p == ')') {
+    #####:  347:	    char sav = p[1];
+        -:  348:
+    #####:  349:	    p[1] = '\0';
+    #####:  350:	    s = metafy(s, -1, META_USEHEAP);
+    #####:  351:	    tokenize(s);
+    #####:  352:	    gprog = patcompile(s, 0, NULL);
+    #####:  353:	    p[1] = sav;
+        -:  354:
+    #####:  355:	    s = p + 1;
+        -:  356:	}
+        -:  357:    }
+      885:  358:    if (*s == '*') {
+        -:  359:	Extcol ec, eo;
+        -:  360:	char *n, *p;
+        -:  361:
+        -:  362:	/* This is for an extension. */
+        -:  363:
+    #####:  364:	n = ++s;
+    #####:  365:	while (*s && *s != '=')
+    #####:  366:	    s++;
+    #####:  367:	if (!*s)
+    #####:  368:	    return s;
+    #####:  369:	*s++ = '\0';
+    #####:  370:	p = getcolval(s, 0);
+    #####:  371:	ec = (Extcol) zhalloc(sizeof(*ec));
+    #####:  372:	ec->prog = gprog;
+    #####:  373:	ec->ext = n;
+    #####:  374:	ec->col = s;
+    #####:  375:	ec->next = NULL;
+    #####:  376:	if ((eo = mcolors.exts)) {
+    #####:  377:	    while (eo->next)
+    #####:  378:		eo = eo->next;
+    #####:  379:	    eo->next = ec;
+        -:  380:	} else
+    #####:  381:	    mcolors.exts = ec;
+    #####:  382:	if (*p)
+    #####:  383:	    *p++ = '\0';
+    #####:  384:	return p;
+      885:  385:    } else if (*s == '=') {
+    #####:  386:	char *p = ++s, *t, *cols[MAX_POS];
+    #####:  387:	int ncols = 0;
+    #####:  388:	int nesting = 0;
+        -:  389:	Patprog prog;
+        -:  390:
+        -:  391:	/* This is for a pattern. */
+        -:  392:
+    #####:  393:	while (*s && (nesting || *s != '=')) {
+    #####:  394:	    switch (*s++) {
+    #####:  395:		case '\\':
+    #####:  396:		    if (*s)
+    #####:  397:			s++;
+    #####:  398:		    break;
+    #####:  399:		case '(':
+    #####:  400:		    nesting++;
+    #####:  401:		    break;
+    #####:  402:		case ')':
+    #####:  403:		    nesting--;
+    #####:  404:		    break;
+        -:  405:	    }
+        -:  406:	}
+    #####:  407:	if (!*s)
+    #####:  408:	    return s;
+    #####:  409:	*s++ = '\0';
+        -:  410:	while (1) {
+    #####:  411:	    t = getcolval(s, 1);
+    #####:  412:	    if (ncols < MAX_POS)
+    #####:  413:		cols[ncols++] = s;
+    #####:  414:	    s = t;
+    #####:  415:	    if (*s != '=')
+    #####:  416:		break;
+    #####:  417:	    *s++ = '\0';
+        -:  418:	}
+    #####:  419:	p = metafy(p, -1, META_USEHEAP);
+    #####:  420:	tokenize(p);
+    #####:  421:	if ((prog = patcompile(p, 0, NULL))) {
+        -:  422:	    Patcol pc, po;
+        -:  423:	    int i;
+        -:  424:
+    #####:  425:	    pc = (Patcol) zhalloc(sizeof(*pc));
+    #####:  426:	    pc->prog = gprog;
+    #####:  427:	    pc->pat = prog;
+    #####:  428:	    for (i = 0; i < ncols; i++)
+    #####:  429:		pc->cols[i] = cols[i];
+    #####:  430:	    pc->cols[i] = NULL;
+    #####:  431:	    pc->next = NULL;
+    #####:  432:	    if ((po = mcolors.pats)) {
+    #####:  433:		while (po->next)
+    #####:  434:		    po = po->next;
+    #####:  435:		po->next = pc;
+        -:  436:	    } else
+    #####:  437:		mcolors.pats = pc;
+        -:  438:	}
+    #####:  439:	if (*t)
+    #####:  440:	    *t++ = '\0';
+    #####:  441:	return t;
+        -:  442:    } else {
+      885:  443:	char *n = s, *p, **nn;
+        -:  444:	int i;
+        -:  445:
+        -:  446:	/* This is for a file type. */
+        -:  447:
+     3540:  448:	while (*s && *s != '=')
+     1770:  449:	    s++;
+      885:  450:	if (!*s)
+    #####:  451:	    return s;
+      885:  452:	*s++ = '\0';
+     9263:  453:	for (i = 0, nn = colnames; *nn; i++, nn++)
+     9263:  454:	    if (!strcmp(n, *nn))
+      885:  455:		break;
+        -:  456:	/*
+        -:  457:	 * special case:  highlighting link targets
+        -:  458:	 */
+      885:  459:	if (i == COL_LN && strpfx("target", s) &&
+    #####:  460:	    (s[6] == ':' || !s[6])) {
+    #####:  461:	    mcolors.flags |= LC_FOLLOW_SYMLINKS;
+    #####:  462:	    p = s + 6;
+        -:  463:	} else {
+      885:  464:	    p = getcolval(s, 0);
+      885:  465:	    if (*nn) {
+        -:  466:		Filecol fc, fo;
+        -:  467:
+      885:  468:		fc = (Filecol) zhalloc(sizeof(*fc));
+     1711:  469:		fc->prog = (i == COL_EC || i == COL_LC || i == COL_RC ?
+     1593:  470:			    NULL : gprog);
+      885:  471:		fc->col = s;
+      885:  472:		fc->next = NULL;
+      885:  473:		if ((fo = mcolors.files[i])) {
+    #####:  474:		    while (fo->next)
+    #####:  475:			fo = fo->next;
+    #####:  476:		    fo->next = fc;
+        -:  477:		} else
+      885:  478:		    mcolors.files[i] = fc;
+        -:  479:	    }
+      885:  480:	    if (*p)
+      826:  481:		*p++ = '\0';
+        -:  482:	}
+      885:  483:	return p;
+        -:  484:    }
+        -:  485:}
+        -:  486:
+        -:  487:static Filecol
+      590:  488:filecol(char *col)
+        -:  489:{
+        -:  490:    Filecol fc;
+        -:  491:
+      590:  492:    fc = (Filecol) zhalloc(sizeof(*fc));
+      590:  493:    fc->prog = NULL;
+      590:  494:    fc->col = col;
+      590:  495:    fc->next = NULL;
+        -:  496:
+      590:  497:    return fc;
+        -:  498:}
+        -:  499:
+        -:  500:/*
+        -:  501: * This initializes the given terminal color structure.
+        -:  502: */
+        -:  503:
+        -:  504:static void
+       59:  505:getcols(void)
+        -:  506:{
+        -:  507:    char *s;
+        -:  508:    int i, l;
+        -:  509:
+       59:  510:    max_caplen = lr_caplen = 0;
+       59:  511:    mcolors.flags = 0;
+       59:  512:    queue_signals();
+       59:  513:    if (!(s = getsparam_u("ZLS_COLORS")) &&
+        -:  514:	!(s = getsparam_u("ZLS_COLOURS"))) {
+    #####:  515:	for (i = 0; i < NUM_COLS; i++)
+    #####:  516:	    mcolors.files[i] = filecol("");
+    #####:  517:	mcolors.pats = NULL;
+    #####:  518:	mcolors.exts = NULL;
+        -:  519:	
+    #####:  520:	if ((s = tcstr[TCSTANDOUTBEG]) && s[0]) {
+    #####:  521:	    mcolors.files[COL_MA] = filecol(s);
+    #####:  522:	    mcolors.files[COL_EC] = filecol(tcstr[TCSTANDOUTEND]);
+        -:  523:	} else
+    #####:  524:	    mcolors.files[COL_MA] = filecol(defcols[COL_MA]);
+    #####:  525:	lr_caplen = 0;
+    #####:  526:	if ((max_caplen = strlen(mcolors.files[COL_MA]->col)) <
+    #####:  527:	    (l = strlen(mcolors.files[COL_EC]->col)))
+    #####:  528:	    max_caplen = l;
+    #####:  529:	unqueue_signals();
+    #####:  530:	return;
+        -:  531:    }
+        -:  532:    /* Reset the global color structure. */
+       59:  533:    memset(&mcolors, 0, sizeof(mcolors));
+       59:  534:    s = dupstring(s);
+     1003:  535:    while (*s)
+      885:  536:	if (*s == ':')
+    #####:  537:	    s++;
+        -:  538:	else
+      885:  539:	    s = getcoldef(s);
+       59:  540:    unqueue_signals();
+        -:  541:
+        -:  542:    /* Use default values for those that aren't set explicitly. */
+     1534:  543:    for (i = 0; i < NUM_COLS; i++) {
+     1475:  544:	if (!mcolors.files[i] || !mcolors.files[i]->col)
+      590:  545:	    mcolors.files[i] = filecol(defcols[i]);
+     2773:  546:	if (mcolors.files[i] && mcolors.files[i]->col &&
+     1298:  547:	    (l = strlen(mcolors.files[i]->col)) > max_caplen)
+    #####:  548:	    max_caplen = l;
+        -:  549:    }
+      118:  550:    lr_caplen = strlen(mcolors.files[COL_LC]->col) +
+       59:  551:	strlen(mcolors.files[COL_RC]->col);
+        -:  552:
+        -:  553:    /* Default for orphan is same as link. */
+       59:  554:    if (!mcolors.files[COL_OR] || !mcolors.files[COL_OR]->col)
+       59:  555:	mcolors.files[COL_OR] = mcolors.files[COL_LN];
+        -:  556:    /* Default for missing files:  currently not used */
+       59:  557:    if (!mcolors.files[COL_MI] || !mcolors.files[COL_MI]->col)
+    #####:  558:	mcolors.files[COL_MI] = mcolors.files[COL_FI];
+        -:  559:
+       59:  560:    return;
+        -:  561:}
+        -:  562:
+        -:  563:static void
+      171:  564:zlrputs(char *cap)
+        -:  565:{
+      171:  566:    if (!*last_cap || strcmp(last_cap, cap)) {
+      171:  567:	VARARR(char, buf, lr_caplen + max_caplen + 1);
+        -:  568:
+      171:  569:	strcpy(buf, mcolors.files[COL_LC]->col);
+      171:  570:	strcat(buf, cap);
+      171:  571:	strcat(buf, mcolors.files[COL_RC]->col);
+        -:  572:
+      171:  573:	tputs(buf, 1, putshout);
+        -:  574:
+      171:  575:	strcpy(last_cap, cap);
+        -:  576:    }
+      171:  577:}
+        -:  578:
+        -:  579:static void
+      171:  580:zcputs(char *group, int colour)
+        -:  581:{
+        -:  582:    Filecol fc;
+        -:  583:
+      171:  584:    for (fc = mcolors.files[colour]; fc; fc = fc->next)
+      342:  585:	if (fc->col &&
+      171:  586:	    (!fc->prog || !group || pattry(fc->prog, group))) {
+      171:  587:	    zlrputs(fc->col);
+        -:  588:
+      171:  589:	    return;
+        -:  590:	}
+    #####:  591:    zlrputs("0");
+        -:  592:}
+        -:  593:
+        -:  594:/* Turn off colouring. */
+        -:  595:
+        -:  596:static void
+      171:  597:zcoff(void)
+        -:  598:{
+      171:  599:    if (mcolors.files[COL_EC] && mcolors.files[COL_EC]->col) {
+      171:  600:	tputs(mcolors.files[COL_EC]->col, 1, putshout);
+      171:  601:	*last_cap = '\0';
+        -:  602:    } else
+    #####:  603:	zcputs(NULL, COL_NO);
+      171:  604:}
+        -:  605:
+        -:  606:/* Clear to end of line, if possible and necessary. */
+        -:  607:static void
+      255:  608:cleareol()
+        -:  609:{
+      255:  610:    if (mlbeg >= 0 && tccan(TCCLEAREOL)) {
+    #####:  611:        if (*last_cap)
+    #####:  612:            zcoff();    /* If we used colors, prevent them from bleeding. */
+    #####:  613:        tcout(TCCLEAREOL);
+        -:  614:    }
+      255:  615:}
+        -:  616:
+        -:  617:static void
+    #####:  618:initiscol(void)
+        -:  619:{
+        -:  620:    int i;
+        -:  621:
+    #####:  622:    zlrputs(patcols[0]);
+        -:  623:
+    #####:  624:    curiscols[curiscol = 0] = *patcols++;
+        -:  625:
+    #####:  626:    curisbeg = curissend = 0;
+        -:  627:
+    #####:  628:    for (i = 0; i < nrefs; i++)
+    #####:  629:	sendpos[i] = 0xfffffff;
+    #####:  630:    for (; i < MAX_POS; i++)
+    #####:  631:	begpos[i] = endpos[i] = sendpos[i] = 0xfffffff;
+    #####:  632:}
+        -:  633:
+        -:  634:static void
+    #####:  635:doiscol(int pos)
+        -:  636:{
+        -:  637:    int fi;
+        -:  638:
+    #####:  639:    while (pos > sendpos[curissend]) {
+    #####:  640:	curissend++;
+    #####:  641:	if (curiscol) {
+    #####:  642:	    zcputs(NULL, COL_NO);
+    #####:  643:	    zlrputs(curiscols[--curiscol]);
+        -:  644:	}
+        -:  645:    }
+    #####:  646:    while (((fi = (endpos[curisbeg] < begpos[curisbeg] || 
+    #####:  647:		  begpos[curisbeg] == -1)) ||
+    #####:  648:	    pos == begpos[curisbeg]) && *patcols) {
+    #####:  649:	if (!fi) {
+    #####:  650:	    int i, j, e = endpos[curisbeg];
+        -:  651:	    
+        -:  652:	    /* insert e in sendpos */
+    #####:  653:	    for (i = curissend; sendpos[i] <= e; ++i)
+        -:  654:		;
+    #####:  655:	    for (j = MAX_POS - 1; j > i; --j)
+    #####:  656:		sendpos[j] = sendpos[j-1];
+    #####:  657:	    sendpos[i] = e;
+        -:  658:	    
+    #####:  659:	    zcputs(NULL, COL_NO);
+    #####:  660:	    zlrputs(*patcols);
+    #####:  661:	    curiscols[++curiscol] = *patcols;
+        -:  662:	}
+    #####:  663:	++patcols;
+    #####:  664:	++curisbeg;
+        -:  665:    }
+    #####:  666:}
+        -:  667:
+        -:  668:/* Stripped-down version of printfmt(). But can do in-string colouring. */
+        -:  669:
+        -:  670:static int
+    #####:  671:clprintfmt(char *p, int ml)
+        -:  672:{
+    #####:  673:    int cc = 0, i = 0, ask, beg;
+        -:  674:
+    #####:  675:    initiscol();
+        -:  676:
+    #####:  677:    while (*p) {
+        -:  678:	convchar_t chr;
+    #####:  679:	int chrlen = MB_METACHARLENCONV(p, &chr);
+    #####:  680:	doiscol(i++);
+    #####:  681:	cc++;
+    #####:  682:	if (*p == '\n') {
+    #####:  683:	    cleareol();
+    #####:  684:	    cc = 0;
+        -:  685:	}
+    #####:  686:	if (ml == mlend - 1 && (cc % zterm_columns) == zterm_columns - 1)
+    #####:  687:	    return 0;
+        -:  688:
+    #####:  689:	while (chrlen) {
+    #####:  690:	    if (*p == Meta) {
+    #####:  691:		p++;
+    #####:  692:		chrlen--;
+    #####:  693:		putc(*p ^ 32, shout);
+        -:  694:	    } else
+    #####:  695:		putc(*p, shout);
+    #####:  696:	    chrlen--;
+    #####:  697:	    p++;
+        -:  698:	}
+    #####:  699:	if ((beg = !(cc % zterm_columns)))
+    #####:  700:	    ml++;
+    #####:  701:	if (mscroll && !(cc % zterm_columns) &&
+    #####:  702:	    !--mrestlines && (ask = asklistscroll(ml)))
+    #####:  703:	    return ask;
+        -:  704:    }
+    #####:  705:    cleareol();
+    #####:  706:    return 0;
+        -:  707:}
+        -:  708:
+        -:  709:/*
+        -:  710: * Local version of nicezputs() with in-string colouring
+        -:  711: * and scrolling.
+        -:  712: */
+        -:  713:
+        -:  714:static int
+      103:  715:clnicezputs(int do_colors, char *s, int ml)
+        -:  716:{
+      103:  717:    int i = 0, col = 0, ask, oml = ml;
+        -:  718:    char *t;
+        -:  719:    ZLE_CHAR_T cc;
+        -:  720:#ifdef MULTIBYTE_SUPPORT
+        -:  721:    /*
+        -:  722:     * ums is the untokenized, unmetafied string (length umlen)
+        -:  723:     * uptr is a pointer into it
+        -:  724:     * sptr is the start of the nice character representation
+        -:  725:     * wptr is the point at which the wide character itself starts
+        -:  726:     *  (but may be the end of the string if the character was fully
+        -:  727:     *  prettified).
+        -:  728:     * ret is the return status from the conversion to a wide character
+        -:  729:     * umleft is the remaining length of the unmetafied string to output
+        -:  730:     * umlen is the full length of the unmetafied string
+        -:  731:     * width is the full printing width of a prettified character,
+        -:  732:     *  including both ASCII prettification and the wide character itself.
+        -:  733:     * mbs is the shift state of the conversion to wide characters.
+        -:  734:     */
+        -:  735:    char *ums, *uptr, *sptr, *wptr;
+      103:  736:    int umleft, umlen, eol = 0;
+        -:  737:    size_t width;
+        -:  738:    mbstate_t mbs;
+        -:  739:
+      103:  740:    memset(&mbs, 0, sizeof mbs);
+      103:  741:    ums = ztrdup(s);
+      103:  742:    untokenize(ums);
+      103:  743:    uptr = unmetafy(ums, &umlen);
+      103:  744:    umleft = umlen;
+        -:  745:
+      103:  746:    if (do_colors)
+    #####:  747:	initiscol();
+        -:  748:
+      103:  749:    mb_charinit();
+      463:  750:    while (umleft > 0) {
+      257:  751:	size_t cnt = eol ? MB_INVALID : mbrtowc(&cc, uptr, umleft, &mbs);
+        -:  752:
+      257:  753:	switch (cnt) {
+    #####:  754:	case MB_INCOMPLETE:
+    #####:  755:	    eol = 1;
+        -:  756:	    /* FALL THROUGH */
+    #####:  757:	case MB_INVALID:
+        -:  758:	    /* This handles byte values that aren't valid wide-character
+        -:  759:	     * sequences. */
+    #####:  760:	    sptr = nicechar(*uptr);
+        -:  761:	    /* everything here is ASCII... */
+    #####:  762:	    width = strlen(sptr);
+    #####:  763:	    wptr = sptr + width;
+    #####:  764:	    cnt = 1;
+        -:  765:	    /* Get mbs out of its undefined state. */
+    #####:  766:	    memset(&mbs, 0, sizeof mbs);
+    #####:  767:	    break;
+    #####:  768:	case 0:
+        -:  769:	    /* This handles a '\0' in the input (which is a real char
+        -:  770:	     * to us, not a terminator). */
+    #####:  771:	    cnt = 1;
+        -:  772:	    /* FALL THROUGH */
+      257:  773:	default:
+      257:  774:	    sptr = wcs_nicechar(cc, &width, &wptr);
+      257:  775:	    break;
+        -:  776:	}
+        -:  777:
+      257:  778:	umleft -= cnt;
+      257:  779:	uptr += cnt;
+      257:  780:	if (do_colors) {
+        -:  781:	    /*
+        -:  782:	     * The code for the colo[u]ri[s/z]ation is obscure (surprised?)
+        -:  783:	     * but if we do it for every input character, as we do in
+        -:  784:	     * the simple case, we shouldn't go too far wrong.
+        -:  785:	     */
+    #####:  786:	    while (cnt--)
+    #####:  787:		doiscol(i++);
+        -:  788:	}
+        -:  789:
+        -:  790:	/*
+        -:  791:	 * Loop over characters in the output of the nice
+        -:  792:	 * representation.  This will often correspond to one input
+        -:  793:	 * (possibly multibyte) character.
+        -:  794:	 */
+      514:  795:	for (t = sptr; *t; t++) {
+        -:  796:	    /* Input is metafied... */
+      257:  797:	    int nc = (*t == Meta) ? STOUC(*++t ^ 32) : STOUC(*t);
+        -:  798:	    /* Is the screen full? */
+      257:  799:	    if (ml == mlend - 1 && col == zterm_columns - 1) {
+    #####:  800:		mlprinted = ml - oml;
+    #####:  801:		free(ums);
+    #####:  802:		return 0;
+        -:  803:	    }
+      257:  804:	    if (t < wptr) {
+        -:  805:		/* outputting ASCII, so single-width */
+    #####:  806:		putc(nc, shout);
+    #####:  807:		col++;
+    #####:  808:		width--;
+        -:  809:	    } else {
+        -:  810:		/* outputting a single wide character, do the lot */
+      257:  811:		putc(nc, shout);
+        -:  812:		/* don't check column until finished */
+      257:  813:		if (t[1])
+    #####:  814:		    continue;
+        -:  815:		/* now we've done the entire rest of the representation */
+      257:  816:		col += width;
+        -:  817:	    }
+        -:  818:	    /*
+        -:  819:	     * There might be problems with characters of printing width
+        -:  820:	     * greater than one here.
+        -:  821:	     */
+      257:  822:	    if (col > zterm_columns) {
+    #####:  823:		ml++;
+    #####:  824:		if (mscroll && !--mrestlines && (ask = asklistscroll(ml))) {
+    #####:  825:		    mlprinted = ml - oml;
+    #####:  826:		    free(ums);
+    #####:  827:		    return ask;
+        -:  828:		}
+    #####:  829:		col -= zterm_columns;
+    #####:  830:		if (do_colors)
+    #####:  831:		    fputs(" \010", shout);
+        -:  832:	    }
+        -:  833:	}
+        -:  834:    }
+        -:  835:
+      103:  836:    free(ums);
+        -:  837:#else
+        -:  838:
+        -:  839:    if (do_colors)
+        -:  840:	initiscol();
+        -:  841:
+        -:  842:    while ((cc = *s++)) {
+        -:  843:	if (do_colors)
+        -:  844:	    doiscol(i++);
+        -:  845:	if (itok(cc)) {
+        -:  846:	    if (cc <= Comma)
+        -:  847:		cc = ztokens[cc - Pound];
+        -:  848:	    else
+        -:  849:		continue;
+        -:  850:	}
+        -:  851:	if (cc == Meta)
+        -:  852:	    cc = *s++ ^ 32;
+        -:  853:
+        -:  854:	for (t = nicechar(cc); *t; t++) {
+        -:  855:	    int nc = (*t == Meta) ? STOUC(*++t ^ 32) : STOUC(*t);
+        -:  856:	    if (ml == mlend - 1 && col == zterm_columns - 1) {
+        -:  857:		mlprinted = ml - oml;
+        -:  858:		return 0;
+        -:  859:	    }
+        -:  860:	    putc(nc, shout);
+        -:  861:	    if (++col > zterm_columns) {
+        -:  862:		ml++;
+        -:  863:		if (mscroll && !--mrestlines && (ask = asklistscroll(ml))) {
+        -:  864:		    mlprinted = ml - oml;
+        -:  865:		    return ask;
+        -:  866:		}
+        -:  867:		col = 0;
+        -:  868:		if (do_colors)
+        -:  869:		    fputs(" \010", shout);
+        -:  870:	    }
+        -:  871:	}
+        -:  872:    }
+        -:  873:#endif
+      103:  874:    mlprinted = ml - oml;
+      103:  875:    return 0;
+        -:  876:}
+        -:  877:
+        -:  878:/* Get the terminal color string for the given match. */
+        -:  879:
+        -:  880:static int
+      106:  881:putmatchcol(char *group, char *n)
+        -:  882:{
+        -:  883:    Patcol pc;
+        -:  884:
+      106:  885:    for (pc = mcolors.pats; pc; pc = pc->next) {
+    #####:  886:	nrefs = MAX_POS - 1;
+        -:  887:
+    #####:  888:	if ((!pc->prog || !group || pattry(pc->prog, group)) &&
+    #####:  889:	    pattryrefs(pc->pat, n, -1, -1, NULL, 0, &nrefs, begpos, endpos)) {
+    #####:  890:	    if (pc->cols[1]) {
+    #####:  891:		patcols = pc->cols;
+        -:  892:
+    #####:  893:		return 1;
+        -:  894:	    }
+    #####:  895:	    zlrputs(pc->cols[0]);
+        -:  896:
+    #####:  897:	    return 0;
+        -:  898:	}
+        -:  899:    }
+        -:  900:
+      106:  901:    zcputs(group, COL_NO);
+        -:  902:
+      106:  903:    return 0;
+        -:  904:}
+        -:  905:
+        -:  906:/* Get the terminal color string for the file with the given name and
+        -:  907: * file modes. */
+        -:  908:
+        -:  909:static int
+    #####:  910:putfilecol(char *group, char *filename, mode_t m, int special)
+        -:  911:{
+    #####:  912:    int colour = -1;
+        -:  913:    Extcol ec;
+        -:  914:    Patcol pc;
+        -:  915:    int len;
+        -:  916:
+    #####:  917:    for (pc = mcolors.pats; pc; pc = pc->next) {
+    #####:  918:	nrefs = MAX_POS - 1;
+        -:  919:
+    #####:  920:	if ((!pc->prog || !group || pattry(pc->prog, group)) &&
+    #####:  921:	    pattryrefs(pc->pat, filename, -1, -1, NULL,
+        -:  922:		       0, &nrefs, begpos, endpos)) {
+    #####:  923:	    if (pc->cols[1]) {
+    #####:  924:		patcols = pc->cols;
+        -:  925:
+    #####:  926:		return 1;
+        -:  927:	    }
+    #####:  928:	    zlrputs(pc->cols[0]);
+        -:  929:
+    #####:  930:	    return 0;
+        -:  931:	}
+        -:  932:    }
+        -:  933:
+    #####:  934:    if (special != -1) {
+    #####:  935:	colour = special;
+    #####:  936:    } else if (S_ISDIR(m)) {
+    #####:  937:	if (m & S_IWOTH)
+    #####:  938:	    if (m & S_ISVTX)
+    #####:  939:		colour = COL_TW;
+        -:  940:	    else
+    #####:  941:		colour = COL_OW;
+    #####:  942:	else if (m & S_ISVTX)
+    #####:  943:	    colour = COL_ST;
+        -:  944:	else
+    #####:  945:	    colour = COL_DI;
+    #####:  946:    } else if (S_ISLNK(m))
+    #####:  947:	colour = COL_LN;
+    #####:  948:    else if (S_ISFIFO(m))
+    #####:  949:	colour = COL_PI;
+    #####:  950:    else if (S_ISSOCK(m))
+    #####:  951:	colour = COL_SO;
+    #####:  952:    else if (S_ISBLK(m))
+    #####:  953:	colour = COL_BD;
+    #####:  954:    else if (S_ISCHR(m))
+    #####:  955:	colour = COL_CD;
+    #####:  956:    else if (m & S_ISUID)
+    #####:  957:	colour = COL_SU;
+    #####:  958:    else if (m & S_ISGID)
+    #####:  959:	colour = COL_SG;
+    #####:  960:    else if (S_ISREG(m) && (m & S_IXUGO))
+    #####:  961:	colour = COL_EX;
+        -:  962:
+    #####:  963:    if (colour != -1) {
+    #####:  964:	zcputs(group, colour);
+    #####:  965:	return 0;
+        -:  966:    }
+        -:  967:
+    #####:  968:    for (ec = mcolors.exts; ec; ec = ec->next)
+    #####:  969:	if (strsfx(ec->ext, filename) &&
+    #####:  970:	    (!ec->prog || !group || pattry(ec->prog, group))) {
+    #####:  971:	    zlrputs(ec->col);
+        -:  972:
+    #####:  973:	    return 0;
+        -:  974:	}
+        -:  975:
+        -:  976:    /* Check for suffix alias */
+    #####:  977:    len = strlen(filename);
+        -:  978:    /* shortest valid suffix format is a.b */
+    #####:  979:    if (len > 2) {
+    #####:  980:	char *suf = filename + len - 1;
+    #####:  981:	while (suf > filename+1) {
+    #####:  982:	    if (suf[-1] == '.') {
+    #####:  983:		if (sufaliastab->getnode(sufaliastab, suf)) {
+    #####:  984:		    zcputs(group, COL_SA);
+    #####:  985:		    return 0;
+        -:  986:		}
+    #####:  987:		break;
+        -:  988:	    }
+    #####:  989:	    suf--;
+        -:  990:	}
+        -:  991:    }
+    #####:  992:    zcputs(group, COL_FI);
+        -:  993:
+    #####:  994:    return 0;
+        -:  995:}
+        -:  996:
+        -:  997:static Cmgroup last_group;
+        -:  998:
+        -:  999:/**/
+        -: 1000:static int
+    #####: 1001:asklistscroll(int ml)
+        -: 1002:{
+        -: 1003:    Thingy cmd;
+    #####: 1004:    int i, ret = 0;
+        -: 1005:
+    #####: 1006:    compprintfmt(NULL, 1, 1, 1, ml, NULL);
+        -: 1007:
+    #####: 1008:    fflush(shout);
+    #####: 1009:    zsetterm();
+    #####: 1010:    menuselect_bindings();	/* sanity in case deleted by user */
+    #####: 1011:    selectlocalmap(lskeymap);
+    #####: 1012:    if (!(cmd = getkeycmd()) || cmd == Th(z_sendbreak))
+    #####: 1013:	ret = 1;
+    #####: 1014:    else if (cmd == Th(z_acceptline) ||
+    #####: 1015:	     cmd == Th(z_downhistory) ||
+    #####: 1016:	     cmd == Th(z_downlineorhistory) ||
+    #####: 1017:	     cmd == Th(z_downlineorsearch) ||
+        -: 1018:	     cmd == Th(z_vidownlineorhistory))
+    #####: 1019:	mrestlines = 1;
+    #####: 1020:    else if (cmd == Th(z_completeword) ||
+    #####: 1021:		   cmd == Th(z_expandorcomplete) ||
+    #####: 1022:		   cmd == Th(z_expandorcompleteprefix) ||
+    #####: 1023:		   cmd == Th(z_menucomplete) ||
+    #####: 1024:		   cmd == Th(z_menuexpandorcomplete) ||
+    #####: 1025:		   !strcmp(cmd->nam, "menu-select") ||
+    #####: 1026:		   !strcmp(cmd->nam, "complete-word") ||
+    #####: 1027:		   !strcmp(cmd->nam, "expand-or-complete") ||
+    #####: 1028:		   !strcmp(cmd->nam, "expand-or-complete-prefix") ||
+    #####: 1029:		   !strcmp(cmd->nam, "menu-complete") ||
+    #####: 1030:	     !strcmp(cmd->nam, "menu-expand-or-complete"))
+    #####: 1031:	mrestlines = zterm_lines - 1;
+    #####: 1032:    else if (cmd == Th(z_acceptsearch))
+    #####: 1033:	ret = 1;
+        -: 1034:    else {
+    #####: 1035:	ungetkeycmd();
+    #####: 1036:	ret = 1;
+        -: 1037:    }
+    #####: 1038:    selectlocalmap(NULL);
+    #####: 1039:    settyinfo(&shttyinfo);
+    #####: 1040:    putc('\r', shout);
+    #####: 1041:    for (i = zterm_columns - 1; i-- > 0; )
+    #####: 1042:	putc(' ', shout);
+    #####: 1043:    putc('\r', shout);
+        -: 1044:
+    #####: 1045:    return ret;
+        -: 1046:}
+        -: 1047:
+        -: 1048:#define dolist(X)   ((X) >= mlbeg && (X) < mlend)
+        -: 1049:#define dolistcl(X) ((X) >= mlbeg && (X) < mlend + 1)
+        -: 1050:#define dolistnl(X) ((X) >= mlbeg && (X) < mlend - 1)
+        -: 1051:
+        -: 1052:/**/
+        -: 1053:static int
+      101: 1054:compprintnl(int ml)
+        -: 1055:{
+        -: 1056:    int ask;
+        -: 1057:
+      101: 1058:    cleareol();
+      101: 1059:    putc('\n', shout);
+        -: 1060:
+      101: 1061:    if (mscroll && !--mrestlines && (ask = asklistscroll(ml)))
+    #####: 1062:	return ask;
+        -: 1063:
+      101: 1064:    return 0;
+        -: 1065:}
+        -: 1066:
+        -: 1067:/* This is used to print the strings (e.g. explanations). *
+        -: 1068: * It returns the number of lines printed.       */
+        -: 1069:
+        -: 1070:/**/
+        -: 1071:static int
+       71: 1072:compprintfmt(char *fmt, int n, int dopr, int doesc, int ml, int *stop)
+        -: 1073:{
+        -: 1074:    char *p, nc[2*DIGBUFSIZE + 12], nbuf[2*DIGBUFSIZE + 12];
+       71: 1075:    int l = 0, cc = 0, b = 0, s = 0, u = 0, m, ask, beg, stat;
+        -: 1076:
+       71: 1077:    if ((stat = !fmt)) {
+    #####: 1078:	if (mlbeg >= 0) {
+    #####: 1079:	    if (!(fmt = mstatus)) {
+    #####: 1080:		mlprinted = 0;
+    #####: 1081:		return 0;
+        -: 1082:	    }
+    #####: 1083:	    cc = -1;
+        -: 1084:	} else
+    #####: 1085:	    fmt = mlistp;
+        -: 1086:    }
+       71: 1087:    MB_METACHARINIT();
+     2459: 1088:    for (p = fmt; *p; ) {
+        -: 1089:	convchar_t cchar;
+        -: 1090:	int len, width;
+        -: 1091:
+     2317: 1092:	len = MB_METACHARLENCONV(p, &cchar);
+        -: 1093:#ifdef MULTIBYTE_SUPPORT
+     2317: 1094:	if (cchar == WEOF) {
+    #####: 1095:	    cchar = (wchar_t)(*p == Meta ? p[1] ^ 32 : *p);
+    #####: 1096:	    width = 1;
+        -: 1097:	}
+        -: 1098:	else
+        -: 1099:#endif
+     2317: 1100:	    width = WCWIDTH_WINT(cchar);
+        -: 1101:
+     2317: 1102:	if (doesc && cchar == ZWC('%')) {
+    #####: 1103:	    p += len;
+    #####: 1104:	    if (*p) {
+    #####: 1105:		int arg = 0, is_fg;
+        -: 1106:		zattr atr;
+        -: 1107:
+    #####: 1108:		if (idigit(*p))
+    #####: 1109:		    arg = zstrtol(p, &p, 10);
+        -: 1110:
+    #####: 1111:		len = MB_METACHARLENCONV(p, &cchar);
+        -: 1112:#ifdef MULTIBYTE_SUPPORT
+    #####: 1113:		if (cchar == WEOF)
+    #####: 1114:		    cchar = (wchar_t)(*p == Meta ? p[1] ^ 32 : *p);
+        -: 1115:#endif
+    #####: 1116:		p += len;
+        -: 1117:
+    #####: 1118:		m = 0;
+    #####: 1119:		switch (cchar) {
+    #####: 1120:		case ZWC('%'):
+    #####: 1121:		    if (dopr == 1)
+    #####: 1122:			putc('%', shout);
+    #####: 1123:		    cc++;
+    #####: 1124:		    break;
+    #####: 1125:		case ZWC('n'):
+    #####: 1126:		    if (!stat) {
+    #####: 1127:			sprintf(nc, "%d", n);
+    #####: 1128:			if (dopr == 1)
+    #####: 1129:			    fputs(nc, shout);
+        -: 1130:			/* everything here is ASCII... */
+    #####: 1131:			cc += strlen(nc);
+        -: 1132:		    }
+    #####: 1133:		    break;
+    #####: 1134:		case ZWC('B'):
+    #####: 1135:		    b = 1;
+    #####: 1136:		    if (dopr)
+    #####: 1137:			tcout(TCBOLDFACEBEG);
+    #####: 1138:		    break;
+    #####: 1139:		case ZWC('b'):
+    #####: 1140:		    b = 0; m = 1;
+    #####: 1141:		    if (dopr)
+    #####: 1142:			tcout(TCALLATTRSOFF);
+    #####: 1143:		    break;
+    #####: 1144:		case ZWC('S'):
+    #####: 1145:		    s = 1;
+    #####: 1146:		    if (dopr)
+    #####: 1147:			tcout(TCSTANDOUTBEG);
+    #####: 1148:		    break;
+    #####: 1149:		case ZWC('s'):
+    #####: 1150:		    s = 0; m = 1;
+    #####: 1151:		    if (dopr)
+    #####: 1152:			tcout(TCSTANDOUTEND);
+    #####: 1153:		    break;
+    #####: 1154:		case ZWC('U'):
+    #####: 1155:		    u = 1;
+    #####: 1156:		    if (dopr)
+    #####: 1157:			tcout(TCUNDERLINEBEG);
+    #####: 1158:		    break;
+    #####: 1159:		case ZWC('u'):
+    #####: 1160:		    u = 0; m = 1;
+    #####: 1161:		    if (dopr)
+    #####: 1162:			tcout(TCUNDERLINEEND);
+    #####: 1163:		    break;
+    #####: 1164:		case ZWC('F'):
+        -: 1165:		case ZWC('K'):
+    #####: 1166:		    is_fg = (cchar == ZWC('F'));
+        -: 1167:		    /* colours must be ASCII */
+    #####: 1168:		    if (*p == '{') {
+    #####: 1169:			p++;
+    #####: 1170:			atr = match_colour((const char **)&p, is_fg, 0);
+    #####: 1171:			if (*p == '}')
+    #####: 1172:			    p++;
+        -: 1173:		    } else
+    #####: 1174:			atr = match_colour(NULL, is_fg, arg);
+    #####: 1175:		    if (atr != TXT_ERROR && dopr)
+    #####: 1176:			set_colour_attribute(atr, is_fg ? COL_SEQ_FG :
+        -: 1177:					     COL_SEQ_BG, 0);
+    #####: 1178:		    break;
+    #####: 1179:		case ZWC('f'):
+    #####: 1180:		    if (dopr)
+    #####: 1181:			set_colour_attribute(TXTNOFGCOLOUR, COL_SEQ_FG, 0);
+    #####: 1182:		    break;
+    #####: 1183:		case ZWC('k'):
+    #####: 1184:		    if (dopr)
+    #####: 1185:			set_colour_attribute(TXTNOBGCOLOUR, COL_SEQ_BG, 0);
+    #####: 1186:		    break;
+    #####: 1187:		case ZWC('{'):
+    #####: 1188:		    if (arg)
+    #####: 1189:			cc += arg;
+    #####: 1190:		    for (; *p && (*p != '%' || p[1] != '}'); p++)
+    #####: 1191:			if (dopr)
+    #####: 1192:			    putc(*p == Meta ? *++p ^ 32 : *p, shout);
+    #####: 1193:		    if (*p)
+    #####: 1194:			p += 2;
+    #####: 1195:		    break;
+    #####: 1196:		case ZWC('m'):
+    #####: 1197:		    if (stat) {
+    #####: 1198:			sprintf(nc, "%d/%d", (n ? mlastm : mselect),
+        -: 1199:				listdat.nlist);
+    #####: 1200:			m = 2;
+        -: 1201:		    }
+    #####: 1202:		    break;
+    #####: 1203:		case ZWC('M'):
+    #####: 1204:		    if (stat) {
+    #####: 1205:			sprintf(nbuf, "%d/%d", (n ? mlastm : mselect),
+        -: 1206:				listdat.nlist);
+    #####: 1207:			sprintf(nc, "%-9s", nbuf);
+    #####: 1208:			m = 2;
+        -: 1209:		    }
+    #####: 1210:		    break;
+    #####: 1211:		case ZWC('l'):
+    #####: 1212:		    if (stat) {
+    #####: 1213:			sprintf(nc, "%d/%d", ml + 1, listdat.nlines);
+    #####: 1214:			m = 2;
+        -: 1215:		    }
+    #####: 1216:		    break;
+    #####: 1217:		case ZWC('L'):
+    #####: 1218:		    if (stat) {
+    #####: 1219:			sprintf(nbuf, "%d/%d", ml + 1, listdat.nlines);
+    #####: 1220:			sprintf(nc, "%-9s", nbuf);
+    #####: 1221:			m = 2;
+        -: 1222:		    }
+    #####: 1223:		    break;
+    #####: 1224:		case ZWC('p'):
+    #####: 1225:		    if (stat) {
+    #####: 1226:			if (ml == listdat.nlines - 1)
+    #####: 1227:			    strcpy(nc, "Bottom");
+    #####: 1228:			else if (n ? mfirstl : (mlbeg > 0 || ml != mfirstl))
+    #####: 1229:			    sprintf(nc, "%d%%",
+    #####: 1230:				    ((ml + 1) * 100) / listdat.nlines);
+        -: 1231:			else
+    #####: 1232:			    strcpy(nc, "Top");
+    #####: 1233:			m = 2;
+        -: 1234:		    }
+    #####: 1235:		    break;
+    #####: 1236:		case ZWC('P'):
+    #####: 1237:		    if (stat) {
+    #####: 1238:			if (ml == listdat.nlines - 1)
+    #####: 1239:			    strcpy(nc, "Bottom");
+    #####: 1240:			else if (n ? mfirstl : (mlbeg > 0 || ml != mfirstl))
+    #####: 1241:			    sprintf(nc, "%2d%%   ",
+    #####: 1242:				    ((ml + 1) * 100) / listdat.nlines);
+        -: 1243:			else
+    #####: 1244:			    strcpy(nc, "Top   ");
+    #####: 1245:			m = 2;
+        -: 1246:		    }
+    #####: 1247:		    break;
+        -: 1248:		}
+    #####: 1249:		if (m == 2 && dopr == 1) {
+        -: 1250:		    /* nc only contains ASCII text */
+    #####: 1251:		    int l = strlen(nc);
+        -: 1252:
+    #####: 1253:		    if (l + cc > zterm_columns - 2)
+    #####: 1254:			nc[l -= l + cc - (zterm_columns - 2)] = '\0';
+    #####: 1255:		    fputs(nc, shout);
+    #####: 1256:		    cc += l;
+    #####: 1257:		} else if (dopr && m == 1) {
+    #####: 1258:		    if (b)
+    #####: 1259:			tcout(TCBOLDFACEBEG);
+    #####: 1260:		    if (s)
+    #####: 1261:			tcout(TCSTANDOUTBEG);
+    #####: 1262:		    if (u)
+    #####: 1263:			tcout(TCUNDERLINEBEG);
+        -: 1264:		}
+        -: 1265:	    } else
+    #####: 1266:		break;
+        -: 1267:	} else {
+     2317: 1268:	    cc += width;
+        -: 1269:
+     2317: 1270:	    if ((cc >= zterm_columns - 2 || cchar == ZWC('\n')) && stat)
+    #####: 1271:		dopr = 2;
+     2317: 1272:	    if (cchar == ZWC('\n')) {
+       68: 1273:		if (dopr == 1)
+       68: 1274:		    cleareol();
+       68: 1275:		l += 1 + ((cc - 1) / zterm_columns);
+       68: 1276:		cc = 0;
+        -: 1277:	    }
+     2317: 1278:	    if (dopr == 1) {
+     2317: 1279:		if (ml == mlend - 1 && (cc % zterm_columns) ==
+    #####: 1280:		    zterm_columns - 1) {
+    #####: 1281:		    dopr = 0;
+    #####: 1282:		    p += len;
+    #####: 1283:		    continue;
+        -: 1284:		}
+     6951: 1285:		while (len--) {
+     2317: 1286:		    if (*p == Meta) {
+    #####: 1287:			len--;
+    #####: 1288:			p++;
+    #####: 1289:			putc(*p++ ^ 32, shout);
+        -: 1290:		    } else
+     2317: 1291:			putc(*p++, shout);
+        -: 1292:		}
+        -: 1293:		/*
+        -: 1294:		 * TODO: the following doesn't allow for
+        -: 1295:		 * character widths greater than 1.
+        -: 1296:		 */
+     2317: 1297:		if ((beg = !(cc % zterm_columns)) && !stat) {
+       68: 1298:		    ml++;
+       68: 1299:                    fputs(" \010", shout);
+        -: 1300:                }
+     2317: 1301:		if (mscroll && beg && !--mrestlines && (ask = asklistscroll(ml))) {
+    #####: 1302:		    *stop = 1;
+    #####: 1303:		    if (stat && n)
+    #####: 1304:			mfirstl = -1;
+    #####: 1305:		    mlprinted = l + (cc ? ((cc-1) / zterm_columns) : 0);
+    #####: 1306:		    return mlprinted;
+        -: 1307:		}
+        -: 1308:	    }
+        -: 1309:	    else
+    #####: 1310:		p += len;
+        -: 1311:	}
+        -: 1312:    }
+       71: 1313:    if (dopr) {
+       71: 1314:        if (!(cc % zterm_columns))
+       68: 1315:            fputs(" \010", shout);
+       71: 1316:        cleareol();
+        -: 1317:    }
+       71: 1318:    if (stat && n)
+    #####: 1319:	mfirstl = -1;
+        -: 1320:
+        -: 1321:    /*
+        -: 1322:     * *Not* subtracting 1 from cc at this point appears to be
+        -: 1323:     * correct.  C.f. printfmt in zle_tricky.c.
+        -: 1324:     */
+       71: 1325:    mlprinted = l + (cc / zterm_columns);
+       71: 1326:    return mlprinted;
+        -: 1327:}
+        -: 1328:
+        -: 1329:/* This is like zputs(), but allows scrolling. */
+        -: 1330:
+        -: 1331:/**/
+        -: 1332:static int
+    #####: 1333:compzputs(char const *s, int ml)
+        -: 1334:{
+    #####: 1335:    int c, col = 0, ask;
+        -: 1336:
+    #####: 1337:    while (*s) {
+    #####: 1338:	if (*s == Meta)
+    #####: 1339:	    c = *++s ^ 32;
+    #####: 1340:	else if(itok(*s)) {
+    #####: 1341:	    s++;
+    #####: 1342:	    continue;
+        -: 1343:	} else
+    #####: 1344:	    c = *s;
+    #####: 1345:	s++;
+    #####: 1346:	putc(c, shout);
+    #####: 1347:	if (c == '\n')
+    #####: 1348:	    cleareol();
+    #####: 1349:	if (mscroll && (++col == zterm_columns || c == '\n')) {
+    #####: 1350:	    ml++;
+    #####: 1351:	    if (!--mrestlines && (ask = asklistscroll(ml)))
+    #####: 1352:		return ask;
+        -: 1353:
+    #####: 1354:	    col = 0;
+        -: 1355:	}
+        -: 1356:    }
+    #####: 1357:    return 0;
+        -: 1358:}
+        -: 1359:
+        -: 1360:/**/
+        -: 1361:static int
+       59: 1362:compprintlist(int showall)
+        -: 1363:{
+        -: 1364:    static int lasttype = 0, lastbeg = 0, lastml = 0, lastinvcount = -1;
+        -: 1365:    static int lastn = 0, lastnl = 0, lastnlnct = -1;
+        -: 1366:    static Cmgroup lastg = NULL;
+        -: 1367:    static Cmatch *lastp = NULL;
+        -: 1368:    static Cexpl *lastexpl = NULL;
+        -: 1369:
+        -: 1370:    Cmgroup g;
+        -: 1371:    Cmatch *p, m;
+        -: 1372:    Cexpl *e;
+       59: 1373:    int pnl = 0, cl, mc = 0, ml = 0, printed = 0, stop = 0, asked = 1;
+       59: 1374:    int lastused = 0;
+        -: 1375:
+       59: 1376:    mfirstl = -1;
+       59: 1377:    if (mnew || lastinvcount != invcount || lastbeg != mlbeg || mlbeg < 0) {
+       59: 1378:	lasttype = 0;
+       59: 1379:	lastg = NULL;
+       59: 1380:	lastexpl = NULL;
+       59: 1381:	lastml = 0;
+       59: 1382:	lastnlnct = -1;
+        -: 1383:    }
+      118: 1384:    cl = (listdat.nlines > zterm_lines - nlnct - mhasstat ?
+       59: 1385:	  zterm_lines - nlnct - mhasstat :
+       59: 1386:	  listdat.nlines) - (lastnlnct > nlnct);
+       59: 1387:    lastnlnct = nlnct;
+       59: 1388:    mrestlines = zterm_lines - 1;
+       59: 1389:    lastinvcount = invcount;
+        -: 1390:
+       59: 1391:    if (cl < 2) {
+        3: 1392:	cl = -1;
+        3: 1393:	if (tccan(TCCLEAREOD))
+        3: 1394:	    tcout(TCCLEAREOD);
+       56: 1395:    } else if (mlbeg >= 0 && !tccan(TCCLEAREOL) && tccan(TCCLEAREOD))
+    #####: 1396:	tcout(TCCLEAREOD);
+        -: 1397:
+       59: 1398:    g = ((lasttype && lastg) ? lastg : amatches);
+      268: 1399:    while (g && !errflag) {
+      150: 1400:	char **pp = g->ylist;
+        -: 1401:
+        -: 1402:#ifdef ZSH_HEAP_DEBUG
+        -: 1403:	if (memory_validate(g->heap_id)) {
+        -: 1404:	    HEAP_ERROR(g->heap_id);
+        -: 1405:	}
+        -: 1406:#endif
+      150: 1407:	if ((e = g->expls)) {
+      105: 1408:	    if (!lastused && lasttype == 1) {
+    #####: 1409:		e = lastexpl;
+    #####: 1410:		ml = lastml;
+    #####: 1411:		lastused = 1;
+        -: 1412:	    }
+      315: 1413:	    while (*e && !errflag) {
+      173: 1414:		if (((*e)->count || (*e)->always) &&
+       68: 1415:		    (!listdat.onlyexpl ||
+    #####: 1416:		     (listdat.onlyexpl & ((*e)->always > 0 ? 2 : 1)))) {
+       68: 1417:		    if (pnl) {
+       12: 1418:			if (dolistnl(ml) && compprintnl(ml))
+    #####: 1419:			    goto end;
+       12: 1420:			pnl = 0;
+       12: 1421:			ml++;
+       12: 1422:			if (dolistcl(ml) && cl >= 0 && --cl <= 1) {
+    #####: 1423:			    cl = -1;
+    #####: 1424:			    if (tccan(TCCLEAREOD))
+    #####: 1425:				tcout(TCCLEAREOD);
+        -: 1426:			}
+        -: 1427:		    }
+       68: 1428:		    if (mlbeg < 0 && mfirstl < 0)
+       56: 1429:			mfirstl = ml;
+      248: 1430:		    (void)compprintfmt((*e)->str,
+      112: 1431:				       ((*e)->always ? -1 : (*e)->count),
+      136: 1432:				       dolist(ml), 1, ml, &stop);
+       68: 1433:		    if (mselect >= 0) {
+    #####: 1434:			int mm = (mcols * ml), i;
+        -: 1435:
+    #####: 1436:			for (i = mcols; i-- > 0; ) {
+        -: 1437:			    DPUTS(mm+i >= mgtabsize, "BUG: invalid position");
+    #####: 1438:			    mtab[mm + i] = mtmark(NULL);
+    #####: 1439:			    mgtab[mm + i] = mgmark(NULL);
+        -: 1440:			}
+        -: 1441:		    }
+       68: 1442:		    if (stop)
+    #####: 1443:			goto end;
+       68: 1444:		    if (!lasttype && ml >= mlbeg) {
+       56: 1445:			lasttype = 1;
+       56: 1446:			lastg = g;
+       56: 1447:			lastbeg = mlbeg;
+       56: 1448:			lastml = ml;
+       56: 1449:			lastexpl = e;
+       56: 1450:			lastp = NULL;
+       56: 1451:			lastused = 1;
+        -: 1452:		    }
+       68: 1453:		    ml += mlprinted;
+       68: 1454:		    if (dolistcl(ml) && cl >= 0 && (cl -= mlprinted) <= 1) {
+       15: 1455:			cl = -1;
+       15: 1456:			if (tccan(TCCLEAREOD))
+       15: 1457:			    tcout(TCCLEAREOD);
+        -: 1458:		    }
+       68: 1459:		    pnl = 1;
+        -: 1460:		}
+      105: 1461:		e++;
+      105: 1462:		if (!mnew && ml > mlend)
+    #####: 1463:		    goto end;
+        -: 1464:	    }
+        -: 1465:	}
+      150: 1466:	if (!listdat.onlyexpl && mlbeg < 0 && pp && *pp) {
+    #####: 1467:	    if (pnl) {
+    #####: 1468:		if (dolistnl(ml) && compprintnl(ml))
+    #####: 1469:		    goto end;
+    #####: 1470:		pnl = 0;
+    #####: 1471:		ml++;
+    #####: 1472:		if (cl >= 0 && --cl <= 1) {
+    #####: 1473:		    cl = -1;
+    #####: 1474:		    if (tccan(TCCLEAREOD))
+    #####: 1475:			tcout(TCCLEAREOD);
+        -: 1476:		}
+        -: 1477:	    }
+    #####: 1478:	    if (mlbeg < 0 && mfirstl < 0)
+    #####: 1479:		mfirstl = ml;
+    #####: 1480:	    if (g->flags & CGF_LINES) {
+    #####: 1481:		while (*pp) {
+    #####: 1482:		    if (compzputs(*pp, ml))
+    #####: 1483:			goto end;
+    #####: 1484:		    if (*++pp && compprintnl(ml))
+    #####: 1485:			goto end;
+        -: 1486:		}
+        -: 1487:	    } else {
+    #####: 1488:		int n = g->lcount, nl, nc, i, a;
+        -: 1489:		char **pq;
+        -: 1490:
+    #####: 1491:		nl = nc = g->lins;
+        -: 1492:
+    #####: 1493:		while (n && nl-- && !errflag) {
+    #####: 1494:		    i = g->cols;
+    #####: 1495:		    mc = 0;
+    #####: 1496:		    pq = pp;
+    #####: 1497:		    while (n && i-- && !errflag) {
+    #####: 1498:			if (pq - g->ylist >= g->lcount)
+    #####: 1499:			    break;
+    #####: 1500:			if (compzputs(*pq, mscroll))
+    #####: 1501:			    goto end;
+    #####: 1502:			if (i) {
+    #####: 1503:			    a = (g->widths ? g->widths[mc] : g->width) -
+    #####: 1504:				strlen(*pq);
+    #####: 1505:			    while (a--)
+    #####: 1506:				putc(' ', shout);
+        -: 1507:			}
+    #####: 1508:			pq += ((g->flags & CGF_ROWS) ? 1 : nc);
+    #####: 1509:			mc++;
+    #####: 1510:			n--;
+        -: 1511:		    }
+    #####: 1512:		    if (n) {
+    #####: 1513:			if (compprintnl(ml))
+    #####: 1514:			    goto end;
+    #####: 1515:			ml++;
+    #####: 1516:			if (cl >= 0 && --cl <= 1) {
+    #####: 1517:			    cl = -1;
+    #####: 1518:			    if (tccan(TCCLEAREOD))
+    #####: 1519:				tcout(TCCLEAREOD);
+        -: 1520:			}
+        -: 1521:		    }
+    #####: 1522:		    pp += ((g->flags & CGF_ROWS) ? g->cols : 1);
+        -: 1523:		}
+        -: 1524:	    }
+      300: 1525:	} else if (!listdat.onlyexpl &&
+      253: 1526:		   (g->lcount || (showall && g->mcount))) {
+       47: 1527:	    int n = g->dcount, nl, nc, i, j, wid;
+        -: 1528:	    Cmatch *q;
+        -: 1529:
+       47: 1530:	    nl = nc = g->lins;
+        -: 1531:
+       47: 1532:	    if ((g->flags & CGF_HASDL) &&
+    #####: 1533:		(lastused || !lasttype || lasttype == 2)) {
+        2: 1534:		if (!lastused && lasttype == 2) {
+    #####: 1535:		    p = lastp;
+    #####: 1536:		    ml = lastml;
+    #####: 1537:		    n = lastn;
+    #####: 1538:		    nl = lastnl;
+    #####: 1539:		    lastused = 1;
+    #####: 1540:		    pnl = 0;
+        -: 1541:		} else
+        2: 1542:		    p = g->matches;
+        -: 1543:
+        5: 1544:		for (; (m = *p); p++) {
+        3: 1545:		    if (m->disp && (m->flags & CMF_DISPLINE) &&
+        3: 1546:                        (showall || !(m->flags & (CMF_HIDE|CMF_NOLIST)))) {
+        3: 1547:			if (pnl) {
+        3: 1548:			    if (dolistnl(ml) && compprintnl(ml))
+    #####: 1549:				goto end;
+        3: 1550:			    pnl = 0;
+        3: 1551:			    ml++;
+        3: 1552:			    if (dolistcl(ml) && cl >= 0 && --cl <= 1) {
+        2: 1553:				cl = -1;
+        2: 1554:				if (tccan(TCCLEAREOD))
+        2: 1555:				    tcout(TCCLEAREOD);
+        -: 1556:			    }
+        -: 1557:			}
+        3: 1558:			if (!lasttype && ml >= mlbeg) {
+    #####: 1559:			    lasttype = 2;
+    #####: 1560:			    lastg = g;
+    #####: 1561:			    lastbeg = mlbeg;
+    #####: 1562:			    lastml = ml;
+    #####: 1563:			    lastp = p;
+    #####: 1564:			    lastn = n;
+    #####: 1565:			    lastnl = nl;
+    #####: 1566:			    lastused = 1;
+        -: 1567:			}
+        3: 1568:			if (mfirstl < 0)
+    #####: 1569:			    mfirstl = ml;
+        3: 1570:			if (dolist(ml))
+        3: 1571:			    printed++;
+        3: 1572:			if (clprintm(g, p, 0, ml, 1, 0))
+    #####: 1573:			    goto end;
+        3: 1574:			ml += mlprinted;
+        3: 1575:			if (dolistcl(ml) && (cl -= mlprinted) <= 1) {
+        2: 1576:			    cl = -1;
+        2: 1577:			    if (tccan(TCCLEAREOD))
+        2: 1578:				tcout(TCCLEAREOD);
+        -: 1579:			}
+        3: 1580:			pnl = 1;
+        -: 1581:		    }
+        3: 1582:		    if (!mnew && ml > mlend)
+    #####: 1583:			goto end;
+        -: 1584:		}
+        -: 1585:	    }
+       47: 1586:	    if (n && pnl) {
+       42: 1587:		if (dolistnl(ml) && compprintnl(ml))
+    #####: 1588:		    goto end;
+       42: 1589:		pnl = 0;
+       42: 1590:		ml++;
+       42: 1591:		if (dolistcl(ml) && cl >= 0 && --cl <= 1) {
+       39: 1592:		    cl = -1;
+       39: 1593:		    if (tccan(TCCLEAREOD))
+       39: 1594:			tcout(TCCLEAREOD);
+        -: 1595:		}
+        -: 1596:	    }
+       47: 1597:	    if (!lastused && lasttype == 3) {
+    #####: 1598:		p = lastp;
+    #####: 1599:		n = lastn;
+    #####: 1600:		nl = lastnl;
+    #####: 1601:		ml = lastml;
+    #####: 1602:		lastused = 1;
+        -: 1603:	    } else
+       47: 1604:		p = skipnolist(g->matches, showall);
+        -: 1605:
+      139: 1606:	    while (n && nl-- && !errflag) {
+       45: 1607:		if (!lasttype && ml >= mlbeg) {
+        3: 1608:		    lasttype = 3;
+        3: 1609:		    lastg = g;
+        3: 1610:		    lastbeg = mlbeg;
+        3: 1611:		    lastml = ml;
+        3: 1612:		    lastp = p;
+        3: 1613:		    lastn = n;
+        3: 1614:		    lastnl = nl + 1;
+        3: 1615:		    lastused = 1;
+        -: 1616:		}
+       45: 1617:		i = g->cols;
+       45: 1618:		mc = 0;
+       45: 1619:		q = p;
+      193: 1620:		while (n && i-- && !errflag) {
+      103: 1621:		    wid = (g->widths ? g->widths[mc] : g->width);
+      103: 1622:		    if (!(m = *q)) {
+    #####: 1623:			if (clprintm(g, NULL, mc, ml, (!i), wid))
+    #####: 1624:			    goto end;
+    #####: 1625:			break;
+        -: 1626:		    }
+      103: 1627:                    if (clprintm(g, q, mc, ml, (!i), wid))
+    #####: 1628:                        goto end;
+        -: 1629:
+      103: 1630:		    if (dolist(ml))
+      103: 1631:			printed++;
+      103: 1632:		    ml += mlprinted;
+      103: 1633:		    if (dolistcl(ml) && (cl -= mlprinted) < 1) {
+       99: 1634:			cl = -1;
+       99: 1635:			if (tccan(TCCLEAREOD))
+       99: 1636:			    tcout(TCCLEAREOD);
+        -: 1637:		    }
+      103: 1638:		    if (mfirstl < 0)
+        3: 1639:			mfirstl = ml;
+        -: 1640:
+      103: 1641:		    if (--n)
+      174: 1642:			for (j = ((g->flags & CGF_ROWS) ? 1 : nc);
+      116: 1643:			     j && *q; j--)
+       58: 1644:			    q = skipnolist(q + 1, showall);
+      103: 1645:		    mc++;
+        -: 1646:		}
+       90: 1647:		while (i-- > 0) {
+    #####: 1648:		    if (clprintm(g, NULL, mc, ml, (!i),
+    #####: 1649:				 (g->widths ? g->widths[mc] : g->width)))
+    #####: 1650:			goto end;
+    #####: 1651:		    mc++;
+        -: 1652:		}
+       45: 1653:		if (n) {
+    #####: 1654:		    if (dolistnl(ml) && compprintnl(ml))
+    #####: 1655:			goto end;
+    #####: 1656:		    ml++;
+    #####: 1657:		    if (dolistcl(ml) && cl >= 0 && --cl <= 1) {
+    #####: 1658:			cl = -1;
+    #####: 1659:			if (tccan(TCCLEAREOD))
+    #####: 1660:			    tcout(TCCLEAREOD);
+        -: 1661:		    }
+    #####: 1662:		    if (nl)
+    #####: 1663:			for (j = ((g->flags & CGF_ROWS) ? g->cols : 1);
+    #####: 1664:			     j && *p; j--)
+    #####: 1665:			    p = skipnolist(p + 1, showall);
+        -: 1666:		}
+       45: 1667:		if (!mnew && ml > mlend)
+    #####: 1668:		    goto end;
+        -: 1669:	    }
+        -: 1670:	}
+      150: 1671:	if (g->lcount || (showall && g->mcount))
+       47: 1672:	    pnl = 1;
+      150: 1673:	g = g->next;
+        -: 1674:    }
+       59: 1675:    asked = 0;
+       59: 1676: end:
+       59: 1677:    mstatprinted = 0;
+       59: 1678:    lastlistlen = 0;
+       59: 1679:    if (nlnct <= 1)
+       59: 1680:	mscroll = 0;
+       59: 1681:    if (clearflag) {
+        -: 1682:	int nl;
+        -: 1683:
+        -: 1684:	/* Move the cursor up to the prompt, if always_last_prompt *
+        -: 1685:	 * is set and all that...                                  */
+       15: 1686:	if (mlbeg >= 0) {
+    #####: 1687:	    if ((nl = listdat.nlines + nlnct) >= zterm_lines) {
+    #####: 1688:		if (mhasstat) {
+    #####: 1689:		    putc('\n', shout);
+    #####: 1690:		    compprintfmt(NULL, 0, 1, 1, mline, NULL);
+    #####: 1691:                    mstatprinted = 1;
+        -: 1692:		}
+    #####: 1693:		nl = zterm_lines - 1;
+        -: 1694:	    } else
+    #####: 1695:		nl--;
+    #####: 1696:	    tcmultout(TCUP, TCMULTUP, nl);
+    #####: 1697:	    showinglist = -1;
+        -: 1698:
+    #####: 1699:	    lastlistlen = listdat.nlines;
+       15: 1700:	} else if ((nl = listdat.nlines + nlnct - 1) < zterm_lines) {
+       15: 1701:	    cleareol();
+       15: 1702:	    tcmultout(TCUP, TCMULTUP, nl);
+       15: 1703:	    showinglist = -1;
+        -: 1704:
+       15: 1705:	    lastlistlen = listdat.nlines;
+        -: 1706:	} else {
+    #####: 1707:	    clearflag = 0;
+    #####: 1708:	    if (!asked) {
+    #####: 1709:		mrestlines = (ml + nlnct > zterm_lines);
+    #####: 1710:		compprintnl(ml);
+        -: 1711:	    }
+        -: 1712:	}
+       44: 1713:    } else if (!asked) {
+       44: 1714:	mrestlines = (ml + nlnct > zterm_lines);
+       44: 1715:	compprintnl(ml);
+        -: 1716:    }
+       59: 1717:    listshown = (clearflag ? 1 : -1);
+       59: 1718:    mnew = 0;
+        -: 1719:
+       59: 1720:    return printed;
+        -: 1721:}
+        -: 1722:
+        -: 1723:/**/
+        -: 1724:static int
+      106: 1725:clprintm(Cmgroup g, Cmatch *mp, int mc, int ml, int lastc, int width)
+        -: 1726:{
+        -: 1727:    Cmatch m;
+      106: 1728:    int len, subcols = 0, stop = 0, ret = 0;
+        -: 1729:
+        -: 1730:    DPUTS2(mselect >= 0 && ml >= mlines,
+        -: 1731:	   "clprintm called with ml too large (%d/%d)",
+        -: 1732:	   ml, mlines);
+      106: 1733:    if (g != last_group)
+       34: 1734:        *last_cap = '\0';
+        -: 1735:
+      106: 1736:    last_group = g;
+        -: 1737:
+      106: 1738:    if (!mp) {
+    #####: 1739:	if (dolist(ml)) {
+    #####: 1740:	    zcputs(g->name, COL_SP);
+    #####: 1741:	    len = width - 2;
+    #####: 1742:	    while (len-- > 0)
+    #####: 1743:		putc(' ', shout);
+    #####: 1744:	    zcoff();
+        -: 1745:	}
+    #####: 1746:	mlprinted = 0;
+    #####: 1747:	return 0;
+        -: 1748:    }
+      106: 1749:    m = *mp;
+        -: 1750:
+      106: 1751:    if ((m->flags & CMF_ALL) && (!m->disp || !m->disp[0]))
+    #####: 1752:	bld_all_str(m);
+        -: 1753:
+      106: 1754:    mlastm = m->gnum;
+      106: 1755:    if (m->disp && (m->flags & CMF_DISPLINE)) {
+        3: 1756:	if (mselect >= 0) {
+    #####: 1757:	    int mm = (mcols * ml), i;
+        -: 1758:
+    #####: 1759:            if (m->flags & CMF_DUMMY) {
+    #####: 1760:                for (i = mcols; i-- > 0; ) {
+        -: 1761:		    DPUTS(mm+i >= mgtabsize, "BUG: invalid position");
+    #####: 1762:                    mtab[mm + i] = mtmark(mp);
+    #####: 1763:                    mgtab[mm + i] = mgmark(g);
+        -: 1764:                }
+        -: 1765:            } else {
+    #####: 1766:                for (i = mcols; i-- > 0; ) {
+        -: 1767:		    DPUTS(mm+i >= mgtabsize, "BUG: invalid position");
+    #####: 1768:                    mtab[mm + i] = mp;
+    #####: 1769:                    mgtab[mm + i] = g;
+        -: 1770:                }
+        -: 1771:            }
+        -: 1772:	}
+        3: 1773:	if (!dolist(ml)) {
+    #####: 1774:	    mlprinted = printfmt(m->disp, 0, 0, 0);
+    #####: 1775:	    return 0;
+        -: 1776:	}
+        3: 1777:	if (m->gnum == mselect) {
+    #####: 1778:	    int mm = (mcols * ml);
+        -: 1779:	    DPUTS(mm >= mgtabsize, "BUG: invalid position");
+    #####: 1780:	    mline = ml;
+    #####: 1781:	    mcol = 0;
+    #####: 1782:	    mmtabp = mtab + mm;
+    #####: 1783:	    mgtabp = mgtab + mm;
+    #####: 1784:	    zcputs(g->name, COL_MA);
+        3: 1785:	} else if ((m->flags & CMF_NOLIST) &&
+    #####: 1786:                   mcolors.files[COL_HI] && mcolors.files[COL_HI]->col)
+    #####: 1787:	    zcputs(g->name, COL_HI);
+        3: 1788:	else if (mselect >= 0 && (m->flags & (CMF_MULT | CMF_FMULT)) &&
+    #####: 1789:                 mcolors.files[COL_DU] && mcolors.files[COL_DU]->col)
+    #####: 1790:	    zcputs(g->name, COL_DU);
+        -: 1791:	else
+        3: 1792:	    subcols = putmatchcol(g->name, m->disp);
+        3: 1793:	if (subcols)
+    #####: 1794:	    ret = clprintfmt(m->disp, ml);
+        -: 1795:	else {
+        3: 1796:	    compprintfmt(m->disp, 0, 1, 0, ml, &stop);
+        3: 1797:	    if (stop)
+    #####: 1798:		ret = 1;
+        -: 1799:	}
+        3: 1800:	zcoff();
+        -: 1801:    } else {
+        -: 1802:	int mx, modec;
+        -: 1803:
+      103: 1804:	if (g->widths) {
+        -: 1805:	    int i;
+        -: 1806:
+    #####: 1807:	    for (i = mx = 0; i < mc; i++)
+    #####: 1808:		mx += g->widths[i];
+        -: 1809:	} else
+      103: 1810:	    mx = mc * g->width;
+        -: 1811:
+      103: 1812:	if (mselect >= 0) {
+    #####: 1813:	    int mm = mcols * ml, i;
+        -: 1814:
+    #####: 1815:            if (m->flags & CMF_DUMMY) {
+    #####: 1816:                for (i = (width ? width : mcols); i-- > 0; ) {
+        -: 1817:		    DPUTS(mx+mm+i >= mgtabsize, "BUG: invalid position");
+    #####: 1818:                    mtab[mx + mm + i] = mtmark(mp);
+    #####: 1819:                    mgtab[mx + mm + i] = mgmark(g);
+        -: 1820:                }
+        -: 1821:            } else {
+    #####: 1822:                for (i = (width ? width : mcols); i-- > 0; ) {
+        -: 1823:		    DPUTS(mx+mm+i >= mgtabsize, "BUG: invalid position");
+    #####: 1824:                    mtab[mx + mm + i] = mp;
+    #####: 1825:                    mgtab[mx + mm + i] = g;
+        -: 1826:                }
+        -: 1827:            }
+        -: 1828:	}
+      103: 1829:	if (!dolist(ml)) {
+    #####: 1830:	    int nc = ZMB_nicewidth(m->disp ? m->disp : m->str);
+    #####: 1831:	    if (nc)
+    #####: 1832:		mlprinted = (nc-1) / zterm_columns;
+        -: 1833:	    else
+    #####: 1834:		mlprinted = 0;
+    #####: 1835:	    return 0;
+        -: 1836:	}
+      103: 1837:	if (m->gnum == mselect) {
+    #####: 1838:	    int mm = mcols * ml;
+        -: 1839:	    DPUTS(mx+mm >= mgtabsize, "BUG: invalid position");
+        -: 1840:
+    #####: 1841:	    mcol = mx;
+    #####: 1842:	    mline = ml;
+    #####: 1843:	    mmtabp = mtab + mx + mm;
+    #####: 1844:	    mgtabp = mgtab + mx + mm;
+    #####: 1845:	    zcputs(g->name, COL_MA);
+      103: 1846:	} else if (m->flags & CMF_NOLIST)
+    #####: 1847:	    zcputs(g->name, COL_HI);
+      103: 1848:	else if (mselect >= 0 && (m->flags & (CMF_MULT | CMF_FMULT)))
+    #####: 1849:	    zcputs(g->name, COL_DU);
+      103: 1850:	else if (m->mode) {
+        -: 1851:	    /*
+        -: 1852:	     * Symlink is orphaned if we read the mode with lstat
+        -: 1853:	     * but couldn't read one with stat.  That's the
+        -: 1854:	     * only way they can be different so the following
+        -: 1855:	     * test should be enough.
+        -: 1856:	     */
+    #####: 1857:	    int orphan_colour = (m->mode && !m->fmode) ? COL_OR : -1;
+    #####: 1858:	    if (mcolors.flags & LC_FOLLOW_SYMLINKS) {
+    #####: 1859:		subcols = putfilecol(g->name, m->str, m->fmode, orphan_colour);
+        -: 1860:	    } else {
+    #####: 1861:		subcols = putfilecol(g->name, m->str, m->mode, orphan_colour);
+        -: 1862:	    }
+        -: 1863:	}
+        -: 1864:	else
+      103: 1865:	    subcols = putmatchcol(g->name, (m->disp ? m->disp : m->str));
+        -: 1866:
+      103: 1867:	ret = clnicezputs(subcols,
+      103: 1868:			  (m->disp ? m->disp : m->str), ml);
+      103: 1869:	if (ret) {
+    #####: 1870:	    zcoff();
+    #####: 1871:	    return 1;
+        -: 1872:	}
+      103: 1873:	len = ZMB_nicewidth(m->disp ? m->disp : m->str);
+      103: 1874:	mlprinted = len ? (len-1) / zterm_columns : 0;
+        -: 1875:
+      103: 1876:	modec = (mcolors.flags & LC_FOLLOW_SYMLINKS) ? m->fmodec : m->modec;
+      103: 1877:	if ((g->flags & CGF_FILES) && modec) {
+    #####: 1878:	    if (m->gnum != mselect) {
+    #####: 1879:		zcoff();
+    #####: 1880:		zcputs(g->name, COL_TC);
+        -: 1881:	    }
+    #####: 1882:	    putc(modec, shout);
+    #####: 1883:	    len++;
+        -: 1884:        }
+      103: 1885:	if ((len = width - len - 2) > 0) {
+        7: 1886:	    if (m->gnum != mselect) {
+        7: 1887:		zcoff();
+        7: 1888:		zcputs(g->name, COL_SP);
+        -: 1889:	    }
+       30: 1890:	    while (len-- > 0)
+       16: 1891:		putc(' ', shout);
+        -: 1892:	}
+      103: 1893:	zcoff();
+      103: 1894:	if (!lastc) {
+       58: 1895:	    zcputs(g->name, COL_SP);
+       58: 1896:	    fputs("  ", shout);
+       58: 1897:	    zcoff();
+        -: 1898:	}
+        -: 1899:    }
+      106: 1900:    return ret;
+        -: 1901:}
+        -: 1902:
+        -: 1903:static int
+    #####: 1904:singlecalc(int *cp, int l, int *lcp)
+        -: 1905:{
+    #####: 1906:    int c = *cp, n, j, first = 1;
+    #####: 1907:    Cmatch **p, *op, *mp = mtab[l * zterm_columns + c];
+        -: 1908:
+    #####: 1909:    for (n = 0, j = c, p = mtab + l * zterm_columns + c, op = NULL;
+        -: 1910:	 j >= 0;
+    #####: 1911:	 j--, p--) {
+    #####: 1912:        if (*p == mp)
+    #####: 1913:            c = j;
+    #####: 1914:        if (!first && *p != op)
+    #####: 1915:            n++;
+    #####: 1916:        op = *p;
+    #####: 1917:        first = 0;
+        -: 1918:    }
+    #####: 1919:    *cp = c;
+    #####: 1920:    *lcp = 1;
+    #####: 1921:    for (p = mtab + l * zterm_columns + c; c < zterm_columns; c++, p++)
+    #####: 1922:        if (*p && mp != *p)
+    #####: 1923:            *lcp = 0;
+        -: 1924:
+    #####: 1925:    return n;
+        -: 1926:}
+        -: 1927:
+        -: 1928:static void
+    #####: 1929:singledraw(void)
+        -: 1930:{
+        -: 1931:    Cmgroup g;
+        -: 1932:    int mc1, mc2, ml1, ml2, md1, md2, mcc1, mcc2, lc1, lc2, t1, t2;
+        -: 1933:
+    #####: 1934:    t1 = mline - mlbeg;
+    #####: 1935:    t2 = moline - molbeg;
+        -: 1936:
+    #####: 1937:    if (t2 < t1) {
+    #####: 1938:        mc1 = mocol; ml1 = moline; md1 = t2;
+    #####: 1939:        mc2 = mcol; ml2 = mline; md2 = t1;
+        -: 1940:    } else {
+    #####: 1941:        mc1 = mcol; ml1 = mline; md1 = t1;
+    #####: 1942:        mc2 = mocol; ml2 = moline; md2 = t2;
+        -: 1943:    }
+    #####: 1944:    mcc1 = singlecalc(&mc1, ml1, &lc1);
+    #####: 1945:    mcc2 = singlecalc(&mc2, ml2, &lc2);
+        -: 1946:
+    #####: 1947:    if (md1)
+    #####: 1948:        tc_downcurs(md1);
+    #####: 1949:    if (mc1)
+    #####: 1950:        tcmultout(TCRIGHT, TCMULTRIGHT, mc1);
+        -: 1951:    DPUTS(ml1 * zterm_columns + mc1 >= mgtabsize, "BUG: invalid position");
+    #####: 1952:    g = mgtab[ml1 * zterm_columns + mc1];
+    #####: 1953:    clprintm(g, mtab[ml1 * zterm_columns + mc1], mcc1, ml1, lc1,
+    #####: 1954:             (g->widths ? g->widths[mcc1] : g->width));
+    #####: 1955:    if (mlprinted)
+    #####: 1956:	(void) tcmultout(TCUP, TCMULTUP, mlprinted);
+    #####: 1957:    putc('\r', shout);
+        -: 1958:
+    #####: 1959:    if (md2 != md1)
+    #####: 1960:        tc_downcurs(md2 - md1);
+    #####: 1961:    if (mc2)
+    #####: 1962:        tcmultout(TCRIGHT, TCMULTRIGHT, mc2);
+        -: 1963:    DPUTS(ml2 * zterm_columns + mc2 >= mgtabsize, "BUG: invalid position");
+    #####: 1964:    g = mgtab[ml2 * zterm_columns + mc2];
+    #####: 1965:    clprintm(g, mtab[ml2 * zterm_columns + mc2], mcc2, ml2, lc2,
+    #####: 1966:             (g->widths ? g->widths[mcc2] : g->width));
+    #####: 1967:    if (mlprinted)
+    #####: 1968:	(void) tcmultout(TCUP, TCMULTUP, mlprinted);
+    #####: 1969:    putc('\r', shout);
+        -: 1970:
+    #####: 1971:    if (mstatprinted) {
+    #####: 1972:        int i = zterm_lines - md2 - nlnct;
+        -: 1973:
+    #####: 1974:        tc_downcurs(i - 1);
+    #####: 1975:        compprintfmt(NULL, 0, 1, 1, mline, NULL);
+    #####: 1976:        tcmultout(TCUP, TCMULTUP, zterm_lines - 1);
+        -: 1977:    } else
+    #####: 1978:        tcmultout(TCUP, TCMULTUP, md2 + nlnct);
+        -: 1979:
+    #####: 1980:    showinglist = -1;
+    #####: 1981:    listshown = 1;
+    #####: 1982:}
+        -: 1983:
+        -: 1984:static int
+       59: 1985:complistmatches(UNUSED(Hookdef dummy), Chdata dat)
+        -: 1986:{
+        -: 1987:    static int onlnct = -1;
+        -: 1988:    static int extendedglob;
+        -: 1989:
+       59: 1990:    Cmgroup oamatches = amatches;
+        -: 1991:
+       59: 1992:    amatches = dat->matches;
+        -: 1993:#ifdef ZSH_HEAP_DEBUG
+        -: 1994:    if (memory_validate(amatches->heap_id)) {
+        -: 1995:	HEAP_ERROR(amatches->heap_id);
+        -: 1996:    }
+        -: 1997:#endif
+        -: 1998:
+       59: 1999:    if (noselect > 0)
+       58: 2000:	noselect = 0;
+        -: 2001:
+       59: 2002:    if ((minfo.asked == 2 && mselect < 0) || nlnct >= zterm_lines ||
+        -: 2003:	errflag) {
+    #####: 2004:	showinglist = 0;
+    #####: 2005:	amatches = oamatches;
+    #####: 2006:	return (noselect = 1);
+        -: 2007:    }
+        -: 2008:
+        -: 2009:    /*
+        -: 2010:     * There's a lot of memory allocation from this function
+        -: 2011:     * for setting up the color display which isn't needed
+        -: 2012:     * after the function exits, so it's worthwhile pushing
+        -: 2013:     * another heap.  As this is called from a hook in the main
+        -: 2014:     * completion handler nothing temporarily allocated from here can be
+        -: 2015:     * useful outside.
+        -: 2016:     */
+       59: 2017:    pushheap();
+       59: 2018:    extendedglob = opts[EXTENDEDGLOB];
+       59: 2019:    opts[EXTENDEDGLOB] = 1;
+        -: 2020:
+       59: 2021:    getcols();
+        -: 2022:
+      118: 2023:    mnew = ((calclist(mselect >= 0) || mlastcols != zterm_columns ||
+      118: 2024:	     mlastlines != listdat.nlines) && mselect >= 0);
+        -: 2025:
+       59: 2026:    if (!listdat.nlines || (mselect >= 0 &&
+    #####: 2027:			    !(isset(USEZLE) && !termflags &&
+    #####: 2028:			      complastprompt && *complastprompt))) {
+    #####: 2029:	showinglist = listshown = 0;
+    #####: 2030:	noselect = 1;
+    #####: 2031:	amatches = oamatches;
+    #####: 2032:	popheap();
+    #####: 2033:	opts[EXTENDEDGLOB] = extendedglob;
+    #####: 2034:	return 1;
+        -: 2035:    }
+       59: 2036:    if (inselect || mlbeg >= 0)
+    #####: 2037:	clearflag = 0;
+        -: 2038:
+       59: 2039:    mscroll = 0;
+       59: 2040:    mlistp = NULL;
+        -: 2041:
+       59: 2042:    queue_signals();
+      118: 2043:    if (mselect >= 0 || mlbeg >= 0 ||
+       59: 2044:	(mlistp = dupstring(getsparam("LISTPROMPT")))) {
+    #####: 2045:	unqueue_signals();
+    #####: 2046:	if (mlistp && !*mlistp)
+    #####: 2047:	    mlistp = "%SAt %p: Hit TAB for more, or the character to insert%s";
+    #####: 2048:	trashzle();
+    #####: 2049:	showinglist = listshown = 0;
+        -: 2050:
+    #####: 2051:	lastlistlen = 0;
+        -: 2052:
+    #####: 2053:	if (mlistp) {
+    #####: 2054:	    clearflag = (isset(USEZLE) && !termflags && dolastprompt);
+    #####: 2055:	    mscroll = 1;
+        -: 2056:	} else {
+    #####: 2057:	    clearflag = 1;
+    #####: 2058:	    minfo.asked = (listdat.nlines + nlnct <= zterm_lines);
+        -: 2059:	}
+        -: 2060:    } else {
+       59: 2061:	unqueue_signals();
+       59: 2062:	mlistp = NULL;
+       59: 2063:	if (asklist()) {
+    #####: 2064:	    amatches = oamatches;
+    #####: 2065:	    popheap();
+    #####: 2066:	    opts[EXTENDEDGLOB] = extendedglob;
+    #####: 2067:	    return (noselect = 1);
+        -: 2068:	}
+        -: 2069:    }
+       59: 2070:    if (mlbeg >= 0) {
+    #####: 2071:	mlend = mlbeg + zterm_lines - nlnct - mhasstat;
+    #####: 2072:	while (mline >= mlend)
+    #####: 2073:	    mlbeg++, mlend++;
+        -: 2074:    } else
+       59: 2075:	mlend = 9999999;
+        -: 2076:
+       59: 2077:    if (mnew) {
+        -: 2078:	int i;
+        -: 2079:
+    #####: 2080:    	mtab_been_reallocated = 1;
+        -: 2081:
+    #####: 2082:	i = zterm_columns * listdat.nlines;
+    #####: 2083:	free(mtab);
+    #####: 2084:	mtab = (Cmatch **) zalloc(i * sizeof(Cmatch *));
+    #####: 2085:	memset(mtab, 0, i * sizeof(Cmatch *));
+    #####: 2086:	free(mgtab);
+    #####: 2087:	mgtab = (Cmgroup *) zalloc(i * sizeof(Cmgroup));
+        -: 2088:#ifdef DEBUG
+        -: 2089:	mgtabsize = i;
+        -: 2090:#endif
+    #####: 2091:	memset(mgtab, 0, i * sizeof(Cmgroup));
+    #####: 2092:	mlastcols = mcols = zterm_columns;
+    #####: 2093:	mlastlines = mlines = listdat.nlines;
+    #####: 2094:	mmtabp = 0;
+        -: 2095:    }
+       59: 2096:    last_cap = (char *) zhalloc(max_caplen + 1);
+       59: 2097:    *last_cap = '\0';
+        -: 2098:
+       59: 2099:    if (!mnew && inselect &&
+    #####: 2100:	onlnct == nlnct && mlbeg >= 0 && mlbeg == molbeg) {
+    #####: 2101:	if (!noselect)
+    #####: 2102:	    singledraw();
+       59: 2103:    } else if (!compprintlist(mselect >= 0) || !clearflag)
+       59: 2104:	noselect = 1;
+        -: 2105:
+       59: 2106:    onlnct = nlnct;
+       59: 2107:    molbeg = mlbeg;
+       59: 2108:    mocol = mcol;
+       59: 2109:    moline = mline;
+        -: 2110:
+       59: 2111:    amatches = oamatches;
+        -: 2112:
+       59: 2113:    popheap();
+       59: 2114:    opts[EXTENDEDGLOB] = extendedglob;
+        -: 2115:
+       59: 2116:    return (noselect < 0 ? 0 : noselect);
+        -: 2117:}
+        -: 2118:
+        -: 2119:static int
+    #####: 2120:adjust_mcol(int wish, Cmatch ***tabp, Cmgroup **grp)
+        -: 2121:{
+    #####: 2122:    Cmatch **matchtab = *tabp;
+        -: 2123:    int p, n, c;
+        -: 2124:
+    #####: 2125:    matchtab -= mcol;
+        -: 2126:
+    #####: 2127:    for (p = wish; p >= 0 && (!matchtab[p] || mmarked(matchtab[p])); p--);
+    #####: 2128:    for (n = wish; n < mcols && (!matchtab[n] || mmarked(matchtab[n])); n++);
+    #####: 2129:    if (n == mcols)
+    #####: 2130:	n = -1;
+        -: 2131:
+    #####: 2132:    if (p < 0) {
+    #####: 2133:	if (n < 0)
+    #####: 2134:	    return 1;
+    #####: 2135:	c = n;
+    #####: 2136:    } else if (n < 0)
+    #####: 2137:	c = p;
+        -: 2138:    else
+    #####: 2139:	c = ((mcol - p) < (n - mcol) ? p : n);
+        -: 2140:
+    #####: 2141:    *tabp = matchtab + c;
+    #####: 2142:    if (grp)
+    #####: 2143:	*grp = *grp + c - mcol;
+        -: 2144:
+    #####: 2145:    mcol = c;
+        -: 2146:    
+    #####: 2147:    return 0;
+        -: 2148:}
+        -: 2149:
+        -: 2150:typedef struct menustack *Menustack;
+        -: 2151:
+        -: 2152:struct menustack {
+        -: 2153:    Menustack prev;
+        -: 2154:    char *line;
+        -: 2155:    Brinfo brbeg;
+        -: 2156:    Brinfo brend;
+        -: 2157:    int nbrbeg, nbrend;
+        -: 2158:    int cs, acc, nmatches, mline, mlbeg, nolist;
+        -: 2159:    struct menuinfo info;
+        -: 2160:    Cmgroup amatches, pmatches, lastmatches, lastlmatches;
+        -: 2161:    /*
+        -: 2162:     * Status for how line looked like previously.
+        -: 2163:     */
+        -: 2164:    char *origline;
+        -: 2165:    int origcs, origll;
+        -: 2166:    /*
+        -: 2167:     * Status for interactive mode.  status is the line
+        -: 2168:     * printed above the matches saying what the interactive
+        -: 2169:     * completion prefix is.  mode says whether we are in
+        -: 2170:     * interactive or some search mode.
+        -: 2171:     * typed.
+        -: 2172:     */
+        -: 2173:    char *status;
+        -: 2174:    int mode;
+        -: 2175:};
+        -: 2176:
+        -: 2177:typedef struct menusearch *Menusearch;
+        -: 2178:
+        -: 2179:struct menusearch {
+        -: 2180:    Menusearch prev;
+        -: 2181:    char *str;
+        -: 2182:    int line;
+        -: 2183:    int col;
+        -: 2184:    int back;
+        -: 2185:    int state;
+        -: 2186:    Cmatch **ptr;
+        -: 2187:};
+        -: 2188:
+        -: 2189:#define MS_OK       0
+        -: 2190:#define MS_FAILED   1
+        -: 2191:#define MS_WRAPPED  2
+        -: 2192:
+        -: 2193:#define MAX_STATUS 128
+        -: 2194:
+        -: 2195:static char *
+    #####: 2196:setmstatus(char *status, char *sline, int sll, int scs,
+        -: 2197:           int *csp, int *llp, int *lenp)
+        -: 2198:{
+    #####: 2199:    char *p, *s, *ret = NULL;
+        -: 2200:    int pl, sl, max;
+        -: 2201:
+        -: 2202:    METACHECK();
+        -: 2203:
+    #####: 2204:    if (csp) {
+    #####: 2205:        *csp = zlemetacs;
+    #####: 2206:        *llp = zlemetall;
+    #####: 2207:        *lenp = lastend - wb;
+        -: 2208:
+    #####: 2209:        ret = dupstring(zlemetaline);
+        -: 2210:
+    #####: 2211:        p = (char *) zhalloc(zlemetacs - wb + 1);
+    #####: 2212:        strncpy(p, zlemetaline + wb, zlemetacs - wb);
+    #####: 2213:        p[zlemetacs - wb] = '\0';
+    #####: 2214:        if (lastend < zlemetacs)
+    #####: 2215:            s = "";
+        -: 2216:        else {
+    #####: 2217:            s = (char *) zhalloc(lastend - zlemetacs + 1);
+    #####: 2218:            strncpy(s, zlemetaline + zlemetacs, lastend - zlemetacs);
+    #####: 2219:            s[lastend - zlemetacs] = '\0';
+        -: 2220:        }
+    #####: 2221:        zlemetacs = 0;
+    #####: 2222:        foredel(zlemetall, CUT_RAW);
+    #####: 2223:        spaceinline(sll);
+    #####: 2224:        memcpy(zlemetaline, sline, sll);
+    #####: 2225:        zlemetacs = scs;
+        -: 2226:    } else {
+    #####: 2227:        p = complastprefix;
+    #####: 2228:        s = complastsuffix;
+        -: 2229:    }
+    #####: 2230:    pl = strlen(p);
+    #####: 2231:    sl = strlen(s);
+    #####: 2232:    max = (zterm_columns < MAX_STATUS ? zterm_columns : MAX_STATUS) - 14;
+        -: 2233:
+    #####: 2234:    if (max > 12) {
+    #####: 2235:        int h = (max - 2) >> 1;
+        -: 2236:
+    #####: 2237:        strcpy(status, "interactive: ");
+    #####: 2238:        if (pl > h - 3) {
+    #####: 2239:            strcat(status, "...");
+    #####: 2240:            strcat(status, p + pl - h - 3);
+        -: 2241:        } else
+    #####: 2242:            strcat(status, p);
+        -: 2243:
+    #####: 2244:        strcat(status, "[]");
+    #####: 2245:        if (sl > h - 3) {
+    #####: 2246:            strncat(status, s, h - 3);
+    #####: 2247:            strcat(status, "...");
+        -: 2248:        } else
+    #####: 2249:            strcat(status, s);
+        -: 2250:    }
+    #####: 2251:    return ret;
+        -: 2252:}
+        -: 2253:
+        -: 2254:static Menusearch msearchstack;
+        -: 2255:static char *msearchstr = NULL;
+        -: 2256:static int msearchstate;
+        -: 2257:
+        -: 2258:static void
+    #####: 2259:msearchpush(Cmatch **p, int back)
+        -: 2260:{
+    #####: 2261:    Menusearch s = (Menusearch) zhalloc(sizeof(struct menusearch));
+        -: 2262:
+    #####: 2263:    s->prev = msearchstack;
+    #####: 2264:    msearchstack = s;
+    #####: 2265:    s->str = dupstring(msearchstr);
+    #####: 2266:    s->line = mline;
+    #####: 2267:    s->col = mcol;
+    #####: 2268:    s->back = back;
+    #####: 2269:    s->state = msearchstate;
+    #####: 2270:    s->ptr = p;
+    #####: 2271:}
+        -: 2272:
+        -: 2273:static Cmatch **
+    #####: 2274:msearchpop(int *backp)
+        -: 2275:{
+    #####: 2276:    Menusearch s = msearchstack;
+        -: 2277:
+    #####: 2278:    if (!s)
+    #####: 2279:        return NULL;
+        -: 2280:
+    #####: 2281:    if (s->prev)
+    #####: 2282:        msearchstack = s->prev;
+        -: 2283:
+    #####: 2284:    msearchstr = s->str;
+    #####: 2285:    mline = s->line;
+    #####: 2286:    mcol = s->col;
+    #####: 2287:    msearchstate = s->state;
+        -: 2288:
+    #####: 2289:    *backp = s->back;
+        -: 2290:
+    #####: 2291:    return s->ptr;
+        -: 2292:}
+        -: 2293:
+        -: 2294:static Cmatch **
+    #####: 2295:msearch(Cmatch **ptr, char *ins, int back, int rep, int *wrapp)
+        -: 2296:{
+    #####: 2297:    Cmatch **p, *l = NULL, m;
+    #####: 2298:    int x = mcol, y = mline;
+    #####: 2299:    int ex, ey, wrap = 0, owrap = (msearchstate & MS_WRAPPED);
+        -: 2300:
+    #####: 2301:    msearchpush(ptr, back);
+        -: 2302:
+    #####: 2303:    if (ins)
+    #####: 2304:        msearchstr = dyncat(msearchstr, ins);
+    #####: 2305:    if (back) {
+    #####: 2306:        ex = mcols - 1;
+    #####: 2307:        ey = -1;
+        -: 2308:    } else {
+    #####: 2309:        ex = 0;
+    #####: 2310:        ey = listdat.nlines;
+        -: 2311:    }
+    #####: 2312:    p = mtab + (mline * mcols) + mcol;
+    #####: 2313:    if (rep)
+    #####: 2314:        l = *p;
+        -: 2315:    while (1) {
+    #####: 2316:        if (!rep && mtunmark(*p) && *p != l) {
+    #####: 2317:            l = *p;
+    #####: 2318:            m = *mtunmark(*p);
+        -: 2319:
+    #####: 2320:            if (strstr((m->disp ? m->disp : m->str), msearchstr)) {
+    #####: 2321:                mcol = x;
+    #####: 2322:                mline = y;
+        -: 2323:
+    #####: 2324:                return p;
+        -: 2325:            }
+        -: 2326:        }
+    #####: 2327:        rep = 0;
+        -: 2328:
+    #####: 2329:        if (back) {
+    #####: 2330:            p--;
+    #####: 2331:            if (--x < 0) {
+    #####: 2332:                x = mcols - 1;
+    #####: 2333:                y--;
+        -: 2334:            }
+        -: 2335:        } else {
+    #####: 2336:            p++;
+    #####: 2337:            if (++x == mcols) {
+    #####: 2338:                x = 0;
+    #####: 2339:                y++;
+        -: 2340:            }
+        -: 2341:        }
+    #####: 2342:        if (x == ex && y == ey) {
+        -: 2343:
+    #####: 2344:            if (back) {
+    #####: 2345:                x = mcols - 1;
+    #####: 2346:                y = listdat.nlines - 1;
+    #####: 2347:                p = mtab + (y * mcols) + x;
+        -: 2348:            } else {
+    #####: 2349:                x = y = 0;
+    #####: 2350:                p = mtab;
+        -: 2351:            }
+    #####: 2352:            ex = mcol;
+    #####: 2353:            ey = mline;
+        -: 2354:
+    #####: 2355:            if (wrap || (x == ex && y == ey)) {
+    #####: 2356:                msearchstate = MS_FAILED | owrap;
+    #####: 2357:                break;
+        -: 2358:            }
+        -: 2359:
+    #####: 2360:            msearchstate |= MS_WRAPPED;
+    #####: 2361:            wrap = 1;
+    #####: 2362:            *wrapp = 1;
+        -: 2363:        }
+        -: 2364:    }
+    #####: 2365:    return NULL;
+        -: 2366:}
+        -: 2367:
+        -: 2368:/*
+        -: 2369: * Values to assign to mode: interactive, etc.
+        -: 2370: */
+        -: 2371:#define MM_INTER   1
+        -: 2372:#define MM_FSEARCH 2
+        -: 2373:#define MM_BSEARCH 3
+        -: 2374:
+        -: 2375:static int
+        3: 2376:domenuselect(Hookdef dummy, Chdata dat)
+        -: 2377:{
+        -: 2378:    static Chdata fdat = NULL;
+        -: 2379:    static char *lastsearch = NULL;
+        -: 2380:    Cmatch **p;
+        -: 2381:    Cmgroup *pg;
+        3: 2382:    Thingy cmd = 0;
+        3: 2383:    int     do_last_key = 0;
+        3: 2384:    Menustack u = NULL;
+        3: 2385:    int i = 0, acc = 0, wishcol = 0, setwish = 0, oe = onlyexpl, wasnext = 0;
+        3: 2386:    int space, lbeg = 0, step = 1, wrap, pl = nlnct, broken = 0, first = 1;
+        3: 2387:    int nolist = 0, mode = 0, modecs, modell, modelen, wasmeta;
+        -: 2388:    char *s;
+        3: 2389:    char status[MAX_STATUS], *modeline = NULL;
+        -: 2390:
+        3: 2391:    msearchstack = NULL;
+        3: 2392:    msearchstr = "";
+        3: 2393:    msearchstate = MS_OK;
+        -: 2394:
+        3: 2395:    status[0] = '\0';
+        3: 2396:    queue_signals();
+        3: 2397:    if (fdat || (dummy && (!(s = getsparam("MENUSELECT")) ||
+    #####: 2398:			   (dat && dat->num < atoi(s))))) {
+        3: 2399:	if (fdat) {
+    #####: 2400:	    fdat->matches = dat->matches;
+    #####: 2401:	    fdat->num = dat->num;
+    #####: 2402:	    fdat->nmesg = dat->nmesg;
+        -: 2403:	}
+        3: 2404:	unqueue_signals();
+        3: 2405:	return 0;
+        -: 2406:    }
+        -: 2407:    /*
+        -: 2408:     * Lots of the logic here doesn't really make sense if the
+        -: 2409:     * line isn't metafied, but the evidence was that it only used
+        -: 2410:     * to be metafied locally in a couple of places.
+        -: 2411:     * It's horrifically difficult to work out where the line
+        -: 2412:     * is metafied, so I've resorted to the following.
+        -: 2413:     * Unfortunately we need to unmetafy in zrefresh() when
+        -: 2414:     * we want to display something.  Maybe this function can
+        -: 2415:     * be done better.
+        -: 2416:     */
+    #####: 2417:    if (zlemetaline != NULL)
+    #####: 2418:	wasmeta = 1;
+        -: 2419:    else {
+    #####: 2420:	wasmeta = 0;
+    #####: 2421:	metafy_line();
+        -: 2422:    }
+        -: 2423:    
+    #####: 2424:    if ((s = getsparam("MENUSCROLL"))) {
+    #####: 2425:	if (!(step = mathevali(s)))
+    #####: 2426:	    step = (zterm_lines - nlnct) >> 1;
+    #####: 2427:	else if (step < 0)
+    #####: 2428:	    if ((step += zterm_lines - nlnct) < 0)
+    #####: 2429:		step = 1;
+        -: 2430:    }
+    #####: 2431:    if ((s = getsparam("MENUMODE"))) {
+    #####: 2432:        if (!strcmp(s, "interactive")) {
+    #####: 2433:            int l = strlen(origline);
+        -: 2434:
+        -: 2435:	    /*
+        -: 2436:	     * In interactive completion mode we don't insert
+        -: 2437:	     * the completion onto the command line, instead
+        -: 2438:	     * we show just what the user has typed and
+        -: 2439:	     * the match so far underneath (stored in "status").
+        -: 2440:	     * So put the command line back to how it
+        -: 2441:	     * was before completion started.
+        -: 2442:	     */
+    #####: 2443:            mode = MM_INTER;
+    #####: 2444:            zlemetacs = 0;
+    #####: 2445:            foredel(zlemetall, CUT_RAW);
+    #####: 2446:            spaceinline(l);
+    #####: 2447:            strncpy(zlemetaline, origline, l);
+    #####: 2448:            zlemetacs = origcs;
+    #####: 2449:            setmstatus(status, NULL, 0 , 0, NULL, NULL, NULL);
+    #####: 2450:        } else if (strpfx("search", s)) {
+    #####: 2451:            mode = (strstr(s, "back") ? MM_BSEARCH : MM_FSEARCH);
+        -: 2452:        }
+        -: 2453:    }
+    #####: 2454:    if ((mstatus = dupstring(getsparam("MENUPROMPT"))) && !*mstatus)
+    #####: 2455:	mstatus = "%SScrolling active: current selection at %p%s";
+    #####: 2456:    unqueue_signals();
+    #####: 2457:    mhasstat = (mstatus && *mstatus);
+    #####: 2458:    fdat = dat;
+    #####: 2459:    menuselect_bindings();	/* sanity in case deleted by user */
+    #####: 2460:    selectlocalmap(mskeymap);
+    #####: 2461:    noselect = 1;
+    #####: 2462:    while ((menuacc &&
+    #####: 2463:	    !hasbrpsfx(*(minfo.cur), minfo.prebr, minfo.postbr)) ||
+    #####: 2464:	   ((*minfo.cur)->flags & CMF_DUMMY) ||
+    #####: 2465:	   (((*minfo.cur)->flags & (CMF_NOLIST | CMF_MULT)) &&
+    #####: 2466:	    (!(*minfo.cur)->str || !*(*minfo.cur)->str)))
+    #####: 2467:	do_menucmp(0);
+        -: 2468:
+    #####: 2469:    mselect = (*(minfo.cur))->gnum;
+    #####: 2470:    mline = 0;
+    #####: 2471:    mlines = 999999;
+    #####: 2472:    mlbeg = 0;
+    #####: 2473:    molbeg = -42;
+    #####: 2474:    mtab_been_reallocated = 0;
+        -: 2475:    for (;;) {
+        -: 2476:	METACHECK();
+        -: 2477:
+    #####: 2478:	if (mline < 0 || mtab_been_reallocated) {
+        -: 2479:	    int x, y;
+    #####: 2480:	    Cmatch **p = mtab;
+        -: 2481:
+    #####: 2482:	    for (y = 0; y < mlines; y++) {
+    #####: 2483:		for (x = mcols; x > 0; x--, p++)
+    #####: 2484:		    if (*p && !mmarked(*p) && **p && mselect == (**p)->gnum)
+    #####: 2485:			break;
+    #####: 2486:		if (x) {
+    #####: 2487:                    mcol = mcols - x;
+    #####: 2488:		    break;
+        -: 2489:                }
+        -: 2490:	    }
+    #####: 2491:	    if (y < mlines)
+    #####: 2492:		mline = y;
+        -: 2493:	}
+    #####: 2494:    	mtab_been_reallocated = 0;
+        -: 2495:	DPUTS(mline < 0,
+        -: 2496:	      "BUG: mline < 0 after re-scanning mtab in domenuselect()");
+    #####: 2497:	while (mline < mlbeg)
+    #####: 2498:	    if ((mlbeg -= step) < 0) {
+    #####: 2499:		mlbeg = 0;
+        -: 2500:		/* Crude workaround for BUG above */
+    #####: 2501:		if (mline < 0)
+    #####: 2502:		    break;
+        -: 2503:	    }
+        -: 2504:
+    #####: 2505:	if (mlbeg && lbeg != mlbeg) {
+    #####: 2506:	    Cmatch **p = mtab + ((mlbeg - 1) * zterm_columns), **q;
+        -: 2507:	    int c;
+        -: 2508:
+    #####: 2509:	    while (mlbeg) {
+    #####: 2510:		for (q = p, c = zterm_columns; c > 0; q++, c--)
+    #####: 2511:		    if (*q && !mmarked(*q))
+    #####: 2512:			break;
+    #####: 2513:		if (c)
+    #####: 2514:		    break;
+    #####: 2515:		p -= zterm_columns;
+    #####: 2516:		mlbeg--;
+        -: 2517:	    }
+        -: 2518:	}
+    #####: 2519:	if ((space = zterm_lines - pl - mhasstat) > 0)
+    #####: 2520:	    while (mline >= mlbeg + space)
+    #####: 2521:		if ((mlbeg += step) + space > mlines)
+    #####: 2522:		    mlbeg = mlines - space;
+    #####: 2523:	if (lbeg != mlbeg) {
+    #####: 2524:	    Cmatch **p = mtab + (mlbeg * zterm_columns), **q;
+        -: 2525:	    int c;
+        -: 2526:
+    #####: 2527:	    while (mlbeg < mlines) {
+    #####: 2528:		for (q = p, c = zterm_columns; c > 0; q++, c--)
+    #####: 2529:		    if (*q)
+    #####: 2530:			break;
+    #####: 2531:		if (c)
+    #####: 2532:		    break;
+    #####: 2533:		p += zterm_columns;
+    #####: 2534:		mlbeg++;
+        -: 2535:	    }
+        -: 2536:	}
+    #####: 2537:	lbeg = mlbeg;
+    #####: 2538:        onlyexpl = 0;
+    #####: 2539:        showinglist = -2;
+    #####: 2540:        if (first && !listshown && isset(LISTBEEP))
+    #####: 2541:            zbeep();
+    #####: 2542:        if (first) {
+        -: 2543:	    /*
+        -: 2544:	     * remember the original data that we will use when
+        -: 2545:	     * performing interactive completion to restore the
+        -: 2546:	     * command line when a menu completion is inserted.
+        -: 2547:	     * this is because menu completion will insert
+        -: 2548:	     * the next match in the loop; for interactive
+        -: 2549:	     * completion we don't want that, we always want to
+        -: 2550:	     * be able to type the next character.
+        -: 2551:	     */
+    #####: 2552:	    modeline = dupstring(zlemetaline);
+    #####: 2553:            modecs = zlemetacs;
+    #####: 2554:            modell = zlemetall;
+    #####: 2555:            modelen = minfo.len;
+        -: 2556:        }
+    #####: 2557:        first = 0;
+    #####: 2558:        if (mode == MM_INTER)
+    #####: 2559:	    statusline = status;
+    #####: 2560:        else if (mode) {
+    #####: 2561:            int l = sprintf(status, "%s%sisearch%s: ",
+    #####: 2562:                            ((msearchstate & MS_FAILED) ? "failed " : ""),
+    #####: 2563:                            ((msearchstate & MS_WRAPPED) ? "wrapped " : ""),
+        -: 2564:                            (mode == MM_FSEARCH ? "" : " backward"));
+        -: 2565:
+    #####: 2566:            strncat(status, msearchstr, MAX_STATUS - l - 1);
+        -: 2567:
+    #####: 2568:            statusline = status;
+        -: 2569:        } else {
+    #####: 2570:            statusline = NULL;
+        -: 2571:        }
+    #####: 2572:	if (noselect < 0) {
+    #####: 2573:	    showinglist = clearlist = 0;
+    #####: 2574:	    clearflag = 1;
+        -: 2575:	}
+    #####: 2576:        zrefresh();
+    #####: 2577:	statusline = NULL;
+    #####: 2578:        inselect = 1;
+    #####: 2579:	selected = 1;
+    #####: 2580:        if (noselect) {
+    #####: 2581:	    if (noselect < 0) {
+        -: 2582:		/* no selection until after processing keystroke */
+    #####: 2583:		noselect = 0;
+    #####: 2584:		goto getk;
+        -: 2585:	    }
+    #####: 2586:            broken = 1;
+    #####: 2587:            break;
+        -: 2588:        }
+    #####: 2589:	if (!i) {
+    #####: 2590:	    i = mcols * mlines;
+    #####: 2591:	    while (i--)
+    #####: 2592:		if (mtab[i])
+    #####: 2593:		    break;
+    #####: 2594:	    if (!i)
+    #####: 2595:		break;
+    #####: 2596:	    i = 1;
+        -: 2597:	}
+    #####: 2598:	p = mmtabp;
+    #####: 2599:	pg = mgtabp;
+    #####: 2600:	if (!p) /* selected match not in display, find line */
+    #####: 2601:	    continue;
+    #####: 2602:	minfo.cur = *p;
+    #####: 2603:	minfo.group = *pg;
+    #####: 2604:	if (setwish)
+    #####: 2605:	    wishcol = mcol;
+    #####: 2606:	else if (mcol > wishcol) {
+    #####: 2607:	    while (mcol > 0 && p[-1] == minfo.cur)
+    #####: 2608:		mcol--, p--, pg--;
+    #####: 2609:	} else if (mcol < wishcol) {
+    #####: 2610:	    while (mcol < mcols - 1 && p[1] == minfo.cur)
+    #####: 2611:		mcol++, p++, pg++;
+        -: 2612:	}
+    #####: 2613:	setwish = wasnext = 0;
+        -: 2614:
+    #####: 2615:    getk:
+        -: 2616:
+    #####: 2617:    	if (!do_last_key) {
+    #####: 2618:	    zmult = 1;
+    #####: 2619:	    cmd = getkeycmd();
+        -: 2620:	    /*
+        -: 2621:	     * On interrupt, we'll exit due to cmd being empty.
+        -: 2622:	     * Don't propagate the interrupt any further, which
+        -: 2623:	     * can screw up redrawing.
+        -: 2624:	     */
+    #####: 2625:	    errflag &= ~ERRFLAG_INT;
+    #####: 2626:	    if (mtab_been_reallocated) {
+    #####: 2627:		do_last_key = 1;
+    #####: 2628:		continue;
+        -: 2629:	    }
+        -: 2630:    	}
+    #####: 2631:	do_last_key = 0;
+        -: 2632:
+    #####: 2633:	if (!cmd || cmd == Th(z_sendbreak)) {
+    #####: 2634:	    zbeep();
+    #####: 2635:            molbeg = -1;
+    #####: 2636:	    break;
+    #####: 2637:	} else if (nolist && cmd != Th(z_undo) &&
+    #####: 2638:                   (!mode || (cmd != Th(z_backwarddeletechar) &&
+    #####: 2639:                              cmd != Th(z_selfinsert) &&
+        -: 2640:                              cmd != Th(z_selfinsertunmeta)))) {
+    #####: 2641:	    ungetkeycmd();
+    #####: 2642:	    break;
+    #####: 2643:	} else if (cmd == Th(z_acceptline) || cmd == Th(z_acceptsearch)) {
+    #####: 2644:            if (mode == MM_FSEARCH || mode == MM_BSEARCH) {
+    #####: 2645:                mode = 0;
+    #####: 2646:                continue;
+        -: 2647:            }
+    #####: 2648:	    acc = 1;
+    #####: 2649:	    break;
+    #####: 2650:        } else if (cmd == Th(z_viinsert)) {
+    #####: 2651:            if (mode == MM_INTER)
+    #####: 2652:                mode = 0;
+        -: 2653:            else {
+    #####: 2654:                int l = strlen(origline);
+        -: 2655:
+        -: 2656:		/*
+        -: 2657:		 * Entering interactive completion mode:
+        -: 2658:		 * same code as when we enter it on menu selection
+        -: 2659:		 * start.
+        -: 2660:		 */
+    #####: 2661:                mode = MM_INTER;
+    #####: 2662:                zlemetacs = 0;
+    #####: 2663:                foredel(zlemetall, CUT_RAW);
+    #####: 2664:                spaceinline(l);
+    #####: 2665:                strncpy(zlemetaline, origline, l);
+    #####: 2666:                zlemetacs = origcs;
+    #####: 2667:                setmstatus(status, NULL, 0, 0, NULL, NULL, NULL);
+        -: 2668:
+    #####: 2669:                continue;
+        -: 2670:            }
+    #####: 2671:	} else if (cmd == Th(z_acceptandinfernexthistory) ||
+    #####: 2672:                   (mode == MM_INTER && (cmd == Th(z_selfinsert) ||
+        -: 2673:                                         cmd == Th(z_selfinsertunmeta)))) {
+    #####: 2674:            char *saveline = NULL;
+    #####: 2675:            int savell = 0;
+    #####: 2676:            int savecs = 0;
+    #####: 2677:	    Menustack s = (Menustack) zhalloc(sizeof(*s));
+        -: 2678:
+    #####: 2679:	    s->prev = u;
+    #####: 2680:	    u = s;
+    #####: 2681:	    s->line = dupstring(zlemetaline);
+    #####: 2682:	    s->cs = zlemetacs;
+    #####: 2683:	    s->mline = mline;
+    #####: 2684:	    s->mlbeg = mlbeg;
+    #####: 2685:	    memcpy(&(s->info), &minfo, sizeof(struct menuinfo));
+    #####: 2686:	    s->amatches = amatches;
+        -: 2687:#ifdef ZSH_HEAP_DEBUG
+        -: 2688:	    if (memory_validate(amatches->heap_id)) {
+        -: 2689:		HEAP_ERROR(amatches->heap_id);
+        -: 2690:	    }
+        -: 2691:#endif
+    #####: 2692:	    s->pmatches = pmatches;
+    #####: 2693:	    s->lastmatches = lastmatches;
+    #####: 2694:	    s->lastlmatches = lastlmatches;
+    #####: 2695:            s->nolist = nolist;
+    #####: 2696:	    s->acc = menuacc;
+    #####: 2697:	    s->brbeg = dupbrinfo(brbeg, NULL, 1);
+    #####: 2698:	    s->brend = dupbrinfo(brend, NULL, 1);
+    #####: 2699:	    s->nbrbeg = nbrbeg;
+    #####: 2700:	    s->nbrend = nbrend;
+    #####: 2701:	    s->nmatches = nmatches;
+    #####: 2702:	    s->origline = dupstring(origline);
+    #####: 2703:	    s->origcs = origcs;
+    #####: 2704:	    s->origll = origll;
+    #####: 2705:            s->status = dupstring(status);
+        -: 2706:	    /*
+        -: 2707:	     * with just the slightest hint of a note of infuriation:
+        -: 2708:	     * mode here is the menu mode, not the file mode, despite
+        -: 2709:	     * the fact we're in a file dealing with file highlighting;
+        -: 2710:	     * but that's OK, because s is a menu stack entry, despite
+        -: 2711:	     * the fact we're in a function declaring s as char *.
+        -: 2712:	     * anyway, in functions we really mean *mode* it's
+        -: 2713:	     * called m, to be clear.
+        -: 2714:	     */
+    #####: 2715:            s->mode = mode;
+    #####: 2716:	    menucmp = menuacc = hasoldlist = 0;
+    #####: 2717:	    minfo.cur = NULL;
+    #####: 2718:	    fixsuffix();
+    #####: 2719:	    handleundo();
+    #####: 2720:	    validlist = 0;
+    #####: 2721:	    amatches = pmatches = lastmatches = NULL;
+    #####: 2722:	    invalidate_list();
+    #####: 2723:	    iforcemenu = 1;
+    #####: 2724:	    comprecursive = 1;
+    #####: 2725:            if (cmd != Th(z_acceptandinfernexthistory)) {
+    #####: 2726:                int l = strlen(origline);
+        -: 2727:
+        -: 2728:		/*
+        -: 2729:		 * Interactive mode: we need to restore the
+        -: 2730:		 * line, add the character, then remember how
+        -: 2731:		 * this new line looks in order to keep
+        -: 2732:		 * the command line as it is with just the
+        -: 2733:		 * characters typed by the user.
+        -: 2734:		 */
+    #####: 2735:                zlemetacs = 0;
+    #####: 2736:                foredel(zlemetall, CUT_RAW);
+    #####: 2737:                spaceinline(l);
+    #####: 2738:                strncpy(zlemetaline, origline, l);
+    #####: 2739:                zlemetacs = origcs;
+        -: 2740:
+        -: 2741:		/*
+        -: 2742:		 * Horrible quick fix:
+        -: 2743:		 * we shouldn't need to metafy and unmetafy
+        -: 2744:		 * quite as much.  If we kept unmetafied through
+        -: 2745:		 * here we could fix up setmstatus to use unmetafied
+        -: 2746:		 * as well.  This is the only use of setmstatus which
+        -: 2747:		 * restores the line so that should be doable.
+        -: 2748:		 */
+    #####: 2749:		unmetafy_line();
+    #####: 2750:                if (cmd == Th(z_selfinsert))
+    #####: 2751:                    selfinsert(zlenoargs);
+        -: 2752:                else
+    #####: 2753:                    selfinsertunmeta(zlenoargs);
+    #####: 2754:		metafy_line();
+    #####: 2755:		minfo.len++;
+    #####: 2756:		minfo.end++;
+        -: 2757:
+    #####: 2758:                saveline = (char *) zhalloc(zlemetall);
+    #####: 2759:                memcpy(saveline, zlemetaline, zlemetall);
+    #####: 2760:                savell = zlemetall;
+    #####: 2761:                savecs = zlemetacs;
+    #####: 2762:                iforcemenu = -1;
+        -: 2763:            } else
+    #####: 2764:                mode = 0;
+        -: 2765:	    /* Nested completion assumes line is unmetafied */
+    #####: 2766:	    unmetafy_line();
+    #####: 2767:	    menucomplete(zlenoargs);
+    #####: 2768:	    metafy_line();
+    #####: 2769:	    iforcemenu = 0;
+        -: 2770:
+    #####: 2771:            if (cmd != Th(z_acceptandinfernexthistory))
+    #####: 2772:                modeline = setmstatus(status, saveline, savell, savecs,
+        -: 2773:                                      &modecs, &modell, &modelen);
+        -: 2774:
+    #####: 2775:	    if (nmatches < 1 || !minfo.cur || !*(minfo.cur)) {
+    #####: 2776:		nolist = 1;
+    #####: 2777:                if (mode == MM_INTER) {
+    #####: 2778:                    statusline = status;
+        -: 2779:                } else {
+        -: 2780:		    /* paranoia */
+    #####: 2781:		    statusline = NULL;
+        -: 2782:		}
+    #####: 2783:		if (nmessages) {
+    #####: 2784:		    showinglist = -2;
+    #####: 2785:		    zrefresh();
+    #####: 2786:		    noselect = -1;
+        -: 2787:		} else {
+    #####: 2788:		    trashzle();
+    #####: 2789:		    zsetterm();
+    #####: 2790:		    if (tccan(TCCLEAREOD))
+    #####: 2791:			tcout(TCCLEAREOD);
+    #####: 2792:		    fputs("no matches\r", shout);
+    #####: 2793:		    fflush(shout);
+    #####: 2794:		    tcmultout(TCUP, TCMULTUP, nlnct);
+    #####: 2795:		    showinglist = clearlist = 0;
+    #####: 2796:		    clearflag = 1;
+    #####: 2797:		    zrefresh();
+    #####: 2798:		    showinglist = clearlist = 0;
+        -: 2799:		}
+    #####: 2800:		statusline = NULL;
+        -: 2801:
+    #####: 2802:		goto getk;
+        -: 2803:	    }
+    #####: 2804:	    clearlist = listshown = 1;
+    #####: 2805:	    mselect = (*(minfo.cur))->gnum;
+    #####: 2806:	    setwish = wasnext = 1;
+    #####: 2807:	    mline = 0;
+    #####: 2808:            molbeg = -42;
+    #####: 2809:	    continue;
+    #####: 2810:	} else if (cmd == Th(z_acceptandhold) ||
+        -: 2811:		   cmd == Th(z_acceptandmenucomplete)) {
+    #####: 2812:	    Menustack s = (Menustack) zhalloc(sizeof(*s));
+        -: 2813:	    int ol;
+        -: 2814:
+    #####: 2815:	    if (mode == MM_INTER)
+    #####: 2816:		do_single(*minfo.cur);
+    #####: 2817:	    mode = 0;
+    #####: 2818:	    s->prev = u;
+    #####: 2819:	    u = s;
+    #####: 2820:	    s->line = dupstring(zlemetaline);
+    #####: 2821:	    s->cs = zlemetacs;
+    #####: 2822:	    s->mline = mline;
+    #####: 2823:	    s->mlbeg = mlbeg;
+    #####: 2824:	    memcpy(&(s->info), &minfo, sizeof(struct menuinfo));
+    #####: 2825:	    s->amatches = s->pmatches =
+    #####: 2826:		s->lastmatches = s->lastlmatches = NULL;
+    #####: 2827:            s->nolist = nolist;
+    #####: 2828:	    s->acc = menuacc;
+    #####: 2829:	    s->brbeg = dupbrinfo(brbeg, NULL, 1);
+    #####: 2830:	    s->brend = dupbrinfo(brend, NULL, 1);
+    #####: 2831:	    s->nbrbeg = nbrbeg;
+    #####: 2832:	    s->nbrend = nbrend;
+    #####: 2833:	    s->nmatches = nmatches;
+    #####: 2834:	    s->origline = dupstring(origline);
+    #####: 2835:	    s->origcs = origcs;
+    #####: 2836:	    s->origll = origll;
+    #####: 2837:            s->status = dupstring(status);
+        -: 2838:	    /* see above */
+    #####: 2839:            s->mode = mode;
+    #####: 2840:	    accept_last();
+    #####: 2841:	    handleundo();
+    #####: 2842:	    comprecursive = 1;
+    #####: 2843:	    do_menucmp(0);
+    #####: 2844:	    mselect = (*(minfo.cur))->gnum;
+        -: 2845:
+    #####: 2846:	    p -= mcol;
+    #####: 2847:	    mcol = 0;
+    #####: 2848:	    ol = mline;
+        -: 2849:	    do {
+    #####: 2850:		for (mcol = 0; mcol < mcols; mcol++, p++)
+    #####: 2851:		    if (*p == minfo.cur)
+    #####: 2852:			break;
+    #####: 2853:		if (mcol != mcols)
+    #####: 2854:		    break;
+    #####: 2855:		if (++mline == mlines) {
+    #####: 2856:		    mline = 0;
+    #####: 2857:		    p -= mlines * mcols;
+        -: 2858:		}
+    #####: 2859:	    } while (mline != ol);
+    #####: 2860:	    if (*p != minfo.cur) {
+    #####: 2861:		noselect = clearlist = listshown = 1;
+    #####: 2862:		onlyexpl = 0;
+    #####: 2863:		zrefresh();
+    #####: 2864:		break;
+        -: 2865:	    }
+    #####: 2866:	    setwish = 1;
+    #####: 2867:	    continue;
+    #####: 2868:	} else if (cmd == Th(z_undo) ||
+    #####: 2869:                   (mode == MM_INTER && cmd == Th(z_backwarddeletechar))) {
+        -: 2870:	    int l;
+        -: 2871:
+    #####: 2872:	    if (!u)
+    #####: 2873:		break;
+        -: 2874:
+    #####: 2875:	    handleundo();
+    #####: 2876:	    zlemetacs = 0;
+    #####: 2877:	    foredel(zlemetall, CUT_RAW);
+    #####: 2878:	    spaceinline(l = strlen(u->line));
+    #####: 2879:	    strncpy(zlemetaline, u->line, l);
+    #####: 2880:	    zlemetacs = u->cs;
+    #####: 2881:	    menuacc = u->acc;
+    #####: 2882:	    memcpy(&minfo, &(u->info), sizeof(struct menuinfo));
+    #####: 2883:	    p = &(minfo.cur);
+    #####: 2884:	    mline = u->mline;
+    #####: 2885:	    mlbeg = u->mlbeg;
+    #####: 2886:	    if (u->lastmatches && lastmatches != u->lastmatches) {
+    #####: 2887:		if (lastmatches)
+    #####: 2888:		    freematches(lastmatches, 0);
+    #####: 2889:		amatches = u->amatches;
+        -: 2890:#ifdef ZSH_HEAP_DEBUG
+        -: 2891:		if (memory_validate(amatches->heap_id)) {
+        -: 2892:		    HEAP_ERROR(amatches->heap_id);
+        -: 2893:		}
+        -: 2894:#endif
+    #####: 2895:		pmatches = u->pmatches;
+    #####: 2896:		lastmatches = u->lastmatches;
+    #####: 2897:		lastlmatches = u->lastlmatches;
+    #####: 2898:		nmatches = u->nmatches;
+    #####: 2899:		hasoldlist = validlist = 1;
+        -: 2900:	    }
+    #####: 2901:	    freebrinfo(brbeg);
+    #####: 2902:	    freebrinfo(brend);
+    #####: 2903:	    brbeg = dupbrinfo(u->brbeg, &lastbrbeg, 0);
+    #####: 2904:	    brend = dupbrinfo(u->brend, &lastbrend, 0);
+    #####: 2905:	    nbrbeg = u->nbrbeg;
+    #####: 2906:	    nbrend = u->nbrend;
+    #####: 2907:	    zsfree(origline);
+    #####: 2908:	    origline = ztrdup(u->origline);
+    #####: 2909:	    origcs = u->origcs;
+    #####: 2910:	    origll = u->origll;
+    #####: 2911:            strcpy(status, u->status);
+    #####: 2912:            mode = u->mode;
+    #####: 2913:            nolist = u->nolist;
+        -: 2914:
+    #####: 2915:	    u = u->prev;
+    #####: 2916:	    clearlist = 1;
+    #####: 2917:	    setwish = 1;
+    #####: 2918:	    listdat.valid = 0;
+    #####: 2919:            molbeg = -42;
+        -: 2920:
+    #####: 2921:            if (nolist) {
+    #####: 2922:                if (mode == MM_INTER) {
+    #####: 2923:                    statusline = status;
+        -: 2924:                } else {
+        -: 2925:		    /* paranoia */
+    #####: 2926:		    statusline = NULL;
+        -: 2927:		}
+    #####: 2928:                zrefresh();
+    #####: 2929:		statusline = NULL;
+    #####: 2930:                goto getk;
+        -: 2931:            }
+    #####: 2932:            if (mode)
+    #####: 2933:                continue;
+    #####: 2934:	} else if (cmd == Th(z_redisplay)) {
+    #####: 2935:	    redisplay(zlenoargs);
+    #####: 2936:            molbeg = -42;
+    #####: 2937:	    continue;
+    #####: 2938:	} else if (cmd == Th(z_clearscreen)) {
+    #####: 2939:	    clearscreen(zlenoargs);
+    #####: 2940:            molbeg = -42;
+    #####: 2941:	    continue;
+    #####: 2942:	} else if (cmd == Th(z_downhistory) ||
+    #####: 2943:		   cmd == Th(z_downlineorhistory) ||
+    #####: 2944:		   cmd == Th(z_downlineorsearch) ||
+    #####: 2945:		   cmd == Th(z_vidownlineorhistory)) {
+        -: 2946:	    int omline;
+        -: 2947:	    Cmatch **op;
+        -: 2948:
+    #####: 2949:            mode = 0;
+    #####: 2950:	    wrap = 0;
+        -: 2951:
+    #####: 2952:	down:
+        -: 2953:
+    #####: 2954:	    omline = mline;
+    #####: 2955:	    op = p;
+        -: 2956:
+        -: 2957:	    do {
+    #####: 2958:		if (mline == mlines - 1) {
+    #####: 2959:		    if (wrap & 2) {
+    #####: 2960:			mline = omline; 
+    #####: 2961:			p = op;
+    #####: 2962:			break;
+        -: 2963:		    }
+    #####: 2964:		    p -= mline * mcols;
+    #####: 2965:		    mline = 0;
+    #####: 2966:		    wrap |= 1;
+        -: 2967:		} else {
+    #####: 2968:		    mline++;
+    #####: 2969:		    p += mcols;
+        -: 2970:		}
+    #####: 2971:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 2972:		    continue;
+    #####: 2973:	    } while (!*p || mmarked(*p));
+        -: 2974:
+    #####: 2975:	    if (wrap == 1)
+    #####: 2976:		goto right;
+    #####: 2977:	} else if (cmd == Th(z_uphistory) ||
+    #####: 2978:		   cmd == Th(z_uplineorhistory) ||
+    #####: 2979:		   cmd == Th(z_uplineorsearch) ||
+    #####: 2980:		   cmd == Th(z_viuplineorhistory)) {
+        -: 2981:	    int omline;
+        -: 2982:	    Cmatch **op;
+        -: 2983:
+    #####: 2984:            mode = 0;
+    #####: 2985:	    wrap = 0;
+        -: 2986:
+    #####: 2987:	up:
+        -: 2988:
+    #####: 2989:	    omline = mline;
+    #####: 2990:	    op = p;
+        -: 2991:
+        -: 2992:	    do {
+    #####: 2993:		if (!mline) {
+    #####: 2994:		    if (wrap & 2) {
+    #####: 2995:			mline = omline; 
+    #####: 2996:			p = op;
+    #####: 2997:			break;
+        -: 2998:		    }
+    #####: 2999:		    mline = mlines - 1;
+    #####: 3000:		    p += mline * mcols;
+    #####: 3001:		    wrap |= 1;
+        -: 3002:		} else {
+    #####: 3003:		    mline--;
+    #####: 3004:		    p -= mcols;
+        -: 3005:		}
+    #####: 3006:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 3007:		    continue;
+    #####: 3008:	    } while (!*p || mmarked(*p));
+        -: 3009:
+    #####: 3010:	    if (wrap == 1) {
+    #####: 3011:		if (mcol == wishcol)
+    #####: 3012:		    goto left;
+        -: 3013:
+    #####: 3014:		wishcol = mcol;
+        -: 3015:	    }
+    #####: 3016:	} else if (cmd == Th(z_emacsforwardword) ||
+    #####: 3017:		   cmd == Th(z_viforwardword) ||
+    #####: 3018:		   cmd == Th(z_viforwardwordend) ||
+    #####: 3019:		   cmd == Th(z_forwardword)) {
+    #####: 3020:	    int i = zterm_lines - pl - 1, oi = i, ll = 0;
+    #####: 3021:	    Cmatch **lp = NULL;
+        -: 3022:
+    #####: 3023:            mode = 0;
+    #####: 3024:	    if (mline == mlines - 1)
+    #####: 3025:		goto top;
+    #####: 3026:	    while (i > 0) {
+    #####: 3027:		if (mline == mlines - 1) {
+    #####: 3028:		    if (i != oi && lp)
+    #####: 3029:			break;
+    #####: 3030:		    goto top;
+        -: 3031:		} else {
+    #####: 3032:		    mline++;
+    #####: 3033:		    p += mcols;
+        -: 3034:		}
+    #####: 3035:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 3036:		    continue;
+    #####: 3037:		if (*p && !mmarked(*p)) {
+    #####: 3038:		    i--;
+    #####: 3039:		    lp = p;
+    #####: 3040:		    ll = mline;
+        -: 3041:		}
+        -: 3042:	    }
+    #####: 3043:	    p = lp;
+    #####: 3044:	    mline = ll;
+    #####: 3045:	} else if (cmd == Th(z_emacsbackwardword) ||
+    #####: 3046:		   cmd == Th(z_vibackwardword) ||
+    #####: 3047:		   cmd == Th(z_backwardword)) {
+    #####: 3048:	    int i = zterm_lines - pl - 1, oi = i, ll = 0;
+    #####: 3049:	    Cmatch **lp = NULL;
+        -: 3050:
+    #####: 3051:            mode = 0;
+    #####: 3052:	    if (!mline)
+    #####: 3053:		goto bottom;
+    #####: 3054:	    while (i > 0) {
+    #####: 3055:		if (!mline) {
+    #####: 3056:		    if (i != oi && lp)
+    #####: 3057:			break;
+    #####: 3058:		    goto bottom;
+        -: 3059:		} else {
+    #####: 3060:		    mline--;
+    #####: 3061:		    p -= mcols;
+        -: 3062:		}
+    #####: 3063:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 3064:		    continue;
+    #####: 3065:		if (*p || !mmarked(*p)) {
+    #####: 3066:		    i--;
+    #####: 3067:		    lp = p;
+    #####: 3068:		    ll = mline;
+        -: 3069:		}
+        -: 3070:	    }
+    #####: 3071:	    p = lp;
+    #####: 3072:	    mline = ll;
+    #####: 3073:	} else if (cmd == Th(z_beginningofhistory)) {
+        -: 3074:	    int ll;
+        -: 3075:	    Cmatch **lp;
+        -: 3076:
+    #####: 3077:            mode = 0;
+        -: 3078:
+    #####: 3079:	top:
+        -: 3080:
+    #####: 3081:	    ll = mline;
+    #####: 3082:	    lp = p;
+    #####: 3083:	    while (mline) {
+    #####: 3084:		mline--;
+    #####: 3085:		p -= mcols;
+    #####: 3086:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 3087:		    continue;
+    #####: 3088:		if (*p && !mmarked(*p)) {
+    #####: 3089:		    lp = p;
+    #####: 3090:		    ll = mline;
+        -: 3091:		}
+        -: 3092:	    }
+    #####: 3093:	    mline = ll;
+    #####: 3094:	    p = lp;
+    #####: 3095:	} else if (cmd == Th(z_endofhistory)) {
+        -: 3096:	    int ll;
+        -: 3097:	    Cmatch **lp;
+        -: 3098:
+    #####: 3099:            mode = 0;
+        -: 3100:
+    #####: 3101:	bottom:
+        -: 3102:
+    #####: 3103:	    ll = mline;
+    #####: 3104:	    lp = p;
+    #####: 3105:	    while (mline < mlines - 1) {
+    #####: 3106:		mline++;
+    #####: 3107:		p += mcols;
+    #####: 3108:		if (adjust_mcol(wishcol, &p, NULL))
+    #####: 3109:		    continue;
+    #####: 3110:		if (*p && !mmarked(*p)) {
+    #####: 3111:		    lp = p;
+    #####: 3112:		    ll = mline;
+        -: 3113:		}
+        -: 3114:	    }
+    #####: 3115:	    mline = ll;
+    #####: 3116:	    p = lp;
+    #####: 3117:	} else if (cmd == Th(z_forwardchar) || cmd == Th(z_viforwardchar)) {
+        -: 3118:	    int omcol;
+        -: 3119:	    Cmatch **op;
+        -: 3120:
+    #####: 3121:            mode = 0;
+    #####: 3122:	    wrap = 0;
+        -: 3123:
+    #####: 3124:	right:
+        -: 3125:
+    #####: 3126:	    omcol = mcol;
+    #####: 3127:	    op = p;
+        -: 3128:
+        -: 3129:	    do {
+    #####: 3130:		if (mcol == mcols - 1) {
+    #####: 3131:		    if (wrap & 1) {
+    #####: 3132:			p = op;
+    #####: 3133:			mcol = omcol;
+    #####: 3134:			break;
+        -: 3135:		    }
+    #####: 3136:		    p -= mcol;
+    #####: 3137:		    mcol = 0;
+    #####: 3138:		    wrap |= 2;
+        -: 3139:		} else {
+    #####: 3140:		    mcol++;
+    #####: 3141:		    p++;
+        -: 3142:		}
+    #####: 3143:	    } while (!*p || mmarked(*p) || (mcol != omcol && *p == *op));
+    #####: 3144:	    wishcol = mcol;
+        -: 3145:
+    #####: 3146:	    if (wrap == 2)
+    #####: 3147:		goto down;
+    #####: 3148:	} else if (cmd == Th(z_backwardchar) || cmd == Th(z_vibackwardchar)) {
+        -: 3149:	    int omcol;
+        -: 3150:	    Cmatch **op;
+        -: 3151:
+    #####: 3152:            mode = 0;
+    #####: 3153:	    wrap = 0;
+        -: 3154:
+    #####: 3155:	left:
+        -: 3156:
+    #####: 3157:	    omcol = mcol;
+    #####: 3158:	    op = p;
+        -: 3159:
+        -: 3160:	    do {
+    #####: 3161:		if (!mcol) {
+    #####: 3162:		    if (wrap & 1) {
+    #####: 3163:			p = op;
+    #####: 3164:			mcol = omcol;
+    #####: 3165:			break;
+        -: 3166:		    }
+    #####: 3167:		    mcol = mcols - 1;
+    #####: 3168:		    p += mcol;
+    #####: 3169:		    wrap |= 2;
+        -: 3170:		} else {
+    #####: 3171:		    mcol--;
+    #####: 3172:		    p--;
+        -: 3173:		}
+    #####: 3174:	    } while (!*p || mmarked(*p) || (mcol != omcol && *p == *op));
+    #####: 3175:	    wishcol = mcol;
+        -: 3176:
+    #####: 3177:	    if (wrap == 2) {
+    #####: 3178:		p += mcols - 1 - mcol;
+    #####: 3179:		wishcol = mcol = mcols - 1;
+    #####: 3180:		adjust_mcol(wishcol, &p, NULL);
+    #####: 3181:		goto up;
+        -: 3182:	    }
+    #####: 3183:	} else if (cmd == Th(z_beginningofbufferorhistory) ||
+    #####: 3184:		   cmd == Th(z_beginningofline) ||
+    #####: 3185:		   cmd == Th(z_beginningoflinehist) ||
+        -: 3186:		   cmd == Th(z_vibeginningofline)) {
+    #####: 3187:            mode = 0;
+    #####: 3188:	    p -= mcol;
+    #####: 3189:	    mcol = 0;
+    #####: 3190:	    while (!*p || mmarked(*p)) {
+    #####: 3191:		mcol++;
+    #####: 3192:		p++;
+        -: 3193:	    }
+    #####: 3194:	    wishcol = 0;
+    #####: 3195:	} else if (cmd == Th(z_endofbufferorhistory) ||
+    #####: 3196:		   cmd == Th(z_endofline) ||
+    #####: 3197:		   cmd == Th(z_endoflinehist) ||
+        -: 3198:		   cmd == Th(z_viendofline)) {
+    #####: 3199:            mode = 0;
+    #####: 3200:	    p += mcols - mcol - 1;
+    #####: 3201:	    mcol = mcols - 1;
+    #####: 3202:	    while (!*p || mmarked(*p)) {
+    #####: 3203:		mcol--;
+    #####: 3204:		p--;
+        -: 3205:	    }
+    #####: 3206:	    wishcol = mcols - 1;
+    #####: 3207:	} else if (cmd == Th(z_viforwardblankword) ||
+    #####: 3208:		   cmd == Th(z_viforwardblankwordend)) {
+    #####: 3209:	    Cmgroup g = *pg;
+    #####: 3210:	    int ol = mline;
+        -: 3211:
+    #####: 3212:            mode = 0;
+        -: 3213:	    do {
+    #####: 3214:		if (mline == mlines - 1) {
+    #####: 3215:		    p -= mline * mcols;
+    #####: 3216:		    pg -= mline * mcols;
+    #####: 3217:		    mline = 0;
+        -: 3218:		} else {
+    #####: 3219:		    mline++;
+    #####: 3220:		    p += mcols;
+    #####: 3221:		    pg += mcols;
+        -: 3222:		}
+    #####: 3223:		if (adjust_mcol(wishcol, &p, &pg))
+    #####: 3224:		    continue;
+    #####: 3225:	    } while (ol != mline && (*pg == g || !*pg || mmarked(*pg)));
+    #####: 3226:	} else if (cmd == Th(z_vibackwardblankword)) {
+    #####: 3227:	    Cmgroup g = *pg;
+    #####: 3228:	    int ol = mline;
+        -: 3229:
+    #####: 3230:            mode = 0;
+        -: 3231:	    do {
+    #####: 3232:		if (!mline) {
+    #####: 3233:		    mline = mlines - 1;
+    #####: 3234:		    p += mline * mcols;
+    #####: 3235:		    pg += mline * mcols;
+        -: 3236:		} else {
+    #####: 3237:		    mline--;
+    #####: 3238:		    p -= mcols;
+    #####: 3239:		    pg -= mcols;
+        -: 3240:		}
+    #####: 3241:		if (adjust_mcol(wishcol, &p, &pg))
+    #####: 3242:		    continue;
+    #####: 3243:	    } while (ol != mline && (*pg == g || !*pg || mmarked(*pg)));
+    #####: 3244:	} else if (cmd == Th(z_completeword) ||
+    #####: 3245:		   cmd == Th(z_expandorcomplete) ||
+    #####: 3246:		   cmd == Th(z_expandorcompleteprefix) ||
+    #####: 3247:		   cmd == Th(z_menucomplete) ||
+    #####: 3248:		   cmd == Th(z_menuexpandorcomplete) ||
+    #####: 3249:		   !strcmp(cmd->nam, "menu-select") ||
+    #####: 3250:		   !strcmp(cmd->nam, "complete-word") ||
+    #####: 3251:		   !strcmp(cmd->nam, "expand-or-complete") ||
+    #####: 3252:		   !strcmp(cmd->nam, "expand-or-complete-prefix") ||
+    #####: 3253:		   !strcmp(cmd->nam, "menu-complete") ||
+    #####: 3254:		   !strcmp(cmd->nam, "menu-expand-or-complete")) {
+    #####: 3255:            if (mode == MM_INTER) {
+        -: 3256:		/*
+        -: 3257:		 * do_menucmp() has inserted the completion onto
+        -: 3258:		 * the command line.  In interactive mode we
+        -: 3259:		 * don't want that, just what the user typed,
+        -: 3260:		 * so restore the information.
+        -: 3261:		 */
+    #####: 3262:		zsfree(origline);
+    #####: 3263:		origline = ztrdup(modeline);
+    #####: 3264:                origcs = modecs;
+    #####: 3265:                origll = modell;
+    #####: 3266:                zlemetacs = 0;
+    #####: 3267:                foredel(zlemetall, CUT_RAW);
+    #####: 3268:                spaceinline(origll);
+    #####: 3269:                strncpy(zlemetaline, origline, origll);
+    #####: 3270:                zlemetacs = origcs;
+    #####: 3271:                minfo.len = modelen;
+        -: 3272:            } else {
+    #####: 3273:                mode = 0;
+    #####: 3274:                comprecursive = 1;
+    #####: 3275:                do_menucmp(0);
+    #####: 3276:                mselect = (*(minfo.cur))->gnum;
+    #####: 3277:                setwish = 1;
+    #####: 3278:                mline = -1;
+        -: 3279:            }
+    #####: 3280:	    continue;
+    #####: 3281:	} else if (cmd == Th(z_reversemenucomplete) ||
+    #####: 3282:		   !strcmp(cmd->nam, "reverse-menu-complete")) {
+    #####: 3283:            mode = 0;
+    #####: 3284:	    comprecursive = 1;
+    #####: 3285:	    zmult = -zmult;
+    #####: 3286:	    do_menucmp(0);
+    #####: 3287:	    mselect = (*(minfo.cur))->gnum;
+    #####: 3288:	    setwish = 1;
+    #####: 3289:	    mline = -1;
+    #####: 3290:	    continue;
+    #####: 3291:        } else if (cmd == Th(z_historyincrementalsearchforward) ||
+    #####: 3292:                   cmd == Th(z_historyincrementalsearchbackward) ||
+    #####: 3293:                   ((mode == MM_FSEARCH || mode == MM_BSEARCH) &&
+    #####: 3294:                    (cmd == Th(z_selfinsert) ||
+    #####: 3295:                     cmd == Th(z_selfinsertunmeta) ||
+    #####: 3296:		     cmd == Th(z_bracketedpaste)))) {
+    #####: 3297:            Cmatch **np, **op = p;
+    #####: 3298:            int was = (mode == MM_FSEARCH || mode == MM_BSEARCH);
+    #####: 3299:            int ins = (cmd == Th(z_selfinsert) || cmd == Th(z_selfinsertunmeta) ||
+        -: 3300:		cmd == Th(z_bracketedpaste));
+    #####: 3301:            int back = (cmd == Th(z_historyincrementalsearchbackward));
+        -: 3302:            int wrap;
+        -: 3303:
+        -: 3304:            do {
+    #####: 3305:		char *toins = NULL;
+        -: 3306:#ifdef MULTIBYTE_SUPPORT
+        -: 3307:		/* MB_CUR_MAX may not be constant */
+    #####: 3308:		VARARR(char, insert, MB_CUR_MAX+1);
+        -: 3309:#else
+        -: 3310:		char insert[2];
+        -: 3311:#endif
+    #####: 3312:                if (was) {
+    #####: 3313:                    p += wishcol - mcol;
+    #####: 3314:                    mcol = wishcol;
+        -: 3315:                }
+    #####: 3316:                if (!ins) {
+    #####: 3317:                    if (was) {
+    #####: 3318:                        if (!*msearchstr && lastsearch &&
+    #####: 3319:			    back == (mode == MM_BSEARCH)) {
+    #####: 3320:                            msearchstr = dupstring(lastsearch);
+    #####: 3321:                            mode = 0;
+        -: 3322:                        }
+        -: 3323:                    } else {
+    #####: 3324:                        msearchstr = "";
+    #####: 3325:                        msearchstack = NULL;
+    #####: 3326:			msearchstate = MS_OK;
+        -: 3327:                    }
+        -: 3328:                } else {
+    #####: 3329:		    if (cmd == Th(z_selfinsertunmeta)) {
+    #####: 3330:			fixunmeta();
+        -: 3331:		    }
+    #####: 3332:		    if (cmd == Th(z_bracketedpaste)) {
+    #####: 3333:			toins = bracketedstring();
+        -: 3334:		    } else {
+    #####: 3335:			toins = insert;
+        -: 3336:#ifdef MULTIBYTE_SUPPORT
+    #####: 3337:			if (lastchar_wide_valid)
+        -: 3338:			{
+        -: 3339:			    mbstate_t mbs;
+        -: 3340:			    int len;
+        -: 3341:
+    #####: 3342:			    memset(&mbs, 0, sizeof(mbs));
+    #####: 3343:			    len = wcrtomb(toins, lastchar_wide, &mbs);
+    #####: 3344:			    if (len < 0)
+    #####: 3345:				len = 0;
+    #####: 3346:			    insert[len] = '\0';
+        -: 3347:			} else
+        -: 3348:#endif
+        -: 3349:			{
+    #####: 3350:			    insert[0] = lastchar;
+    #####: 3351:			    insert[1] = '\0';
+        -: 3352:			}
+        -: 3353:		    }
+        -: 3354:		}
+    #####: 3355:                wrap = 0;
+    #####: 3356:                np = msearch(p, toins, (ins ? (mode == MM_BSEARCH) : back),
+        -: 3357:                             (was && !ins), &wrap);
+        -: 3358:
+    #####: 3359:                if (!ins)
+    #####: 3360:                    mode = (back ? MM_BSEARCH : MM_FSEARCH);
+    #####: 3361:		else if (cmd == Th(z_bracketedpaste))
+    #####: 3362:		    free(toins);
+        -: 3363:
+    #####: 3364:                if (*msearchstr) {
+    #####: 3365:                    zsfree(lastsearch);
+    #####: 3366:                    lastsearch = ztrdup(msearchstr);
+        -: 3367:                }
+    #####: 3368:                if (np) {
+    #####: 3369:                    wishcol = mcol;
+    #####: 3370:                    p = np;
+        -: 3371:                }
+    #####: 3372:                adjust_mcol(wishcol, &p, NULL);
+        -: 3373:
+    #####: 3374:            } while ((back || cmd == Th(z_historyincrementalsearchforward)) &&
+    #####: 3375:                     np && !wrap && was && **p == **op);
+        -: 3376:
+    #####: 3377:        } else if ((mode == MM_FSEARCH || mode == MM_BSEARCH) &&
+    #####: 3378:                   cmd == Th(z_backwarddeletechar)) {
+    #####: 3379:            int back = 1;
+    #####: 3380:            Cmatch **np = msearchpop(&back);
+        -: 3381:
+    #####: 3382:            mode = (back ? MM_BSEARCH : MM_FSEARCH);
+    #####: 3383:            wishcol = mcol;
+    #####: 3384:            if (np) {
+    #####: 3385:                p = np;
+    #####: 3386:                adjust_mcol(wishcol, &p, NULL);
+        -: 3387:            }
+    #####: 3388:	} else if (cmd == Th(z_undefinedkey)) {
+    #####: 3389:            mode = 0;
+    #####: 3390:	    continue;
+        -: 3391:	} else {
+    #####: 3392:	    ungetkeycmd();
+    #####: 3393:	    if (cmd->widget && (cmd->widget->flags & WIDGET_NCOMP)) {
+    #####: 3394:		acc = 0;
+    #####: 3395:		broken = 2;
+        -: 3396:	    } else
+    #####: 3397:		acc = 1;
+    #####: 3398:	    break;
+        -: 3399:	}
+    #####: 3400:	do_single(**p);
+    #####: 3401:	mselect = (**p)->gnum;
+        -: 3402:    }
+    #####: 3403:    if (u)
+    #####: 3404:	for (; u; u = u->prev)
+    #####: 3405:	    if (u->lastmatches != lastmatches)
+    #####: 3406:		freematches(u->lastmatches, 0);
+        -: 3407:
+    #####: 3408:    selectlocalmap(NULL);
+    #####: 3409:    mselect = mlastcols = mlastlines = -1;
+    #####: 3410:    mstatus = NULL;
+    #####: 3411:    inselect = mhasstat = 0;
+    #####: 3412:    if (nolist)
+    #####: 3413:        clearlist = listshown = 1;
+    #####: 3414:    if (acc && validlist && minfo.cur) {
+    #####: 3415:	menucmp = lastambig = hasoldlist = 0;
+    #####: 3416:	do_single(*(minfo.cur));
+        -: 3417:    }
+    #####: 3418:    if (wasnext || broken) {
+    #####: 3419:	menucmp = 1;
+    #####: 3420:	showinglist = ((validlist && !nolist) ? -2 : 0);
+    #####: 3421:	minfo.asked = 0;
+    #####: 3422:	if (!noselect) {
+    #####: 3423:	    int nos = noselect;
+        -: 3424:
+    #####: 3425:	    zrefresh();
+    #####: 3426:	    noselect = nos;
+        -: 3427:	}
+        -: 3428:    }
+    #####: 3429:    if (!noselect && (!dat || acc)) {
+        -: 3430:	/*
+        -: 3431:	 * I added the following because in certain cases the zrefresh()
+        -: 3432:	 * here was screwing up the list.  Forcing it to redraw the
+        -: 3433:	 * screen worked.  The case in question (courtesy of
+        -: 3434:	 * "Matt Wozniski" <godlygeek@gmail.com>) is in zsh-workers/24756.
+        -: 3435:	 *
+        -: 3436:	 * *** PLEASE DON'T ASK ME WHY THIS IS NECESSARY ***
+        -: 3437:	 */
+    #####: 3438:	mlbeg = -1;
+    #####: 3439:	showinglist = ((validlist && !nolist) ? -2 : 0);
+    #####: 3440:	onlyexpl = oe;
+    #####: 3441:	if (acc && listshown) {
+        -: 3442:	    /*
+        -: 3443:	     * Clear the list without spending sixteen weeks of
+        -: 3444:	     * redrawing it in slightly different states first.
+        -: 3445:	     * The following seems to work.  I'm not sure what
+        -: 3446:	     * the difference is between listshown and showinglist,
+        -: 3447:	     * but listshown looks like the traditional thing to
+        -: 3448:	     * check for in this file at least.
+        -: 3449:	     *
+        -: 3450:	     * showinglist has a normally undocumented value of 1,
+        -: 3451:	     * and an extra-specially undocumented value of -2, which
+        -: 3452:	     * seems to be a force---it appears we need to kick it out
+        -: 3453:	     * of that state, though it worries me that in some places
+        -: 3454:	     * the code actually forces it back into that state.
+        -: 3455:	     */
+    #####: 3456:	    clearlist = listshown = showinglist = 1;
+    #####: 3457:	} else if (!smatches)
+    #####: 3458:	    clearlist = listshown = 1;
+    #####: 3459:	zrefresh();
+        -: 3460:    }
+    #####: 3461:    mlbeg = -1;
+    #####: 3462:    fdat = NULL;
+        -: 3463:
+    #####: 3464:    if (!wasmeta)
+    #####: 3465:	unmetafy_line();
+        -: 3466:
+    #####: 3467:    return (broken == 2 ? 3 :
+    #####: 3468:	    ((dat && !broken) ? (acc ? 1 : 2) : (!noselect ^ acc)));
+        -: 3469:}
+        -: 3470:
+        -: 3471:/* The widget function. */
+        -: 3472:
+        -: 3473:static int
+    #####: 3474:menuselect(char **args)
+        -: 3475:{
+    #####: 3476:    int d = 0;
+        -: 3477:
+    #####: 3478:    if (!minfo.cur) {
+    #####: 3479:	selected = 0;
+    #####: 3480:	menucomplete(args);
+    #####: 3481:	if ((minfo.cur && minfo.asked == 2) || selected)
+    #####: 3482:	    return 0;
+    #####: 3483:	d = 1;
+        -: 3484:    }
+    #####: 3485:    if (minfo.cur && (minfo.asked == 2 || domenuselect(NULL, NULL)) && !d)
+    #####: 3486:	menucomplete(args);
+        -: 3487:
+    #####: 3488:    return 0;
+        -: 3489:}
+        -: 3490:
+        -: 3491:static struct features module_features = {
+        -: 3492:    NULL, 0,
+        -: 3493:    NULL, 0,
+        -: 3494:    NULL, 0,
+        -: 3495:    NULL, 0,
+        -: 3496:    0
+        -: 3497:};
+        -: 3498:
+        -: 3499:/**/
+        -: 3500:int
+        1: 3501:setup_(UNUSED(Module m))
+        -: 3502:{
+        1: 3503:    return 0;
+        -: 3504:}
+        -: 3505:
+        -: 3506:/**/
+        -: 3507:int
+      169: 3508:features_(Module m, char ***features)
+        -: 3509:{
+      169: 3510:    *features = featuresarray(m, &module_features);
+      169: 3511:    return 0;
+        -: 3512:}
+        -: 3513:
+        -: 3514:/**/
+        -: 3515:int
+      338: 3516:enables_(Module m, int **enables)
+        -: 3517:{
+      338: 3518:    return handlefeatures(m, &module_features, enables);
+        -: 3519:}
+        -: 3520:
+        -: 3521:/**/
+        -: 3522:static void
+        1: 3523:menuselect_bindings(void)
+        -: 3524:{
+        1: 3525:    if (!(mskeymap = openkeymap("menuselect"))) {
+        1: 3526:	mskeymap = newkeymap(NULL, "menuselect");
+        1: 3527:	linkkeymap(mskeymap, "menuselect", 1);
+        1: 3528:	bindkey(mskeymap, "\t", refthingy(t_completeword), NULL);
+        1: 3529:	bindkey(mskeymap, "\n", refthingy(t_acceptline), NULL);
+        1: 3530:	bindkey(mskeymap, "\r", refthingy(t_acceptline), NULL);
+        1: 3531:	bindkey(mskeymap, "\33[A",  refthingy(t_uplineorhistory), NULL);
+        1: 3532:	bindkey(mskeymap, "\33[B",  refthingy(t_downlineorhistory), NULL);
+        1: 3533:	bindkey(mskeymap, "\33[C",  refthingy(t_forwardchar), NULL);
+        1: 3534:	bindkey(mskeymap, "\33[D",  refthingy(t_backwardchar), NULL);
+        1: 3535:	bindkey(mskeymap, "\33OA",  refthingy(t_uplineorhistory), NULL);
+        1: 3536:	bindkey(mskeymap, "\33OB",  refthingy(t_downlineorhistory), NULL);
+        1: 3537:	bindkey(mskeymap, "\33OC",  refthingy(t_forwardchar), NULL);
+        1: 3538:	bindkey(mskeymap, "\33OD",  refthingy(t_backwardchar), NULL);
+        -: 3539:    }
+        1: 3540:    if (!(lskeymap = openkeymap("listscroll"))) {
+        1: 3541:	lskeymap = newkeymap(NULL, "listscroll");
+        1: 3542:	linkkeymap(lskeymap, "listscroll", 1);
+        1: 3543:	bindkey(lskeymap, "\t", refthingy(t_completeword), NULL);
+        1: 3544:	bindkey(lskeymap, " ", refthingy(t_completeword), NULL);
+        1: 3545:	bindkey(lskeymap, "\n", refthingy(t_acceptline), NULL);
+        1: 3546:	bindkey(lskeymap, "\r", refthingy(t_acceptline), NULL);
+        1: 3547:	bindkey(lskeymap, "\33[B",  refthingy(t_downlineorhistory), NULL);
+        1: 3548:	bindkey(lskeymap, "\33OB",  refthingy(t_downlineorhistory), NULL);
+        -: 3549:    }
+        1: 3550:}
+        -: 3551:
+        -: 3552:/**/
+        -: 3553:int
+        1: 3554:boot_(Module m)
+        -: 3555:{
+        1: 3556:    mtab = NULL;
+        1: 3557:    mgtab = NULL;
+        1: 3558:    mselect = -1;
+        1: 3559:    inselect = 0;
+        -: 3560:
+        1: 3561:    w_menuselect = addzlefunction("menu-select", menuselect,
+        -: 3562:                                    ZLE_MENUCMP|ZLE_KEEPSUFFIX|ZLE_ISCOMP);
+        1: 3563:    if (!w_menuselect) {
+    #####: 3564:	zwarnnam(m->node.nam,
+        -: 3565:		 "name clash when adding ZLE function `menu-select'");
+    #####: 3566:	return -1;
+        -: 3567:    }
+        1: 3568:    addhookfunc("comp_list_matches", (Hookfn) complistmatches);
+        1: 3569:    addhookfunc("menu_start", (Hookfn) domenuselect);
+        1: 3570:    menuselect_bindings();
+        1: 3571:    return 0;
+        -: 3572:}
+        -: 3573:
+        -: 3574:/**/
+        -: 3575:int
+    #####: 3576:cleanup_(Module m)
+        -: 3577:{
+    #####: 3578:    free(mtab);
+    #####: 3579:    free(mgtab);
+        -: 3580:
+    #####: 3581:    deletezlefunction(w_menuselect);
+    #####: 3582:    deletehookfunc("comp_list_matches", (Hookfn) complistmatches);
+    #####: 3583:    deletehookfunc("menu_start", (Hookfn) domenuselect);
+    #####: 3584:    unlinkkeymap("menuselect", 1);
+    #####: 3585:    unlinkkeymap("listscroll", 1);
+    #####: 3586:    return setfeatureenables(m, &module_features, NULL);
+        -: 3587:}
+        -: 3588:
+        -: 3589:/**/
+        -: 3590:int
+    #####: 3591:finish_(UNUSED(Module m))
+        -: 3592:{
+    #####: 3593:    return 0;
+        -: 3594:}

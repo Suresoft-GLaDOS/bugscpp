@@ -1,0 +1,917 @@
+        -:    0:Source:rlimits.c
+        -:    0:Graph:/home/workspace/Src/Builtins/rlimits.gcno
+        -:    0:Data:/home/workspace/Src/Builtins/rlimits.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * rlimits.c - resource limit builtins
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "rlimits.mdh"
+        -:   31:#include "rlimits.pro"
+        -:   32:
+        -:   33:#if defined(HAVE_GETRLIMIT) && defined(RLIM_INFINITY)
+        -:   34:
+        -:   35:enum zlimtype {
+        -:   36:    ZLIMTYPE_MEMORY,
+        -:   37:    ZLIMTYPE_NUMBER,
+        -:   38:    ZLIMTYPE_TIME,
+        -:   39:    ZLIMTYPE_MICROSECONDS,
+        -:   40:    ZLIMTYPE_UNKNOWN
+        -:   41:};
+        -:   42:
+        -:   43:typedef struct resinfo_T {
+        -:   44:    int	res;		/* RLIMIT_XXX */
+        -:   45:    char* name;		/* used by limit builtin */
+        -:   46:    enum zlimtype type;
+        -:   47:    int unit;		/* 1, 512, or 1024 */
+        -:   48:    char opt;		/* option character */
+        -:   49:    char* descr;	/* used by ulimit builtin */
+        -:   50:} resinfo_T;
+        -:   51:
+        -:   52:/* table of known resources */
+        -:   53:/*
+        -:   54: * How to add a new resource:
+        -:   55: * 1. Add zsh_LIMIT_PRESENT(RLIMIT_XXX) in configure.ac.
+        -:   56: * 2. Add an entry for RLIMIT_XXX to known_resources[].
+        -:   57: *    Make sure the option letter (resinto_T.opt) is unique.
+        -:   58: * 3. Build zsh and run the test B12rlimit.ztst.
+        -:   59: */
+        -:   60:static const resinfo_T known_resources[] = {
+        -:   61:    {RLIMIT_CPU, "cputime", ZLIMTYPE_TIME, 1,
+        -:   62:		't', "cpu time (seconds)"},
+        -:   63:    {RLIMIT_FSIZE, "filesize", ZLIMTYPE_MEMORY, 512,
+        -:   64:		'f', "file size (blocks)"},
+        -:   65:    {RLIMIT_DATA, "datasize", ZLIMTYPE_MEMORY, 1024,
+        -:   66:		'd', "data seg size (kbytes)"},
+        -:   67:    {RLIMIT_STACK, "stacksize", ZLIMTYPE_MEMORY, 1024,
+        -:   68:		's', "stack size (kbytes)"},
+        -:   69:    {RLIMIT_CORE, "coredumpsize", ZLIMTYPE_MEMORY, 512,
+        -:   70:		'c', "core file size (blocks)"},
+        -:   71:# ifdef HAVE_RLIMIT_NOFILE
+        -:   72:    {RLIMIT_NOFILE, "descriptors", ZLIMTYPE_NUMBER, 1,
+        -:   73:		'n', "file descriptors"},
+        -:   74:# endif
+        -:   75:# if defined(HAVE_RLIMIT_AS) && !defined(RLIMIT_VMEM_IS_AS)
+        -:   76:    {RLIMIT_AS, "addressspace", ZLIMTYPE_MEMORY, 1024,
+        -:   77:		'v', "address space (kbytes)"},
+        -:   78:# endif
+        -:   79:# if defined(HAVE_RLIMIT_RSS) && !defined(RLIMIT_VMEM_IS_RSS) && !defined(RLIMIT_RSS_IS_AS)
+        -:   80:    {RLIMIT_RSS, "resident", ZLIMTYPE_MEMORY, 1024,
+        -:   81:		'm', "resident set size (kbytes)"},
+        -:   82:# endif
+        -:   83:# if defined(HAVE_RLIMIT_VMEM)
+        -:   84:    {RLIMIT_VMEM,
+        -:   85:#  if defined(RLIMIT_VMEM_IS_RSS)
+        -:   86:		 "resident", ZLIMTYPE_MEMORY, 1024,
+        -:   87:		 'm', "memory size (kbytes)"
+        -:   88:#  else
+        -:   89:		 "vmemorysize", ZLIMTYPE_MEMORY, 1024,
+        -:   90:		 'v', "virtual memory size (kbytes)"
+        -:   91:#  endif
+        -:   92:    },
+        -:   93:# endif
+        -:   94:# ifdef HAVE_RLIMIT_NPROC
+        -:   95:    {RLIMIT_NPROC, "maxproc", ZLIMTYPE_NUMBER, 1,
+        -:   96:		'u', "processes"},
+        -:   97:# endif
+        -:   98:# ifdef HAVE_RLIMIT_MEMLOCK
+        -:   99:    {RLIMIT_MEMLOCK, "memorylocked", ZLIMTYPE_MEMORY, 1024,
+        -:  100:		'l', "locked-in-memory size (kbytes)"},
+        -:  101:# endif
+        -:  102:    /* Linux */
+        -:  103:# ifdef HAVE_RLIMIT_LOCKS
+        -:  104:    {RLIMIT_LOCKS, "maxfilelocks", ZLIMTYPE_NUMBER, 1,
+        -:  105:		'x', "file locks"},
+        -:  106:# endif
+        -:  107:# ifdef HAVE_RLIMIT_SIGPENDING
+        -:  108:    {RLIMIT_SIGPENDING, "sigpending", ZLIMTYPE_NUMBER, 1,
+        -:  109:		'i', "pending signals"},
+        -:  110:# endif
+        -:  111:# ifdef HAVE_RLIMIT_MSGQUEUE
+        -:  112:    {RLIMIT_MSGQUEUE, "msgqueue", ZLIMTYPE_NUMBER, 1,
+        -:  113:		'q', "bytes in POSIX msg queues"},
+        -:  114:# endif
+        -:  115:# ifdef HAVE_RLIMIT_NICE
+        -:  116:    {RLIMIT_NICE, "nice", ZLIMTYPE_NUMBER, 1,
+        -:  117:		'e', "max nice"},
+        -:  118:# endif
+        -:  119:# ifdef HAVE_RLIMIT_RTPRIO
+        -:  120:    {RLIMIT_RTPRIO, "rt_priority", ZLIMTYPE_NUMBER, 1,
+        -:  121:		'r', "max rt priority"},
+        -:  122:# endif
+        -:  123:# ifdef HAVE_RLIMIT_RTTIME
+        -:  124:    {RLIMIT_RTTIME, "rt_time", ZLIMTYPE_MICROSECONDS, 1,
+        -:  125:		'N', "rt cpu time (microseconds)"},
+        -:  126:# endif
+        -:  127:    /* BSD */
+        -:  128:# ifdef HAVE_RLIMIT_SBSIZE
+        -:  129:    {RLIMIT_SBSIZE, "sockbufsize", ZLIMTYPE_MEMORY, 1,
+        -:  130:		'b', "socket buffer size (bytes)"},
+        -:  131:# endif
+        -:  132:# ifdef HAVE_RLIMIT_KQUEUES /* FreeBSD */
+        -:  133:    {RLIMIT_KQUEUES, "kqueues", ZLIMTYPE_NUMBER, 1,
+        -:  134:		'k', "kqueues"},
+        -:  135:# endif
+        -:  136:# ifdef HAVE_RLIMIT_NPTS    /* FreeBSD */
+        -:  137:    {RLIMIT_NPTS, "pseudoterminals", ZLIMTYPE_NUMBER, 1,
+        -:  138:		'p', "pseudo-terminals"},
+        -:  139:# endif
+        -:  140:# ifdef HAVE_RLIMIT_SWAP    /* FreeBSD */
+        -:  141:    {RLIMIT_SWAP, "swapsize", ZLIMTYPE_MEMORY, 1024,
+        -:  142:		'w', "swap size (kbytes)"},
+        -:  143:# endif
+        -:  144:# ifdef HAVE_RLIMIT_UMTXP   /* FreeBSD */
+        -:  145:    {RLIMIT_UMTXP, "umtxp", ZLIMTYPE_NUMBER, 1,
+        -:  146:		'o', "umtx shared locks"},
+        -:  147:# endif
+        -:  148:
+        -:  149:# ifdef HAVE_RLIMIT_POSIXLOCKS	/* DragonFly */
+        -:  150:    {RLIMIT_POSIXLOCKS, "posixlocks", ZLIMTYPE_NUMBER, 1,
+        -:  151:		'x', "number of POSIX locks"},
+        -:  152:# endif
+        -:  153:# if defined(HAVE_RLIMIT_NTHR) && !defined(HAVE_RLIMIT_RTPRIO) /* Net/OpenBSD */
+        -:  154:    {RLIMIT_NTHR, "maxpthreads", ZLIMTYPE_NUMBER, 1,
+        -:  155:		'r', "threads"},
+        -:  156:# endif
+        -:  157:    /* others */
+        -:  158:# if defined(HAVE_RLIMIT_PTHREAD) && !defined(HAVE_RLIMIT_NTHR)	/* IRIX ? */
+        -:  159:    {RLIMIT_PTHREAD, "maxpthreads", ZLIMTYPE_NUMBER, 1,
+        -:  160:		'T', "threads per process"},
+        -:  161:# endif
+        -:  162:# ifdef HAVE_RLIMIT_AIO_MEM /* HP-UX ? */
+        -:  163:    {RLIMIT_AIO_MEM, "aiomemorylocked", ZLIMTYPE_MEMORY, 1024,
+        -:  164:		'N', "AIO locked-in-memory (kbytes)"},
+        -:  165:# endif
+        -:  166:# ifdef HAVE_RLIMIT_AIO_OPS /* HP-UX ? */
+        -:  167:    {RLIMIT_AIO_OPS, "aiooperations", ZLIMTYPE_NUMBER, 1,
+        -:  168:		'N', "AIO operations"},
+        -:  169:# endif
+        -:  170:# ifdef HAVE_RLIMIT_TCACHE  /* HP-UX ? */
+        -:  171:    {RLIMIT_TCACHE, "cachedthreads", ZLIMTYPE_NUMBER, 1,
+        -:  172:		'N', "cached threads"},
+        -:  173:# endif
+        -:  174:};
+        -:  175:
+        -:  176:/* resinfo[RLIMIT_XXX] points to the corresponding entry
+        -:  177: * in known_resources[] */
+        -:  178:static const resinfo_T **resinfo;
+        -:  179:
+        -:  180:/**/
+        -:  181:static void
+    #####:  182:set_resinfo(void)
+        -:  183:{
+        -:  184:    int i;
+        -:  185:
+    #####:  186:    resinfo = (const resinfo_T **)zshcalloc(RLIM_NLIMITS*sizeof(resinfo_T *));
+        -:  187:
+    #####:  188:    for (i=0; i<sizeof(known_resources)/sizeof(resinfo_T); ++i) {
+    #####:  189:	resinfo[known_resources[i].res] = &known_resources[i];
+        -:  190:    }
+    #####:  191:    for (i=0; i<RLIM_NLIMITS; ++i) {
+    #####:  192:	if (!resinfo[i]) {
+        -:  193:	    /* unknown resource */
+    #####:  194:	    resinfo_T *info = (resinfo_T *)zshcalloc(sizeof(resinfo_T));
+    #####:  195:	    char *buf = (char *)zalloc(12);
+    #####:  196:	    snprintf(buf, 12, "UNKNOWN-%d", i);
+    #####:  197:	    info->res = - 1;	/* negative value indicates "unknown" */
+    #####:  198:	    info->name = buf;
+    #####:  199:	    info->type = ZLIMTYPE_UNKNOWN;
+    #####:  200:	    info->unit = 1;
+    #####:  201:	    info->opt = 'N';
+    #####:  202:	    info->descr = buf;
+    #####:  203:	    resinfo[i] = info;
+        -:  204:	}
+        -:  205:    }
+    #####:  206:}
+        -:  207:
+        -:  208:/**/
+        -:  209:static void
+    #####:  210:free_resinfo(void)
+        -:  211:{
+        -:  212:    int i;
+    #####:  213:    for (i=0; i<RLIM_NLIMITS; ++i) {
+    #####:  214:	if (resinfo[i]->res < 0) {  /* unknown resource */
+    #####:  215:	    free(resinfo[i]->name);
+    #####:  216:	    free((void*)resinfo[i]);
+        -:  217:	}
+        -:  218:    }
+    #####:  219:    free(resinfo);
+    #####:  220:    resinfo = NULL;
+    #####:  221:}
+        -:  222:
+        -:  223:/* Find resource by its option character */
+        -:  224:
+        -:  225:/**/
+        -:  226:static int
+    #####:  227:find_resource(char c)
+        -:  228:{
+        -:  229:    int i;
+    #####:  230:    for (i=0; i<RLIM_NLIMITS; ++i) {
+    #####:  231:	if (resinfo[i]->opt == c)
+    #####:  232:	    return i;
+        -:  233:    }
+    #####:  234:    return -1;
+        -:  235:}
+        -:  236:
+        -:  237:/* Print a value of type rlim_t */
+        -:  238:
+        -:  239:/**/
+        -:  240:static void
+    #####:  241:printrlim(rlim_t val, const char *unit)
+        -:  242:{
+        -:  243:# ifdef RLIM_T_IS_QUAD_T
+        -:  244:	printf("%qd%s", val, unit);
+        -:  245:# else
+        -:  246:#  ifdef RLIM_T_IS_LONG_LONG
+        -:  247:	printf("%lld%s", val, unit);
+        -:  248:#  else
+        -:  249:#   ifdef RLIM_T_IS_UNSIGNED
+    #####:  250:	printf("%lu%s", (unsigned long)val, unit);
+        -:  251:#   else
+        -:  252:	printf("%ld%s", (long)val, unit);
+        -:  253:#   endif /* RLIM_T_IS_UNSIGNED */
+        -:  254:#  endif /* RLIM_T_IS_LONG_LONG */
+        -:  255:# endif /* RLIM_T_IS_QUAD_T */
+    #####:  256:}
+        -:  257:
+        -:  258:/**/
+        -:  259:static rlim_t
+    #####:  260:zstrtorlimt(const char *s, char **t, int base)
+        -:  261:{
+    #####:  262:    rlim_t ret = 0;
+        -:  263:
+    #####:  264:    if (strcmp(s, "unlimited") == 0) {
+    #####:  265:	if (t)
+    #####:  266:	    *t = (char *) s + 9;
+    #####:  267:	return RLIM_INFINITY;
+        -:  268:    }
+        -:  269:# if defined(RLIM_T_IS_QUAD_T) || defined(RLIM_T_IS_LONG_LONG) || defined(RLIM_T_IS_UNSIGNED)
+    #####:  270:    if (!base) {
+    #####:  271:	if (*s != '0')
+    #####:  272:	    base = 10;
+    #####:  273:	else if (*++s == 'x' || *s == 'X')
+    #####:  274:	    base = 16, s++;
+        -:  275:	else
+    #####:  276:	    base = 8;
+        -:  277:    } 
+    #####:  278:    if (base <= 10)
+    #####:  279:	for (; *s >= '0' && *s < ('0' + base); s++)
+    #####:  280:	    ret = ret * base + *s - '0';
+        -:  281:    else
+    #####:  282:	for (; idigit(*s) || (*s >= 'a' && *s < ('a' + base - 10))
+    #####:  283:	     || (*s >= 'A' && *s < ('A' + base - 10)); s++)
+    #####:  284:	    ret = ret * base + (idigit(*s) ? (*s - '0') : (*s & 0x1f) + 9);
+    #####:  285:    if (t)
+    #####:  286:	*t = (char *)s;
+        -:  287:# else /* !RLIM_T_IS_QUAD_T && !RLIM_T_IS_LONG_LONG && !RLIM_T_IS_UNSIGNED */
+        -:  288:    ret = zstrtol(s, t, base);
+        -:  289:# endif /* !RLIM_T_IS_QUAD_T && !RLIM_T_IS_LONG_LONG && !RLIM_T_IS_UNSIGNED */
+    #####:  290:    return ret;
+        -:  291:}
+        -:  292:
+        -:  293:/**/
+        -:  294:static void
+    #####:  295:showlimitvalue(int lim, rlim_t val)
+        -:  296:{
+        -:  297:    /* display limit for resource number lim */
+    #####:  298:    if (lim < RLIM_NLIMITS)
+    #####:  299:	printf("%-16s", resinfo[lim]->name);
+        -:  300:    else
+        -:  301:    {
+        -:  302:	/* Unknown limit, hence unknown units. */
+    #####:  303:	printf("%-16d", lim);
+        -:  304:    }
+    #####:  305:    if (val == RLIM_INFINITY)
+    #####:  306:	printf("unlimited\n");
+    #####:  307:    else if (lim >= RLIM_NLIMITS)
+    #####:  308:	printrlim(val, "\n");
+    #####:  309:    else if (resinfo[lim]->type == ZLIMTYPE_TIME) {
+        -:  310:	/* time-type resource -- display as hours, minutes and
+        -:  311:	   seconds. */
+    #####:  312:	printf("%d:%02d:%02d\n", (int)(val / 3600),
+    #####:  313:	       (int)(val / 60) % 60, (int)(val % 60));
+    #####:  314:    } else if (resinfo[lim]->type == ZLIMTYPE_MICROSECONDS)
+    #####:  315:	printrlim(val, "us\n");	/* microseconds */
+    #####:  316:    else if (resinfo[lim]->type == ZLIMTYPE_NUMBER ||
+    #####:  317:	       resinfo[lim]->type == ZLIMTYPE_UNKNOWN)
+    #####:  318:	printrlim(val, "\n");	/* pure numeric resource */
+        -:  319:    else {
+        -:  320:	/* memory resource -- display with `k' or `M' modifier */
+    #####:  321:	if (val >= 1024L * 1024L)
+    #####:  322:	    printrlim(val/(1024L * 1024L), "MB\n");
+        -:  323:	else
+    #####:  324:	    printrlim(val/1024L, "kB\n");
+        -:  325:    }
+    #####:  326:}
+        -:  327:
+        -:  328:/* Display resource limits.  hard indicates whether `hard' or `soft'  *
+        -:  329: * limits should be displayed.  lim specifies the limit, or may be -1 *
+        -:  330: * to show all.                                                       */
+        -:  331:
+        -:  332:/**/
+        -:  333:static int
+    #####:  334:showlimits(char *nam, int hard, int lim)
+        -:  335:{
+        -:  336:    int rt;
+        -:  337:
+    #####:  338:    if (lim >= RLIM_NLIMITS)
+        -:  339:    {
+        -:  340:	/*
+        -:  341:	 * Not configured into the shell.  Ask the OS
+        -:  342:	 * explicitly for this limit.
+        -:  343:	 */
+        -:  344:	struct rlimit vals;
+    #####:  345:	if (getrlimit(lim, &vals) < 0)
+        -:  346:	{
+    #####:  347:	    zwarnnam(nam, "can't read limit: %e", errno);
+    #####:  348:	    return 1;
+        -:  349:	}
+    #####:  350:	showlimitvalue(lim, hard ? vals.rlim_max : vals.rlim_cur);
+        -:  351:    }
+    #####:  352:    else if (lim != -1)
+        -:  353:    {
+    #####:  354:	showlimitvalue(lim, hard ? limits[lim].rlim_max :
+        -:  355:		       limits[lim].rlim_cur);
+        -:  356:    }
+        -:  357:    else
+        -:  358:    {
+        -:  359:	/* main loop over resource types */
+    #####:  360:	for (rt = 0; rt != RLIM_NLIMITS; rt++)
+    #####:  361:	    showlimitvalue(rt, (hard) ? limits[rt].rlim_max :
+        -:  362:			   limits[rt].rlim_cur);
+        -:  363:    }
+        -:  364:
+    #####:  365:    return 0;
+        -:  366:}
+        -:  367:
+        -:  368:/* Display a resource limit, in ulimit style.  lim specifies which   *
+        -:  369: * limit should be displayed, and hard indicates whether the hard or *
+        -:  370: * soft limit should be displayed.                                   */
+        -:  371:
+        -:  372:/**/
+        -:  373:static int
+    #####:  374:printulimit(char *nam, int lim, int hard, int head)
+        -:  375:{
+        -:  376:    rlim_t limit;
+        -:  377:
+        -:  378:    /* get the limit in question */
+    #####:  379:    if (lim >= RLIM_NLIMITS)
+        -:  380:    {
+        -:  381:	struct rlimit vals;
+        -:  382:
+    #####:  383:	if (getrlimit(lim, &vals) < 0)
+        -:  384:	{
+    #####:  385:	    zwarnnam(nam, "can't read limit: %e", errno);
+    #####:  386:	    return 1;
+        -:  387:	}
+    #####:  388:	limit = (hard) ? vals.rlim_max : vals.rlim_cur;
+        -:  389:    }
+        -:  390:    else
+    #####:  391:	limit = (hard) ? limits[lim].rlim_max : limits[lim].rlim_cur;
+        -:  392:    /* display the appropriate heading */
+    #####:  393:    if (head) {
+    #####:  394:	if (lim < RLIM_NLIMITS) {
+    #####:  395:	    const resinfo_T *info = resinfo[lim];
+    #####:  396:	    if (info->opt == 'N')
+    #####:  397:		printf("-N %2d: %-29s", lim, info->descr);
+        -:  398:	    else
+    #####:  399:		printf("-%c: %-32s", info->opt, info->descr);
+        -:  400:	}
+        -:  401:	else
+    #####:  402:	    printf("-N %2d: %-29s", lim, "");
+        -:  403:    }
+        -:  404:    /* display the limit */
+    #####:  405:    if (limit == RLIM_INFINITY)
+    #####:  406:	printf("unlimited\n");
+        -:  407:    else {
+    #####:  408:	if (lim < RLIM_NLIMITS)
+    #####:  409:	    printrlim(limit/resinfo[lim]->unit, "\n");
+        -:  410:	else
+    #####:  411:	    printrlim(limit, "\n");
+        -:  412:    }
+        -:  413:
+    #####:  414:    return 0;
+        -:  415:}
+        -:  416:
+        -:  417:/**/
+        -:  418:static int
+    #####:  419:do_limit(char *nam, int lim, rlim_t val, int hard, int soft, int set)
+        -:  420:{
+    #####:  421:    if (lim >= RLIM_NLIMITS) {
+        -:  422:	struct rlimit vals;
+    #####:  423:	if (getrlimit(lim, &vals) < 0)
+        -:  424:	{
+        -:  425:	    /* best guess about error */
+    #####:  426:	    zwarnnam(nam, "can't read limit: %e", errno);
+    #####:  427:	    return 1;
+        -:  428:	}
+    #####:  429:	if (hard)
+        -:  430:	{
+    #####:  431:	    if (val > vals.rlim_max && geteuid()) {
+    #####:  432:		zwarnnam(nam, "can't raise hard limits");
+    #####:  433:		return 1;
+        -:  434:	    }
+    #####:  435:	    vals.rlim_max = val;
+        -:  436:	    /*
+        -:  437:	     * not show if all systems will do this silently, but
+        -:  438:	     * best be safe...
+        -:  439:	     */
+    #####:  440:	    if (val < vals.rlim_cur)
+    #####:  441:		vals.rlim_cur = val;
+        -:  442:	}
+    #####:  443:	if (soft || !hard) {
+    #####:  444:	    if (val > vals.rlim_max) {
+    #####:  445:		zwarnnam(nam, "limit exceeds hard limit");
+    #####:  446:		return 1;
+        -:  447:	    }
+        -:  448:	    else
+    #####:  449:		vals.rlim_cur = val;
+        -:  450:	}
+    #####:  451:	if (!set)
+        -:  452:	{
+    #####:  453:	    zwarnnam(nam,
+        -:  454:		     "warning: unrecognised limit %d, use -s to set",
+        -:  455:		     lim);
+    #####:  456:	    return 1;
+        -:  457:	}
+    #####:  458:	else if (setrlimit(lim, &vals) < 0)
+        -:  459:	{
+    #####:  460:	    zwarnnam(nam, "setrlimit failed: %e", errno);
+    #####:  461:	    return 1;
+        -:  462:	}
+        -:  463:    } else {
+        -:  464:	/* new limit is valid and has been interpreted; apply it to the
+        -:  465:	specified resource */
+    #####:  466:	if (hard) {
+        -:  467:	    /* can only raise hard limits if running as root */
+    #####:  468:	    if (val > current_limits[lim].rlim_max && geteuid()) {
+    #####:  469:		zwarnnam(nam, "can't raise hard limits");
+    #####:  470:		return 1;
+        -:  471:	    } else {
+    #####:  472:		limits[lim].rlim_max = val;
+    #####:  473:		if (val < limits[lim].rlim_cur)
+    #####:  474:		    limits[lim].rlim_cur = val;
+        -:  475:	    }
+        -:  476:	}
+    #####:  477:	if (soft || !hard) {
+    #####:  478:	    if (val > limits[lim].rlim_max) {
+        -:  479:		/* no idea about this difference, don't intend to worry */
+    #####:  480:		if (*nam == 'u')
+        -:  481:		{
+        -:  482:		    /* ulimit does this */
+    #####:  483:		    if (val > current_limits[lim].rlim_max && geteuid()) {
+    #####:  484:			zwarnnam(nam, "value exceeds hard limit");
+    #####:  485:			return 1;
+        -:  486:		    }
+    #####:  487:		    limits[lim].rlim_max = limits[lim].rlim_cur = val;
+        -:  488:		} else {
+        -:  489:		    /* but limit does this */
+    #####:  490:		    zwarnnam(nam, "limit exceeds hard limit");
+    #####:  491:		    return 1;
+        -:  492:		}
+        -:  493:	    } else
+    #####:  494:		limits[lim].rlim_cur = val;
+    #####:  495:	    if (set && zsetlimit(lim, nam))
+    #####:  496:		return 1;
+        -:  497:	}
+        -:  498:    }
+    #####:  499:    return 0;
+        -:  500:}
+        -:  501:
+        -:  502:/* limit: set or show resource limits.  The variable hard indicates *
+        -:  503: * whether `hard' or `soft' resource limits are being set/shown.    */
+        -:  504:
+        -:  505:/**/
+        -:  506:static int
+    #####:  507:bin_limit(char *nam, char **argv, Options ops, UNUSED(int func))
+        -:  508:{
+        -:  509:    char *s;
+        -:  510:    int hard, limnum, lim;
+        -:  511:    rlim_t val;
+    #####:  512:    int ret = 0;
+        -:  513:
+    #####:  514:    hard = OPT_ISSET(ops,'h');
+    #####:  515:    if (OPT_ISSET(ops,'s') && !*argv)
+    #####:  516:	return setlimits(NULL);
+        -:  517:    /* without arguments, display limits */
+    #####:  518:    if (!*argv)
+    #####:  519:	return showlimits(nam, hard, -1);
+    #####:  520:    while ((s = *argv++)) {
+        -:  521:	/* Search for the appropriate resource name.  When a name matches (i.e. *
+        -:  522:	 * starts with) the argument, the lim variable changes from -1 to the   *
+        -:  523:	 * number of the resource.  If another match is found, lim goes to -2.  */
+    #####:  524:	if (idigit(*s))
+        -:  525:	{
+    #####:  526:	    lim = (int)zstrtol(s, NULL, 10);
+        -:  527:	}
+        -:  528:	else
+    #####:  529:	    for (lim = -1, limnum = 0; limnum < RLIM_NLIMITS; limnum++)
+    #####:  530:		if (!strncmp(resinfo[limnum]->name, s, strlen(s))) {
+    #####:  531:		    if (lim != -1)
+    #####:  532:			lim = -2;
+        -:  533:		    else
+    #####:  534:			lim = limnum;
+        -:  535:		}
+        -:  536:	/* lim==-1 indicates that no matches were found.       *
+        -:  537:	 * lim==-2 indicates that multiple matches were found. */
+    #####:  538:	if (lim < 0) {
+    #####:  539:	    zwarnnam(nam,
+        -:  540:		     (lim == -2) ? "ambiguous resource specification: %s"
+        -:  541:		     : "no such resource: %s", s);
+    #####:  542:	    return 1;
+        -:  543:	}
+        -:  544:	/* without value for limit, display the current limit */
+    #####:  545:	if (!(s = *argv++))
+    #####:  546:	    return showlimits(nam, hard, lim);
+    #####:  547:	if (lim >= RLIM_NLIMITS)
+        -:  548:	{
+    #####:  549:	    val = zstrtorlimt(s, &s, 10);
+    #####:  550:	    if (*s)
+        -:  551:	    {
+        -:  552:		/* unknown limit, no idea how to scale */
+    #####:  553:		zwarnnam(nam, "unknown scaling factor: %s", s);
+    #####:  554:		return 1;
+        -:  555:	    }
+        -:  556:	}
+    #####:  557:	else if (resinfo[lim]->type == ZLIMTYPE_TIME) {
+        -:  558:	    /* time-type resource -- may be specified as seconds, or minutes or *
+        -:  559:	     * hours with the `m' and `h' modifiers, and `:' may be used to add *
+        -:  560:	     * together more than one of these.  It's easier to understand from *
+        -:  561:	     * the code:                                                        */
+    #####:  562:	    val = zstrtorlimt(s, &s, 10);
+    #####:  563:	    if (*s) {
+    #####:  564:		if ((*s == 'h' || *s == 'H') && !s[1])
+    #####:  565:		    val *= 3600L;
+    #####:  566:		else if ((*s == 'm' || *s == 'M') && !s[1])
+    #####:  567:		    val *= 60L;
+    #####:  568:		else if (*s == ':')
+    #####:  569:		    val = val * 60 + zstrtorlimt(s + 1, &s, 10);
+        -:  570:		else {
+    #####:  571:		    zwarnnam(nam, "unknown scaling factor: %s", s);
+    #####:  572:		    return 1;
+        -:  573:		}
+        -:  574:	    }
+    #####:  575:	} else if (resinfo[lim]->type == ZLIMTYPE_NUMBER ||
+    #####:  576:		   resinfo[lim]->type == ZLIMTYPE_UNKNOWN ||
+    #####:  577:		   resinfo[lim]->type == ZLIMTYPE_MICROSECONDS) {
+        -:  578:	    /* pure numeric resource -- only a straight decimal number is
+        -:  579:	    permitted. */
+    #####:  580:	    char *t = s;
+    #####:  581:	    val = zstrtorlimt(t, &s, 10);
+    #####:  582:	    if (s == t) {
+    #####:  583:		zwarnnam(nam, "limit must be a number");
+    #####:  584:		return 1;
+        -:  585:	    }
+        -:  586:	} else {
+        -:  587:	    /* memory-type resource -- `k', `M' and `G' modifiers are *
+        -:  588:	     * permitted, meaning (respectively) 2^10, 2^20 and 2^30. */
+    #####:  589:	    val = zstrtorlimt(s, &s, 10);
+    #####:  590:	    if (!*s || ((*s == 'k' || *s == 'K') && !s[1])) {
+    #####:  591:		if (val != RLIM_INFINITY)
+    #####:  592:		    val *= 1024L;
+    #####:  593:	    } else if ((*s == 'M' || *s == 'm') && !s[1])
+    #####:  594:		val *= 1024L * 1024;
+    #####:  595:	    else if ((*s == 'G' || *s == 'g') && !s[1])
+    #####:  596:		val *= 1024L * 1024 * 1024;
+        -:  597:	    else {
+    #####:  598:		zwarnnam(nam, "unknown scaling factor: %s", s);
+    #####:  599:		return 1;
+        -:  600:	    }
+        -:  601:	}
+    #####:  602:	if (do_limit(nam, lim, val, hard, !hard, OPT_ISSET(ops, 's')))
+    #####:  603:	    ret++;
+        -:  604:    }
+    #####:  605:    return ret;
+        -:  606:}
+        -:  607:
+        -:  608:/**/
+        -:  609:static int
+    #####:  610:do_unlimit(char *nam, int lim, int hard, int soft, int set, int euid)
+        -:  611:{
+        -:  612:    /* remove specified limit */
+    #####:  613:    if (lim >= RLIM_NLIMITS) {
+        -:  614:	struct rlimit vals;
+    #####:  615:	if (getrlimit(lim, &vals) < 0)
+        -:  616:	{
+    #####:  617:	    zwarnnam(nam, "can't read limit: %e", errno);
+    #####:  618:	    return 1;
+        -:  619:	}
+    #####:  620:	if (hard) {
+    #####:  621:	    if (euid && vals.rlim_max != RLIM_INFINITY) {
+    #####:  622:		zwarnnam(nam, "can't remove hard limits");
+    #####:  623:		return 1;
+        -:  624:	    } else
+    #####:  625:		vals.rlim_max = RLIM_INFINITY;
+        -:  626:	}
+    #####:  627:	if (!hard || soft)
+    #####:  628:	    vals.rlim_cur = vals.rlim_max;
+    #####:  629:	if (!set) {
+    #####:  630:	    zwarnnam(nam,
+        -:  631:		     "warning: unrecognised limit %d, use -s to set", lim);
+    #####:  632:	    return 1;
+    #####:  633:	} else if (setrlimit(lim, &vals) < 0) {
+    #####:  634:	    zwarnnam(nam, "setrlimit failed: %e", errno);
+    #####:  635:	    return 1;
+        -:  636:	}
+        -:  637:    } else {
+    #####:  638:	if (hard) {
+    #####:  639:	    if (euid && current_limits[lim].rlim_max != RLIM_INFINITY) {
+    #####:  640:		zwarnnam(nam, "can't remove hard limits");
+    #####:  641:		return 1;
+        -:  642:	    } else
+    #####:  643:		limits[lim].rlim_max = RLIM_INFINITY;
+        -:  644:	}
+    #####:  645:	if (!hard || soft)
+    #####:  646:	    limits[lim].rlim_cur = limits[lim].rlim_max;
+    #####:  647:	if (set && zsetlimit(lim, nam))
+    #####:  648:	    return 1;
+        -:  649:    }
+    #####:  650:    return 0;
+        -:  651:}
+        -:  652:
+        -:  653:/* unlimit: remove resource limits.  Much of this code is the same as *
+        -:  654: * that in bin_limit().                                               */
+        -:  655:
+        -:  656:/**/
+        -:  657:static int
+    #####:  658:bin_unlimit(char *nam, char **argv, Options ops, UNUSED(int func))
+        -:  659:{
+        -:  660:    int hard, limnum, lim;
+    #####:  661:    int ret = 0;
+    #####:  662:    uid_t euid = geteuid();
+        -:  663:
+    #####:  664:    hard = OPT_ISSET(ops,'h');
+        -:  665:    /* Without arguments, remove all limits. */
+    #####:  666:    if (!*argv) {
+    #####:  667:	for (limnum = 0; limnum != RLIM_NLIMITS; limnum++) {
+    #####:  668:	    if (hard) {
+    #####:  669:		if (euid && current_limits[limnum].rlim_max != RLIM_INFINITY)
+    #####:  670:		    ret++;
+        -:  671:		else
+    #####:  672:		    limits[limnum].rlim_max = RLIM_INFINITY;
+        -:  673:	    } else
+    #####:  674:		limits[limnum].rlim_cur = limits[limnum].rlim_max;
+        -:  675:	}
+    #####:  676:	if (OPT_ISSET(ops,'s'))
+    #####:  677:	    ret += setlimits(nam);
+    #####:  678:	if (ret)
+    #####:  679:	    zwarnnam(nam, "can't remove hard limits");
+        -:  680:    } else {
+    #####:  681:	for (; *argv; argv++) {
+        -:  682:	    /* Search for the appropriate resource name.  When a name     *
+        -:  683:	     * matches (i.e. starts with) the argument, the lim variable  *
+        -:  684:	     * changes from -1 to the number of the resource.  If another *
+        -:  685:	     * match is found, lim goes to -2.                            */
+    #####:  686:	    if (idigit(**argv)) {
+    #####:  687:		lim = (int)zstrtol(*argv, NULL, 10);
+        -:  688:	    } else {
+    #####:  689:		for (lim = -1, limnum = 0; limnum < RLIM_NLIMITS; limnum++)
+    #####:  690:		    if (!strncmp(resinfo[limnum]->name, *argv, strlen(*argv))) {
+    #####:  691:			if (lim != -1)
+    #####:  692:			    lim = -2;
+        -:  693:			else
+    #####:  694:			    lim = limnum;
+        -:  695:		    }
+        -:  696:	    }
+        -:  697:	    /* lim==-1 indicates that no matches were found.       *
+        -:  698:	     * lim==-2 indicates that multiple matches were found. */
+    #####:  699:	    if (lim < 0) {
+    #####:  700:		zwarnnam(nam,
+        -:  701:			 (lim == -2) ? "ambiguous resource specification: %s"
+        -:  702:			 : "no such resource: %s", *argv);
+    #####:  703:		return 1;
+        -:  704:	    }
+    #####:  705:	    else if (do_unlimit(nam, lim, hard, !hard, OPT_ISSET(ops, 's'),
+        -:  706:				euid))
+    #####:  707:		ret++;
+        -:  708:	}
+        -:  709:    }
+    #####:  710:    return ret;
+        -:  711:}
+        -:  712:
+        -:  713:/* ulimit: set or display resource limits */
+        -:  714:
+        -:  715:/**/
+        -:  716:static int
+    #####:  717:bin_ulimit(char *name, char **argv, UNUSED(Options ops), UNUSED(int func))
+        -:  718:{
+    #####:  719:    int res, resmask = 0, hard = 0, soft = 0, nres = 0, all = 0, ret = 0;
+        -:  720:    char *options, *eptr, *number;
+        -:  721:
+        -:  722:    do {
+    #####:  723:	options = *argv;
+    #####:  724:	if (options && *options == '-' && !options[1]) {
+    #####:  725:	    zwarnnam(name, "missing option letter");
+    #####:  726:	    return 1;
+        -:  727:	}
+    #####:  728:	res = -1;
+    #####:  729:	if (options && *options == '-') {
+    #####:  730:	    argv++;
+    #####:  731:	    while (*++options) {
+    #####:  732:		if(*options == Meta)
+    #####:  733:		    *++options ^= 32;
+    #####:  734:		res = -1;
+    #####:  735:		switch (*options) {
+    #####:  736:		case 'H':
+    #####:  737:		    hard = 1;
+    #####:  738:		    continue;
+    #####:  739:		case 'S':
+    #####:  740:		    soft = 1;
+    #####:  741:		    continue;
+    #####:  742:		case 'N':
+    #####:  743:		    if (options[1]) {
+    #####:  744:			number = options + 1;
+    #####:  745:		    } else if (*argv) {
+    #####:  746:			number = *argv++;
+        -:  747:		    } else {
+    #####:  748:			zwarnnam(name, "number required after -N");
+    #####:  749:			return 1;
+        -:  750:		    }
+    #####:  751:		    res = (int)zstrtol(number, &eptr, 10);
+    #####:  752:		    if (*eptr) {
+    #####:  753:			zwarnnam(name, "invalid number: %s", number);
+    #####:  754:			return 1;
+        -:  755:		    }
+        -:  756:		    /*
+        -:  757:		     * fake it so it looks like we just finished an option...
+        -:  758:		     */
+    #####:  759:		    while (options[1])
+    #####:  760:			options++;
+    #####:  761:		    break;
+    #####:  762:		case 'a':
+    #####:  763:		    if (resmask) {
+    #####:  764:			zwarnnam(name, "no limits allowed with -a");
+    #####:  765:			return 1;
+        -:  766:		    }
+    #####:  767:		    all = 1;
+    #####:  768:		    resmask = (1 << RLIM_NLIMITS) - 1;
+    #####:  769:		    nres = RLIM_NLIMITS;
+    #####:  770:		    continue;
+    #####:  771:		default:
+    #####:  772:		    res = find_resource(*options);
+    #####:  773:		    if (res < 0) {
+        -:  774:			/* unrecognised limit */
+    #####:  775:			zwarnnam(name, "bad option: -%c", *options);
+    #####:  776:			return 1;
+        -:  777:		    }
+    #####:  778:		    break;
+        -:  779:		}
+    #####:  780:		if (options[1]) {
+    #####:  781:		    resmask |= 1 << res;
+    #####:  782:		    nres++;
+        -:  783:		}
+    #####:  784:		if (all && res != -1) {
+    #####:  785:		    zwarnnam(name, "no limits allowed with -a");
+    #####:  786:		    return 1;
+        -:  787:		}
+        -:  788:	    }
+        -:  789:	}
+    #####:  790:	if (!*argv || **argv == '-') {
+    #####:  791:	    if (res < 0) {
+    #####:  792:		if (*argv || nres)
+    #####:  793:		    continue;
+        -:  794:		else
+    #####:  795:		    res = RLIMIT_FSIZE;
+        -:  796:	    }
+    #####:  797:	    resmask |= 1 << res;
+    #####:  798:	    nres++;
+    #####:  799:	    continue;
+        -:  800:	}
+    #####:  801:	if (all) {
+    #####:  802:	    zwarnnam(name, "no arguments allowed after -a");
+    #####:  803:	    return 1;
+        -:  804:	}
+    #####:  805:	if (res < 0)
+    #####:  806:	    res = RLIMIT_FSIZE;
+    #####:  807:	if (strcmp(*argv, "unlimited")) {
+        -:  808:	    /* set limit to specified value */
+        -:  809:	    rlim_t limit;
+        -:  810:
+    #####:  811:	    if (!strcmp(*argv, "hard")) {
+        -:  812:		struct rlimit vals;
+        -:  813:
+    #####:  814:		if (getrlimit(res, &vals) < 0)
+        -:  815:		{
+    #####:  816:		    zwarnnam(name, "can't read limit: %e", errno);
+    #####:  817:		    return 1;
+        -:  818:		}
+        -:  819:		else
+        -:  820:		{
+    #####:  821:		    limit = vals.rlim_max;
+        -:  822:		}
+        -:  823:	    } else {
+    #####:  824:		limit = zstrtorlimt(*argv, &eptr, 10);
+    #####:  825:		if (*eptr) {
+    #####:  826:		    zwarnnam(name, "invalid number: %s", *argv);
+    #####:  827:		    return 1;
+        -:  828:		}
+        -:  829:		/* scale appropriately */
+    #####:  830:		if (res < RLIM_NLIMITS)
+    #####:  831:		    limit *= resinfo[res]->unit;
+        -:  832:	    }
+    #####:  833:	    if (do_limit(name, res, limit, hard, soft, 1))
+    #####:  834:		ret++;
+        -:  835:	} else {
+    #####:  836:	    if (do_unlimit(name, res, hard, soft, 1, geteuid()))
+    #####:  837:		ret++;
+        -:  838:	}
+    #####:  839:	argv++;
+    #####:  840:    } while (*argv);
+    #####:  841:    for (res = 0; resmask; res++, resmask >>= 1)
+    #####:  842:	if ((resmask & 1) && printulimit(name, res, hard, nres > 1))
+    #####:  843:	    ret++;
+    #####:  844:    return ret;
+        -:  845:}
+        -:  846:
+        -:  847:#else /* !HAVE_GETRLIMIT || !RLIM_INFINITY */
+        -:  848:
+        -:  849:# define bin_limit   bin_notavail
+        -:  850:# define bin_ulimit  bin_notavail
+        -:  851:# define bin_unlimit bin_notavail
+        -:  852:
+        -:  853:#endif /* !HAVE_GETRLIMIT || !RLIM_INFINITY */
+        -:  854:
+        -:  855:static struct builtin bintab[] = {
+        -:  856:    BUILTIN("limit",   0, bin_limit,   0, -1, 0, "sh", NULL),
+        -:  857:    BUILTIN("ulimit",  0, bin_ulimit,  0, -1, 0, NULL, NULL),
+        -:  858:    BUILTIN("unlimit", 0, bin_unlimit, 0, -1, 0, "hs", NULL),
+        -:  859:};
+        -:  860:
+        -:  861:static struct features module_features = {
+        -:  862:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -:  863:    NULL, 0,
+        -:  864:    NULL, 0,
+        -:  865:    NULL, 0,
+        -:  866:    0
+        -:  867:};
+        -:  868:
+        -:  869:/**/
+        -:  870:int
+    #####:  871:setup_(UNUSED(Module m))
+        -:  872:{
+    #####:  873:    return 0;
+        -:  874:}
+        -:  875:
+        -:  876:/**/
+        -:  877:int
+    #####:  878:features_(Module m, char ***features)
+        -:  879:{
+    #####:  880:    *features = featuresarray(m, &module_features);
+    #####:  881:    return 0;
+        -:  882:}
+        -:  883:
+        -:  884:/**/
+        -:  885:int
+    #####:  886:enables_(Module m, int **enables)
+        -:  887:{
+    #####:  888:    return handlefeatures(m, &module_features, enables);
+        -:  889:}
+        -:  890:
+        -:  891:/**/
+        -:  892:int
+    #####:  893:boot_(UNUSED(Module m))
+        -:  894:{
+    #####:  895:    set_resinfo();
+    #####:  896:    return 0;
+        -:  897:}
+        -:  898:
+        -:  899:/**/
+        -:  900:int
+    #####:  901:cleanup_(Module m)
+        -:  902:{
+    #####:  903:    free_resinfo();
+    #####:  904:    return setfeatureenables(m, &module_features, NULL);
+        -:  905:}
+        -:  906:
+        -:  907:/**/
+        -:  908:int
+    #####:  909:finish_(UNUSED(Module m))
+        -:  910:{
+    #####:  911:    return 0;
+        -:  912:}

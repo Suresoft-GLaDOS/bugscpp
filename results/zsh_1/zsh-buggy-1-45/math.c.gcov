@@ -1,0 +1,1662 @@
+        -:    0:Source:math.c
+        -:    0:Graph:/home/workspace/Src/math.gcno
+        -:    0:Data:/home/workspace/Src/math.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * math.c - mathematical expression evaluation
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:struct mathvalue;
+        -:   31:
+        -:   32:#include "zsh.mdh"
+        -:   33:#include "math.pro"
+        -:   34:
+        -:   35:#include <math.h>
+        -:   36:
+        -:   37:/* nonzero means we are not evaluating, just parsing */
+        -:   38: 
+        -:   39:/**/
+        -:   40:int noeval;
+        -:   41: 
+        -:   42:/* integer zero */
+        -:   43:
+        -:   44:/**/
+        -:   45:mod_export mnumber zero_mnumber;
+        -:   46:
+        -:   47:/*
+        -:   48: * The last value we computed:  note this isn't cleared
+        -:   49: * until the next computation, unlike yyval.
+        -:   50: * Everything else is saved and returned to allow recursive calls.
+        -:   51: */
+        -:   52:/**/
+        -:   53:mnumber lastmathval;
+        -:   54:
+        -:   55:/* last input base we used */
+        -:   56:
+        -:   57:/**/
+        -:   58:int lastbase;
+        -:   59: 
+        -:   60:static char *ptr;
+        -:   61:
+        -:   62:static mnumber yyval;
+        -:   63:static char *yylval;
+        -:   64:
+        -:   65:#define MAX_MLEVEL 256
+        -:   66:
+        -:   67:static int mlevel = 0;
+        -:   68:
+        -:   69:/* != 0 means recognize unary plus, minus, etc. */
+        -:   70:
+        -:   71:static int unary = 1;
+        -:   72:
+        -:   73:/* LR = left-to-right associativity *
+        -:   74: * RL = right-to-left associativity *
+        -:   75: * BOOL = short-circuiting boolean   */
+        -:   76:
+        -:   77:#define LR   0x0000
+        -:   78:#define RL   0x0001
+        -:   79:#define BOOL 0x0002
+        -:   80:
+        -:   81:#define MTYPE(x)  ((x) & 3)
+        -:   82:
+        -:   83:/*
+        -:   84: * OP_A2    2 arguments
+        -:   85: * OP_A2IR  2 arguments, return integer
+        -:   86: * OP_A2IO  2 arguments, must be integer, return integer
+        -:   87: * OP_E2    2 arguments with assignment
+        -:   88: * OP_E2IO  2 arguments with assignment, must be integer, return integer
+        -:   89: * OP_OP    None of the above, but occurs where we are expecting an operator
+        -:   90: *          rather than an operand.
+        -:   91: * OP_OPF   Followed by an operator, not an operand.
+        -:   92: *
+        -:   93: * OP_A2*, OP_E2*, OP_OP*:
+        -:   94: *   Occur when we need an operator; the next object must be an operand,
+        -:   95: *   unless OP_OPF is also supplied.
+        -:   96: *
+        -:   97: * Others:
+        -:   98: *   Occur when we need an operand; the next object must also be an operand,
+        -:   99: *   unless OP_OPF is also supplied.
+        -:  100: */
+        -:  101:#define OP_A2   0x0004
+        -:  102:#define OP_A2IR 0x0008
+        -:  103:#define OP_A2IO 0x0010
+        -:  104:#define OP_E2   0x0020
+        -:  105:#define OP_E2IO 0x0040
+        -:  106:#define OP_OP   0x0080
+        -:  107:#define OP_OPF  0x0100
+        -:  108:
+        -:  109:#define M_INPAR 0
+        -:  110:#define M_OUTPAR 1
+        -:  111:#define NOT 2
+        -:  112:#define COMP 3
+        -:  113:#define POSTPLUS 4
+        -:  114:#define POSTMINUS 5
+        -:  115:#define UPLUS 6
+        -:  116:#define UMINUS 7
+        -:  117:#define AND 8
+        -:  118:#define XOR 9
+        -:  119:#define OR 10
+        -:  120:#define MUL 11
+        -:  121:#define DIV 12
+        -:  122:#define MOD 13
+        -:  123:#define PLUS 14
+        -:  124:#define MINUS 15
+        -:  125:#define SHLEFT 16
+        -:  126:#define SHRIGHT 17
+        -:  127:#define LES 18
+        -:  128:#define LEQ 19
+        -:  129:#define GRE 20
+        -:  130:#define GEQ 21
+        -:  131:#define DEQ 22
+        -:  132:#define NEQ 23
+        -:  133:#define DAND 24
+        -:  134:#define DOR 25
+        -:  135:#define DXOR 26
+        -:  136:#define QUEST 27
+        -:  137:#define COLON 28
+        -:  138:#define EQ 29
+        -:  139:#define PLUSEQ 30
+        -:  140:#define MINUSEQ 31
+        -:  141:#define MULEQ 32
+        -:  142:#define DIVEQ 33
+        -:  143:#define MODEQ 34
+        -:  144:#define ANDEQ 35
+        -:  145:#define XOREQ 36
+        -:  146:#define OREQ 37
+        -:  147:#define SHLEFTEQ 38
+        -:  148:#define SHRIGHTEQ 39
+        -:  149:#define DANDEQ 40
+        -:  150:#define DOREQ 41
+        -:  151:#define DXOREQ 42
+        -:  152:#define COMMA 43
+        -:  153:#define EOI 44
+        -:  154:#define PREPLUS 45
+        -:  155:#define PREMINUS 46
+        -:  156:#define NUM 47
+        -:  157:#define ID 48
+        -:  158:#define POWER 49
+        -:  159:#define CID 50
+        -:  160:#define POWEREQ 51
+        -:  161:#define FUNC 52
+        -:  162:#define TOKCOUNT 53
+        -:  163:
+        -:  164:/*
+        -:  165: * Opeator recedences: in reverse order, i.e. lower number, high precedence.
+        -:  166: * These are the C precedences.
+        -:  167: *
+        -:  168: * 0   Non-operators: NUM (numeric constant), ID (identifier),
+        -:  169: *                    CID (identifier with '#'), FUNC (math function)
+        -:  170: * 1   Opening parenthesis: M_INPAR '('  (for convenience, not an operator)
+        -:  171: * 2   Unary operators: PREPLUS/POSTPLUS '++', PREMINUS/POSTMINUS '--',
+        -:  172: *                      NOT '!', COMP '~', UPLUS '+', UMINUS '-'
+        -:  173: * 3   POWER '**' (not in C but at high precedence in Perl)
+        -:  174: * 4   MUL '*', DIV '/', MOD '%'
+        -:  175: * 5   PLUS '+', MINUS '-'
+        -:  176: * 6   SHLEFT '<<', SHRIGHT '>>'
+        -:  177: * 7   GRE '>', 'GEQ' '>=', LES '<', LEQ '<='
+        -:  178: * 8   DEQ '==', NEQ '!='
+        -:  179: * 9   AND '&'
+        -:  180: * 10  XOR '^'
+        -:  181: * 11  OR  '|'
+        -:  182: * 12  DAND '&&'
+        -:  183: * 13  DXOR '^^' (not in C)
+        -:  184: * 14  DOR '||'
+        -:  185: * 15  QUEST '?'
+        -:  186: * 16  COLON ':'
+        -:  187: * 17  EQ '=', PLUSEQ '+=', MINUSEQ '-=', MULEQ '*=', DIVEQ '/=',
+        -:  188: *     MODEQ '%=', ANDEQ '&=', XOREQ '^=', OREQ '|=',
+        -:  189: *     SHFLEFTEQ '<<=', SHRIGHTEQ '>>=', DANDEQ '&&=', DOREQ '||=',
+        -:  190: *     DXOREQ '^^='
+        -:  191: * 18 COMMA ','
+        -:  192: * 137 M_OUTPAR ')' (for convenience, not an operator)
+        -:  193: * 200 EOI (end of input:  for convenience, not an operator)
+        -:  194: */
+        -:  195:static int c_prec[TOKCOUNT] =
+        -:  196:{
+        -:  197:/*        M_INPAR   M_OUTPAR     NOT       COMP     POSTPLUS */
+        -:  198:/*  0 */     1,       137,        2,        2,         2,
+        -:  199:/*        POSTMINUS   UPLUS     UMINUS     AND        XOR    */
+        -:  200:/*  5 */     2,         2,        2,        9,        10,
+        -:  201:/*          OR         MUL       DIV       MOD       PLUS    */
+        -:  202:/* 10 */    11,         4,        4,        4,         5,
+        -:  203:/*         MINUS      SHLEFT   SHRIGHT     LES        LEQ    */
+        -:  204:/* 15 */     5,         6,        6,        7,         7,
+        -:  205:/*          GRE        GEQ       DEQ       NEQ       DAND    */
+        -:  206:/* 20 */     7,         7,        8,        8,        12,
+        -:  207:/*          DOR        DXOR     QUEST     COLON       EQ     */
+        -:  208:/* 25 */    14,        13,       15,       16,        17,
+        -:  209:/*         PLUSEQ    MINUSEQ    MULEQ     DIVEQ      MODEQ   */
+        -:  210:/* 30 */    17,        17,       17,       17,        17,
+        -:  211:/*         ANDEQ      XOREQ     OREQ    SHLEFTEQ   SHRIGHTEQ */
+        -:  212:/* 35 */    17,        17,       17,       17,        17,
+        -:  213:/*        DANDEQ      DOREQ    DXOREQ    COMMA       EOI     */
+        -:  214:/* 40 */    17,        17,       17,       18,       200,
+        -:  215:/*       PREPLUS    PREMINUS     NUM        ID       POWER   */
+        -:  216:/* 45 */     2,         2,        0,        0,         3,
+        -:  217:/*          CID      POWEREQ     FUNC  */
+        -:  218:/* 50 */     0,        17,        0
+        -:  219:};
+        -:  220:
+        -:  221:/*
+        -:  222: * Opeator recedences: in reverse order, i.e. lower number, high precedence.
+        -:  223: * These are the default zsh precedences.
+        -:  224: *
+        -:  225: * 0   Non-operators: NUM (numeric constant), ID (identifier),
+        -:  226: *                    CID (identifier with '#'), FUNC (math function)
+        -:  227: * 1   Opening parenthesis: M_INPAR '('  (for convenience, not an operator)
+        -:  228: * 2   Unary operators: PREPLUS/POSTPLUS '++', PREMINUS/POSTMINUS '--',
+        -:  229: *                      NOT '!', COMP '~', UPLUS '+', UMINUS '-' 
+        -:  230: * 3   SHLEFT '<<', SHRIGHT '>>'
+        -:  231: * 4   AND '&'
+        -:  232: * 5   XOR '^'
+        -:  233: * 6   OR  '|'
+        -:  234: * 7   POWER '**' (not in C but at high precedence in Perl)
+        -:  235: * 8   MUL '*', DIV '/', MOD '%'
+        -:  236: * 9   PLUS '+', MINUS '-'
+        -:  237: * 10  GRE '>', 'GEQ' '>=', LES '<', LEQ '<='
+        -:  238: * 11  DEQ '==', NEQ '!='
+        -:  239: * 12  DAND '&&'
+        -:  240: * 13  DOR '||', DXOR '^^' (not in C)
+        -:  241: * 14  QUEST '?'
+        -:  242: * 15  COLON ':'
+        -:  243: * 16  EQ '=', PLUSEQ '+=', MINUSEQ '-=', MULEQ '*=', DIVEQ '/=',
+        -:  244: *     MODEQ '%=', ANDEQ '&=', XOREQ '^=', OREQ '|=',
+        -:  245: *     SHFLEFTEQ '<<=', SHRIGHTEQ '>>=', DANDEQ '&&=', DOREQ '||=',
+        -:  246: *     DXOREQ '^^='
+        -:  247: * 17 COMMA ','
+        -:  248: * 137 M_OUTPAR ')' (for convenience, not an operator)
+        -:  249: * 200 EOI (end of input:  for convenience, not an operator)
+        -:  250: */
+        -:  251:static int z_prec[TOKCOUNT] =
+        -:  252:{
+        -:  253:/*        M_INPAR   M_OUTPAR     NOT       COMP     POSTPLUS */
+        -:  254:/*  0 */     1,       137,        2,        2,         2,
+        -:  255:/*        POSTMINUS   UPLUS     UMINUS     AND        XOR    */
+        -:  256:/*  5 */     2,         2,        2,        4,         5,
+        -:  257:/*          OR         MUL       DIV       MOD       PLUS    */
+        -:  258:/* 10 */     6,         8,        8,        8,         9,
+        -:  259:/*         MINUS      SHLEFT   SHRIGHT     LES        LEQ    */
+        -:  260:/* 15 */     9,         3,        3,       10,        10,
+        -:  261:/*          GRE        GEQ       DEQ       NEQ       DAND    */
+        -:  262:/* 20 */    10,        10,       11,       11,        12,
+        -:  263:/*          DOR        DXOR     QUEST     COLON       EQ     */
+        -:  264:/* 25 */    13,        13,       14,       15,        16,
+        -:  265:/*         PLUSEQ    MINUSEQ    MULEQ     DIVEQ      MODEQ   */
+        -:  266:/* 30 */    16,        16,       16,       16,        16,
+        -:  267:/*         ANDEQ      XOREQ     OREQ    SHLEFTEQ   SHRIGHTEQ */
+        -:  268:/* 35 */    16,        16,       16,       16,        16,
+        -:  269:/*        DANDEQ      DOREQ    DXOREQ    COMMA       EOI     */
+        -:  270:/* 40 */    16,        16,       16,       17,       200,
+        -:  271:/*       PREPLUS    PREMINUS     NUM        ID       POWER   */
+        -:  272:/* 45 */     2,         2,        0,        0,         7,
+        -:  273:/*          CID      POWEREQ     FUNC  */
+        -:  274:/* 50 */     0,        16,        0
+        -:  275:};
+        -:  276:
+        -:  277:/* Option-selectable preference table */
+        -:  278:static int *prec;
+        -:  279:
+        -:  280:/*
+        -:  281: * Precedences for top and argument evaluation.  Careful:
+        -:  282: * prec needs to be set before we use these.
+        -:  283: */
+        -:  284:#define TOPPREC (prec[COMMA]+1)
+        -:  285:#define ARGPREC (prec[COMMA]-1)
+        -:  286:
+        -:  287:static int type[TOKCOUNT] =
+        -:  288:{
+        -:  289:/*  0 */  LR, LR|OP_OP|OP_OPF, RL, RL, RL|OP_OP|OP_OPF,
+        -:  290:/*  5 */  RL|OP_OP|OP_OPF, RL, RL, LR|OP_A2IO, LR|OP_A2IO,
+        -:  291:/* 10 */  LR|OP_A2IO, LR|OP_A2, LR|OP_A2, LR|OP_A2, LR|OP_A2,
+        -:  292:/* 15 */  LR|OP_A2, LR|OP_A2IO, LR|OP_A2IO, LR|OP_A2IR, LR|OP_A2IR,
+        -:  293:/* 20 */  LR|OP_A2IR, LR|OP_A2IR, LR|OP_A2IR, LR|OP_A2IR, BOOL|OP_A2IO,
+        -:  294:/* 25 */  BOOL|OP_A2IO, LR|OP_A2IO, RL|OP_OP, RL|OP_OP, RL|OP_E2,
+        -:  295:/* 30 */  RL|OP_E2, RL|OP_E2, RL|OP_E2, RL|OP_E2, RL|OP_E2,
+        -:  296:/* 35 */  RL|OP_E2IO, RL|OP_E2IO, RL|OP_E2IO, RL|OP_E2IO, RL|OP_E2IO,
+        -:  297:/* 40 */  BOOL|OP_E2IO, BOOL|OP_E2IO, RL|OP_A2IO, RL|OP_A2, RL|OP_OP,
+        -:  298:/* 45 */  RL, RL, LR|OP_OPF, LR|OP_OPF, RL|OP_A2,
+        -:  299:/* 50 */  LR|OP_OPF, RL|OP_E2, LR|OP_OPF
+        -:  300:};
+        -:  301:
+        -:  302:/* the value stack */
+        -:  303:
+        -:  304:#define STACKSZ 100
+        -:  305:static int mtok;			/* last token */
+        -:  306:static int sp = -1;			/* stack pointer */
+        -:  307:
+        -:  308:struct mathvalue {
+        -:  309:    /*
+        -:  310:     * If we need to get a variable, this is the string to be passed
+        -:  311:     * to the parameter code.  It may include a subscript.
+        -:  312:     */
+        -:  313:    char *lval;
+        -:  314:    /*
+        -:  315:     * If this is not zero, we've retrieved a variable and this
+        -:  316:     * stores a reference to it.
+        -:  317:     */
+        -:  318:    Value pval;
+        -:  319:    mnumber val;
+        -:  320:};
+        -:  321:
+        -:  322:static struct mathvalue *stack;
+        -:  323:
+        -:  324:enum prec_type {
+        -:  325:    /* Evaluating a top-level expression */
+        -:  326:    MPREC_TOP,
+        -:  327:    /* Evaluating a function argument */
+        -:  328:    MPREC_ARG
+        -:  329:};
+        -:  330:
+        -:  331:
+        -:  332:/*
+        -:  333: * Get a number from a variable.
+        -:  334: * Try to be clever about reusing subscripts by caching the Value structure.
+        -:  335: */
+        -:  336:static mnumber
+        3:  337:getmathparam(struct mathvalue *mptr)
+        -:  338:{
+        -:  339:    mnumber result;
+        3:  340:    if (!mptr->pval) {
+        3:  341:	char *s = mptr->lval;
+        3:  342:	mptr->pval = (Value)zhalloc(sizeof(struct value));
+        3:  343:	if (!getvalue(mptr->pval, &s, 1))
+        -:  344:	{
+    #####:  345:	    if (unset(UNSET))
+    #####:  346:		zerr("%s: parameter not set", mptr->lval);
+    #####:  347:	    mptr->pval = NULL;
+    #####:  348:	    if (isset(FORCEFLOAT)) {
+    #####:  349:		result.type = MN_FLOAT;
+    #####:  350:		result.u.d = 0.0;
+    #####:  351:		return result;
+        -:  352:	    }
+    #####:  353:	    return zero_mnumber;
+        -:  354:	}
+        -:  355:    }
+        3:  356:    result = getnumvalue(mptr->pval);
+        3:  357:    if (isset(FORCEFLOAT) && result.type == MN_INTEGER) {
+    #####:  358:	result.type = MN_FLOAT;
+    #####:  359:	result.u.d = (double)result.u.l;
+        -:  360:    }
+        3:  361:    return result;
+        -:  362:}
+        -:  363:
+        -:  364:static mnumber
+       54:  365:mathevall(char *s, enum prec_type prec_tp, char **ep)
+        -:  366:{
+        -:  367:    int xlastbase, xnoeval, xunary, *xprec;
+        -:  368:    char *xptr;
+        -:  369:    mnumber xyyval;
+        -:  370:    char *xyylval;
+        -:  371:    int xsp;
+       54:  372:    struct mathvalue *xstack = 0, nstack[STACKSZ];
+        -:  373:    mnumber ret;
+        -:  374:
+       54:  375:    if (mlevel >= MAX_MLEVEL) {
+    #####:  376:	xyyval.type = MN_INTEGER;
+    #####:  377:	xyyval.u.l = 0;
+    #####:  378:	*ep = s;
+        -:  379:
+    #####:  380:	zerr("math recursion limit exceeded: %s", *ep);
+        -:  381:
+    #####:  382:	return xyyval;
+        -:  383:    }
+       54:  384:    if (mlevel++) {
+    #####:  385:	xlastbase = lastbase;
+    #####:  386:	xnoeval = noeval;
+    #####:  387:	xunary = unary;
+    #####:  388:	xptr = ptr;
+    #####:  389:	xyyval = yyval;
+    #####:  390:	xyylval = yylval;
+        -:  391:
+    #####:  392:	xsp = sp;
+    #####:  393:	xstack = stack;
+    #####:  394:	xprec = prec;
+        -:  395:    } else {
+       54:  396:	xlastbase = xnoeval = xunary = xsp = 0;
+       54:  397:	xyyval.type = MN_INTEGER;
+       54:  398:	xyyval.u.l = 0;
+       54:  399:	xyylval = NULL;
+       54:  400:	xptr = NULL;
+       54:  401:	xprec = NULL;
+        -:  402:    }
+       54:  403:    prec = isset(CPRECEDENCES) ? c_prec : z_prec;
+       54:  404:    stack = nstack;
+       54:  405:    lastbase = -1;
+       54:  406:    ptr = s;
+       54:  407:    sp = -1;
+       54:  408:    unary = 1;
+       54:  409:    stack[0].val.type = MN_INTEGER;
+       54:  410:    stack[0].val.u.l = 0;
+       54:  411:    mathparse(prec_tp == MPREC_TOP ? TOPPREC : ARGPREC);
+        -:  412:    /*
+        -:  413:     * Internally, we parse the contents of parentheses at top
+        -:  414:     * precedence... so we can return a parenthesis here if
+        -:  415:     * there are too many at the end.
+        -:  416:     */
+       54:  417:    if (mtok == M_OUTPAR && !errflag)
+    #####:  418:	zerr("bad math expression: unexpected ')'");
+       54:  419:    *ep = ptr;
+        -:  420:    DPUTS(!errflag && sp > 0,
+        -:  421:	  "BUG: math: wallabies roaming too freely in outback");
+        -:  422:
+       54:  423:    if (errflag) {
+        -:  424:	/*
+        -:  425:	 * This used to set the return value to errflag.
+        -:  426:	 * I don't understand how that could be useful; the
+        -:  427:	 * caller doesn't know that's what's happened and
+        -:  428:	 * may not get a value at all.
+        -:  429:	 * Worse, we reset errflag in execarith() and setting
+        -:  430:	 * this explicitly non-zero means a (( ... )) returns
+        -:  431:	 * status 0 if there's an error.  That surely can't
+        -:  432:	 * be right.  execarith() now detects an error and returns
+        -:  433:	 * status 2.
+        -:  434:	 */
+    #####:  435:	ret.type = MN_INTEGER;
+    #####:  436:	ret.u.l = 0;
+        -:  437:    } else {
+       54:  438:	if (stack[0].val.type == MN_UNSET)
+        1:  439:	    ret = getmathparam(stack);
+        -:  440:	else
+       53:  441:	    ret = stack[0].val;
+        -:  442:    }
+        -:  443:
+       54:  444:    if (--mlevel) {
+    #####:  445:	lastbase = xlastbase;
+    #####:  446:	noeval = xnoeval;
+    #####:  447:	unary = xunary;
+    #####:  448:	ptr = xptr;
+    #####:  449:	yyval = xyyval;
+    #####:  450:	yylval = xyylval;
+        -:  451:
+    #####:  452:	sp = xsp;
+    #####:  453:	stack = xstack;
+    #####:  454:	prec = xprec;
+        -:  455:    }
+       54:  456:    return lastmathval = ret;
+        -:  457:}
+        -:  458:
+        -:  459:static int
+       56:  460:lexconstant(void)
+        -:  461:{
+        -:  462:#ifdef USE_LOCALE
+        -:  463:    char *prev_locale;
+        -:  464:#endif
+        -:  465:    char *nptr;
+        -:  466:
+       56:  467:    nptr = ptr;
+       56:  468:    if (IS_DASH(*nptr))
+    #####:  469:	nptr++;
+        -:  470:
+       56:  471:    if (*nptr == '0') {
+        -:  472:	int lowchar;
+       45:  473:	nptr++;
+       45:  474:	lowchar = tolower(*nptr);
+       45:  475:	if (lowchar == 'x' || lowchar == 'b') {
+        -:  476:	    /* Let zstrtol parse number with base */
+    #####:  477:	    yyval.u.l = zstrtol_underscore(ptr, &ptr, 0, 1);
+        -:  478:	    /* Should we set lastbase here? */
+    #####:  479:	    lastbase = (lowchar == 'b') ? 2 : 16;
+    #####:  480:	    if (isset(FORCEFLOAT))
+        -:  481:	    {
+    #####:  482:		yyval.type = MN_FLOAT;
+    #####:  483:		yyval.u.d = (double)yyval.u.l;
+        -:  484:	    }
+    #####:  485:	    return NUM;
+        -:  486:	}
+       45:  487:	else if (isset(OCTALZEROES))
+        -:  488:	{
+        -:  489:	    char *ptr2;
+        -:  490:
+        -:  491:	    /*
+        -:  492:	     * Make sure this is a real octal constant;
+        -:  493:	     * it can't be a base indication (always decimal)
+        -:  494:	     * or a floating point number.
+        -:  495:	     */
+    #####:  496:	    for (ptr2 = nptr; idigit(*ptr2) || *ptr2 == '_'; ptr2++)
+        -:  497:		;
+        -:  498:
+    #####:  499:	    if (ptr2 > nptr && *ptr2 != '.' && *ptr2 != 'e' &&
+    #####:  500:		*ptr2 != 'E' && *ptr2 != '#')
+        -:  501:	    {
+    #####:  502:		yyval.u.l = zstrtol_underscore(ptr, &ptr, 0, 1);
+    #####:  503:		lastbase = 8;
+    #####:  504:		if (isset(FORCEFLOAT))
+        -:  505:		{
+    #####:  506:		    yyval.type = MN_FLOAT;
+    #####:  507:		    yyval.u.d = (double)yyval.u.l;
+        -:  508:		}
+    #####:  509:		return NUM;
+        -:  510:	    }
+    #####:  511:	    nptr = ptr2;
+        -:  512:	}
+        -:  513:    }
+      123:  514:    while (idigit(*nptr) || *nptr == '_')
+       11:  515:	nptr++;
+        -:  516:
+       56:  517:    if (*nptr == '.' || *nptr == 'e' || *nptr == 'E') {
+        -:  518:	char *ptr2;
+        -:  519:	/* it's a float */
+    #####:  520:	yyval.type = MN_FLOAT;
+        -:  521:#ifdef USE_LOCALE
+    #####:  522:	prev_locale = dupstring(setlocale(LC_NUMERIC, NULL));
+    #####:  523:	setlocale(LC_NUMERIC, "POSIX");
+        -:  524:#endif
+    #####:  525:	if (*nptr == '.') {
+    #####:  526:	    nptr++;
+    #####:  527:	    while (idigit(*nptr) || *nptr == '_')
+    #####:  528:		nptr++;
+        -:  529:	}
+    #####:  530:	if (*nptr == 'e' || *nptr == 'E') {
+    #####:  531:	    nptr++;
+    #####:  532:	    if (*nptr == '+' || IS_DASH(*nptr))
+    #####:  533:		nptr++;
+    #####:  534:	    while (idigit(*nptr) || *nptr == '_')
+    #####:  535:		nptr++;
+        -:  536:	}
+    #####:  537:	for (ptr2 = ptr; ptr2 < nptr; ptr2++) {
+    #####:  538:	    if (*ptr2 == '_') {
+    #####:  539:		int len = nptr - ptr;
+    #####:  540:		ptr = dupstring(ptr);
+    #####:  541:		for (ptr2 = ptr; len; len--) {
+    #####:  542:		    if (*ptr2 == '_')
+    #####:  543:			chuck(ptr2);
+        -:  544:		    else
+    #####:  545:			ptr2++;
+        -:  546:		}
+    #####:  547:		break;
+        -:  548:	    }
+        -:  549:	}
+    #####:  550:	yyval.u.d = strtod(ptr, &nptr);
+        -:  551:#ifdef USE_LOCALE
+    #####:  552:	if (prev_locale) setlocale(LC_NUMERIC, prev_locale);
+        -:  553:#endif
+    #####:  554:	if (ptr == nptr || *nptr == '.') {
+    #####:  555:	    zerr("bad floating point constant");
+    #####:  556:	    return EOI;
+        -:  557:	}
+    #####:  558:	ptr = nptr;
+        -:  559:    } else {
+        -:  560:	/* it's an integer */
+       56:  561:	yyval.u.l = zstrtol_underscore(ptr, &ptr, 10, 1);
+        -:  562:
+       56:  563:	if (*ptr == '#') {
+    #####:  564:	    ptr++;
+    #####:  565:	    lastbase = yyval.u.l;
+    #####:  566:	    yyval.u.l = zstrtol_underscore(ptr, &ptr, lastbase, 1);
+        -:  567:	}
+       56:  568:	if (isset(FORCEFLOAT))
+        -:  569:	{
+    #####:  570:	    yyval.type = MN_FLOAT;
+    #####:  571:	    yyval.u.d = (double)yyval.u.l;
+        -:  572:	}
+        -:  573:    }
+       56:  574:    return NUM;
+        -:  575:}
+        -:  576:
+        -:  577:/**/
+        -:  578:int outputradix;
+        -:  579:
+        -:  580:/**/
+        -:  581:int outputunderscore;
+        -:  582:
+        -:  583:#ifndef HAVE_ISINF
+        -:  584:/**/
+        -:  585:int
+        -:  586:isinf(double x)
+        -:  587:{
+        -:  588:    if ((-1.0 < x) && (x < 1.0))       /* x is small, and thus finite */
+        -:  589:       return (0);
+        -:  590:    else if ((x + x) == x)             /* only true if x == Infinity */
+        -:  591:       return (1);
+        -:  592:    else                               /* must be finite (normal or subnormal), or NaN */
+        -:  593:       return (0);
+        -:  594:}
+        -:  595:#endif
+        -:  596:
+        -:  597:#if !defined(HAVE_ISNAN)
+        -:  598:static double
+        -:  599:store(double *x)
+        -:  600:{
+        -:  601:    return (*x);
+        -:  602:}
+        -:  603:
+        -:  604:/**/
+        -:  605:int
+        -:  606:isnan(double x)
+        -:  607:{
+        -:  608:    /* (x != x) should be sufficient, but some compilers incorrectly optimize it away */
+        -:  609:    return (store(&x) != store(&x));
+        -:  610:}
+        -:  611:#endif
+        -:  612:
+        -:  613:/**/
+        -:  614:static int
+      119:  615:zzlex(void)
+        -:  616:{
+      119:  617:    int cct = 0;
+        -:  618:    char *ie;
+      119:  619:    yyval.type = MN_INTEGER;
+        -:  620:
+       29:  621:    for (;; cct = 0)
+      177:  622:	switch (*ptr++) {
+        3:  623:	case '+':
+        3:  624:	    if (*ptr == '+') {
+        1:  625:		ptr++;
+        1:  626:		return (unary) ? PREPLUS : POSTPLUS;
+        -:  627:	    }
+        2:  628:	    if (*ptr == '=') {
+    #####:  629:		ptr++;
+    #####:  630:		return PLUSEQ;
+        -:  631:	    }
+        2:  632:	    return (unary) ? UPLUS : PLUS;
+    #####:  633:	case '-':
+        -:  634:	case Dash:
+    #####:  635:	    if (IS_DASH(*ptr)) {
+    #####:  636:		ptr++;
+    #####:  637:		return (unary) ? PREMINUS : POSTMINUS;
+        -:  638:	    }
+    #####:  639:	    if (*ptr == '=') {
+    #####:  640:		ptr++;
+    #####:  641:		return MINUSEQ;
+        -:  642:	    }
+    #####:  643:	    if (unary) {
+    #####:  644:		if (idigit(*ptr) || *ptr == '.') {
+    #####:  645:		    int ctype = lexconstant();
+    #####:  646:		    if (ctype == NUM)
+        -:  647:		    {
+    #####:  648:			if (yyval.type == MN_FLOAT)
+        -:  649:			{
+    #####:  650:			    yyval.u.d = -yyval.u.d;
+        -:  651:			}
+        -:  652:			else
+        -:  653:			{
+    #####:  654:			    yyval.u.l = -yyval.u.l;
+        -:  655:			}
+        -:  656:		    }
+    #####:  657:		    return ctype;
+        -:  658:		} else
+    #####:  659:		    return UMINUS;
+        -:  660:	    } else
+    #####:  661:		return MINUS;
+    #####:  662:	case '(':
+    #####:  663:	    return M_INPAR;
+    #####:  664:	case ')':
+    #####:  665:	    return M_OUTPAR;
+    #####:  666:	case '!':
+    #####:  667:	    if (*ptr == '=') {
+    #####:  668:		ptr++;
+    #####:  669:		return NEQ;
+        -:  670:	    }
+    #####:  671:	    return NOT;
+    #####:  672:	case '~':
+    #####:  673:	    return COMP;
+    #####:  674:	case '&':
+    #####:  675:	    if (*ptr == '&') {
+    #####:  676:		if (*++ptr == '=') {
+    #####:  677:		    ptr++;
+    #####:  678:		    return DANDEQ;
+        -:  679:		}
+    #####:  680:		return DAND;
+    #####:  681:	    } else if (*ptr == '=') {
+    #####:  682:		ptr++;
+    #####:  683:		return ANDEQ;
+        -:  684:	    }
+    #####:  685:	    return AND;
+    #####:  686:	case '|':
+    #####:  687:	    if (*ptr == '|') {
+    #####:  688:		if (*++ptr == '=') {
+    #####:  689:		    ptr++;
+    #####:  690:		    return DOREQ;
+        -:  691:		}
+    #####:  692:		return DOR;
+    #####:  693:	    } else if (*ptr == '=') {
+    #####:  694:		ptr++;
+    #####:  695:		return OREQ;
+        -:  696:	    }
+    #####:  697:	    return OR;
+    #####:  698:	case '^':
+    #####:  699:	    if (*ptr == '^') {
+    #####:  700:		if (*++ptr == '=') {
+    #####:  701:		    ptr++;
+    #####:  702:		    return DXOREQ;
+        -:  703:		}
+    #####:  704:		return DXOR;
+    #####:  705:	    } else if (*ptr == '=') {
+    #####:  706:		ptr++;
+    #####:  707:		return XOREQ;
+        -:  708:	    }
+    #####:  709:	    return XOR;
+    #####:  710:	case '*':
+    #####:  711:	    if (*ptr == '*') {
+    #####:  712:		if (*++ptr == '=') {
+    #####:  713:		    ptr++;
+    #####:  714:		    return POWEREQ;
+        -:  715:		}
+    #####:  716:		return POWER;
+        -:  717:	    }
+    #####:  718:	    if (*ptr == '=') {
+    #####:  719:		ptr++;
+    #####:  720:		return MULEQ;
+        -:  721:	    }
+    #####:  722:	    return MUL;
+    #####:  723:	case '/':
+    #####:  724:	    if (*ptr == '=') {
+    #####:  725:		ptr++;
+    #####:  726:		return DIVEQ;
+        -:  727:	    }
+    #####:  728:	    return DIV;
+    #####:  729:	case '%':
+    #####:  730:	    if (*ptr == '=') {
+    #####:  731:		ptr++;
+    #####:  732:		return MODEQ;
+        -:  733:	    }
+    #####:  734:	    return MOD;
+    #####:  735:	case '<':
+    #####:  736:	    if (*ptr == '<') {
+    #####:  737:		if (*++ptr == '=') {
+    #####:  738:		    ptr++;
+    #####:  739:		    return SHLEFTEQ;
+        -:  740:		}
+    #####:  741:		return SHLEFT;
+    #####:  742:	    } else if (*ptr == '=') {
+    #####:  743:		ptr++;
+    #####:  744:		return LEQ;
+        -:  745:	    }
+    #####:  746:	    return LES;
+    #####:  747:	case '>':
+    #####:  748:	    if (*ptr == '>') {
+    #####:  749:		if (*++ptr == '=') {
+    #####:  750:		    ptr++;
+    #####:  751:		    return SHRIGHTEQ;
+        -:  752:		}
+    #####:  753:		return SHRIGHT;
+    #####:  754:	    } else if (*ptr == '=') {
+    #####:  755:		ptr++;
+    #####:  756:		return GEQ;
+        -:  757:	    }
+    #####:  758:	    return GRE;
+        1:  759:	case '=':
+        1:  760:	    if (*ptr == '=') {
+        1:  761:		ptr++;
+        1:  762:		return DEQ;
+        -:  763:	    }
+    #####:  764:	    return EQ;
+    #####:  765:	case '$':
+    #####:  766:	    yyval.u.l = mypid;
+    #####:  767:	    return NUM;
+        1:  768:	case '?':
+        1:  769:	    if (unary) {
+    #####:  770:		yyval.u.l = lastval;
+    #####:  771:		return NUM;
+        -:  772:	    }
+        1:  773:	    return QUEST;
+        1:  774:	case ':':
+        1:  775:	    return COLON;
+    #####:  776:	case ',':
+    #####:  777:	    return COMMA;
+       54:  778:	case '\0':
+       54:  779:	    ptr--;
+       54:  780:	    return EOI;
+    #####:  781:	case '[':
+        -:  782:	    {
+    #####:  783:		int n, checkradix = 0;
+        -:  784:
+    #####:  785:		if (idigit(*ptr)) {
+    #####:  786:		    n = zstrtol(ptr, &ptr, 10);
+    #####:  787:		    if (*ptr != ']' || !idigit(*++ptr)) {
+    #####:  788:			zerr("bad base syntax");
+    #####:  789:			return EOI;
+        -:  790:		    }
+    #####:  791:		    yyval.u.l = zstrtol(ptr, &ptr, lastbase = n);
+    #####:  792:		    return NUM;
+        -:  793:		}
+    #####:  794:		if (*ptr == '#') {
+    #####:  795:		    n = 1;
+    #####:  796:		    if (*++ptr == '#') {
+    #####:  797:			n = -1;
+    #####:  798:			ptr++;
+        -:  799:		    }
+    #####:  800:		    if (!idigit(*ptr) && *ptr != '_')
+    #####:  801:			goto bofs;
+    #####:  802:		    if (idigit(*ptr)) {
+    #####:  803:			outputradix = n * zstrtol(ptr, &ptr, 10);
+    #####:  804:			checkradix = 1;
+        -:  805:		    }
+    #####:  806:		    if (*ptr == '_') {
+    #####:  807:			ptr++;
+    #####:  808:			if (idigit(*ptr))
+    #####:  809:			    outputunderscore = zstrtol(ptr, &ptr, 10);
+        -:  810:			else
+    #####:  811:			    outputunderscore = 3;
+        -:  812:		    }
+        -:  813:		} else {
+    #####:  814:		    bofs:
+    #####:  815:		    zerr("bad output format specification");
+    #####:  816:		    return EOI;
+        -:  817:		}
+    #####:  818:		if(*ptr != ']')
+    #####:  819:			goto bofs;
+    #####:  820:		if (checkradix) {
+    #####:  821:		    n = (outputradix < 0) ? -outputradix : outputradix;
+    #####:  822:		    if (n < 2 || n > 36) {
+    #####:  823:			zerr("invalid base (must be 2 to 36 inclusive): %d",
+        -:  824:			     outputradix);
+    #####:  825:			return EOI;
+        -:  826:		    }
+        -:  827:		}
+    #####:  828:		ptr++;
+    #####:  829:		break;
+        -:  830:	    }
+       29:  831:	case ' ': /* Fall through! */
+        -:  832:	case '\t':
+        -:  833:	case '\n':
+        -:  834:	case '"': /* POSIX says ignore these */
+        -:  835:	case Dnull:
+       29:  836:	    break;
+       59:  837:	default:
+       59:  838:	    if (idigit(*--ptr) || *ptr == '.')
+       56:  839:		return lexconstant();
+        3:  840:	    if (*ptr == '#') {
+    #####:  841:		if (*++ptr == '\\' || *ptr == '#') {
+        -:  842:		    int v;
+    #####:  843:		    char *optr = ptr;
+        -:  844:
+    #####:  845:		    ptr++;
+    #####:  846:		    if (!*ptr) {
+    #####:  847:			zerr("bad math expression: character missing after ##");
+    #####:  848:			return EOI;
+        -:  849:		    }
+    #####:  850:		    if(!(ptr = getkeystring(ptr, NULL, GETKEYS_MATH, &v))) {
+    #####:  851:			zerr("bad math expression: bad character after ##");
+    #####:  852:			ptr = optr;
+    #####:  853:			return EOI;
+        -:  854:		    }
+    #####:  855:		    yyval.u.l = v;
+    #####:  856:		    return NUM;
+        -:  857:		}
+    #####:  858:		cct = 1;
+        -:  859:	    }
+        3:  860:	    if ((ie = itype_end(ptr, IIDENT, 0)) != ptr) {
+        3:  861:		int func = 0;
+        -:  862:		char *p;
+        -:  863:
+        3:  864:		p = ptr;
+        3:  865:		ptr = ie;
+        3:  866:		if (ie - p == 3) {
+    #####:  867:		    if ((p[0] == 'N' || p[0] == 'n') &&
+    #####:  868:			(p[1] == 'A' || p[1] == 'a') &&
+    #####:  869:			(p[2] == 'N' || p[2] == 'n')) {
+    #####:  870:			yyval.type = MN_FLOAT;
+    #####:  871:			yyval.u.d = 0.0;
+    #####:  872:			yyval.u.d /= yyval.u.d;
+    #####:  873:			return NUM;
+        -:  874:		    }
+    #####:  875:		    else if ((p[0] == 'I' || p[0] == 'i') &&
+    #####:  876:			     (p[1] == 'N' || p[1] == 'n') &&
+    #####:  877:			     (p[2] == 'F' || p[2] == 'f')) {
+    #####:  878:			yyval.type = MN_FLOAT;
+    #####:  879:			yyval.u.d = 0.0;
+    #####:  880:			yyval.u.d = 1.0 / yyval.u.d;
+    #####:  881:			return NUM;
+        -:  882:		    }
+        -:  883:		}
+        3:  884:		if (*ptr == '[' || (!cct && *ptr == '(')) {
+    #####:  885:		    char op = *ptr, cp = ((*ptr == '[') ? ']' : ')');
+        -:  886:		    int l;
+    #####:  887:		    func = (op == '(');
+    #####:  888:		    for (ptr++, l = 1; *ptr && l; ptr++) {
+    #####:  889:			if (*ptr == op)
+    #####:  890:			    l++;
+    #####:  891:			if (*ptr == cp)
+    #####:  892:			    l--;
+    #####:  893:			if (*ptr == '\\' && ptr[1])
+    #####:  894:			    ptr++;
+        -:  895:		    }
+        -:  896:		}
+        3:  897:		yylval = dupstrpfx(p, ptr - p);
+        3:  898:		return (func ? FUNC : (cct ? CID : ID));
+        -:  899:	    }
+    #####:  900:	    else if (cct) {
+    #####:  901:		yyval.u.l = poundgetfn(NULL);
+    #####:  902:		return NUM;
+        -:  903:	    }
+    #####:  904:	    return EOI;
+        -:  905:	}
+        -:  906:}
+        -:  907:
+        -:  908:/**/
+        -:  909:static void
+       63:  910:push(mnumber val, char *lval, int getme)
+        -:  911:{
+       63:  912:    if (sp == STACKSZ - 1)
+    #####:  913:	zerr("stack overflow");
+        -:  914:    else
+       63:  915:	sp++;
+       63:  916:    stack[sp].val = val;
+       63:  917:    stack[sp].lval = lval;
+       63:  918:    stack[sp].pval = NULL;
+       63:  919:    if (getme)
+        3:  920:	stack[sp].val.type = MN_UNSET;
+       63:  921:}
+        -:  922:
+        -:  923:/**/
+        -:  924:static mnumber
+        9:  925:pop(int noget)
+        -:  926:{
+        9:  927:    struct mathvalue *mv = stack+sp;
+        -:  928:
+        9:  929:    if (mv->val.type == MN_UNSET && !noget)
+    #####:  930:	mv->val = getmathparam(mv);
+        9:  931:    sp--;
+        9:  932:    return errflag ? zero_mnumber : mv->val;
+        -:  933:}
+        -:  934:
+        -:  935:/**/
+        -:  936:static mnumber
+    #####:  937:getcvar(char *s)
+        -:  938:{
+        -:  939:    char *t;
+        -:  940:    mnumber mn;
+    #####:  941:    mn.type = MN_INTEGER;
+        -:  942:
+    #####:  943:    queue_signals();
+    #####:  944:    if (!(t = getsparam(s)))
+    #####:  945:	mn.u.l = 0;
+        -:  946:    else {
+        -:  947:#ifdef MULTIBYTE_SUPPORT
+    #####:  948:	if (isset(MULTIBYTE)) {
+        -:  949:	    wint_t wc;
+    #####:  950:	    (void)mb_metacharlenconv(t, &wc);
+    #####:  951:	    if (wc != WEOF) {
+    #####:  952:		mn.u.l = (zlong)wc;
+    #####:  953:		unqueue_signals();
+    #####:  954:		return mn;
+        -:  955:	    }
+        -:  956:	}
+        -:  957:#endif
+    #####:  958:	mn.u.l = STOUC(*t == Meta ? t[1] ^ 32 : *t);
+        -:  959:    }
+    #####:  960:    unqueue_signals();
+    #####:  961:    return mn;
+        -:  962:}
+        -:  963:
+        -:  964:/**/
+        -:  965:static mnumber
+        1:  966:setmathvar(struct mathvalue *mvp, mnumber v)
+        -:  967:{
+        -:  968:    Param pm;
+        -:  969:
+        1:  970:    if (mvp->pval) {
+        -:  971:	/*
+        -:  972:	 * This value may have been hanging around for a while.
+        -:  973:	 * Be ultra-paranoid in checking the variable is still valid.
+        -:  974:	 */
+        1:  975:	char *s = mvp->lval, *ptr;
+        -:  976:	Param pm;
+        -:  977:	DPUTS(!mvp->lval, "no variable name but variable value in math");
+        1:  978:	if ((ptr = strchr(s, '[')))
+    #####:  979:	    s = dupstrpfx(s, ptr - s);
+        1:  980:	pm = (Param) paramtab->getnode(paramtab, s);
+        1:  981:	if (pm == mvp->pval->pm) {
+        1:  982:	    if (noeval)
+    #####:  983:		return v;
+        1:  984:	    setnumvalue(mvp->pval, v);
+        1:  985:	    return v;
+        -:  986:	}
+        -:  987:	/* Different parameter, start again from scratch */
+    #####:  988:	mvp->pval = NULL;
+        -:  989:    }
+    #####:  990:    if (!mvp->lval) {
+    #####:  991:	zerr("bad math expression: lvalue required");
+    #####:  992:	v.type = MN_INTEGER;
+    #####:  993:	v.u.l = 0;
+    #####:  994:	return v;
+        -:  995:    }
+    #####:  996:    if (noeval)
+    #####:  997:	return v;
+    #####:  998:    untokenize(mvp->lval);
+    #####:  999:    pm = setnparam(mvp->lval, v);
+    #####: 1000:    if (pm) {
+        -: 1001:	/*
+        -: 1002:	 * If we are performing an assignment, we return the
+        -: 1003:	 * number with the same type as the parameter we are
+        -: 1004:	 * assigning to, in the spirit of the way assignments
+        -: 1005:	 * in C work.  Note this was a change to long-standing
+        -: 1006:	 * zsh behaviour.
+        -: 1007:	 */
+    #####: 1008:	switch (PM_TYPE(pm->node.flags)) {
+    #####: 1009:	case PM_INTEGER:
+    #####: 1010:	    if (v.type != MN_INTEGER) {
+    #####: 1011:		v.u.l = (zlong)v.u.d;
+    #####: 1012:		v.type = MN_INTEGER;
+        -: 1013:	    }
+    #####: 1014:	    break;
+        -: 1015:
+    #####: 1016:	case PM_EFLOAT:
+        -: 1017:	case PM_FFLOAT:
+    #####: 1018:	    if (v.type != MN_FLOAT) {
+    #####: 1019:		v.u.d = (double)v.u.l;
+    #####: 1020:		v.type = MN_FLOAT;
+        -: 1021:	    }
+    #####: 1022:	    break;
+        -: 1023:	}
+        -: 1024:    }
+    #####: 1025:    return v;
+        -: 1026:}
+        -: 1027:
+        -: 1028:
+        -: 1029:/**/
+        -: 1030:static mnumber
+    #####: 1031:callmathfunc(char *o)
+        -: 1032:{
+        -: 1033:    MathFunc f;
+        -: 1034:    char *a, *n;
+        -: 1035:    static mnumber dummy;
+        -: 1036:
+    #####: 1037:    n = a = dupstring(o);
+        -: 1038:
+    #####: 1039:    while (*a != '(')
+    #####: 1040:	a++;
+    #####: 1041:    *a++ = '\0';
+    #####: 1042:    a[strlen(a) - 1] = '\0';
+        -: 1043:
+    #####: 1044:    if ((f = getmathfunc(n, 1))) {
+    #####: 1045:	if ((f->flags & (MFF_STR|MFF_USERFUNC)) == MFF_STR) {
+    #####: 1046:	    return f->sfunc(n, a, f->funcid);
+        -: 1047:	} else {
+    #####: 1048:	    int argc = 0;
+    #####: 1049:	    mnumber *argv = NULL, *q, marg;
+    #####: 1050:	    LinkList l = newlinklist();
+        -: 1051:	    LinkNode node;
+        -: 1052:
+    #####: 1053:	    if (f->flags & MFF_USERFUNC) {
+        -: 1054:		/* first argument is function name: always use mathfunc */
+    #####: 1055:		addlinknode(l, n);
+        -: 1056:	    }
+        -: 1057:
+    #####: 1058:	    if (f->flags & MFF_STR) {
+    #####: 1059:		if (!*a) {
+    #####: 1060:		    addlinknode(l, dupstring(""));
+    #####: 1061:		    argc++;
+        -: 1062:		}
+        -: 1063:	    } else {
+    #####: 1064:		while (iblank(*a))
+    #####: 1065:		    a++;
+        -: 1066:	    }
+    #####: 1067:	    while (*a) {
+    #####: 1068:		if (*a) {
+    #####: 1069:		    argc++;
+    #####: 1070:		    if (f->flags & MFF_USERFUNC) {
+        -: 1071:			/* need to pass strings */
+        -: 1072:			char *str;
+    #####: 1073:			if (f->flags & MFF_STR) {
+    #####: 1074:			    str = dupstring(a);
+    #####: 1075:			    a = "";
+        -: 1076:			} else {
+    #####: 1077:			    marg = mathevall(a, MPREC_ARG, &a);
+    #####: 1078:			    if (marg.type & MN_FLOAT) {
+        -: 1079:				/* convfloat is off the heap */
+    #####: 1080:				str = convfloat(marg.u.d, 0, 0, NULL);
+        -: 1081:			    } else {
+        -: 1082:				char buf[BDIGBUFSIZE];
+    #####: 1083:				convbase(buf, marg.u.l, 10);
+    #####: 1084:				str = dupstring(buf);
+        -: 1085:			    }
+        -: 1086:			}
+    #####: 1087:			addlinknode(l, str);
+        -: 1088:		    } else {
+    #####: 1089:			q = (mnumber *) zhalloc(sizeof(mnumber));
+    #####: 1090:			*q = mathevall(a, MPREC_ARG, &a);
+    #####: 1091:			addlinknode(l, q);
+        -: 1092:		    }
+    #####: 1093:		    if (errflag || mtok != COMMA)
+        -: 1094:			break;
+        -: 1095:		}
+        -: 1096:	    }
+    #####: 1097:	    if (*a && !errflag)
+    #####: 1098:		zerr("bad math expression: illegal character: %c", *a);
+    #####: 1099:	    if (!errflag) {
+    #####: 1100:		if (argc >= f->minargs && (f->maxargs < 0 ||
+    #####: 1101:					   argc <= f->maxargs)) {
+    #####: 1102:		    if (f->flags & MFF_USERFUNC) {
+    #####: 1103:			char *shfnam = f->module ? f->module : n;
+    #####: 1104:			Shfunc shfunc = getshfunc(shfnam);
+    #####: 1105:			if (!shfunc)
+    #####: 1106:			    zerr("no such function: %s", shfnam);
+        -: 1107:			else {
+    #####: 1108:			    doshfunc(shfunc, l, 1);
+    #####: 1109:			    return lastmathval;
+        -: 1110:			}
+        -: 1111:		    } else {
+    #####: 1112:			if (argc) {
+    #####: 1113:			    q = argv =
+    #####: 1114:				(mnumber *)zhalloc(argc * sizeof(mnumber));
+    #####: 1115:			    for (node = firstnode(l); node; incnode(node))
+    #####: 1116:				*q++ = *(mnumber *)getdata(node);
+        -: 1117:			}
+    #####: 1118:			return f->nfunc(n, argc, argv, f->funcid);
+        -: 1119:		    }
+        -: 1120:		} else
+    #####: 1121:		    zerr("wrong number of arguments: %s", o);
+        -: 1122:	    }
+        -: 1123:	}
+        -: 1124:    } else {
+    #####: 1125:	zerr("unknown function: %s", n);
+        -: 1126:    }
+        -: 1127:
+    #####: 1128:    dummy.type = MN_INTEGER;
+    #####: 1129:    dummy.u.l = 0;
+        -: 1130:
+    #####: 1131:    return dummy;
+        -: 1132:}
+        -: 1133:
+        -: 1134:/**/
+        -: 1135:static int
+    #####: 1136:notzero(mnumber a)
+        -: 1137:{
+    #####: 1138:    if ((a.type & MN_INTEGER) && a.u.l == 0) {
+    #####: 1139:        zerr("division by zero");
+    #####: 1140:        return 0;
+        -: 1141:    }
+    #####: 1142:    return 1;
+        -: 1143:}
+        -: 1144:
+        -: 1145:/* macro to pop three values off the value stack */
+        -: 1146:
+        -: 1147:static void
+        5: 1148:op(int what)
+        -: 1149:{
+        -: 1150:    mnumber a, b, c, *spval;
+        5: 1151:    int tp = type[what];
+        -: 1152:
+        5: 1153:    if (errflag)
+        3: 1154:	return;
+        5: 1155:    if (sp < 0) {
+    #####: 1156:	zerr("bad math expression: stack empty");
+    #####: 1157:	return;
+        -: 1158:    }
+        -: 1159:
+        5: 1160:    if (tp & (OP_A2|OP_A2IR|OP_A2IO|OP_E2|OP_E2IO)) {
+        -: 1161:	/* Make sure anyone seeing this message reports it. */
+        -: 1162:	DPUTS(sp < 1, "BUG: math: not enough wallabies in outback.");
+        3: 1163:	b = pop(0);
+        3: 1164:	a = pop(what == EQ);
+        3: 1165:	if (errflag)
+    #####: 1166:	    return;
+        -: 1167:
+        3: 1168:	if (tp & (OP_A2IO|OP_E2IO)) {
+        -: 1169:	    /* coerce to integers */
+    #####: 1170:	    if (a.type & MN_FLOAT) {
+    #####: 1171:		a.type = MN_INTEGER;
+    #####: 1172:		a.u.l = (zlong)a.u.d;
+        -: 1173:	    }
+    #####: 1174:	    if (b.type & MN_FLOAT) {
+    #####: 1175:		b.type = MN_INTEGER;
+    #####: 1176:		b.u.l = (zlong)b.u.d;
+        -: 1177:	    }
+        3: 1178:	} else if (a.type != b.type && what != COMMA &&
+    #####: 1179:		   (a.type != MN_UNSET || what != EQ)) {
+        -: 1180:	    /*
+        -: 1181:	     * Different types, so coerce to float.
+        -: 1182:	     * It may happen during an assignment that the LHS
+        -: 1183:	     * variable is actually an integer, but there's still
+        -: 1184:	     * no harm in doing the arithmetic in floating point;
+        -: 1185:	     * the assignment will do the correct conversion.
+        -: 1186:	     * This way, if the parameter is actually a scalar, but
+        -: 1187:	     * used to contain an integer, we can write a float into it.
+        -: 1188:	     */
+    #####: 1189:	    if (a.type & MN_INTEGER) {
+    #####: 1190:		a.type = MN_FLOAT;
+    #####: 1191:		a.u.d = (double)a.u.l;
+        -: 1192:	    }
+    #####: 1193:	    if (b.type & MN_INTEGER) {
+    #####: 1194:		b.type = MN_FLOAT;
+    #####: 1195:		b.u.d = (double)b.u.l;
+        -: 1196:	    }
+        -: 1197:	}
+        -: 1198:
+        3: 1199:	if (noeval) {
+    #####: 1200:	    c.type = MN_INTEGER;
+    #####: 1201:	    c.u.l = 0;
+        -: 1202:	} else {
+        -: 1203:	    /*
+        -: 1204:	     * type for operation: usually same as operands, but e.g.
+        -: 1205:	     * (a == b) returns int.
+        -: 1206:	     */
+        3: 1207:	    c.type = (tp & OP_A2IR) ? MN_INTEGER : a.type;
+        -: 1208:
+        3: 1209:	    switch(what) {
+    #####: 1210:	    case AND:
+        -: 1211:	    case ANDEQ:
+    #####: 1212:		c.u.l = a.u.l & b.u.l;
+    #####: 1213:		break;
+    #####: 1214:	    case XOR:
+        -: 1215:	    case XOREQ:
+    #####: 1216:		c.u.l = a.u.l ^ b.u.l;
+    #####: 1217:		break;
+    #####: 1218:	    case OR:
+        -: 1219:	    case OREQ:
+    #####: 1220:		c.u.l = a.u.l | b.u.l;
+    #####: 1221:		break;
+    #####: 1222:	    case MUL:
+        -: 1223:	    case MULEQ:
+    #####: 1224:		if (c.type == MN_FLOAT)
+    #####: 1225:		    c.u.d = a.u.d * b.u.d;
+        -: 1226:		else
+    #####: 1227:		    c.u.l = a.u.l * b.u.l;
+    #####: 1228:		break;
+    #####: 1229:	    case DIV:
+        -: 1230:	    case DIVEQ:
+    #####: 1231:		if (!notzero(b))
+    #####: 1232:		    return;
+    #####: 1233:		if (c.type == MN_FLOAT)
+    #####: 1234:		    c.u.d = a.u.d / b.u.d;
+        -: 1235:		else {
+        -: 1236:		    /*
+        -: 1237:		     * Avoid exception when dividing the smallest
+        -: 1238:		     * negative integer by -1.  Always treat it the
+        -: 1239:		     * same as multiplication.  This still doesn't give
+        -: 1240:		     * numerically the right answer in two's complement,
+        -: 1241:		     * but treating both these in the same way seems
+        -: 1242:		     * reasonable.
+        -: 1243:		     */
+    #####: 1244:		    if (b.u.l == -1)
+    #####: 1245:			c.u.l = - a.u.l;
+        -: 1246:		    else
+    #####: 1247:			c.u.l = a.u.l / b.u.l;
+        -: 1248:		}
+    #####: 1249:		break;
+    #####: 1250:	    case MOD:
+        -: 1251:	    case MODEQ:
+    #####: 1252:		if (!notzero(b))
+    #####: 1253:		    return;
+        -: 1254:		/*
+        -: 1255:		 * Avoid exception as above.
+        -: 1256:		 * Any integer mod -1 is the same as any integer mod 1
+        -: 1257:		 * i.e. zero.
+        -: 1258:		 */
+    #####: 1259:		if (c.type == MN_FLOAT)
+    #####: 1260:		    c.u.d = fmod(a.u.d, b.u.d);
+    #####: 1261:		else if (b.u.l == -1)
+    #####: 1262:		    c.u.l = 0;
+        -: 1263:		else
+    #####: 1264:		    c.u.l = a.u.l % b.u.l;
+    #####: 1265:		break;
+        2: 1266:	    case PLUS:
+        -: 1267:	    case PLUSEQ:
+        2: 1268:		if (c.type == MN_FLOAT)
+    #####: 1269:		    c.u.d = a.u.d + b.u.d;
+        -: 1270:		else
+        2: 1271:		    c.u.l = a.u.l + b.u.l;
+        2: 1272:		break;
+    #####: 1273:	    case MINUS:
+        -: 1274:	    case MINUSEQ:
+    #####: 1275:		if (c.type == MN_FLOAT)
+    #####: 1276:		    c.u.d = a.u.d - b.u.d;
+        -: 1277:		else
+    #####: 1278:		    c.u.l = a.u.l - b.u.l;
+    #####: 1279:		break;
+    #####: 1280:	    case SHLEFT:
+        -: 1281:	    case SHLEFTEQ:
+    #####: 1282:		c.u.l = a.u.l << b.u.l;
+    #####: 1283:		break;
+    #####: 1284:	    case SHRIGHT:
+        -: 1285:	    case SHRIGHTEQ:
+    #####: 1286:		c.u.l = a.u.l >> b.u.l;
+    #####: 1287:		break;
+    #####: 1288:	    case LES:
+    #####: 1289:		c.u.l = (zlong)
+    #####: 1290:		    (a.type == MN_FLOAT ? (a.u.d < b.u.d) : (a.u.l < b.u.l));
+    #####: 1291:		break;
+    #####: 1292:	    case LEQ:
+    #####: 1293:		c.u.l = (zlong)
+    #####: 1294:		    (a.type == MN_FLOAT ? (a.u.d <= b.u.d) : (a.u.l <= b.u.l));
+    #####: 1295:		break;
+    #####: 1296:	    case GRE:
+    #####: 1297:		c.u.l = (zlong)
+    #####: 1298:		    (a.type == MN_FLOAT ? (a.u.d > b.u.d) : (a.u.l > b.u.l));
+    #####: 1299:		break;
+    #####: 1300:	    case GEQ:
+    #####: 1301:		c.u.l = (zlong)
+    #####: 1302:		    (a.type == MN_FLOAT ? (a.u.d >= b.u.d) : (a.u.l >= b.u.l));
+    #####: 1303:		break;
+        1: 1304:	    case DEQ:
+        2: 1305:		c.u.l = (zlong)
+        2: 1306:		    (a.type == MN_FLOAT ? (a.u.d == b.u.d) : (a.u.l == b.u.l));
+        1: 1307:		break;
+    #####: 1308:	    case NEQ:
+    #####: 1309:		c.u.l = (zlong)
+    #####: 1310:		    (a.type == MN_FLOAT ? (a.u.d != b.u.d) : (a.u.l != b.u.l));
+    #####: 1311:		break;
+    #####: 1312:	    case DAND:
+        -: 1313:	    case DANDEQ:
+    #####: 1314:		c.u.l = (zlong)(a.u.l && b.u.l);
+    #####: 1315:		break;
+    #####: 1316:	    case DOR:
+        -: 1317:	    case DOREQ:
+    #####: 1318:		c.u.l = (zlong)(a.u.l || b.u.l);
+    #####: 1319:		break;
+    #####: 1320:	    case DXOR:
+        -: 1321:	    case DXOREQ:
+    #####: 1322:		c.u.l = (zlong)((a.u.l && !b.u.l) || (!a.u.l && b.u.l));
+    #####: 1323:		break;
+    #####: 1324:	    case COMMA:
+    #####: 1325:		c = b;
+    #####: 1326:		break;
+    #####: 1327:	    case POWER:
+        -: 1328:	    case POWEREQ:
+    #####: 1329:		if (c.type == MN_INTEGER && b.u.l < 0) {
+        -: 1330:		    /* produces a real result, so cast to real. */
+    #####: 1331:		    a.type = b.type = c.type = MN_FLOAT;
+    #####: 1332:		    a.u.d = (double) a.u.l;
+    #####: 1333:		    b.u.d = (double) b.u.l;
+        -: 1334:		}
+    #####: 1335:		if (c.type == MN_INTEGER) {
+    #####: 1336:		    for (c.u.l = 1; b.u.l--; c.u.l *= a.u.l);
+        -: 1337:		} else {
+    #####: 1338:		    if (b.u.d <= 0 && !notzero(a))
+    #####: 1339:			return;
+    #####: 1340:		    if (a.u.d < 0) {
+        -: 1341:			/* Error if (-num ** b) and b is not an integer */
+    #####: 1342:			double tst = (double)(zlong)b.u.d;
+    #####: 1343:			if (tst != b.u.d) {
+    #####: 1344:			    zerr("bad math expression: imaginary power");
+    #####: 1345:			    return;
+        -: 1346:			}
+        -: 1347:		    }
+    #####: 1348:		    c.u.d = pow(a.u.d, b.u.d);
+        -: 1349:		}
+    #####: 1350:		break;
+    #####: 1351:	    case EQ:
+    #####: 1352:		c = b;
+    #####: 1353:		break;
+        -: 1354:	    }
+        -: 1355:	}
+        3: 1356:	if (tp & (OP_E2|OP_E2IO)) {
+    #####: 1357:	    struct mathvalue *mvp = stack + sp + 1;
+    #####: 1358:	    c = setmathvar(mvp, c);
+    #####: 1359:	    push(c, mvp->lval, 0);
+        -: 1360:	} else
+        3: 1361:	    push(c,NULL, 0);
+        3: 1362:	return;
+        -: 1363:    }
+        -: 1364:
+        2: 1365:    spval = &stack[sp].val;
+        2: 1366:    if (stack[sp].val.type == MN_UNSET)
+        1: 1367:	*spval = getmathparam(stack + sp);
+        2: 1368:    switch (what) {
+    #####: 1369:    case NOT:
+    #####: 1370:	if (spval->type & MN_FLOAT) {
+    #####: 1371:	    spval->u.l = !spval->u.d;
+    #####: 1372:	    spval->type = MN_INTEGER;
+        -: 1373:	} else
+    #####: 1374:	    spval->u.l = !spval->u.l;
+    #####: 1375:	break;
+    #####: 1376:    case COMP:
+    #####: 1377:	if (spval->type & MN_FLOAT) {
+    #####: 1378:	    spval->u.l = ~((zlong)spval->u.d);
+    #####: 1379:	    spval->type = MN_INTEGER;
+        -: 1380:	} else
+    #####: 1381:	    spval->u.l = ~spval->u.l;
+    #####: 1382:	break;
+        1: 1383:    case POSTPLUS:
+        1: 1384:	a = *spval;
+        1: 1385:	if (spval->type & MN_FLOAT)
+    #####: 1386:	    a.u.d++;
+        -: 1387:	else
+        1: 1388:	    a.u.l++;
+        1: 1389:	(void)setmathvar(stack + sp, a);
+        1: 1390:	break;
+    #####: 1391:    case POSTMINUS:
+    #####: 1392:	a = *spval;
+    #####: 1393:	if (spval->type & MN_FLOAT)
+    #####: 1394:	    a.u.d--;
+        -: 1395:	else
+    #####: 1396:	    a.u.l--;
+    #####: 1397:	(void)setmathvar(stack + sp, a);
+    #####: 1398:	break;
+    #####: 1399:    case UPLUS:
+    #####: 1400:	break;
+    #####: 1401:    case UMINUS:
+    #####: 1402:	if (spval->type & MN_FLOAT)
+    #####: 1403:	    spval->u.d = -spval->u.d;
+        -: 1404:	else
+    #####: 1405:	    spval->u.l = -spval->u.l;
+    #####: 1406:	break;
+        1: 1407:    case QUEST:
+        -: 1408:	DPUTS(sp < 2, "BUG: math: three shall be the number of the counting.");
+        1: 1409:	c = pop(0);
+        1: 1410:	b = pop(0);
+        1: 1411:	a = pop(0);
+        1: 1412:	if (errflag)
+    #####: 1413:	    return;
+        -: 1414:	/* b and c can stay different types in this case. */
+        1: 1415:	push(((a.type & MN_FLOAT) ? a.u.d : a.u.l) ? b : c, NULL, 0);
+        1: 1416:	break;
+    #####: 1417:    case COLON:
+    #####: 1418:	zerr("bad math expression: ':' without '?'");
+    #####: 1419:	break;
+    #####: 1420:    case PREPLUS:
+    #####: 1421:	if (spval->type & MN_FLOAT)
+    #####: 1422:	    spval->u.d++;
+        -: 1423:	else
+    #####: 1424:	    spval->u.l++;
+    #####: 1425:	setmathvar(stack + sp, *spval);
+    #####: 1426:	break;
+    #####: 1427:    case PREMINUS:
+    #####: 1428:	if (spval->type & MN_FLOAT)
+    #####: 1429:	    spval->u.d--;
+        -: 1430:	else
+    #####: 1431:	    spval->u.l--;
+    #####: 1432:	setmathvar(stack + sp, *spval);
+    #####: 1433:	break;
+    #####: 1434:    default:
+    #####: 1435:	zerr("bad math expression: out of integers");
+    #####: 1436:	return;
+        -: 1437:    }
+        2: 1438:    stack[sp].lval = NULL;
+        2: 1439:    stack[sp].pval = NULL;
+        -: 1440:}
+        -: 1441:
+        -: 1442:
+        -: 1443:/**/
+        -: 1444:static void
+    #####: 1445:bop(int tk)
+        -: 1446:{
+    #####: 1447:    mnumber *spval = &stack[sp].val;
+        -: 1448:    int tst;
+        -: 1449:
+    #####: 1450:    if (stack[sp].val.type == MN_UNSET)
+    #####: 1451:	*spval = getmathparam(stack + sp);
+    #####: 1452:    tst = (spval->type & MN_FLOAT) ? (zlong)spval->u.d : spval->u.l; 
+        -: 1453:
+    #####: 1454:    switch (tk) {
+    #####: 1455:    case DAND:
+        -: 1456:    case DANDEQ:
+    #####: 1457:	if (!tst)
+    #####: 1458:	    noeval++;
+    #####: 1459:	break;
+    #####: 1460:    case DOR:
+        -: 1461:    case DOREQ:
+    #####: 1462:	if (tst)
+    #####: 1463:	    noeval++;
+    #####: 1464:	break;
+        -: 1465:    };
+    #####: 1466:}
+        -: 1467:
+        -: 1468:
+        -: 1469:/**/
+        -: 1470:mod_export mnumber
+       53: 1471:matheval(char *s)
+        -: 1472:{
+        -: 1473:    char *junk;
+        -: 1474:    mnumber x;
+       53: 1475:    int xmtok = mtok;
+        -: 1476:    /* maintain outputradix and outputunderscore across levels of evaluation */
+       53: 1477:    if (!mlevel)
+       53: 1478:	outputradix = outputunderscore = 0;
+        -: 1479:
+       53: 1480:    if (*s == Nularg)
+    #####: 1481:	s++;
+       53: 1482:    if (!*s) {
+    #####: 1483:	x.type = MN_INTEGER;
+    #####: 1484:	x.u.l = 0;
+    #####: 1485:	return x;
+        -: 1486:    }
+       53: 1487:    x = mathevall(s, MPREC_TOP, &junk);
+       53: 1488:    mtok = xmtok;
+       53: 1489:    if (*junk)
+    #####: 1490:	zerr("bad math expression: illegal character: %c", *junk);
+       53: 1491:    return x;
+        -: 1492:}
+        -: 1493:
+        -: 1494:/**/
+        -: 1495:mod_export zlong
+       38: 1496:mathevali(char *s)
+        -: 1497:{
+       38: 1498:    mnumber x = matheval(s);
+       38: 1499:    return (x.type & MN_FLOAT) ? (zlong)x.u.d : x.u.l;
+        -: 1500:}
+        -: 1501:
+        -: 1502:
+        -: 1503:/**/
+        -: 1504:zlong
+        1: 1505:mathevalarg(char *s, char **ss)
+        -: 1506:{
+        -: 1507:    mnumber x;
+        1: 1508:    int xmtok = mtok;
+        -: 1509:
+        -: 1510:    /*
+        -: 1511:     * At this entry point we don't allow an empty expression,
+        -: 1512:     * whereas we do with matheval().  I'm not sure if this
+        -: 1513:     * difference is deliberate, but it does mean that e.g.
+        -: 1514:     * $array[$ind] where ind hasn't been set produces an error,
+        -: 1515:     * which is probably safe.
+        -: 1516:     *
+        -: 1517:     * To avoid a more opaque error further in, bail out here.
+        -: 1518:     */
+        1: 1519:    if (*s == Nularg)
+    #####: 1520:	s++;
+        1: 1521:    if (!*s) {
+    #####: 1522:	zerr("bad math expression: empty string");
+    #####: 1523:	return (zlong)0;
+        -: 1524:    }
+        1: 1525:    x = mathevall(s, MPREC_ARG, ss);
+        1: 1526:    if (mtok == COMMA)
+    #####: 1527:	(*ss)--;
+        1: 1528:    mtok = xmtok;
+        1: 1529:    return (x.type & MN_FLOAT) ? (zlong)x.u.d : x.u.l;
+        -: 1530:}
+        -: 1531:
+        -: 1532:/*
+        -: 1533: * Make sure we have an operator or an operand, whatever is expected.
+        -: 1534: * For this purpose, unary operators constitute part of an operand.
+        -: 1535: */
+        -: 1536:
+        -: 1537:/**/
+        -: 1538:static void
+      119: 1539:checkunary(int mtokc, char *mptr)
+        -: 1540:{
+      119: 1541:    int errmsg = 0;
+      119: 1542:    int tp = type[mtokc];
+      119: 1543:    if (tp & (OP_A2|OP_A2IR|OP_A2IO|OP_E2|OP_E2IO|OP_OP)) {
+       60: 1544:	if (unary)
+    #####: 1545:	    errmsg = 1;
+        -: 1546:    } else {
+       59: 1547:	if (!unary)
+    #####: 1548:	    errmsg = 2;
+        -: 1549:    }
+      119: 1550:    if (errmsg) {
+    #####: 1551:	int len, over = 0;
+    #####: 1552:	char *errtype = errmsg == 2 ? "operator" : "operand";
+    #####: 1553:	while (inblank(*mptr))
+    #####: 1554:	    mptr++;
+    #####: 1555:	len = ztrlen(mptr);
+    #####: 1556:	if (len > 10) {
+    #####: 1557:	    len = 10;
+    #####: 1558:	    over = 1;
+        -: 1559:	}
+    #####: 1560:	if (!*mptr)
+    #####: 1561:	    zerr("bad math expression: %s expected at end of string",
+        -: 1562:		errtype);
+        -: 1563:	else
+    #####: 1564:	    zerr("bad math expression: %s expected at `%l%s'",
+        -: 1565:		 errtype, mptr, len, over ? "..." : "");
+        -: 1566:    }
+      119: 1567:    unary = !(tp & OP_OPF);
+      119: 1568:}
+        -: 1569:
+        -: 1570:/* operator-precedence parse the string and execute */
+        -: 1571:
+        -: 1572:/**/
+        -: 1573:static void
+       60: 1574:mathparse(int pc)
+        -: 1575:{
+        -: 1576:    zlong q;
+        -: 1577:    int otok, onoeval;
+       60: 1578:    char *optr = ptr;
+        -: 1579:
+       60: 1580:    if (errflag)
+    #####: 1581:	return;
+       60: 1582:    queue_signals();
+       60: 1583:    mtok = zzlex();
+        -: 1584:    /* Handle empty input */
+       60: 1585:    if (pc == TOPPREC && mtok == EOI) {
+    #####: 1586:	unqueue_signals();
+    #####: 1587:	return;
+        -: 1588:    }
+       60: 1589:    checkunary(mtok, optr);
+      184: 1590:    while (prec[mtok] <= pc) {
+       64: 1591:	if (errflag) {
+    #####: 1592:	    unqueue_signals();
+    #####: 1593:	    return;
+        -: 1594:	}
+       64: 1595:	switch (mtok) {
+       56: 1596:	case NUM:
+       56: 1597:	    push(yyval, NULL, 0);
+       56: 1598:	    break;
+        3: 1599:	case ID:
+        3: 1600:	    push(zero_mnumber, yylval, !noeval);
+        3: 1601:	    break;
+    #####: 1602:	case CID:
+    #####: 1603:	    push((noeval ? zero_mnumber : getcvar(yylval)), yylval, 0);
+    #####: 1604:	    break;
+    #####: 1605:	case FUNC:
+    #####: 1606:	    push((noeval ? zero_mnumber : callmathfunc(yylval)), yylval, 0);
+    #####: 1607:	    break;
+    #####: 1608:	case M_INPAR:
+    #####: 1609:	    mathparse(TOPPREC);
+    #####: 1610:	    if (mtok != M_OUTPAR) {
+    #####: 1611:		if (!errflag)
+    #####: 1612:		    zerr("bad math expression: ')' expected");
+    #####: 1613:		unqueue_signals();
+    #####: 1614:		return;
+        -: 1615:	    }
+    #####: 1616:	    break;
+        1: 1617:	case QUEST:
+        1: 1618:	    if (stack[sp].val.type == MN_UNSET)
+        1: 1619:		stack[sp].val = getmathparam(stack + sp);
+        2: 1620:	    q = (stack[sp].val.type == MN_FLOAT) ?
+        2: 1621:		(stack[sp].val.u.d == 0 ? 0 : 1) :
+        1: 1622:		stack[sp].val.u.l;
+        -: 1623:
+        1: 1624:	    if (!q)
+        1: 1625:		noeval++;
+        1: 1626:	    mathparse(prec[COLON] - 1);
+        1: 1627:	    if (!q)
+        1: 1628:		noeval--;
+        1: 1629:	    if (mtok != COLON) {
+    #####: 1630:		if (!errflag)
+    #####: 1631:		    zerr("bad math expression: ':' expected");
+    #####: 1632:		unqueue_signals();
+    #####: 1633:		return;
+        -: 1634:	    }
+        1: 1635:	    if (q)
+    #####: 1636:		noeval++;
+        1: 1637:	    mathparse(prec[QUEST]);
+        1: 1638:	    if (q)
+    #####: 1639:		noeval--;
+        1: 1640:	    op(QUEST);
+        1: 1641:	    continue;
+        4: 1642:	default:
+        4: 1643:	    otok = mtok;
+        4: 1644:	    onoeval = noeval;
+        4: 1645:	    if (MTYPE(type[otok]) == BOOL)
+    #####: 1646:		bop(otok);
+        4: 1647:	    mathparse(prec[otok] - (MTYPE(type[otok]) != RL));
+        4: 1648:	    noeval = onoeval;
+        4: 1649:	    op(otok);
+        4: 1650:	    continue;
+        -: 1651:	}
+       59: 1652:	optr = ptr;
+       59: 1653:	mtok = zzlex();
+       59: 1654:	checkunary(mtok, optr);
+        -: 1655:    }
+       60: 1656:    unqueue_signals();
+        -: 1657:}

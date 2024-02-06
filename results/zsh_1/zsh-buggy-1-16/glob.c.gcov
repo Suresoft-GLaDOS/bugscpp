@@ -1,0 +1,3950 @@
+        -:    0:Source:glob.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * glob.c - filename generation
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "glob.pro"
+        -:   32:
+        -:   33:#if defined(OFF_T_IS_64_BIT) && defined(__GNUC__)
+        -:   34:# define ALIGN64 __attribute__((aligned(8)))
+        -:   35:#else
+        -:   36:# define ALIGN64
+        -:   37:#endif
+        -:   38:
+        -:   39:/* flag for CSHNULLGLOB */
+        -:   40:
+        -:   41:typedef struct gmatch *Gmatch;
+        -:   42:
+        -:   43:struct gmatch {
+        -:   44:    /* Metafied file name */
+        -:   45:    char *name;
+        -:   46:    /* Unmetafied file name; embedded nulls can't occur in file names */
+        -:   47:    char *uname;
+        -:   48:    /*
+        -:   49:     * Array of sort strings:  one for each GS_EXEC sort type in
+        -:   50:     * the glob qualifiers.
+        -:   51:     */
+        -:   52:    char **sortstrs;
+        -:   53:    off_t size ALIGN64;
+        -:   54:    long atime;
+        -:   55:    long mtime;
+        -:   56:    long ctime;
+        -:   57:    long links;
+        -:   58:    off_t _size ALIGN64;
+        -:   59:    long _atime;
+        -:   60:    long _mtime;
+        -:   61:    long _ctime;
+        -:   62:    long _links;
+        -:   63:#ifdef GET_ST_ATIME_NSEC
+        -:   64:    long ansec;
+        -:   65:    long _ansec;
+        -:   66:#endif
+        -:   67:#ifdef GET_ST_MTIME_NSEC
+        -:   68:    long mnsec;
+        -:   69:    long _mnsec;
+        -:   70:#endif
+        -:   71:#ifdef GET_ST_CTIME_NSEC
+        -:   72:    long cnsec;
+        -:   73:    long _cnsec;
+        -:   74:#endif
+        -:   75:};
+        -:   76:
+        -:   77:#define GS_NAME   1
+        -:   78:#define GS_DEPTH  2
+        -:   79:#define GS_EXEC	  4
+        -:   80:
+        -:   81:#define GS_SHIFT_BASE	8
+        -:   82:
+        -:   83:#define GS_SIZE  (GS_SHIFT_BASE)
+        -:   84:#define GS_ATIME (GS_SHIFT_BASE << 1)
+        -:   85:#define GS_MTIME (GS_SHIFT_BASE << 2)
+        -:   86:#define GS_CTIME (GS_SHIFT_BASE << 3)
+        -:   87:#define GS_LINKS (GS_SHIFT_BASE << 4)
+        -:   88:
+        -:   89:#define GS_SHIFT  5
+        -:   90:#define GS__SIZE  (GS_SIZE << GS_SHIFT)
+        -:   91:#define GS__ATIME (GS_ATIME << GS_SHIFT)
+        -:   92:#define GS__MTIME (GS_MTIME << GS_SHIFT)
+        -:   93:#define GS__CTIME (GS_CTIME << GS_SHIFT)
+        -:   94:#define GS__LINKS (GS_LINKS << GS_SHIFT)
+        -:   95:
+        -:   96:#define GS_DESC  (GS_SHIFT_BASE << (2*GS_SHIFT))
+        -:   97:#define GS_NONE  (GS_SHIFT_BASE << (2*GS_SHIFT+1))
+        -:   98:
+        -:   99:#define GS_NORMAL (GS_SIZE | GS_ATIME | GS_MTIME | GS_CTIME | GS_LINKS)
+        -:  100:#define GS_LINKED (GS_NORMAL << GS_SHIFT)
+        -:  101:
+        -:  102:/**/
+        -:  103:int badcshglob;
+        -:  104:
+        -:  105:/**/
+        -:  106:int pathpos;		/* position in pathbuf (needed by pattern code) */
+        -:  107:
+        -:  108:/*
+        -:  109: * pathname buffer (needed by pattern code).
+        -:  110: * It is currently believed the string in here is stored metafied and is
+        -:  111: * unmetafied temporarily as needed by system calls.
+        -:  112: */
+        -:  113:
+        -:  114:/**/
+        -:  115:char *pathbuf;
+        -:  116:
+        -:  117:typedef struct stat *Statptr;	 /* This makes the Ultrix compiler happy.  Go figure. */
+        -:  118:
+        -:  119:/* modifier for unit conversions */
+        -:  120:
+        -:  121:#define TT_DAYS 0
+        -:  122:#define TT_HOURS 1
+        -:  123:#define TT_MINS 2
+        -:  124:#define TT_WEEKS 3
+        -:  125:#define TT_MONTHS 4
+        -:  126:#define TT_SECONDS 5
+        -:  127:
+        -:  128:#define TT_BYTES 0
+        -:  129:#define TT_POSIX_BLOCKS 1
+        -:  130:#define TT_KILOBYTES 2
+        -:  131:#define TT_MEGABYTES 3
+        -:  132:#define TT_GIGABYTES 4
+        -:  133:#define TT_TERABYTES 5
+        -:  134:
+        -:  135:
+        -:  136:typedef int (*TestMatchFunc) _((char *, struct stat *, off_t, char *));
+        -:  137:
+        -:  138:struct qual {
+        -:  139:    struct qual *next;		/* Next qualifier, must match                */
+        -:  140:    struct qual *or;		/* Alternative set of qualifiers to match    */
+        -:  141:    TestMatchFunc func;		/* Function to call to test match            */
+        -:  142:    off_t data ALIGN64;		/* Argument passed to function               */
+        -:  143:    int sense;			/* Whether asserting or negating             */
+        -:  144:    int amc;			/* Flag for which time to test (a, m, c)     */
+        -:  145:    int range;			/* Whether to test <, > or = (as per signum) */
+        -:  146:    int units;			/* Multiplier for time or size, respectively */
+        -:  147:    char *sdata;		/* currently only: expression to eval        */
+        -:  148:};
+        -:  149:
+        -:  150:/* Prefix, suffix for doing zle trickery */
+        -:  151:
+        -:  152:/**/
+        -:  153:mod_export char *glob_pre, *glob_suf;
+        -:  154:
+        -:  155:/* Element of a glob sort */
+        -:  156:struct globsort {
+        -:  157:    /* Sort type */
+        -:  158:    int tp;
+        -:  159:    /* Sort code to eval, if type is GS_EXEC */
+        -:  160:    char *exec;
+        -:  161:};
+        -:  162:
+        -:  163:/* Maximum entries in sort array */
+        -:  164:#define MAX_SORTS	(12)
+        -:  165:
+        -:  166:/* struct to easily save/restore current state */
+        -:  167:
+        -:  168:struct globdata {
+        -:  169:    int gd_pathpos;
+        -:  170:    char *gd_pathbuf;
+        -:  171:
+        -:  172:    int gd_matchsz;		/* size of matchbuf                     */
+        -:  173:    int gd_matchct;		/* number of matches found              */
+        -:  174:    int gd_pathbufsz;		/* size of pathbuf			*/
+        -:  175:    int gd_pathbufcwd;		/* where did we chdir()'ed		*/
+        -:  176:    Gmatch gd_matchbuf;		/* array of matches                     */
+        -:  177:    Gmatch gd_matchptr;		/* &matchbuf[matchct]                   */
+        -:  178:    char *gd_colonmod;		/* colon modifiers in qualifier list    */
+        -:  179:
+        -:  180:    /* Qualifiers pertaining to current pattern */
+        -:  181:    struct qual *gd_quals;
+        -:  182:
+        -:  183:    /* Other state values for current pattern */
+        -:  184:    int gd_qualct, gd_qualorct;
+        -:  185:    int gd_range, gd_amc, gd_units;
+        -:  186:    int gd_gf_nullglob, gd_gf_markdirs, gd_gf_noglobdots, gd_gf_listtypes;
+        -:  187:    int gd_gf_numsort;
+        -:  188:    int gd_gf_follow, gd_gf_sorts, gd_gf_nsorts;
+        -:  189:    struct globsort gd_gf_sortlist[MAX_SORTS];
+        -:  190:    LinkList gd_gf_pre_words, gd_gf_post_words;
+        -:  191:
+        -:  192:    char *gd_glob_pre, *gd_glob_suf;
+        -:  193:};
+        -:  194:
+        -:  195:/* The variable with the current globbing state and convenience macros */
+        -:  196:
+        -:  197:static struct globdata curglobdata;
+        -:  198:
+        -:  199:#define matchsz       (curglobdata.gd_matchsz)
+        -:  200:#define matchct       (curglobdata.gd_matchct)
+        -:  201:#define pathbufsz     (curglobdata.gd_pathbufsz)
+        -:  202:#define pathbufcwd    (curglobdata.gd_pathbufcwd)
+        -:  203:#define matchbuf      (curglobdata.gd_matchbuf)
+        -:  204:#define matchptr      (curglobdata.gd_matchptr)
+        -:  205:#define colonmod      (curglobdata.gd_colonmod)
+        -:  206:#define quals         (curglobdata.gd_quals)
+        -:  207:#define qualct        (curglobdata.gd_qualct)
+        -:  208:#define qualorct      (curglobdata.gd_qualorct)
+        -:  209:#define g_range       (curglobdata.gd_range)
+        -:  210:#define g_amc         (curglobdata.gd_amc)
+        -:  211:#define g_units       (curglobdata.gd_units)
+        -:  212:#define gf_nullglob   (curglobdata.gd_gf_nullglob)
+        -:  213:#define gf_markdirs   (curglobdata.gd_gf_markdirs)
+        -:  214:#define gf_noglobdots (curglobdata.gd_gf_noglobdots)
+        -:  215:#define gf_listtypes  (curglobdata.gd_gf_listtypes)
+        -:  216:#define gf_numsort    (curglobdata.gd_gf_numsort)
+        -:  217:#define gf_follow     (curglobdata.gd_gf_follow)
+        -:  218:#define gf_sorts      (curglobdata.gd_gf_sorts)
+        -:  219:#define gf_nsorts     (curglobdata.gd_gf_nsorts)
+        -:  220:#define gf_sortlist   (curglobdata.gd_gf_sortlist)
+        -:  221:#define gf_pre_words  (curglobdata.gd_gf_pre_words)
+        -:  222:#define gf_post_words (curglobdata.gd_gf_post_words)
+        -:  223:
+        -:  224:/* and macros for save/restore */
+        -:  225:
+        -:  226:#define save_globstate(N) \
+        -:  227:  do { \
+        -:  228:    queue_signals(); \
+        -:  229:    memcpy(&(N), &curglobdata, sizeof(struct globdata)); \
+        -:  230:    (N).gd_pathpos = pathpos; \
+        -:  231:    (N).gd_pathbuf = pathbuf; \
+        -:  232:    (N).gd_glob_pre = glob_pre; \
+        -:  233:    (N).gd_glob_suf = glob_suf; \
+        -:  234:    pathbuf = NULL; \
+        -:  235:    unqueue_signals(); \
+        -:  236:  } while (0)
+        -:  237:
+        -:  238:#define restore_globstate(N) \
+        -:  239:  do { \
+        -:  240:    queue_signals(); \
+        -:  241:    zfree(pathbuf, pathbufsz); \
+        -:  242:    memcpy(&curglobdata, &(N), sizeof(struct globdata)); \
+        -:  243:    pathpos = (N).gd_pathpos; \
+        -:  244:    pathbuf = (N).gd_pathbuf; \
+        -:  245:    glob_pre = (N).gd_glob_pre; \
+        -:  246:    glob_suf = (N).gd_glob_suf; \
+        -:  247:    unqueue_signals(); \
+        -:  248:  } while (0)
+        -:  249:
+        -:  250:/* pathname component in filename patterns */
+        -:  251:
+        -:  252:struct complist {
+        -:  253:    Complist next;
+        -:  254:    Patprog pat;
+        -:  255:    int closure;		/* 1 if this is a (foo/)# */
+        -:  256:    int follow; 		/* 1 to go thru symlinks */
+        -:  257:};
+        -:  258:
+        -:  259:/* Add a component to pathbuf: This keeps track of how    *
+        -:  260: * far we are into a file name, since each path component *
+        -:  261: * must be matched separately.                            */
+        -:  262:
+        -:  263:/**/
+        -:  264:static void
+       35:  265:addpath(char *s, int l)
+        -:  266:{
+        -:  267:    DPUTS(!pathbuf, "BUG: pathbuf not initialised");
+       70:  268:    while (pathpos + l + 1 >= pathbufsz)
+    #####:  269:	pathbuf = zrealloc(pathbuf, pathbufsz *= 2);
+      270:  270:    while (l--)
+      200:  271:	pathbuf[pathpos++] = *s++;
+       35:  272:    pathbuf[pathpos++] = '/';
+       35:  273:    pathbuf[pathpos] = '\0';
+       35:  274:}
+        -:  275:
+        -:  276:/* stat the filename s appended to pathbuf.  l should be true for lstat,    *
+        -:  277: * false for stat.  If st is NULL, the file is only checked for existence.  *
+        -:  278: * s == "" is treated as s == ".".  This is necessary since on most systems *
+        -:  279: * foo/ can be used to reference a non-directory foo.  Returns nonzero if   *
+        -:  280: * the file does not exists.                                                */
+        -:  281:
+        -:  282:static int
+       44:  283:statfullpath(const char *s, struct stat *st, int l)
+        -:  284:{
+        -:  285:    char buf[PATH_MAX+1];
+       44:  286:    int check_for_being_a_directory = 0;
+        -:  287:
+        -:  288:    DPUTS(strlen(s) + !*s + pathpos - pathbufcwd >= PATH_MAX,
+        -:  289:	  "BUG: statfullpath(): pathname too long");
+       44:  290:    strcpy(buf, pathbuf + pathbufcwd);
+       44:  291:    strcpy(buf + pathpos - pathbufcwd, s);
+       44:  292:    if (!*s && *buf) {
+        -:  293:	/*
+        -:  294:	 * Don't add the '.' if the path so far is empty, since
+        -:  295:	 * then we get bogus empty strings inserted as files.
+        -:  296:	 */
+    #####:  297:	if (st) {
+    #####:  298:	    buf[pathpos - pathbufcwd] = '.';
+    #####:  299:	    buf[pathpos - pathbufcwd + 1] = '\0';
+    #####:  300:	    l = 0;
+        -:  301:	}
+        -:  302:	else {
+    #####:  303:	    check_for_being_a_directory = 1;
+        -:  304:	}
+        -:  305:    }
+       44:  306:    unmetafy(buf, NULL);
+       44:  307:    if (st) {
+       44:  308:	return l ? lstat(buf, st) : stat(buf, st);
+        -:  309:    }
+    #####:  310:    else if (check_for_being_a_directory) {
+        -:  311:	struct stat tmp;
+    #####:  312:	if (stat(buf, &tmp))
+    #####:  313:	    return -1;
+        -:  314:
+    #####:  315:	return S_ISDIR(tmp.st_mode) ? 0 : -1;
+        -:  316:    }
+        -:  317:    else {
+        -:  318:	char lbuf[1];
+        -:  319:
+        -:  320:	/* If it exists, signal success. */
+    #####:  321:	if (access(buf, F_OK) == 0)
+    #####:  322:	    return 0;
+        -:  323:
+        -:  324:	/* Would a dangling symlink be good enough? */
+    #####:  325:	if (l == 0)
+    #####:  326:	    return -1;
+        -:  327:
+        -:  328:	/* Is it a dangling symlink? */
+    #####:  329:	if (readlink(buf, lbuf, 1) >= 0)
+    #####:  330:	    return 0;
+        -:  331:
+        -:  332:	/* Guess it doesn't exist, then. */
+    #####:  333:	return -1;
+        -:  334:    }
+        -:  335:}
+        -:  336:
+        -:  337:/* This may be set by qualifier functions to an array of strings to insert
+        -:  338: * into the list instead of the original string. */
+        -:  339:
+        -:  340:static char **inserts;
+        -:  341:
+        -:  342:/* add a match to the list */
+        -:  343:
+        -:  344:/**/
+        -:  345:static void
+       44:  346:insert(char *s, int checked)
+        -:  347:{
+        -:  348:    struct stat buf, buf2, *bp;
+       44:  349:    char *news = s;
+       44:  350:    int statted = 0;
+        -:  351:
+       44:  352:    queue_signals();
+       44:  353:    inserts = NULL;
+        -:  354:
+       44:  355:    if (gf_listtypes || gf_markdirs) {
+        -:  356:	/* Add the type marker to the end of the filename */
+        -:  357:	mode_t mode;
+    #####:  358:	if (statfullpath(s, &buf, 1)) {
+    #####:  359:	    unqueue_signals();
+    #####:  360:	    return;
+        -:  361:	}
+        -:  362:	else {
+    #####:  363:	    checked = statted = 1;
+        -:  364:	}
+    #####:  365:	mode = buf.st_mode;
+    #####:  366:	if (gf_follow) {
+    #####:  367:	    if (!S_ISLNK(mode) || statfullpath(s, &buf2, 0))
+    #####:  368:		memcpy(&buf2, &buf, sizeof(buf));
+    #####:  369:	    statted |= 2;
+    #####:  370:	    mode = buf2.st_mode;
+        -:  371:	}
+    #####:  372:	if (gf_listtypes || S_ISDIR(mode)) {
+    #####:  373:	    int ll = strlen(s);
+        -:  374:
+    #####:  375:	    news = (char *) hcalloc(ll + 2);
+    #####:  376:	    strcpy(news, s);
+    #####:  377:	    news[ll] = file_type(mode);
+    #####:  378:	    news[ll + 1] = '\0';
+        -:  379:	}
+        -:  380:    }
+       87:  381:    if (qualct || qualorct) {
+        -:  382:	/* Go through the qualifiers, rejecting the file if appropriate */
+        -:  383:	struct qual *qo, *qn;
+        -:  384:
+       44:  385:	if (!statted && statfullpath(s, &buf, 1)) {
+    #####:  386:	    unqueue_signals();
+    #####:  387:	    return;
+        -:  388:	}
+       44:  389:	news = dyncat(pathbuf, news);
+        -:  390:
+       44:  391:	statted = 1;
+       44:  392:	qo = quals;
+      131:  393:	for (qn = qo; qn && qn->func;) {
+       44:  394:	    g_range = qn->range;
+       44:  395:	    g_amc = qn->amc;
+       44:  396:	    g_units = qn->units;
+       44:  397:	    if ((qn->sense & 2) && !(statted & 2)) {
+        -:  398:		/* If (sense & 2), we're following links */
+    #####:  399:		if (!S_ISLNK(buf.st_mode) || statfullpath(s, &buf2, 0))
+    #####:  400:		    memcpy(&buf2, &buf, sizeof(buf));
+    #####:  401:		statted |= 2;
+        -:  402:	    }
+       44:  403:	    bp = (qn->sense & 2) ? &buf2 : &buf;
+        -:  404:	    /* Reject the file if the function returned zero *
+        -:  405:	     * and the sense was positive (sense&1 == 0), or *
+        -:  406:	     * vice versa.                                   */
+       88:  407:	    if ((!((qn->func) (news, bp, qn->data, qn->sdata))
+       44:  408:		 ^ qn->sense) & 1) {
+        -:  409:		/* Try next alternative, or return if there are no more */
+        1:  410:		if (!(qo = qo->or)) {
+        1:  411:		    unqueue_signals();
+        1:  412:		    return;
+        -:  413:		}
+    #####:  414:		qn = qo;
+    #####:  415:		continue;
+        -:  416:	    }
+       43:  417:	    qn = qn->next;
+        -:  418:	}
+    #####:  419:    } else if (!checked) {
+    #####:  420:	if (statfullpath(s, NULL, 1)) {
+    #####:  421:	    unqueue_signals();
+    #####:  422:	    return;
+        -:  423:	}
+    #####:  424:	news = dyncat(pathbuf, news);
+        -:  425:    } else
+    #####:  426:	news = dyncat(pathbuf, news);
+        -:  427:
+       86:  428:    while (!inserts || (news = dupstring(*inserts++))) {
+       43:  429:	if (colonmod) {
+        -:  430:	    /* Handle the remainder of the qualifier:  e.g. (:r:s/foo/bar/). */
+    #####:  431:	    char *mod = colonmod;
+    #####:  432:	    modify(&news, &mod, 1);
+        -:  433:	}
+       43:  434:	if (!statted && (gf_sorts & GS_NORMAL)) {
+    #####:  435:	    statfullpath(s, &buf, 1);
+    #####:  436:	    statted = 1;
+        -:  437:	}
+       43:  438:	if (!(statted & 2) && (gf_sorts & GS_LINKED)) {
+    #####:  439:	    if (statted) {
+    #####:  440:		if (!S_ISLNK(buf.st_mode) || statfullpath(s, &buf2, 0))
+    #####:  441:		    memcpy(&buf2, &buf, sizeof(buf));
+    #####:  442:	    } else if (statfullpath(s, &buf2, 0))
+    #####:  443:		statfullpath(s, &buf2, 1);
+    #####:  444:	    statted |= 2;
+        -:  445:	}
+       43:  446:	matchptr->name = news;
+       43:  447:	if (statted & 1) {
+       43:  448:	    matchptr->size = buf.st_size;
+       43:  449:	    matchptr->atime = buf.st_atime;
+       43:  450:	    matchptr->mtime = buf.st_mtime;
+       43:  451:	    matchptr->ctime = buf.st_ctime;
+       43:  452:	    matchptr->links = buf.st_nlink;
+        -:  453:#ifdef GET_ST_ATIME_NSEC
+       43:  454:	    matchptr->ansec = GET_ST_ATIME_NSEC(buf);
+        -:  455:#endif
+        -:  456:#ifdef GET_ST_MTIME_NSEC
+       43:  457:	    matchptr->mnsec = GET_ST_MTIME_NSEC(buf);
+        -:  458:#endif
+        -:  459:#ifdef GET_ST_CTIME_NSEC
+       43:  460:	    matchptr->cnsec = GET_ST_CTIME_NSEC(buf);
+        -:  461:#endif
+        -:  462:	}
+       43:  463:	if (statted & 2) {
+    #####:  464:	    matchptr->_size = buf2.st_size;
+    #####:  465:	    matchptr->_atime = buf2.st_atime;
+    #####:  466:	    matchptr->_mtime = buf2.st_mtime;
+    #####:  467:	    matchptr->_ctime = buf2.st_ctime;
+    #####:  468:	    matchptr->_links = buf2.st_nlink;
+        -:  469:#ifdef GET_ST_ATIME_NSEC
+    #####:  470:	    matchptr->_ansec = GET_ST_ATIME_NSEC(buf2);
+        -:  471:#endif
+        -:  472:#ifdef GET_ST_MTIME_NSEC
+    #####:  473:	    matchptr->_mnsec = GET_ST_MTIME_NSEC(buf2);
+        -:  474:#endif
+        -:  475:#ifdef GET_ST_CTIME_NSEC
+    #####:  476:	    matchptr->_cnsec = GET_ST_CTIME_NSEC(buf2);
+        -:  477:#endif
+        -:  478:	}
+       43:  479:	matchptr++;
+        -:  480:
+       43:  481:	if (++matchct == matchsz) {
+        1:  482:	    matchbuf = (Gmatch)zrealloc((char *)matchbuf,
+        1:  483:					sizeof(struct gmatch) * (matchsz *= 2));
+        -:  484:
+        1:  485:	    matchptr = matchbuf + matchct;
+        -:  486:	}
+       43:  487:	if (!inserts)
+       43:  488:	    break;
+        -:  489:    }
+       43:  490:    unqueue_signals();
+       43:  491:    return;
+        -:  492:}
+        -:  493:
+        -:  494:/* Do the globbing:  scanner is called recursively *
+        -:  495: * with successive bits of the path until we've    *
+        -:  496: * tried all of it.                                */
+        -:  497:
+        -:  498:/**/
+        -:  499:static void
+       39:  500:scanner(Complist q, int shortcircuit)
+        -:  501:{
+        -:  502:    Patprog p;
+        -:  503:    int closure;
+       39:  504:    int pbcwdsav = pathbufcwd;
+       39:  505:    int errssofar = errsfound;
+        -:  506:    struct dirsav ds;
+        -:  507:
+       39:  508:    if (!q || errflag)
+    #####:  509:	return;
+       39:  510:    init_dirsav(&ds);
+        -:  511:
+       39:  512:    if ((closure = q->closure)) {
+        -:  513:	/* (foo/)# - match zero or more dirs */
+    #####:  514:	if (q->closure == 2)	/* (foo/)## - match one or more dirs */
+    #####:  515:	    q->closure = 1;
+        -:  516:	else {
+    #####:  517:	    scanner(q->next, shortcircuit);
+    #####:  518:	    if (shortcircuit && shortcircuit == matchct)
+    #####:  519:		return;
+        -:  520:	}
+        -:  521:    }
+       39:  522:    p = q->pat;
+        -:  523:    /* Now the actual matching for the current path section. */
+       39:  524:    if (p->flags & PAT_PURES) {
+        -:  525:	/*
+        -:  526:	 * It's a straight string to the end of the path section.
+        -:  527:	 */
+       15:  528:	char *str = (char *)p + p->startoff;
+       15:  529:	int l = p->patmlen;
+        -:  530:
+       15:  531:	if (l + !l + pathpos - pathbufcwd >= PATH_MAX) {
+        -:  532:	    int err;
+        -:  533:
+    #####:  534:	    if (l >= PATH_MAX)
+    #####:  535:		return;
+    #####:  536:	    err = lchdir(unmeta(pathbuf + pathbufcwd), &ds, 0);
+    #####:  537:	    if (err == -1)
+    #####:  538:		return;
+    #####:  539:	    if (err) {
+    #####:  540:		zerr("current directory lost during glob");
+    #####:  541:		return;
+        -:  542:	    }
+    #####:  543:	    pathbufcwd = pathpos;
+        -:  544:	}
+       15:  545:	if (q->next) {
+        -:  546:	    /* Not the last path section. Just add it to the path. */
+       15:  547:	    int oppos = pathpos;
+        -:  548:
+       15:  549:	    if (!errflag) {
+       15:  550:		int add = 1;
+        -:  551:
+       15:  552:		if (q->closure && *pathbuf) {
+    #####:  553:		    if (!strcmp(str, "."))
+    #####:  554:			add = 0;
+    #####:  555:		    else if (!strcmp(str, "..")) {
+        -:  556:			struct stat sc, sr;
+        -:  557:
+    #####:  558:			add = (stat("/", &sr) || stat(unmeta(pathbuf), &sc) ||
+    #####:  559:			       sr.st_ino != sc.st_ino ||
+    #####:  560:			       sr.st_dev != sc.st_dev);
+        -:  561:		    }
+        -:  562:		}
+       15:  563:		if (add) {
+       15:  564:		    addpath(str, l);
+       15:  565:		    if (!closure || !statfullpath("", NULL, 1)) {
+       15:  566:			scanner((q->closure) ? q : q->next, shortcircuit);
+       15:  567:			if (shortcircuit && shortcircuit == matchct)
+    #####:  568:			    return;
+        -:  569:		    }
+       15:  570:		    pathbuf[pathpos = oppos] = '\0';
+        -:  571:		}
+        -:  572:	    }
+        -:  573:	} else {
+    #####:  574:	    if (str[l])
+    #####:  575:		str = dupstrpfx(str, l);
+    #####:  576:	    insert(str, 0);
+    #####:  577:	    if (shortcircuit && shortcircuit == matchct)
+    #####:  578:		return;
+        -:  579:	}
+        -:  580:    } else {
+        -:  581:	/* Do pattern matching on current path section. */
+       24:  582:	char *fn = pathbuf[pathbufcwd] ? unmeta(pathbuf + pathbufcwd) : ".";
+       24:  583:	int dirs = !!q->next;
+       24:  584:	DIR *lock = opendir(fn);
+       24:  585:	char *subdirs = NULL;
+       24:  586:	int subdirlen = 0;
+        -:  587:
+       24:  588:	if (lock == NULL)
+        6:  589:	    return;
+      257:  590:	while ((fn = zreaddir(lock, 1)) && !errflag) {
+        -:  591:	    /* prefix and suffix are zle trickery */
+      420:  592:	    if (!dirs && !colonmod &&
+      199:  593:		((glob_pre && !strpfx(glob_pre, fn))
+      199:  594:		 || (glob_suf && !strsfx(glob_suf, fn))))
+    #####:  595:		continue;
+      221:  596:	    errsfound = errssofar;
+      221:  597:	    if (pattry(p, fn)) {
+        -:  598:		/* if this name matches the pattern... */
+      128:  599:		if (pbcwdsav == pathbufcwd &&
+       64:  600:		    strlen(fn) + pathpos - pathbufcwd >= PATH_MAX) {
+        -:  601:		    int err;
+        -:  602:
+        -:  603:		    DPUTS(pathpos == pathbufcwd,
+        -:  604:			  "BUG: filename longer than PATH_MAX");
+    #####:  605:		    err = lchdir(unmeta(pathbuf + pathbufcwd), &ds, 0);
+    #####:  606:		    if (err == -1)
+    #####:  607:			break;
+    #####:  608:		    if (err) {
+    #####:  609:			zerr("current directory lost during glob");
+    #####:  610:			break;
+        -:  611:		    }
+    #####:  612:		    pathbufcwd = pathpos;
+        -:  613:		}
+       64:  614:		if (dirs) {
+        -:  615:		    int l;
+        -:  616:
+        -:  617:		    /*
+        -:  618:		     * If not the last component in the path:
+        -:  619:		     *
+        -:  620:		     * If we made an approximation in the new path segment,
+        -:  621:		     * then it is possible we made too many errors.  For
+        -:  622:		     * example, (ab)#(cb)# will match the directory abcb
+        -:  623:		     * with one error if allowed to, even though it can
+        -:  624:		     * match with none.  This will stop later parts of the
+        -:  625:		     * path matching, so we need to check by reducing the
+        -:  626:		     * maximum number of errors and seeing if the directory
+        -:  627:		     * still matches.  Luckily, this is not a terribly
+        -:  628:		     * common case, since complex patterns typically occur
+        -:  629:		     * in the last part of the path which is not affected
+        -:  630:		     * by this problem.
+        -:  631:		     */
+       20:  632:		    if (errsfound > errssofar) {
+    #####:  633:			forceerrs = errsfound - 1;
+    #####:  634:			while (forceerrs >= errssofar) {
+    #####:  635:			    errsfound = errssofar;
+    #####:  636:			    if (!pattry(p, fn))
+    #####:  637:				break;
+    #####:  638:			    forceerrs = errsfound - 1;
+        -:  639:			}
+    #####:  640:			errsfound = forceerrs + 1;
+    #####:  641:			forceerrs = -1;
+        -:  642:		    }
+       20:  643:		    if (closure) {
+        -:  644:			/* if matching multiple directories */
+        -:  645:			struct stat buf;
+        -:  646:
+    #####:  647:			if (statfullpath(fn, &buf, !q->follow)) {
+    #####:  648:			    if (errno != ENOENT && errno != EINTR &&
+    #####:  649:				errno != ENOTDIR && !errflag) {
+    #####:  650:				zwarn("%e: %s", errno, fn);
+        -:  651:			    }
+    #####:  652:			    continue;
+        -:  653:			}
+    #####:  654:			if (!S_ISDIR(buf.st_mode))
+    #####:  655:			    continue;
+        -:  656:		    }
+       20:  657:		    l = strlen(fn) + 1;
+       20:  658:		    subdirs = hrealloc(subdirs, subdirlen, subdirlen + l
+        -:  659:				       + sizeof(int));
+       20:  660:		    strcpy(subdirs + subdirlen, fn);
+       20:  661:		    subdirlen += l;
+        -:  662:		    /* store the count of errors made so far, too */
+       20:  663:		    memcpy(subdirs + subdirlen, (char *)&errsfound,
+        -:  664:			   sizeof(int));
+       20:  665:		    subdirlen += sizeof(int);
+        -:  666:		} else {
+        -:  667:		    /* if the last filename component, just add it */
+       44:  668:		    insert(fn, 1);
+       44:  669:		    if (shortcircuit && shortcircuit == matchct) {
+    #####:  670:			closedir(lock);
+    #####:  671:			return;
+        -:  672:		    }
+        -:  673:		}
+        -:  674:	    }
+        -:  675:	}
+       18:  676:	closedir(lock);
+       18:  677:	if (subdirs) {
+        1:  678:	    int oppos = pathpos;
+        -:  679:
+       22:  680:	    for (fn = subdirs; fn < subdirs+subdirlen; ) {
+       20:  681:		int l = strlen(fn);
+       20:  682:		addpath(fn, l);
+       20:  683:		fn += l + 1;
+       20:  684:		memcpy((char *)&errsfound, fn, sizeof(int));
+       20:  685:		fn += sizeof(int);
+        -:  686:		/* scan next level */
+       20:  687:		scanner((q->closure) ? q : q->next, shortcircuit); 
+       20:  688:		if (shortcircuit && shortcircuit == matchct)
+    #####:  689:		    return;
+       20:  690:		pathbuf[pathpos = oppos] = '\0';
+        -:  691:	    }
+        1:  692:	    hrealloc(subdirs, subdirlen, 0);
+        -:  693:	}
+        -:  694:    }
+       33:  695:    if (pbcwdsav < pathbufcwd) {
+    #####:  696:	if (restoredir(&ds))
+    #####:  697:	    zerr("current directory lost during glob");
+    #####:  698:	zsfree(ds.dirname);
+    #####:  699:	if (ds.dirfd >= 0)
+    #####:  700:	    close(ds.dirfd);
+    #####:  701:	pathbufcwd = pbcwdsav;
+        -:  702:    }
+       33:  703:    return;
+        -:  704:}
+        -:  705:
+        -:  706:/* This function tokenizes a zsh glob pattern */
+        -:  707:
+        -:  708:/**/
+        -:  709:static Complist
+       20:  710:parsecomplist(char *instr)
+        -:  711:{
+        -:  712:    Patprog p1;
+        -:  713:    Complist l1;
+        -:  714:    char *str;
+       20:  715:    int compflags = gf_noglobdots ? (PAT_FILE|PAT_NOGLD) : PAT_FILE;
+        -:  716:
+       20:  717:    if (instr[0] == Star && instr[1] == Star) {
+    #####:  718:	int shortglob = 0;
+    #####:  719:        if (instr[2] == '/' || (instr[2] == Star && instr[3] == '/')
+    #####:  720:	    || (shortglob = isset(GLOBSTARSHORT))) {
+        -:  721:	    /* Match any number of directories. */
+        -:  722:	    int follow;
+        -:  723:
+        -:  724:	    /* with three stars, follow symbolic links */
+    #####:  725:	    follow = (instr[2] == Star);
+        -:  726:	    /*
+        -:  727:	     * With GLOBSTARSHORT, leave a star in place for the
+        -:  728:	     * pattern inside the directory.
+        -:  729:	     */
+    #####:  730:	    instr += ((shortglob ? 1 : 3) + follow);
+        -:  731:
+        -:  732:	    /* Now get the next path component if there is one. */
+    #####:  733:	    l1 = (Complist) zhalloc(sizeof *l1);
+    #####:  734:	    if ((l1->next = parsecomplist(instr)) == NULL) {
+    #####:  735:		errflag |= ERRFLAG_ERROR;
+    #####:  736:		return NULL;
+        -:  737:	    }
+    #####:  738:	    l1->pat = patcompile(NULL, compflags | PAT_ANY, NULL);
+    #####:  739:	    l1->closure = 1;		/* ...zero or more times. */
+    #####:  740:	    l1->follow = follow;
+    #####:  741:	    return l1;
+        -:  742:	}
+        -:  743:    }
+        -:  744:
+        -:  745:    /* Parse repeated directories such as (dir/)# and (dir/)## */
+       20:  746:    if (*(str = instr) == zpc_special[ZPC_INPAR] &&
+    #####:  747:	!skipparens(Inpar, Outpar, (char **)&str) &&
+    #####:  748:        *str == zpc_special[ZPC_HASH] && str[-2] == '/') {
+    #####:  749:	instr++;
+    #####:  750:	if (!(p1 = patcompile(instr, compflags, &instr)))
+    #####:  751:	    return NULL;
+    #####:  752:	if (instr[0] == '/' && instr[1] == Outpar && instr[2] == Pound) {
+    #####:  753:	    int pdflag = 0;
+        -:  754:
+    #####:  755:	    instr += 3;
+    #####:  756:	    if (*instr == Pound) {
+    #####:  757:		pdflag = 1;
+    #####:  758:		instr++;
+        -:  759:	    }
+    #####:  760:	    l1 = (Complist) zhalloc(sizeof *l1);
+    #####:  761:	    l1->pat = p1;
+        -:  762:	    /* special case (/)# to avoid infinite recursion */
+    #####:  763:	    l1->closure = (*((char *)p1 + p1->startoff)) ? 1 + pdflag : 0;
+    #####:  764:	    l1->follow = 0;
+    #####:  765:	    l1->next = parsecomplist(instr);
+    #####:  766:	    return (l1->pat) ? l1 : NULL;
+        -:  767:	}
+        -:  768:    } else {
+        -:  769:	/* parse single path component */
+       20:  770:	if (!(p1 = patcompile(instr, compflags|PAT_FILET, &instr)))
+    #####:  771:	    return NULL;
+        -:  772:	/* then do the remaining path components */
+       20:  773:	if (*instr == '/' || !*instr) {
+       20:  774:	    int ef = *instr == '/';
+        -:  775:
+       20:  776:	    l1 = (Complist) zhalloc(sizeof *l1);
+       20:  777:	    l1->pat = p1;
+       20:  778:	    l1->closure = 0;
+       20:  779:	    l1->next = ef ? parsecomplist(instr+1) : NULL;
+       20:  780:	    return (ef && !l1->next) ? NULL : l1;
+        -:  781:	}
+        -:  782:    }
+    #####:  783:    errflag |= ERRFLAG_ERROR;
+    #####:  784:    return NULL;
+        -:  785:}
+        -:  786:
+        -:  787:/* turn a string into a Complist struct:  this has path components */
+        -:  788:
+        -:  789:/**/
+        -:  790:static Complist
+        4:  791:parsepat(char *str)
+        -:  792:{
+        -:  793:    long assert;
+        -:  794:    int ignore;
+        -:  795:
+        4:  796:    patcompstart();
+        -:  797:    /*
+        -:  798:     * Check for initial globbing flags, so that they don't form
+        -:  799:     * a bogus path component.
+        -:  800:     */
+        8:  801:    if ((*str == zpc_special[ZPC_INPAR] && str[1] == zpc_special[ZPC_HASH]) ||
+        4:  802:	(*str == zpc_special[ZPC_KSH_AT] && str[1] == Inpar &&
+    #####:  803:	 str[2] == zpc_special[ZPC_HASH])) {
+    #####:  804:	str += (*str == Inpar) ? 2 : 3;
+    #####:  805:	if (!patgetglobflags(&str, &assert, &ignore))
+    #####:  806:	    return NULL;
+        -:  807:    }
+        -:  808:
+        -:  809:    /* Now there is no (#X) in front, we can check the path. */
+        4:  810:    if (!pathbuf)
+        4:  811:	pathbuf = zalloc(pathbufsz = PATH_MAX+1);
+        -:  812:    DPUTS(pathbufcwd, "BUG: glob changed directory");
+        4:  813:    if (*str == '/') {		/* pattern has absolute path */
+        3:  814:	str++;
+        3:  815:	pathbuf[0] = '/';
+        3:  816:	pathbuf[pathpos = 1] = '\0';
+        -:  817:    } else			/* pattern is relative to pwd */
+        1:  818:	pathbuf[pathpos = 0] = '\0';
+        -:  819:
+        4:  820:    return parsecomplist(str);
+        -:  821:}
+        -:  822:
+        -:  823:/* get number after qualifier */
+        -:  824:
+        -:  825:/**/
+        -:  826:static off_t
+    #####:  827:qgetnum(char **s)
+        -:  828:{
+    #####:  829:    off_t v = 0;
+        -:  830:
+    #####:  831:    if (!idigit(**s)) {
+    #####:  832:	zerr("number expected");
+    #####:  833:	return 0;
+        -:  834:    }
+    #####:  835:    while (idigit(**s))
+    #####:  836:	v = v * 10 + *(*s)++ - '0';
+    #####:  837:    return v;
+        -:  838:}
+        -:  839:
+        -:  840:/* get mode spec after qualifier */
+        -:  841:
+        -:  842:/**/
+        -:  843:static zlong
+    #####:  844:qgetmodespec(char **s)
+        -:  845:{
+    #####:  846:    zlong yes = 0, no = 0, val, mask, t;
+    #####:  847:    char *p = *s, c, how, end;
+        -:  848:
+    #####:  849:    if ((c = *p) == '=' || c == Equals || c == '+' || c == '-' ||
+    #####:  850:	c == '?' || c == Quest || (c >= '0' && c <= '7')) {
+    #####:  851:	end = 0;
+    #####:  852:	c = 0;
+        -:  853:    } else {
+    #####:  854:	end = (c == '<' ? '>' :
+        -:  855:	       (c == '[' ? ']' :
+        -:  856:		(c == '{' ? '}' :
+        -:  857:		 (c == Inang ? Outang :
+        -:  858:		  (c == Inbrack ? Outbrack :
+        -:  859:		   (c == Inbrace ? Outbrace : c))))));
+    #####:  860:	p++;
+        -:  861:    }
+        -:  862:    do {
+    #####:  863:	mask = 0;
+    #####:  864:	while (((c = *p) == 'u' || c == 'g' || c == 'o' || c == 'a') && end) {
+    #####:  865:	    switch (c) {
+    #####:  866:	    case 'o': mask |= 01007; break;
+    #####:  867:	    case 'g': mask |= 02070; break;
+    #####:  868:	    case 'u': mask |= 04700; break;
+    #####:  869:	    case 'a': mask |= 07777; break;
+        -:  870:	    }
+    #####:  871:	    p++;
+        -:  872:	}
+    #####:  873:	how = ((c == '+' || c == '-') ? c : '=');
+    #####:  874:	if (c == '+' || c == '-' || c == '=' || c == Equals)
+    #####:  875:	    p++;
+    #####:  876:	val = 0;
+    #####:  877:	if (mask) {
+    #####:  878:	    while ((c = *p++) != ',' && c != end) {
+    #####:  879:		switch (c) {
+    #####:  880:		case 'x': val |= 00111; break;
+    #####:  881:		case 'w': val |= 00222; break;
+    #####:  882:		case 'r': val |= 00444; break;
+    #####:  883:		case 's': val |= 06000; break;
+    #####:  884:		case 't': val |= 01000; break;
+    #####:  885:		case '0': case '1': case '2': case '3':
+        -:  886:		case '4': case '5': case '6': case '7':
+    #####:  887:		    t = ((zlong) c - '0');
+    #####:  888:		    val |= t | (t << 3) | (t << 6);
+    #####:  889:		    break;
+    #####:  890:		default:
+    #####:  891:		    zerr("invalid mode specification");
+    #####:  892:		    return 0;
+        -:  893:		}
+        -:  894:	    }
+    #####:  895:	    if (how == '=' || how == '+') {
+    #####:  896:		yes |= val & mask;
+    #####:  897:		val = ~val;
+        -:  898:	    }
+    #####:  899:	    if (how == '=' || how == '-')
+    #####:  900:		no |= val & mask;
+    #####:  901:	} else if (!(end && c == end) && c != ',' && c) {
+    #####:  902:	    t = 07777;
+    #####:  903:	    while ((c = *p) == '?' || c == Quest ||
+    #####:  904:		   (c >= '0' && c <= '7')) {
+    #####:  905:		if (c == '?' || c == Quest) {
+    #####:  906:		    t = (t << 3) | 7;
+    #####:  907:		    val <<= 3;
+        -:  908:		} else {
+    #####:  909:		    t <<= 3;
+    #####:  910:		    val = (val << 3) | ((zlong) c - '0');
+        -:  911:		}
+    #####:  912:		p++;
+        -:  913:	    }
+    #####:  914:	    if (end && c != end && c != ',') {
+    #####:  915:		zerr("invalid mode specification");
+    #####:  916:		return 0;
+        -:  917:	    }
+    #####:  918:	    if (how == '=') {
+    #####:  919:		yes = (yes & ~t) | val;
+    #####:  920:		no = (no & ~t) | (~val & ~t);
+    #####:  921:	    } else if (how == '+')
+    #####:  922:		yes |= val;
+        -:  923:	    else
+    #####:  924:		no |= val;
+        -:  925:	} else {
+    #####:  926:	    zerr("invalid mode specification");
+    #####:  927:	    return 0;
+        -:  928:        }
+    #####:  929:    } while (end && c != end);
+        -:  930:
+    #####:  931:    *s = p;
+    #####:  932:    return ((yes & 07777) | ((no & 07777) << 12));
+        -:  933:}
+        -:  934:
+        -:  935:static int
+      142:  936:gmatchcmp(Gmatch a, Gmatch b)
+        -:  937:{
+        -:  938:    int i;
+      142:  939:    off_t r = 0L;
+        -:  940:    struct globsort *s;
+      142:  941:    char **asortstrp = NULL, **bsortstrp = NULL;
+        -:  942:
+      142:  943:    for (i = gf_nsorts, s = gf_sortlist; i; i--, s++) {
+      142:  944:	switch (s->tp & ~GS_DESC) {
+      142:  945:	case GS_NAME:
+      142:  946:	    r = zstrcmp(b->uname, a->uname,
+      142:  947:			gf_numsort ? SORTIT_NUMERICALLY : 0);
+      142:  948:	    break;
+    #####:  949:	case GS_DEPTH:
+        -:  950:	    {
+    #####:  951:		char *aptr = a->name, *bptr = b->name;
+    #####:  952:		int slasha = 0, slashb = 0;
+        -:  953:		/* Count slashes.  Trailing slashes don't count. */
+    #####:  954:		while (*aptr && *aptr == *bptr)
+    #####:  955:		    aptr++, bptr++;
+        -:  956:		/* Like I just said... */
+    #####:  957:		if ((!*aptr || !*bptr) && aptr > a->name && aptr[-1] == '/')
+    #####:  958:		    aptr--, bptr--;
+    #####:  959:		if (*aptr)
+    #####:  960:		    for (; aptr[1]; aptr++)
+    #####:  961:			if (*aptr == '/') {
+    #####:  962:			    slasha = 1;
+    #####:  963:			    break;
+        -:  964:			}
+    #####:  965:		if (*bptr)
+    #####:  966:		    for (; bptr[1]; bptr++)
+    #####:  967:			if (*bptr == '/') {
+    #####:  968:			    slashb = 1;
+    #####:  969:			    break;
+        -:  970:			}
+    #####:  971:		r = slasha - slashb;
+        -:  972:	    }
+    #####:  973:	    break;
+    #####:  974:	case GS_EXEC:
+    #####:  975:	    if (!asortstrp) {
+    #####:  976:		asortstrp = a->sortstrs;
+    #####:  977:		bsortstrp = b->sortstrs;
+        -:  978:	    } else {
+    #####:  979:		asortstrp++;
+    #####:  980:		bsortstrp++;
+        -:  981:	    }
+    #####:  982:	    r = zstrcmp(*bsortstrp, *asortstrp,
+    #####:  983:			gf_numsort ? SORTIT_NUMERICALLY : 0);
+    #####:  984:	    break;
+    #####:  985:	case GS_SIZE:
+    #####:  986:	    r = b->size - a->size;
+    #####:  987:	    break;
+    #####:  988:	case GS_ATIME:
+    #####:  989:	    r = a->atime - b->atime;
+        -:  990:#ifdef GET_ST_ATIME_NSEC
+    #####:  991:            if (!r)
+    #####:  992:              r = a->ansec - b->ansec;
+        -:  993:#endif
+    #####:  994:	    break;
+    #####:  995:	case GS_MTIME:
+    #####:  996:	    r = a->mtime - b->mtime;
+        -:  997:#ifdef GET_ST_MTIME_NSEC
+    #####:  998:            if (!r)
+    #####:  999:              r = a->mnsec - b->mnsec;
+        -: 1000:#endif
+    #####: 1001:	    break;
+    #####: 1002:	case GS_CTIME:
+    #####: 1003:	    r = a->ctime - b->ctime;
+        -: 1004:#ifdef GET_ST_CTIME_NSEC
+    #####: 1005:            if (!r)
+    #####: 1006:              r = a->cnsec - b->cnsec;
+        -: 1007:#endif
+    #####: 1008:	    break;
+    #####: 1009:	case GS_LINKS:
+    #####: 1010:	    r = b->links - a->links;
+    #####: 1011:	    break;
+    #####: 1012:	case GS__SIZE:
+    #####: 1013:	    r = b->_size - a->_size;
+    #####: 1014:	    break;
+    #####: 1015:	case GS__ATIME:
+    #####: 1016:	    r = a->_atime - b->_atime;
+        -: 1017:#ifdef GET_ST_ATIME_NSEC
+    #####: 1018:            if (!r)
+    #####: 1019:              r = a->_ansec - b->_ansec;
+        -: 1020:#endif
+    #####: 1021:	    break;
+    #####: 1022:	case GS__MTIME:
+    #####: 1023:	    r = a->_mtime - b->_mtime;
+        -: 1024:#ifdef GET_ST_MTIME_NSEC
+    #####: 1025:            if (!r)
+    #####: 1026:              r = a->_mnsec - b->_mnsec;
+        -: 1027:#endif
+    #####: 1028:	    break;
+    #####: 1029:	case GS__CTIME:
+    #####: 1030:	    r = a->_ctime - b->_ctime;
+        -: 1031:#ifdef GET_ST_CTIME_NSEC
+    #####: 1032:            if (!r)
+    #####: 1033:              r = a->_cnsec - b->_cnsec;
+        -: 1034:#endif
+    #####: 1035:	    break;
+    #####: 1036:	case GS__LINKS:
+    #####: 1037:	    r = b->_links - a->_links;
+    #####: 1038:	    break;
+        -: 1039:	}
+      142: 1040:	if (r)
+      142: 1041:	    return (s->tp & GS_DESC) ?
+      284: 1042:	      (r < 0L ? 1 : -1) :
+      142: 1043:	      (r > 0L ? 1 : -1);
+        -: 1044:    }
+    #####: 1045:    return 0;
+        -: 1046:}
+        -: 1047:
+        -: 1048:/*
+        -: 1049: * Duplicate a list of qualifiers using the `next' linkage (not the
+        -: 1050: * `or' linkage).  Return the head element and set *last (if last non-NULL)
+        -: 1051: * to point to the last element of the new list.  All allocation is on the
+        -: 1052: * heap (or off the heap?)
+        -: 1053: */
+    #####: 1054:static struct qual *dup_qual_list(struct qual *orig, struct qual **lastp)
+        -: 1055:{
+    #####: 1056:    struct qual *qfirst = NULL, *qlast = NULL;
+        -: 1057:
+    #####: 1058:    while (orig) {
+    #####: 1059:	struct qual *qnew = (struct qual *)zhalloc(sizeof(struct qual));
+    #####: 1060:	*qnew = *orig;
+    #####: 1061:	qnew->next = qnew->or = NULL;
+        -: 1062:
+    #####: 1063:	if (!qfirst)
+    #####: 1064:	    qfirst = qnew;
+    #####: 1065:	if (qlast)
+    #####: 1066:	    qlast->next = qnew;
+    #####: 1067:	qlast = qnew;
+        -: 1068:
+    #####: 1069:	orig = orig->next;
+        -: 1070:    }
+        -: 1071:
+    #####: 1072:    if (lastp)
+    #####: 1073:	*lastp = qlast;
+    #####: 1074:    return qfirst;
+        -: 1075:}
+        -: 1076:
+        -: 1077:
+        -: 1078:/*
+        -: 1079: * Get a glob string for execution, following e, P or + qualifiers.
+        -: 1080: * Pointer is character after the e, P or +.
+        -: 1081: */
+        -: 1082:
+        -: 1083:/**/
+        -: 1084:static char *
+    #####: 1085:glob_exec_string(char **sp)
+        -: 1086:{
+    #####: 1087:    char sav, *tt, *sdata, *s = *sp;
+        -: 1088:    int plus;
+        -: 1089:
+    #####: 1090:    if (s[-1] == '+') {
+    #####: 1091:	plus = 0;
+    #####: 1092:	tt = itype_end(s, IIDENT, 0);
+    #####: 1093:	if (tt == s)
+        -: 1094:	{
+    #####: 1095:	    zerr("missing identifier after `+'");
+    #####: 1096:	    return NULL;
+        -: 1097:	}
+        -: 1098:    } else {
+    #####: 1099:	tt = get_strarg(s, &plus);
+    #####: 1100:	if (!*tt)
+        -: 1101:	{
+    #####: 1102:	    zerr("missing end of string");
+    #####: 1103:	    return NULL;
+        -: 1104:	}
+        -: 1105:    }
+        -: 1106:
+    #####: 1107:    sav = *tt;
+    #####: 1108:    *tt = '\0';
+    #####: 1109:    sdata = dupstring(s + plus);
+    #####: 1110:    untokenize(sdata);
+    #####: 1111:    *tt = sav;
+    #####: 1112:    if (sav)
+    #####: 1113:	*sp = tt + plus;
+        -: 1114:    else
+    #####: 1115:	*sp = tt;
+        -: 1116:
+    #####: 1117:    return sdata;
+        -: 1118:}
+        -: 1119:
+        -: 1120:/*
+        -: 1121: * Insert a glob match.
+        -: 1122: * If there were words to prepend given by the P glob qualifier, do so.
+        -: 1123: */
+        -: 1124:static void
+       44: 1125:insert_glob_match(LinkList list, LinkNode next, char *data)
+        -: 1126:{
+       44: 1127:    if (gf_pre_words) {
+        -: 1128:	LinkNode added;
+    #####: 1129:	for (added = firstnode(gf_pre_words); added; incnode(added)) {
+    #####: 1130:	    next = insertlinknode(list, next, dupstring(getdata(added)));
+        -: 1131:	}
+        -: 1132:    }
+        -: 1133:
+       44: 1134:    next = insertlinknode(list, next, data);
+        -: 1135:
+       44: 1136:    if (gf_post_words) {
+        -: 1137:	LinkNode added;
+    #####: 1138:	for (added = firstnode(gf_post_words); added; incnode(added)) {
+    #####: 1139:	    next = insertlinknode(list, next, dupstring(getdata(added)));
+        -: 1140:	}
+        -: 1141:    }
+       44: 1142:}
+        -: 1143:
+        -: 1144:/*
+        -: 1145: * Return
+        -: 1146: *   1 if str ends in bare glob qualifiers
+        -: 1147: *   2 if str ends in non-bare glob qualifiers (#q)
+        -: 1148: *   0 otherwise.
+        -: 1149: *
+        -: 1150: * str is the string to check.
+        -: 1151: * sl is its length (to avoid recalculation).
+        -: 1152: * nobareglob is 1 if bare glob qualifiers are not allowed.
+        -: 1153: * *sp, if sp is not null, will be a pointer to the opening parenthesis.
+        -: 1154: */
+        -: 1155:
+        -: 1156:/**/
+        -: 1157:int
+      757: 1158:checkglobqual(char *str, int sl, int nobareglob, char **sp)
+        -: 1159:{
+        -: 1160:    char *s;
+      757: 1161:    int paren, ret = 1;
+        -: 1162:
+      757: 1163:    if (str[sl - 1] != Outpar)
+      754: 1164:	return 0;
+        -: 1165:
+        -: 1166:    /* Check these are really qualifiers, not a set of *
+        -: 1167:     * alternatives or exclusions.  We can be more     *
+        -: 1168:     * lenient with an explicit (#q) than with a bare  *
+        -: 1169:     * set of qualifiers.                              */
+        3: 1170:    paren = 0;
+        6: 1171:    for (s = str + sl - 2; *s && (*s != Inpar || paren); s--) {
+        3: 1172:	switch (*s) {
+    #####: 1173:	case Outpar:
+    #####: 1174:	    paren++; /*FALLTHROUGH*/
+    #####: 1175:	case Bar:
+    #####: 1176:	    if (!zpc_disables[ZPC_BAR])
+    #####: 1177:		nobareglob = 1;
+    #####: 1178:	    break;
+    #####: 1179:	case Tilde:
+    #####: 1180:	    if (isset(EXTENDEDGLOB) && !zpc_disables[ZPC_TILDE])
+    #####: 1181:		nobareglob = 1;
+    #####: 1182:	    break;
+    #####: 1183:	case Inpar:
+    #####: 1184:	    paren--;
+    #####: 1185:	    break;
+        -: 1186:	}
+        3: 1187:	if (s == str)
+    #####: 1188:	    break;
+        -: 1189:    }
+        3: 1190:    if (*s != Inpar)
+    #####: 1191:	return 0;
+        3: 1192:    if (isset(EXTENDEDGLOB) && !zpc_disables[ZPC_HASH] && s[1] == Pound) {
+    #####: 1193:	if (s[2] != 'q')
+    #####: 1194:	    return 0;
+    #####: 1195:	ret = 2;
+        3: 1196:    } else if (nobareglob)
+    #####: 1197:	return 0;
+        -: 1198:
+        3: 1199:    if (sp)
+        3: 1200:	*sp = s;
+        -: 1201:
+        3: 1202:    return ret;
+        -: 1203:}
+        -: 1204:
+        -: 1205:/* Main entry point to the globbing code for filename globbing. *
+        -: 1206: * np points to a node in the list which will be expanded  *
+        -: 1207: * into a series of nodes.                                      */
+        -: 1208:
+        -: 1209:/**/
+        -: 1210:void
+    15222: 1211:zglob(LinkList list, LinkNode np, int nountok)
+        -: 1212:{
+        -: 1213:    struct qual *qo, *qn, *ql;
+    15222: 1214:    LinkNode node = prevnode(np);
+        -: 1215:    char *str;				/* the pattern                   */
+        -: 1216:    int sl;				/* length of the pattern         */
+        -: 1217:    Complist q;				/* pattern after parsing         */
+    15222: 1218:    char *ostr = (char *)getdata(np);	/* the pattern before the parser */
+        -: 1219:					/* chops it up                   */
+    15222: 1220:    int first = 0, end = -1;		/* index of first match to return */
+        -: 1221:					/* and index+1 of the last match */
+        -: 1222:    struct globdata saved;		/* saved glob state              */
+    15222: 1223:    int nobareglob = !isset(BAREGLOBQUAL);
+    15222: 1224:    int shortcircuit = 0;		/* How many files to match;      */
+        -: 1225:					/* 0 means no limit              */
+        -: 1226:
+    15222: 1227:    if (unset(GLOBOPT) || !haswilds(ostr) || unset(EXECOPT)) {
+    15218: 1228:	if (!nountok)
+    15218: 1229:	    untokenize(ostr);
+    30436: 1230:	return;
+        -: 1231:    }
+        4: 1232:    save_globstate(saved);
+        -: 1233:
+        4: 1234:    str = dupstring(ostr);
+        4: 1235:    uremnode(list, np);
+        -: 1236:
+        -: 1237:    /* quals will hold the complete list of qualifiers (file static). */
+        4: 1238:    quals = NULL;
+        -: 1239:    /*
+        -: 1240:     * qualct and qualorct indicate we have qualifiers in the last
+        -: 1241:     * alternative, or a set of alternatives, respectively.  They
+        -: 1242:     * are not necessarily an accurate count, however.
+        -: 1243:     */
+        4: 1244:    qualct = qualorct = 0;
+        -: 1245:    /*
+        -: 1246:     * colonmod is a concatenated list of all colon modifiers found in
+        -: 1247:     * all sets of qualifiers.
+        -: 1248:     */
+        4: 1249:    colonmod = NULL;
+        -: 1250:    /* The gf_* flags are qualifiers which are applied globally. */
+        4: 1251:    gf_nullglob = isset(NULLGLOB);
+        4: 1252:    gf_markdirs = isset(MARKDIRS);
+        4: 1253:    gf_listtypes = gf_follow = 0;
+        4: 1254:    gf_noglobdots = unset(GLOBDOTS);
+        4: 1255:    gf_numsort = isset(NUMERICGLOBSORT);
+        4: 1256:    gf_sorts = gf_nsorts = 0;
+        4: 1257:    gf_pre_words = gf_post_words = NULL;
+        -: 1258:
+        -: 1259:    /* Check for qualifiers */
+       14: 1260:    while (!nobareglob ||
+        6: 1261:	   (isset(EXTENDEDGLOB) && !zpc_disables[ZPC_HASH])) {
+        -: 1262:	struct qual *newquals;
+        -: 1263:	char *s;
+        -: 1264:	int sense, qualsfound;
+        -: 1265:	off_t data;
+        -: 1266:	char *sdata, *newcolonmod, *ptr;
+        -: 1267:	int (*func) _((char *, Statptr, off_t, char *));
+        -: 1268:
+        -: 1269:	/*
+        -: 1270:	 * Initialise state variables for current file pattern.
+        -: 1271:	 * newquals is the root for the linked list of all qualifiers.
+        -: 1272:	 * qo is the root of the current list of alternatives.
+        -: 1273:	 * ql is the end of the current alternative where the `next' will go.
+        -: 1274:	 * qn is the current qualifier node to be added.
+        -: 1275:	 *
+        -: 1276:	 * Here is an attempt at a diagram.  An `or' is added horizontally
+        -: 1277:	 * to the top line, a `next' at the bottom of the right hand line.
+        -: 1278:	 * `qn' is usually NULL unless a new `or' has just been added.
+        -: 1279:	 *
+        -: 1280:	 * quals -> x  -> x -> qo
+        -: 1281:	 *          |     |    |
+        -: 1282:	 *          x     x    x
+        -: 1283:	 *          |          |
+        -: 1284:	 *          x          ql
+        -: 1285:	 *
+        -: 1286:	 * In fact, after each loop the complete set is in the file static
+        -: 1287:	 * `quals'.  Then, if we have a second set of qualifiers, we merge
+        -: 1288:	 * the lists together.  This is only tricky if one or both have an
+        -: 1289:	 * `or' in them; then we need to distribute over all alternatives.
+        -: 1290:	 */
+        7: 1291:	newquals = qo = qn = ql = NULL;
+        -: 1292:
+        7: 1293:	sl = strlen(str);
+        7: 1294:	if (!(qualsfound = checkglobqual(str, sl, nobareglob, &s)))
+        4: 1295:	    break;
+        -: 1296:
+        -: 1297:	/* Real qualifiers found. */
+        3: 1298:	nobareglob = 1;
+        3: 1299:	sense = 0;	   /* bit 0 for match (0)/don't match (1)   */
+        -: 1300:			   /* bit 1 for follow links (2), don't (0) */
+        3: 1301:	data = 0;	   /* Any numerical argument required       */
+        3: 1302:	sdata = NULL;	   /* Any list argument required            */
+        3: 1303:	newcolonmod = NULL; /* Contains trailing colon modifiers    */
+        -: 1304:
+        3: 1305:	str[sl-1] = 0;
+        3: 1306:	*s++ = 0;
+        3: 1307:	if (qualsfound == 2)
+    #####: 1308:	    s += 2;
+        6: 1309:	for (ptr = s; *ptr; ptr++)
+        3: 1310:	    if (*ptr == Dash)
+    #####: 1311:		*ptr = '-';
+        9: 1312:	while (*s && !newcolonmod) {
+        3: 1313:	    func = (int (*) _((char *, Statptr, off_t, char *)))0;
+        3: 1314:	    if (*s == ',') {
+        -: 1315:		/* A comma separates alternative sets of qualifiers */
+    #####: 1316:		s++;
+    #####: 1317:		sense = 0;
+    #####: 1318:		if (qualct) {
+    #####: 1319:		    qn = (struct qual *)hcalloc(sizeof *qn);
+    #####: 1320:		    qo->or = qn;
+    #####: 1321:		    qo = qn;
+    #####: 1322:		    qualorct++;
+    #####: 1323:		    qualct = 0;
+    #####: 1324:		    ql = NULL;
+        -: 1325:		}
+        -: 1326:	    } else {
+        3: 1327:		switch (*s++) {
+    #####: 1328:		case ':':
+        -: 1329:		    /* Remaining arguments are history-type     *
+        -: 1330:		     * colon substitutions, handled separately. */
+    #####: 1331:		    newcolonmod = s - 1;
+    #####: 1332:		    untokenize(newcolonmod);
+    #####: 1333:		    if (colonmod) {
+        -: 1334:			/* remember we're searching backwards */
+    #####: 1335:			colonmod = dyncat(newcolonmod, colonmod);
+        -: 1336:		    } else
+    #####: 1337:			colonmod = newcolonmod;
+    #####: 1338:		    break;
+    #####: 1339:		case Hat:
+        -: 1340:		case '^':
+        -: 1341:		    /* Toggle sense:  go from positive to *
+        -: 1342:		     * negative match and vice versa.     */
+    #####: 1343:		    sense ^= 1;
+    #####: 1344:		    break;
+    #####: 1345:		case '-':
+        -: 1346:		case Dash:
+        -: 1347:		    /* Toggle matching of symbolic links */
+    #####: 1348:		    sense ^= 2;
+    #####: 1349:		    break;
+    #####: 1350:		case '@':
+        -: 1351:		    /* Match symbolic links */
+    #####: 1352:		    func = qualislnk;
+    #####: 1353:		    break;
+    #####: 1354:		case Equals:
+        -: 1355:		case '=':
+        -: 1356:		    /* Match sockets */
+    #####: 1357:		    func = qualissock;
+    #####: 1358:		    break;
+    #####: 1359:		case 'p':
+        -: 1360:		    /* Match named pipes */
+    #####: 1361:		    func = qualisfifo;
+    #####: 1362:		    break;
+        2: 1363:		case '/':
+        -: 1364:		    /* Match directories */
+        2: 1365:		    func = qualisdir;
+        2: 1366:		    break;
+    #####: 1367:		case '.':
+        -: 1368:		    /* Match regular files */
+    #####: 1369:		    func = qualisreg;
+    #####: 1370:		    break;
+    #####: 1371:		case '%':
+        -: 1372:		    /* Match special files: block, *
+        -: 1373:		     * character or any device     */
+    #####: 1374:		    if (*s == 'b')
+    #####: 1375:			s++, func = qualisblk;
+    #####: 1376:		    else if (*s == 'c')
+    #####: 1377:			s++, func = qualischr;
+        -: 1378:		    else
+    #####: 1379:			func = qualisdev;
+    #####: 1380:		    break;
+    #####: 1381:		case Star:
+        -: 1382:		    /* Match executable plain files */
+    #####: 1383:		    func = qualiscom;
+    #####: 1384:		    break;
+    #####: 1385:		case 'R':
+        -: 1386:		    /* Match world-readable files */
+    #####: 1387:		    func = qualflags;
+    #####: 1388:		    data = 0004;
+    #####: 1389:		    break;
+    #####: 1390:		case 'W':
+        -: 1391:		    /* Match world-writeable files */
+    #####: 1392:		    func = qualflags;
+    #####: 1393:		    data = 0002;
+    #####: 1394:		    break;
+    #####: 1395:		case 'X':
+        -: 1396:		    /* Match world-executable files */
+    #####: 1397:		    func = qualflags;
+    #####: 1398:		    data = 0001;
+    #####: 1399:		    break;
+    #####: 1400:		case 'A':
+    #####: 1401:		    func = qualflags;
+    #####: 1402:		    data = 0040;
+    #####: 1403:		    break;
+    #####: 1404:		case 'I':
+    #####: 1405:		    func = qualflags;
+    #####: 1406:		    data = 0020;
+    #####: 1407:		    break;
+    #####: 1408:		case 'E':
+    #####: 1409:		    func = qualflags;
+    #####: 1410:		    data = 0010;
+    #####: 1411:		    break;
+    #####: 1412:		case 'r':
+        -: 1413:		    /* Match files readable by current process */
+    #####: 1414:		    func = qualflags;
+    #####: 1415:		    data = 0400;
+    #####: 1416:		    break;
+    #####: 1417:		case 'w':
+        -: 1418:		    /* Match files writeable by current process */
+    #####: 1419:		    func = qualflags;
+    #####: 1420:		    data = 0200;
+    #####: 1421:		    break;
+    #####: 1422:		case 'x':
+        -: 1423:		    /* Match files executable by current process */
+    #####: 1424:		    func = qualflags;
+    #####: 1425:		    data = 0100;
+    #####: 1426:		    break;
+    #####: 1427:		case 's':
+        -: 1428:		    /* Match setuid files */
+    #####: 1429:		    func = qualflags;
+    #####: 1430:		    data = 04000;
+    #####: 1431:		    break;
+    #####: 1432:		case 'S':
+        -: 1433:		    /* Match setgid files */
+    #####: 1434:		    func = qualflags;
+    #####: 1435:		    data = 02000;
+    #####: 1436:		    break;
+    #####: 1437:		case 't':
+    #####: 1438:		    func = qualflags;
+    #####: 1439:		    data = 01000;
+    #####: 1440:		    break;
+    #####: 1441:		case 'd':
+        -: 1442:		    /* Match device files by device number  *
+        -: 1443:		     * (as given by stat's st_dev element). */
+    #####: 1444:		    func = qualdev;
+    #####: 1445:		    data = qgetnum(&s);
+    #####: 1446:		    break;
+    #####: 1447:		case 'l':
+        -: 1448:		    /* Match files with the given no. of hard links */
+    #####: 1449:		    func = qualnlink;
+    #####: 1450:		    g_amc = -1;
+    #####: 1451:		    goto getrange;
+    #####: 1452:		case 'U':
+        -: 1453:		    /* Match files owned by effective user ID */
+    #####: 1454:		    func = qualuid;
+    #####: 1455:		    data = geteuid();
+    #####: 1456:		    break;
+    #####: 1457:		case 'G':
+        -: 1458:		    /* Match files owned by effective group ID */
+    #####: 1459:		    func = qualgid;
+    #####: 1460:		    data = getegid();
+    #####: 1461:		    break;
+    #####: 1462:		case 'u':
+        -: 1463:		    /* Match files owned by given user id */
+    #####: 1464:		    func = qualuid;
+        -: 1465:		    /* either the actual uid... */
+    #####: 1466:		    if (idigit(*s))
+    #####: 1467:			data = qgetnum(&s);
+        -: 1468:		    else {
+        -: 1469:			/* ... or a user name */
+        -: 1470:			char sav, *tt;
+        -: 1471:			int arglen;
+        -: 1472:
+        -: 1473:			/* Find matching delimiters */
+    #####: 1474:			tt = get_strarg(s, &arglen);
+    #####: 1475:			if (!*tt) {
+    #####: 1476:			    zerr("missing delimiter for 'u' glob qualifier");
+    #####: 1477:			    data = 0;
+        -: 1478:			} else {
+        -: 1479:#ifdef USE_GETPWNAM
+        -: 1480:			    struct passwd *pw;
+    #####: 1481:			    sav = *tt;
+    #####: 1482:			    *tt = '\0';
+        -: 1483:
+    #####: 1484:			    if ((pw = getpwnam(s + arglen)))
+    #####: 1485:				data = pw->pw_uid;
+        -: 1486:			    else {
+    #####: 1487:				zerr("unknown username '%s'", s + arglen);
+    #####: 1488:				data = 0;
+        -: 1489:			    }
+    #####: 1490:			    *tt = sav;
+        -: 1491:#else /* !USE_GETPWNAM */
+        -: 1492:			    sav = *tt;
+        -: 1493:			    *tt = '\0';
+        -: 1494:			    zerr("unable to resolve non-numeric username '%s'", s + arglen);
+        -: 1495:			    *tt = sav;
+        -: 1496:			    data = 0;
+        -: 1497:#endif /* !USE_GETPWNAM */
+    #####: 1498:			    if (sav)
+    #####: 1499:				s = tt + arglen;
+        -: 1500:			    else
+    #####: 1501:				s = tt;
+        -: 1502:			}
+        -: 1503:		    }
+    #####: 1504:		    break;
+    #####: 1505:		case 'g':
+        -: 1506:		    /* Given gid or group id... works like `u' */
+    #####: 1507:		    func = qualgid;
+        -: 1508:		    /* either the actual gid... */
+    #####: 1509:		    if (idigit(*s))
+    #####: 1510:			data = qgetnum(&s);
+        -: 1511:		    else {
+        -: 1512:			/* ...or a delimited group name. */
+        -: 1513:			char sav, *tt;
+        -: 1514:			int arglen;
+        -: 1515:
+    #####: 1516:			tt = get_strarg(s, &arglen);
+    #####: 1517:			if (!*tt) {
+    #####: 1518:			    zerr("missing delimiter for 'g' glob qualifier");
+    #####: 1519:			    data = 0;
+        -: 1520:			} else {
+        -: 1521:#ifdef USE_GETGRNAM
+        -: 1522:			    struct group *gr;
+    #####: 1523:			    sav = *tt;
+    #####: 1524:			    *tt = '\0';
+        -: 1525:
+    #####: 1526:			    if ((gr = getgrnam(s + arglen)))
+    #####: 1527:				data = gr->gr_gid;
+        -: 1528:			    else {
+    #####: 1529:				zerr("unknown group");
+    #####: 1530:				data = 0;
+        -: 1531:			    }
+    #####: 1532:			    *tt = sav;
+        -: 1533:#else /* !USE_GETGRNAM */
+        -: 1534:			    sav = *tt;
+        -: 1535:			    zerr("unknown group");
+        -: 1536:			    data = 0;
+        -: 1537:#endif /* !USE_GETGRNAM */
+    #####: 1538:			    if (sav)
+    #####: 1539:				s = tt + arglen;
+        -: 1540:			    else
+    #####: 1541:				s = tt;
+        -: 1542:			}
+        -: 1543:		    }
+    #####: 1544:		    break;
+    #####: 1545:		case 'f':
+        -: 1546:		    /* Match modes with chmod-spec. */
+    #####: 1547:		    func = qualmodeflags;
+    #####: 1548:		    data = qgetmodespec(&s);
+    #####: 1549:		    break;
+    #####: 1550:		case 'F':
+    #####: 1551:		    func = qualnonemptydir;
+    #####: 1552:		    break;
+    #####: 1553:		case 'M':
+        -: 1554:		    /* Mark directories with a / */
+    #####: 1555:		    if ((gf_markdirs = !(sense & 1)))
+    #####: 1556:			gf_follow = sense & 2;
+    #####: 1557:		    break;
+    #####: 1558:		case 'T':
+        -: 1559:		    /* Mark types in a `ls -F' type fashion */
+    #####: 1560:		    if ((gf_listtypes = !(sense & 1)))
+    #####: 1561:			gf_follow = sense & 2;
+    #####: 1562:		    break;
+        1: 1563:		case 'N':
+        -: 1564:		    /* Nullglob:  remove unmatched patterns. */
+        1: 1565:		    gf_nullglob = !(sense & 1);
+        1: 1566:		    break;
+    #####: 1567:		case 'D':
+        -: 1568:		    /* Glob dots: match leading dots implicitly */
+    #####: 1569:		    gf_noglobdots = sense & 1;
+    #####: 1570:		    break;
+    #####: 1571:		case 'n':
+        -: 1572:		    /* Numeric glob sort */
+    #####: 1573:		    gf_numsort = !(sense & 1);
+    #####: 1574:		    break;
+    #####: 1575:		case 'Y':
+        -: 1576:		{
+        -: 1577:		    /* Short circuit: limit number of matches */
+    #####: 1578:		    const char *s_saved = s;
+    #####: 1579:		    shortcircuit = !(sense & 1);
+    #####: 1580:		    if (shortcircuit) {
+        -: 1581:			/* Parse the argument. */
+    #####: 1582:			data = qgetnum(&s);
+    #####: 1583:			if ((shortcircuit = data) != data) {
+        -: 1584:			    /* Integer overflow */
+    #####: 1585:			    zerr("value too big: Y%s", s_saved);
+    #####: 1586:			    restore_globstate(saved);
+    #####: 1587:			    return;
+        -: 1588:			}
+        -: 1589:		    }
+    #####: 1590:		    break;
+        -: 1591:		}
+    #####: 1592:		case 'a':
+        -: 1593:		    /* Access time in given range */
+    #####: 1594:		    g_amc = 0;
+    #####: 1595:		    func = qualtime;
+    #####: 1596:		    goto getrange;
+    #####: 1597:		case 'm':
+        -: 1598:		    /* Modification time in given range */
+    #####: 1599:		    g_amc = 1;
+    #####: 1600:		    func = qualtime;
+    #####: 1601:		    goto getrange;
+    #####: 1602:		case 'c':
+        -: 1603:		    /* Inode creation time in given range */
+    #####: 1604:		    g_amc = 2;
+    #####: 1605:		    func = qualtime;
+    #####: 1606:		    goto getrange;
+    #####: 1607:		case 'L':
+        -: 1608:		    /* File size (Length) in given range */
+    #####: 1609:		    func = qualsize;
+    #####: 1610:		    g_amc = -1;
+        -: 1611:		    /* Get size multiplier */
+    #####: 1612:		    g_units = TT_BYTES;
+    #####: 1613:		    if (*s == 'p' || *s == 'P')
+    #####: 1614:			g_units = TT_POSIX_BLOCKS, ++s;
+    #####: 1615:		    else if (*s == 'k' || *s == 'K')
+    #####: 1616:			g_units = TT_KILOBYTES, ++s;
+    #####: 1617:		    else if (*s == 'm' || *s == 'M')
+    #####: 1618:			g_units = TT_MEGABYTES, ++s;
+        -: 1619:#if defined(ZSH_64_BIT_TYPE) || defined(LONG_IS_64_BIT)
+    #####: 1620:                    else if (*s == 'g' || *s == 'G')
+    #####: 1621:                        g_units = TT_GIGABYTES, ++s;
+    #####: 1622:                    else if (*s == 't' || *s == 'T')
+    #####: 1623:                        g_units = TT_TERABYTES, ++s;
+        -: 1624:#endif
+    #####: 1625:		  getrange:
+        -: 1626:		    /* Get time multiplier */
+    #####: 1627:		    if (g_amc >= 0) {
+    #####: 1628:			g_units = TT_DAYS;
+    #####: 1629:			if (*s == 'h')
+    #####: 1630:			    g_units = TT_HOURS, ++s;
+    #####: 1631:			else if (*s == 'm')
+    #####: 1632:			    g_units = TT_MINS, ++s;
+    #####: 1633:			else if (*s == 'w')
+    #####: 1634:			    g_units = TT_WEEKS, ++s;
+    #####: 1635:			else if (*s == 'M')
+    #####: 1636:			    g_units = TT_MONTHS, ++s;
+    #####: 1637:			else if (*s == 's')
+    #####: 1638:			    g_units = TT_SECONDS, ++s;
+    #####: 1639:			else if (*s == 'd')
+    #####: 1640:			    ++s;
+        -: 1641:		    }
+        -: 1642:		    /* See if it's greater than, equal to, or less than */
+    #####: 1643:		    if ((g_range = *s == '+' ? 1 : IS_DASH(*s) ? -1 : 0))
+    #####: 1644:			++s;
+    #####: 1645:		    data = qgetnum(&s);
+    #####: 1646:		    break;
+        -: 1647:
+    #####: 1648:		case 'o':
+        -: 1649:		case 'O':
+        -: 1650:		{
+        -: 1651:		    int t;
+        -: 1652:		    char *send;
+        -: 1653:
+    #####: 1654:		    if (gf_nsorts == MAX_SORTS) {
+    #####: 1655:			zerr("too many glob sort specifiers");
+    #####: 1656:			restore_globstate(saved);
+    #####: 1657:			return;
+        -: 1658:		    }
+        -: 1659:
+        -: 1660:		    /* usually just one character */
+    #####: 1661:		    send = s+1;
+    #####: 1662:		    switch (*s) {
+    #####: 1663:		    case 'n': t = GS_NAME; break;
+    #####: 1664:		    case 'L': t = GS_SIZE; break;
+    #####: 1665:		    case 'l': t = GS_LINKS; break;
+    #####: 1666:		    case 'a': t = GS_ATIME; break;
+    #####: 1667:		    case 'm': t = GS_MTIME; break;
+    #####: 1668:		    case 'c': t = GS_CTIME; break;
+    #####: 1669:		    case 'd': t = GS_DEPTH; break;
+    #####: 1670:		    case 'N': t = GS_NONE; break;
+    #####: 1671:		    case 'e':
+        -: 1672:		    case '+':
+        -: 1673:		    {
+    #####: 1674:			t = GS_EXEC;
+    #####: 1675:			if ((gf_sortlist[gf_nsorts].exec =
+    #####: 1676:			     glob_exec_string(&send)) == NULL)
+        -: 1677:			{
+    #####: 1678:			    restore_globstate(saved);
+    #####: 1679:			    return;
+        -: 1680:			}
+    #####: 1681:			break;
+        -: 1682:		    }
+    #####: 1683:		    default:
+    #####: 1684:			zerr("unknown sort specifier");
+    #####: 1685:			restore_globstate(saved);
+    #####: 1686:			return;
+        -: 1687:		    }
+    #####: 1688:		    if ((sense & 2) &&
+    #####: 1689:			(t & (GS_SIZE|GS_ATIME|GS_MTIME|GS_CTIME|GS_LINKS)))
+    #####: 1690:			t <<= GS_SHIFT; /* HERE: GS_EXEC? */
+    #####: 1691:		    if (t != GS_EXEC) {
+    #####: 1692:			if (gf_sorts & t) {
+    #####: 1693:			    zerr("doubled sort specifier");
+    #####: 1694:			    restore_globstate(saved);
+    #####: 1695:			    return;
+        -: 1696:			}
+        -: 1697:		    }
+    #####: 1698:		    gf_sorts |= t;
+    #####: 1699:		    gf_sortlist[gf_nsorts++].tp = t |
+    #####: 1700:			(((sense & 1) ^ (s[-1] == 'O')) ? GS_DESC : 0);
+    #####: 1701:		    s = send;
+    #####: 1702:		    break;
+        -: 1703:		}
+    #####: 1704:		case '+':
+        -: 1705:		case 'e':
+        -: 1706:		{
+        -: 1707:		    char *tt;
+        -: 1708:
+    #####: 1709:		    tt = glob_exec_string(&s);
+        -: 1710:
+    #####: 1711:		    if (tt == NULL) {
+    #####: 1712:			data = 0;
+        -: 1713:		    } else {
+    #####: 1714:			func = qualsheval;
+    #####: 1715:			sdata = tt;
+        -: 1716:		    }
+    #####: 1717:		    break;
+        -: 1718:		}
+    #####: 1719:		case '[':
+        -: 1720:		case Inbrack:
+        -: 1721:		{
+    #####: 1722:		    char *os = --s;
+        -: 1723:		    struct value v;
+        -: 1724:
+    #####: 1725:		    v.isarr = SCANPM_WANTVALS;
+    #####: 1726:		    v.pm = NULL;
+    #####: 1727:		    v.end = -1;
+    #####: 1728:		    v.flags = 0;
+    #####: 1729:		    if (getindex(&s, &v, 0) || s == os) {
+    #####: 1730:			zerr("invalid subscript");
+    #####: 1731:			restore_globstate(saved);
+    #####: 1732:			return;
+        -: 1733:		    }
+    #####: 1734:		    first = v.start;
+    #####: 1735:		    end = v.end;
+    #####: 1736:		    break;
+        -: 1737:		}
+    #####: 1738:		case 'P':
+        -: 1739:		{
+        -: 1740:		    char *tt;
+    #####: 1741:		    tt = glob_exec_string(&s);
+        -: 1742:
+    #####: 1743:		    if (tt != NULL)
+        -: 1744:		    {
+    #####: 1745:			LinkList *words = sense & 1 ? &gf_post_words : &gf_pre_words;
+    #####: 1746:			if (!*words)
+    #####: 1747:			    *words = newlinklist();
+    #####: 1748:			addlinknode(*words, tt);
+        -: 1749:		    }
+    #####: 1750:		    break;
+        -: 1751:		}
+    #####: 1752:		default:
+    #####: 1753:		    untokenize(--s);
+    #####: 1754:		    zerr("unknown file attribute: %c", *s);
+    #####: 1755:		    restore_globstate(saved);
+    #####: 1756:		    return;
+        -: 1757:		}
+        -: 1758:	    }
+        3: 1759:	    if (func) {
+        -: 1760:		/* Requested test is performed by function func */
+        2: 1761:		if (!qn)
+        2: 1762:		    qn = (struct qual *)hcalloc(sizeof *qn);
+        2: 1763:		if (ql)
+    #####: 1764:		    ql->next = qn;
+        2: 1765:		ql = qn;
+        2: 1766:		if (!newquals)
+        2: 1767:		    newquals = qo = qn;
+        2: 1768:		qn->func = func;
+        2: 1769:		qn->sense = sense;
+        2: 1770:		qn->data = data;
+        2: 1771:		qn->sdata = sdata;
+        2: 1772:		qn->range = g_range;
+        2: 1773:		qn->units = g_units;
+        2: 1774:		qn->amc = g_amc;
+        -: 1775:
+        2: 1776:		qn = NULL;
+        2: 1777:		qualct++;
+        -: 1778:	    }
+        3: 1779:	    if (errflag) {
+    #####: 1780:		restore_globstate(saved);
+    #####: 1781:		return;
+        -: 1782:	    }
+        -: 1783:	}
+        -: 1784:
+        3: 1785:	if (quals && newquals) {
+        -: 1786:	    /* Merge previous group of qualifiers with new set. */
+    #####: 1787:	    if (quals->or || newquals->or) {
+        -: 1788:		/* The hard case. */
+    #####: 1789:		struct qual *qorhead = NULL, *qortail = NULL;
+        -: 1790:		/*
+        -: 1791:		 * Distribute in the most trivial way, by creating
+        -: 1792:		 * all possible combinations of the two sets and chaining
+        -: 1793:		 * these into one long set of alternatives given
+        -: 1794:		 * by qorhead and qortail.
+        -: 1795:		 */
+    #####: 1796:		for (qn = newquals; qn; qn = qn->or) {
+    #####: 1797:		    for (qo = quals; qo; qo = qo->or) {
+        -: 1798:			struct qual *qfirst, *qlast;
+    #####: 1799:			int islast = !qn->or && !qo->or;
+        -: 1800:			/* Generate first set of qualifiers... */
+    #####: 1801:			if (islast) {
+        -: 1802:			    /* Last time round:  don't bother copying. */
+    #####: 1803:			    qfirst = qn;
+    #####: 1804:			    for (qlast = qfirst; qlast->next;
+    #####: 1805:				 qlast = qlast->next)
+        -: 1806:				;			    
+        -: 1807:			} else
+    #####: 1808:			    qfirst = dup_qual_list(qn, &qlast);
+        -: 1809:			/* ... link into new `or' chain ... */
+    #####: 1810:			if (!qorhead)
+    #####: 1811:			    qorhead = qfirst;
+    #####: 1812:			if (qortail)
+    #####: 1813:			    qortail->or = qfirst;
+    #####: 1814:			qortail = qfirst;
+        -: 1815:			/* ... and concatenate second set. */
+    #####: 1816:			qlast->next = islast ? qo : dup_qual_list(qo, NULL);
+        -: 1817:		    }
+        -: 1818:		}
+    #####: 1819:		quals = qorhead;
+        -: 1820:	    } else {
+        -: 1821:		/*
+        -: 1822:		 * Easy: we can just chain the qualifiers together.
+        -: 1823:		 * This is an optimisation; the code above will work, too.
+        -: 1824:		 * We retain the original left to right ordering --- remember
+        -: 1825:		 * we are searching for sets of qualifiers from the right.
+        -: 1826:		 */
+    #####: 1827:		qn = newquals;
+    #####: 1828:		for ( ; newquals->next; newquals = newquals->next)
+        -: 1829:		    ;
+    #####: 1830:		newquals->next = quals;
+    #####: 1831:		quals = qn;
+        -: 1832:	    }
+        3: 1833:	} else if (newquals)
+        2: 1834:	    quals = newquals;
+        -: 1835:    }
+        4: 1836:    q = parsepat(str);
+        4: 1837:    if (!q || errflag) {	/* if parsing failed */
+    #####: 1838:	restore_globstate(saved);
+    #####: 1839:	if (unset(BADPATTERN)) {
+    #####: 1840:	    if (!nountok)
+    #####: 1841:		untokenize(ostr);
+    #####: 1842:	    insertlinknode(list, node, ostr);
+    #####: 1843:	    return;
+        -: 1844:	}
+    #####: 1845:	errflag &= ~ERRFLAG_ERROR;
+    #####: 1846:	zerr("bad pattern: %s", ostr);
+    #####: 1847:	return;
+        -: 1848:    }
+        4: 1849:    if (!gf_nsorts) {
+        4: 1850:	gf_sortlist[0].tp = gf_sorts = (shortcircuit ? GS_NONE : GS_NAME);
+        4: 1851:	gf_nsorts = 1;
+        -: 1852:    }
+        -: 1853:    /* Initialise receptacle for matched files, *
+        -: 1854:     * expanded by insert() where necessary.    */
+        4: 1855:    matchptr = matchbuf = (Gmatch)zalloc((matchsz = 16) *
+        -: 1856:					 sizeof(struct gmatch));
+        4: 1857:    matchct = 0;
+        4: 1858:    pattrystart();
+        -: 1859:
+        -: 1860:    /* The actual processing takes place here: matches go into  *
+        -: 1861:     * matchbuf.  This is the only top-level call to scanner(). */
+        4: 1862:    scanner(q, shortcircuit);
+        -: 1863:
+        -: 1864:    /* Deal with failures to match depending on options */
+        4: 1865:    if (matchct)
+        2: 1866:	badcshglob |= 2;	/* at least one cmd. line expansion O.K. */
+        2: 1867:    else if (!gf_nullglob) {
+        1: 1868:	if (isset(CSHNULLGLOB)) {
+    #####: 1869:	    badcshglob |= 1;	/* at least one cmd. line expansion failed */
+        1: 1870:	} else if (isset(NOMATCH)) {
+    #####: 1871:	    zerr("no matches found: %s", ostr);
+    #####: 1872:	    zfree(matchbuf, 0);
+    #####: 1873:	    restore_globstate(saved);
+    #####: 1874:	    return;
+        -: 1875:	} else {
+        -: 1876:	    /* treat as an ordinary string */
+        1: 1877:	    untokenize(matchptr->name = dupstring(ostr));
+        1: 1878:	    matchptr++;
+        1: 1879:	    matchct = 1;
+        -: 1880:	}
+        -: 1881:    }
+        -: 1882:
+        4: 1883:    if (!(gf_sortlist[0].tp & GS_NONE)) {
+        -: 1884:	/*
+        -: 1885:	 * Get the strings to use for sorting by executing
+        -: 1886:	 * the code chunk.  We allow more than one of these.
+        -: 1887:	 */
+        4: 1888:	int nexecs = 0;
+        -: 1889:	struct globsort *sortp;
+        4: 1890:	struct globsort *lastsortp = gf_sortlist + gf_nsorts;
+        -: 1891:	Gmatch gmptr;
+        -: 1892:
+        -: 1893:	/* First find out if there are any GS_EXECs, counting them. */
+        8: 1894:	for (sortp = gf_sortlist; sortp < lastsortp; sortp++)
+        -: 1895:	{
+        4: 1896:	    if (sortp->tp & GS_EXEC)
+    #####: 1897:		nexecs++;
+        -: 1898:	}
+        -: 1899:
+        4: 1900:	if (nexecs) {
+        -: 1901:	    Gmatch tmpptr;
+    #####: 1902:	    int iexec = 0;
+        -: 1903:
+        -: 1904:	    /* Yes; allocate enough space for strings for each */
+    #####: 1905:	    for (tmpptr = matchbuf; tmpptr < matchptr; tmpptr++)
+    #####: 1906:		tmpptr->sortstrs = (char **)zhalloc(nexecs*sizeof(char*));
+        -: 1907:
+        -: 1908:	    /* Loop over each one, incrementing iexec */
+    #####: 1909:	    for (sortp = gf_sortlist; sortp < lastsortp; sortp++)
+        -: 1910:	    {
+        -: 1911:		/* Ignore unless this is a GS_EXEC */
+    #####: 1912:		if (sortp->tp & GS_EXEC) {
+        -: 1913:		    Eprog prog;
+        -: 1914:
+    #####: 1915:		    if ((prog = parse_string(sortp->exec, 0))) {
+    #####: 1916:			int ef = errflag, lv = lastval;
+        -: 1917:
+        -: 1918:			/* Parsed OK, execute for each name */
+    #####: 1919:			for (tmpptr = matchbuf; tmpptr < matchptr; tmpptr++) {
+    #####: 1920:			    setsparam("REPLY", ztrdup(tmpptr->name));
+    #####: 1921:			    execode(prog, 1, 0, "globsort");
+    #####: 1922:			    if (!errflag)
+    #####: 1923:				tmpptr->sortstrs[iexec] =
+    #####: 1924:				    dupstring(getsparam("REPLY"));
+        -: 1925:			    else
+    #####: 1926:				tmpptr->sortstrs[iexec] = tmpptr->name;
+        -: 1927:			}
+        -: 1928:
+        -: 1929:			/* Retain any user interrupt error status */
+    #####: 1930:			errflag = ef | (errflag & ERRFLAG_INT);
+    #####: 1931:			lastval = lv;
+        -: 1932:		    } else {
+        -: 1933:			/* Failed, let's be safe */
+    #####: 1934:			for (tmpptr = matchbuf; tmpptr < matchptr; tmpptr++)
+    #####: 1935:			    tmpptr->sortstrs[iexec] = tmpptr->name;
+        -: 1936:		    }
+        -: 1937:
+    #####: 1938:		    iexec++;
+        -: 1939:		}
+        -: 1940:	    }
+        -: 1941:	}
+        -: 1942:
+        -: 1943:	/*
+        -: 1944:	 * Where necessary, create unmetafied version of names
+        -: 1945:	 * for comparison.  If no Meta characters just point
+        -: 1946:	 * to original string.  All on heap.
+        -: 1947:	 */
+       48: 1948:	for (gmptr = matchbuf; gmptr < matchptr; gmptr++)
+        -: 1949:	{
+       44: 1950:	    if (strchr(gmptr->name, Meta))
+        -: 1951:	    {
+        -: 1952:		int dummy;
+    #####: 1953:		gmptr->uname = dupstring(gmptr->name);
+    #####: 1954:		unmetafy(gmptr->uname, &dummy);
+        -: 1955:	    } else {
+       44: 1956:		gmptr->uname = gmptr->name;
+        -: 1957:	    }
+        -: 1958:	}
+        -: 1959:
+        -: 1960:	/* Sort arguments in to lexical (and possibly numeric) order. *
+        -: 1961:	 * This is reversed to facilitate insertion into the list.    */
+        4: 1962:	qsort((void *) & matchbuf[0], matchct, sizeof(struct gmatch),
+        -: 1963:	      (int (*) _((const void *, const void *)))gmatchcmp);
+        -: 1964:    }
+        -: 1965:
+        4: 1966:    if (first < 0) {
+    #####: 1967:	first += matchct;
+    #####: 1968:	if (first < 0)
+    #####: 1969:	    first = 0;
+        -: 1970:    }
+        4: 1971:    if (end < 0)
+        4: 1972:	end += matchct + 1;
+    #####: 1973:    else if (end > matchct)
+    #####: 1974:	end = matchct;
+        4: 1975:    if ((end -= first) > 0) {
+        3: 1976:	if (gf_sortlist[0].tp & GS_NONE) {
+        -: 1977:	    /* Match list was never reversed, so insert back to front. */
+    #####: 1978:	    matchptr = matchbuf + matchct - first - 1;
+    #####: 1979:	    while (end-- > 0) {
+        -: 1980:		/* insert matches in the arg list */
+    #####: 1981:		insert_glob_match(list, node, matchptr->name);
+    #####: 1982:		matchptr--;
+        -: 1983:	    }
+        -: 1984:	} else {
+        3: 1985:	    matchptr = matchbuf + matchct - first - end;
+       50: 1986:	    while (end-- > 0) {
+        -: 1987:		/* insert matches in the arg list */
+       44: 1988:		insert_glob_match(list, node, matchptr->name);
+       44: 1989:		matchptr++;
+        -: 1990:	    }
+        -: 1991:	}
+        1: 1992:    } else if (!badcshglob && !isset(NOMATCH) && matchct == 1) {
+    #####: 1993:	insert_glob_match(list, node, (--matchptr)->name);
+        -: 1994:    }
+        4: 1995:    zfree(matchbuf, 0);
+        -: 1996:
+        4: 1997:    restore_globstate(saved);
+        -: 1998:}
+        -: 1999:
+        -: 2000:/* Return the trailing character for marking file types */
+        -: 2001:
+        -: 2002:/**/
+        -: 2003:mod_export char
+    #####: 2004:file_type(mode_t filemode)
+        -: 2005:{
+    #####: 2006:    if(S_ISBLK(filemode))
+    #####: 2007:	return '#';
+    #####: 2008:    else if(S_ISCHR(filemode))
+    #####: 2009:	return '%';
+    #####: 2010:    else if(S_ISDIR(filemode))
+    #####: 2011:	return '/';
+    #####: 2012:    else if(S_ISFIFO(filemode))
+    #####: 2013:	return '|';
+    #####: 2014:    else if(S_ISLNK(filemode))
+    #####: 2015:	return '@';
+    #####: 2016:    else if(S_ISREG(filemode))
+    #####: 2017:	return (filemode & S_IXUGO) ? '*' : ' ';
+    #####: 2018:    else if(S_ISSOCK(filemode))
+    #####: 2019:	return '=';
+        -: 2020:    else
+    #####: 2021:	return '?';
+        -: 2022:}
+        -: 2023:
+        -: 2024:/* check to see if str is eligible for brace expansion */
+        -: 2025:
+        -: 2026:/**/
+        -: 2027:mod_export int
+    15248: 2028:hasbraces(char *str)
+        -: 2029:{
+        -: 2030:    char *lbr, *mbr, *comma;
+        -: 2031:
+    15248: 2032:    if (isset(BRACECCL)) {
+        -: 2033:	/* In this case, any properly formed brace expression  *
+        -: 2034:	 * will match and expand to the characters in between. */
+        -: 2035:	int bc, c;
+        -: 2036:
+    #####: 2037:	for (bc = 0; (c = *str); ++str)
+    #####: 2038:	    if (c == Inbrace) {
+    #####: 2039:		if (!bc && str[1] == Outbrace)
+    #####: 2040:		    *str++ = '{', *str = '}';
+        -: 2041:		else
+    #####: 2042:		    bc++;
+    #####: 2043:	    } else if (c == Outbrace) {
+    #####: 2044:		if (!bc)
+    #####: 2045:		    *str = '}';
+    #####: 2046:		else if (!--bc)
+    #####: 2047:		    return 1;
+        -: 2048:	    }
+    #####: 2049:	return 0;
+        -: 2050:    }
+        -: 2051:    /* Otherwise we need to look for... */
+    15248: 2052:    lbr = mbr = comma = NULL;
+        -: 2053:    for (;;) {
+   240320: 2054:	switch (*str++) {
+    #####: 2055:	case Inbrace:
+    #####: 2056:	    if (!lbr) {
+    #####: 2057:		if (bracechardots(str-1, NULL, NULL))
+    #####: 2058:		    return 1;
+    #####: 2059:		lbr = str - 1;
+    #####: 2060:		if (IS_DASH(*str))
+    #####: 2061:		    str++;
+    #####: 2062:		while (idigit(*str))
+    #####: 2063:		    str++;
+    #####: 2064:		if (*str == '.' && str[1] == '.') {
+    #####: 2065:		    str++; str++;
+    #####: 2066:		    if (IS_DASH(*str))
+    #####: 2067:			str++;
+    #####: 2068:		    while (idigit(*str))
+    #####: 2069:			str++;
+    #####: 2070:		    if (*str == Outbrace &&
+    #####: 2071:			(idigit(lbr[1]) || idigit(str[-1])))
+    #####: 2072:			return 1;
+    #####: 2073:		    else if (*str == '.' && str[1] == '.') {
+    #####: 2074:			str++; str++;
+    #####: 2075:			if (IS_DASH(*str))
+    #####: 2076:			    str++;
+    #####: 2077:			while (idigit(*str))
+    #####: 2078:			    str++;
+    #####: 2079:			if (*str == Outbrace &&
+    #####: 2080:			    (idigit(lbr[1]) || idigit(str[-1])))
+    #####: 2081:			    return 1;
+        -: 2082:		    }
+        -: 2083:		}
+        -: 2084:	    } else {
+    #####: 2085:		char *s = --str;
+        -: 2086:
+    #####: 2087:		if (skipparens(Inbrace, Outbrace, &str)) {
+    #####: 2088:		    *lbr = *s = '{';
+    #####: 2089:		    if (comma)
+    #####: 2090:			str = comma;
+    #####: 2091:		    if (mbr && mbr < str)
+    #####: 2092:			str = mbr;
+    #####: 2093:		    lbr = mbr = comma = NULL;
+    #####: 2094:		} else if (!mbr)
+    #####: 2095:		    mbr = s;
+        -: 2096:	    }
+    #####: 2097:	    break;
+    #####: 2098:	case Outbrace:
+    #####: 2099:	    if (!lbr)
+    #####: 2100:		str[-1] = '}';
+    #####: 2101:	    else if (comma)
+    #####: 2102:		return 1;
+        -: 2103:	    else {
+    #####: 2104:		*lbr = '{';
+    #####: 2105:		str[-1] = '}';
+    #####: 2106:		if (mbr)
+    #####: 2107:		    str = mbr;
+    #####: 2108:		mbr = lbr = NULL;
+        -: 2109:	    }
+    #####: 2110:	    break;
+    #####: 2111:	case Comma:
+    #####: 2112:	    if (!lbr)
+    #####: 2113:		str[-1] = ',';
+    #####: 2114:	    else if (!comma)
+    #####: 2115:		comma = str - 1;
+    #####: 2116:	    break;
+    15248: 2117:	case '\0':
+    15248: 2118:	    if (lbr)
+    #####: 2119:		*lbr = '{';
+    15248: 2120:	    if (!mbr && !comma)
+    15248: 2121:		return 0;
+    #####: 2122:	    if (comma)
+    #####: 2123:		str = comma;
+    #####: 2124:	    if (mbr && mbr < str)
+    #####: 2125:		str = mbr;
+    #####: 2126:	    lbr = mbr = comma = NULL;
+    #####: 2127:	    break;
+        -: 2128:	}
+        -: 2129:    }
+        -: 2130:}
+        -: 2131:
+        -: 2132:/* expand stuff like >>*.c */
+        -: 2133:
+        -: 2134:/**/
+        -: 2135:int
+       40: 2136:xpandredir(struct redir *fn, LinkList redirtab)
+        -: 2137:{
+        -: 2138:    char *nam;
+        -: 2139:    struct redir *ff;
+       40: 2140:    int ret = 0;
+        -: 2141:    local_list1(fake);
+        -: 2142:
+        -: 2143:    /* Stick the name in a list... */
+       40: 2144:    init_list1(fake, fn->name);
+        -: 2145:    /* ...which undergoes all the usual shell expansions */
+       40: 2146:    prefork(&fake, isset(MULTIOS) ? 0 : PREFORK_SINGLE, NULL);
+        -: 2147:    /* Globbing is only done for multios. */
+       40: 2148:    if (!errflag && isset(MULTIOS))
+       40: 2149:	globlist(&fake, 0);
+       40: 2150:    if (errflag)
+    #####: 2151:	return 0;
+       80: 2152:    if (nonempty(&fake) && !nextnode(firstnode(&fake))) {
+        -: 2153:	/* Just one match, the usual case. */
+       40: 2154:	char *s = peekfirst(&fake);
+       40: 2155:	fn->name = s;
+       40: 2156:	untokenize(s);
+       40: 2157:	if (fn->type == REDIR_MERGEIN || fn->type == REDIR_MERGEOUT) {
+        1: 2158:	    if (IS_DASH(s[0]) && !s[1])
+    #####: 2159:		fn->type = REDIR_CLOSE;
+        1: 2160:	    else if (s[0] == 'p' && !s[1])
+    #####: 2161:		fn->fd2 = -2;
+        -: 2162:	    else {
+        3: 2163:		while (idigit(*s))
+        1: 2164:		    s++;
+        1: 2165:		if (!*s && s > fn->name)
+        1: 2166:		    fn->fd2 = zstrtol(fn->name, NULL, 10);
+    #####: 2167:		else if (fn->type == REDIR_MERGEIN)
+    #####: 2168:		    zerr("file number expected");
+        -: 2169:		else
+    #####: 2170:		    fn->type = REDIR_ERRWRITE;
+        -: 2171:	    }
+        -: 2172:	}
+    #####: 2173:    } else if (fn->type == REDIR_MERGEIN)
+    #####: 2174:	zerr("file number expected");
+        -: 2175:    else {
+    #####: 2176:	if (fn->type == REDIR_MERGEOUT)
+    #####: 2177:	    fn->type = REDIR_ERRWRITE;
+    #####: 2178:	while ((nam = (char *)ugetnode(&fake))) {
+        -: 2179:	    /* Loop over matches, duplicating the *
+        -: 2180:	     * redirection for each file found.   */
+    #####: 2181:	    ff = (struct redir *) zhalloc(sizeof *ff);
+    #####: 2182:	    *ff = *fn;
+    #####: 2183:	    ff->name = nam;
+    #####: 2184:	    addlinknode(redirtab, ff);
+    #####: 2185:	    ret = 1;
+        -: 2186:	}
+        -: 2187:    }
+       40: 2188:    return ret;
+        -: 2189:}
+        -: 2190:
+        -: 2191:/*
+        -: 2192: * Check for a brace expansion of the form {<char>..<char>}.
+        -: 2193: * On input str must be positioned at an Inbrace, but the sequence
+        -: 2194: * of characters beyond that has not necessarily been checked.
+        -: 2195: * Return 1 if found else 0.
+        -: 2196: *
+        -: 2197: * The other parameters are optionaland if the function returns 1 are
+        -: 2198: * used to return:
+        -: 2199: * - *c1p: the first character in the expansion.
+        -: 2200: * - *c2p: the final character in the expansion.
+        -: 2201: */
+        -: 2202:
+        -: 2203:/**/
+        -: 2204:static int
+    #####: 2205:bracechardots(char *str, convchar_t *c1p, convchar_t *c2p)
+        -: 2206:{
+        -: 2207:    convchar_t cstart, cend;
+    #####: 2208:    char *pnext = str + 1, *pconv, convstr[2];
+    #####: 2209:    if (itok(*pnext)) {
+    #####: 2210:	if (*pnext == Inbrace)
+    #####: 2211:	    return 0;
+    #####: 2212:	convstr[0] = ztokens[*pnext - Pound];
+    #####: 2213:	convstr[1] = '\0';
+    #####: 2214:	pconv = convstr;
+        -: 2215:    } else
+    #####: 2216:	pconv = pnext;
+    #####: 2217:    MB_METACHARINIT();
+    #####: 2218:    pnext += MB_METACHARLENCONV(pconv, &cstart);
+    #####: 2219:    if (
+        -: 2220:#ifdef MULTIBYTE_SUPPORT
+    #####: 2221:	cstart == WEOF ||
+        -: 2222:#else
+        -: 2223:	!cstart ||
+        -: 2224:#endif
+    #####: 2225:	pnext[0] != '.' || pnext[1] != '.')
+    #####: 2226:	return 0;
+    #####: 2227:    pnext += 2;
+    #####: 2228:    if (!*pnext)
+    #####: 2229:	return 0;
+    #####: 2230:    if (itok(*pnext)) {
+    #####: 2231:	if (*pnext == Inbrace)
+    #####: 2232:	    return 0;
+    #####: 2233:	convstr[0] = ztokens[*pnext - Pound];
+    #####: 2234:	convstr[1] = '\0';
+    #####: 2235:	pconv = convstr;
+        -: 2236:    } else
+    #####: 2237:	pconv = pnext;
+    #####: 2238:    MB_METACHARINIT();
+    #####: 2239:    pnext += MB_METACHARLENCONV(pconv, &cend);
+    #####: 2240:    if (
+        -: 2241:#ifdef MULTIBYTE_SUPPORT
+    #####: 2242:	cend == WEOF ||
+        -: 2243:#else
+        -: 2244:	!cend ||
+        -: 2245:#endif
+    #####: 2246:	*pnext != Outbrace)
+    #####: 2247:	return 0;
+    #####: 2248:    if (c1p)
+    #####: 2249:	*c1p = cstart;
+    #####: 2250:    if (c2p)
+    #####: 2251:	*c2p = cend;
+    #####: 2252:    return 1;
+        -: 2253:}
+        -: 2254:
+        -: 2255:/* brace expansion */
+        -: 2256:
+        -: 2257:/**/
+        -: 2258:mod_export void
+    #####: 2259:xpandbraces(LinkList list, LinkNode *np)
+        -: 2260:{
+    #####: 2261:    LinkNode node = (*np), last = prevnode(node);
+    #####: 2262:    char *str = (char *)getdata(node), *str3 = str, *str2;
+        -: 2263:    int prev, bc, comma, dotdot;
+        -: 2264:
+    #####: 2265:    for (; *str != Inbrace; str++);
+        -: 2266:    /* First, match up braces and see what we have. */
+    #####: 2267:    for (str2 = str, bc = comma = dotdot = 0; *str2; ++str2)
+    #####: 2268:	if (*str2 == Inbrace)
+    #####: 2269:	    ++bc;
+    #####: 2270:	else if (*str2 == Outbrace) {
+    #####: 2271:	    if (--bc == 0)
+    #####: 2272:		break;
+    #####: 2273:	} else if (bc == 1) {
+    #####: 2274:	    if (*str2 == Comma)
+    #####: 2275:		++comma;	/* we have {foo,bar} */
+    #####: 2276:	    else if (*str2 == '.' && str2[1] == '.') {
+    #####: 2277:		dotdot++;	/* we have {num1..num2} */
+    #####: 2278:		++str2;
+        -: 2279:	    }
+        -: 2280:	}
+        -: 2281:    DPUTS(bc, "BUG: unmatched brace in xpandbraces()");
+    #####: 2282:    if (!comma && dotdot) {
+        -: 2283:	/* Expand range like 0..10 numerically: comma or recursive
+        -: 2284:	   brace expansion take precedence. */
+    #####: 2285:	char *dots, *p, *dots2 = NULL;
+    #####: 2286:	LinkNode olast = last;
+        -: 2287:	/* Get the first number of the range */
+        -: 2288:	zlong rstart, rend;
+    #####: 2289:	int err = 0, rev = 0, rincr = 1;
+        -: 2290:	int wid1, wid2, wid3, strp;
+        -: 2291:	convchar_t cstart, cend;
+        -: 2292:
+    #####: 2293:	if (bracechardots(str, &cstart, &cend)) {
+        -: 2294:	    int lenalloc;
+        -: 2295:	    /*
+        -: 2296:	     * This is a character range.
+        -: 2297:	     */
+    #####: 2298:	    if (cend < cstart) {
+    #####: 2299:		convchar_t ctmp = cend;
+    #####: 2300:		cend = cstart;
+    #####: 2301:		cstart = ctmp;
+    #####: 2302:		rev = 1;
+        -: 2303:	    }
+    #####: 2304:	    uremnode(list, node);
+    #####: 2305:	    strp = str - str3;
+    #####: 2306:	    lenalloc = strp + strlen(str2+1) + 1;
+        -: 2307:	    do {
+        -: 2308:#ifdef MULTIBYTE_SUPPORT
+        -: 2309:		char *ncptr;
+        -: 2310:		int nclen;
+    #####: 2311:		mb_charinit();
+    #####: 2312:		ncptr = wcs_nicechar(cend, NULL, NULL);
+    #####: 2313:		nclen = strlen(ncptr);
+    #####: 2314:		p = zhalloc(lenalloc + nclen);
+    #####: 2315:		memcpy(p, str3, strp);
+    #####: 2316:		memcpy(p + strp, ncptr, nclen);
+    #####: 2317:		strcpy(p + strp + nclen, str2 + 1);
+        -: 2318:#else
+        -: 2319:		p = zhalloc(lenalloc + 1);
+        -: 2320:		memcpy(p, str3, strp);
+        -: 2321:		sprintf(p + strp, "%c", cend);
+        -: 2322:		strcat(p + strp, str2 + 1);
+        -: 2323:#endif
+    #####: 2324:		insertlinknode(list, last, p);
+    #####: 2325:		if (rev)	/* decreasing:  add in reverse order. */
+    #####: 2326:		    last = nextnode(last);
+    #####: 2327:	    } while (cend-- > cstart);
+    #####: 2328:	    *np = nextnode(olast);
+    #####: 2329:	    return;
+        -: 2330:	}
+        -: 2331:
+        -: 2332:	/* Get the first number of the range */
+    #####: 2333:	rstart = zstrtol(str+1,&dots,10);
+    #####: 2334:	rend = 0;
+    #####: 2335:	wid1 = (dots - str) - 1;
+    #####: 2336:	wid2 = (str2 - dots) - 2;
+    #####: 2337:	wid3 = 0;
+    #####: 2338:	strp = str - str3;
+        -: 2339:
+    #####: 2340:	if (dots == str + 1 || *dots != '.' || dots[1] != '.')
+    #####: 2341:	    err++;
+        -: 2342:	else {
+        -: 2343:	    /* Get the last number of the range */
+    #####: 2344:	    rend = zstrtol(dots+2,&p,10);
+    #####: 2345:	    if (p == dots+2)
+    #####: 2346:		err++;
+        -: 2347:	    /* check for {num1..num2..incr} */
+    #####: 2348:	    if (p != str2) {
+    #####: 2349:		wid2 = (p - dots) - 2;
+    #####: 2350:		dots2 = p;
+    #####: 2351:		if (dotdot == 2 && *p == '.' && p[1] == '.') {
+    #####: 2352:		    rincr = zstrtol(p+2, &p, 10);
+    #####: 2353:		    wid3 = p - dots2 - 2;
+    #####: 2354:		    if (p != str2 || !rincr)
+    #####: 2355:			err++;
+        -: 2356:		} else
+    #####: 2357:		    err++;
+        -: 2358:	    }
+        -: 2359:	}
+    #####: 2360:	if (!err) {
+        -: 2361:	    /* If either no. begins with a zero, pad the output with   *
+        -: 2362:	     * zeroes. Otherwise, set min width to 0 to suppress them.
+        -: 2363:	     * str+1 is the first number in the range, dots+2 the last,
+        -: 2364:	     * and dots2+2 is the increment if that's given. */
+        -: 2365:	    /* TODO: sorry about this */
+    #####: 2366:	    int minw = (str[1] == '0' ||
+    #####: 2367:			(IS_DASH(str[1]) && str[2] == '0'))
+        -: 2368:		       ? wid1
+    #####: 2369:		       : (dots[2] == '0' ||
+    #####: 2370:			  (IS_DASH(dots[2]) && dots[3] == '0'))
+        -: 2371:		       ? wid2
+    #####: 2372:		       : (dots2 && (dots2[2] == '0' ||
+    #####: 2373:				    (IS_DASH(dots2[2]) && dots2[3] == '0')))
+        -: 2374:		       ? wid3
+    #####: 2375:		       : 0;
+    #####: 2376:	    if (rincr < 0) {
+        -: 2377:		/* Handle negative increment */
+    #####: 2378:		rincr = -rincr;
+    #####: 2379:		rev = !rev;
+        -: 2380:	    }
+    #####: 2381:	    if (rstart > rend) {
+        -: 2382:		/* Handle decreasing ranges correctly. */
+    #####: 2383:		zlong rt = rend;
+    #####: 2384:		rend = rstart;
+    #####: 2385:		rstart = rt;
+    #####: 2386:		rev = !rev;
+    #####: 2387:	    } else if (rincr > 1) {
+        -: 2388:		/* when incr > 1, range is aligned to the highest number of str1,
+        -: 2389:		 * compensate for this so that it is aligned to the first number */
+    #####: 2390:		rend -= (rend - rstart) % rincr;
+        -: 2391:	    }
+    #####: 2392:	    uremnode(list, node);
+    #####: 2393:	    for (; rend >= rstart; rend -= rincr) {
+        -: 2394:		/* Node added in at end, so do highest first */
+    #####: 2395:		p = dupstring(str3);
+        -: 2396:#if defined(ZLONG_IS_LONG_LONG) && defined(PRINTF_HAS_LLD)
+        -: 2397:		sprintf(p + strp, "%0*lld", minw, rend);
+        -: 2398:#else
+    #####: 2399:		sprintf(p + strp, "%0*ld", minw, (long)rend);
+        -: 2400:#endif
+    #####: 2401:		strcat(p + strp, str2 + 1);
+    #####: 2402:		insertlinknode(list, last, p);
+    #####: 2403:		if (rev)	/* decreasing:  add in reverse order. */
+    #####: 2404:		    last = nextnode(last);
+        -: 2405:	    }
+    #####: 2406:	    *np = nextnode(olast);
+    #####: 2407:	    return;
+        -: 2408:	}
+        -: 2409:    }
+    #####: 2410:    if (!comma && isset(BRACECCL)) {	/* {a-mnop} */
+        -: 2411:	/* Here we expand each character to a separate node,      *
+        -: 2412:	 * but also ranges of characters like a-m.  ccl is a      *
+        -: 2413:	 * set of flags saying whether each character is present; *
+        -: 2414:	 * the final list is in lexical order.                    */
+        -: 2415:	char ccl[256], *p;
+        -: 2416:	unsigned char c1, c2;
+        -: 2417:	unsigned int len, pl;
+    #####: 2418:	int lastch = -1;
+        -: 2419:
+    #####: 2420:	uremnode(list, node);
+    #####: 2421:	memset(ccl, 0, sizeof(ccl) / sizeof(ccl[0]));
+    #####: 2422:	for (p = str + 1; p < str2;) {
+    #####: 2423:	    if (itok(c1 = *p++))
+    #####: 2424:		c1 = ztokens[c1 - STOUC(Pound)];
+    #####: 2425:	    if ((char) c1 == Meta)
+    #####: 2426:		c1 = 32 ^ *p++;
+    #####: 2427:	    if (itok(c2 = *p))
+    #####: 2428:		c2 = ztokens[c2 - STOUC(Pound)];
+    #####: 2429:	    if ((char) c2 == Meta)
+    #####: 2430:		c2 = 32 ^ p[1];
+    #####: 2431:	    if (IS_DASH((char)c1) && lastch >= 0 &&
+    #####: 2432:		p < str2 && lastch <= (int)c2) {
+    #####: 2433:		while (lastch < (int)c2)
+    #####: 2434:		    ccl[lastch++] = 1;
+    #####: 2435:		lastch = -1;
+        -: 2436:	    } else
+    #####: 2437:		ccl[lastch = c1] = 1;
+        -: 2438:	}
+    #####: 2439:	pl = str - str3;
+    #####: 2440:	len = pl + strlen(++str2) + 2;
+    #####: 2441:	for (p = ccl + 256; p-- > ccl;)
+    #####: 2442:	    if (*p) {
+    #####: 2443:		c1 = p - ccl;
+    #####: 2444:		if (imeta(c1)) {
+    #####: 2445:		    str = hcalloc(len + 1);
+    #####: 2446:		    str[pl] = Meta;
+    #####: 2447:		    str[pl+1] = c1 ^ 32;
+    #####: 2448:		    strcpy(str + pl + 2, str2);
+        -: 2449:		} else {
+    #####: 2450:		    str = hcalloc(len);
+    #####: 2451:		    str[pl] = c1;
+    #####: 2452:		    strcpy(str + pl + 1, str2);
+        -: 2453:		}
+    #####: 2454:		memcpy(str, str3, pl);
+    #####: 2455:		insertlinknode(list, last, str);
+        -: 2456:	    }
+    #####: 2457:	*np = nextnode(last);
+    #####: 2458:	return;
+        -: 2459:    }
+    #####: 2460:    prev = str++ - str3;
+    #####: 2461:    str2++;
+    #####: 2462:    uremnode(list, node);
+    #####: 2463:    node = last;
+        -: 2464:    /* Finally, normal comma expansion               *
+        -: 2465:     * str1{foo,bar}str2 -> str1foostr2 str1barstr2. *
+        -: 2466:     * Any number of intervening commas is allowed.  */
+    #####: 2467:    for (;;) {
+        -: 2468:	char *zz, *str4;
+        -: 2469:	int cnt;
+        -: 2470:
+    #####: 2471:	for (str4 = str, cnt = 0; cnt || (*str != Comma && *str !=
+    #####: 2472:					  Outbrace); str++) {
+    #####: 2473:	    if (*str == Inbrace)
+    #####: 2474:		cnt++;
+    #####: 2475:	    else if (*str == Outbrace)
+    #####: 2476:		cnt--;
+        -: 2477:	    DPUTS(!*str, "BUG: illegal brace expansion");
+        -: 2478:	}
+        -: 2479:	/* Concatenate the string before the braces (str3), the section *
+        -: 2480:	 * just found (str4) and the text after the braces (str2)       */
+    #####: 2481:	zz = (char *) hcalloc(prev + (str - str4) + strlen(str2) + 1);
+    #####: 2482:	ztrncpy(zz, str3, prev);
+    #####: 2483:	strncat(zz, str4, str - str4);
+    #####: 2484:	strcat(zz, str2);
+        -: 2485:	/* and add this text to the argument list. */
+    #####: 2486:	insertlinknode(list, node, zz);
+    #####: 2487:	incnode(node);
+    #####: 2488:	if (*str != Outbrace)
+    #####: 2489:	    str++;
+        -: 2490:	else
+    #####: 2491:	    break;
+        -: 2492:    }
+    #####: 2493:    *np = nextnode(last);
+        -: 2494:}
+        -: 2495:
+        -: 2496:/* check to see if a matches b (b is not a filename pattern) */
+        -: 2497:
+        -: 2498:/**/
+        -: 2499:int
+    #####: 2500:matchpat(char *a, char *b)
+        -: 2501:{
+        -: 2502:    Patprog p;
+        -: 2503:    int ret;
+        -: 2504:
+    #####: 2505:    queue_signals();	/* Protect PAT_STATIC */
+        -: 2506:
+    #####: 2507:    if (!(p = patcompile(b, PAT_STATIC, NULL))) {
+    #####: 2508:	zerr("bad pattern: %s", b);
+    #####: 2509:	ret = 0;
+        -: 2510:    } else
+    #####: 2511:      ret = pattry(p, a);
+        -: 2512:
+    #####: 2513:    unqueue_signals();
+        -: 2514:
+    #####: 2515:    return ret;
+        -: 2516:}
+        -: 2517:
+        -: 2518:/* do the ${foo%%bar}, ${foo#bar} stuff */
+        -: 2519:/* please do not laugh at this code. */
+        -: 2520:
+        -: 2521:/* Having found a match in getmatch, decide what part of string
+        -: 2522: * to return.  The matched part starts b characters into string imd->ustr
+        -: 2523: * and finishes e characters in: 0 <= b <= e <= imd->ulen on input
+        -: 2524: * (yes, empty matches should work).
+        -: 2525: *
+        -: 2526: * imd->flags is a set of the SUB_* matches defined in zsh.h from
+        -: 2527: * SUB_MATCH onwards; the lower parts are ignored.
+        -: 2528: *
+        -: 2529: * imd->replstr is the replacement string for a substitution
+        -: 2530: *
+        -: 2531: * imd->replstr is metafied and the values put in imd->repllist are metafied.
+        -: 2532: */
+        -: 2533:
+        -: 2534:/**/
+        -: 2535:static char *
+        3: 2536:get_match_ret(Imatchdata imd, int b, int e)
+        -: 2537:{
+        3: 2538:    char buf[80], *r, *p, *rr, *replstr = imd->replstr;
+        3: 2539:    int ll = 0, bl = 0, t = 0, add = 0, fl = imd->flags, i;
+        -: 2540:
+        -: 2541:    /* Account for b and e referring to unmetafied string */
+        4: 2542:    for (p = imd->ustr; p < imd->ustr + b; p++)
+        1: 2543:	if (imeta(*p))
+    #####: 2544:	    add++;
+        3: 2545:    b += add;
+       13: 2546:    for (; p < imd->ustr + e; p++)
+       10: 2547:	if (imeta(*p))
+    #####: 2548:	    add++;
+        3: 2549:    e += add;
+        -: 2550:
+        -: 2551:    /* Everything now refers to metafied lengths. */
+        3: 2552:    if (replstr || (fl & SUB_LIST)) {
+    #####: 2553:	if (fl & SUB_DOSUBST) {
+    #####: 2554:	    replstr = dupstring(replstr);
+    #####: 2555:	    singsub(&replstr);
+    #####: 2556:	    untokenize(replstr);
+        -: 2557:	}
+    #####: 2558:	if ((fl & (SUB_GLOBAL|SUB_LIST)) && imd->repllist) {
+        -: 2559:	    /* We are replacing the chunk, just add this to the list */
+    #####: 2560:	    Repldata rd = (Repldata)
+    #####: 2561:		((fl & SUB_LIST) ? zalloc(sizeof(*rd)) : zhalloc(sizeof(*rd)));
+    #####: 2562:	    rd->b = b;
+    #####: 2563:	    rd->e = e;
+    #####: 2564:	    rd->replstr = replstr;
+    #####: 2565:	    if (fl & SUB_LIST)
+    #####: 2566:		zaddlinknode(imd->repllist, rd);
+        -: 2567:	    else
+    #####: 2568:		addlinknode(imd->repllist, rd);
+    #####: 2569:	    return imd->mstr;
+        -: 2570:	}
+    #####: 2571:	ll += strlen(replstr);
+        -: 2572:    }
+        3: 2573:    if (fl & SUB_MATCH)			/* matched portion */
+    #####: 2574:	ll += 1 + (e - b);
+        3: 2575:    if (fl & SUB_REST)		/* unmatched portion */
+        3: 2576:	ll += 1 + (imd->mlen - (e - b));
+        3: 2577:    if (fl & SUB_BIND) {
+        -: 2578:	/* position of start of matched portion */
+    #####: 2579:	sprintf(buf, "%d ", MB_METASTRLEN2END(imd->mstr, 0, imd->mstr+b) + 1);
+    #####: 2580:	ll += (bl = strlen(buf));
+        -: 2581:    }
+        3: 2582:    if (fl & SUB_EIND) {
+        -: 2583:	/* position of end of matched portion */
+    #####: 2584:	sprintf(buf + bl, "%d ",
+    #####: 2585:		MB_METASTRLEN2END(imd->mstr, 0, imd->mstr+e) + 1);
+    #####: 2586:	ll += (bl = strlen(buf));
+        -: 2587:    }
+        3: 2588:    if (fl & SUB_LEN) {
+        -: 2589:	/* length of matched portion */
+    #####: 2590:	sprintf(buf + bl, "%d ", MB_METASTRLEN2END(imd->mstr+b, 0,
+        -: 2591:						   imd->mstr+e));
+    #####: 2592:	ll += (bl = strlen(buf));
+        -: 2593:    }
+        3: 2594:    if (bl)
+    #####: 2595:	buf[bl - 1] = '\0';
+        -: 2596:
+        3: 2597:    rr = r = (char *) hcalloc(ll);
+        -: 2598:
+        3: 2599:    if (fl & SUB_MATCH) {
+        -: 2600:	/* copy matched portion to new buffer */
+    #####: 2601:	for (i = b, p = imd->mstr + b; i < e; i++)
+    #####: 2602:	    *rr++ = *p++;
+    #####: 2603:	t = 1;
+        -: 2604:    }
+        3: 2605:    if (fl & SUB_REST) {
+        -: 2606:	/* Copy unmatched portion to buffer.  If both portions *
+        -: 2607:	 * requested, put a space in between (why?)            */
+        3: 2608:	if (t)
+    #####: 2609:	    *rr++ = ' ';
+        -: 2610:	/* there may be unmatched bits at both beginning and end of string */
+        4: 2611:	for (i = 0, p = imd->mstr; i < b; i++)
+        1: 2612:	    *rr++ = *p++;
+        3: 2613:	if (replstr)
+    #####: 2614:	    for (p = replstr; *p; )
+    #####: 2615:		*rr++ = *p++;
+        4: 2616:	for (i = e, p = imd->mstr + e; i < imd->mlen; i++)
+        1: 2617:	    *rr++ = *p++;
+        3: 2618:	t = 1;
+        -: 2619:    }
+        3: 2620:    *rr = '\0';
+        3: 2621:    if (bl) {
+        -: 2622:	/* if there was a buffer (with a numeric result), add it; *
+        -: 2623:	 * if there was other stuff too, stick in a space first.  */
+    #####: 2624:	if (t)
+    #####: 2625:	    *rr++ = ' ';
+    #####: 2626:	strcpy(rr, buf);
+        -: 2627:    }
+        3: 2628:    return r;
+        -: 2629:}
+        -: 2630:
+        -: 2631:static Patprog
+        3: 2632:compgetmatch(char *pat, int *flp, char **replstrp)
+        -: 2633:{
+        -: 2634:    Patprog p;
+        -: 2635:    /*
+        -: 2636:     * Flags to pattern compiler:  use static buffer since we only
+        -: 2637:     * have one pattern at a time; we will try the must-match test ourselves,
+        -: 2638:     * so tell the pattern compiler we are scanning.
+        -: 2639:     */
+        -: 2640:
+        -: 2641:    /* int patflags = PAT_STATIC|PAT_SCAN|PAT_NOANCH;*/
+        -: 2642:
+        -: 2643:    /* Unfortunately, PAT_STATIC doesn't work if we have a replstr with
+        -: 2644:     * something like ${x#...} in it which will be singsub()ed below because
+        -: 2645:     * that would overwrite the pattern buffer. */
+        -: 2646:
+        3: 2647:    int patflags = PAT_SCAN|PAT_NOANCH | (*replstrp ? 0 : PAT_STATIC);
+        -: 2648:
+        -: 2649:    /*
+        -: 2650:     * Search is anchored to the end of the string if we want to match
+        -: 2651:     * it all, or if we are matching at the end of the string and not
+        -: 2652:     * using substrings.
+        -: 2653:     */
+        3: 2654:    if ((*flp & SUB_ALL) || ((*flp & SUB_END) && !(*flp & SUB_SUBSTR)))
+        3: 2655:	patflags &= ~PAT_NOANCH;
+        3: 2656:    p = patcompile(pat, patflags, NULL);
+        3: 2657:    if (!p) {
+    #####: 2658:	zerr("bad pattern: %s", pat);
+    #####: 2659:	return NULL;
+        -: 2660:    }
+        3: 2661:    if (*replstrp) {
+    #####: 2662:	if (p->patnpar || (p->globend & GF_MATCHREF)) {
+        -: 2663:	    /*
+        -: 2664:	     * Either backreferences or match references, so we
+        -: 2665:	     * need to re-substitute replstr each time round.
+        -: 2666:	     */
+    #####: 2667:	    *flp |= SUB_DOSUBST;
+        -: 2668:	} else {
+    #####: 2669:	    singsub(replstrp);
+    #####: 2670:	    untokenize(*replstrp);
+        -: 2671:	}
+        -: 2672:    }
+        -: 2673:
+        3: 2674:    return p;
+        -: 2675:}
+        -: 2676:
+        -: 2677:/*
+        -: 2678: * This is called from paramsubst to get the match for ${foo#bar} etc.
+        -: 2679: * fl is a set of the SUB_* flags defined in zsh.h
+        -: 2680: * *sp points to the string we have to modify. The n'th match will be
+        -: 2681: * returned in *sp. The heap is used to get memory for the result string.
+        -: 2682: * replstr is the replacement string from a ${.../orig/repl}, in
+        -: 2683: * which case pat is the original.
+        -: 2684: *
+        -: 2685: * n is now ignored unless we are looking for a substring, in
+        -: 2686: * which case the n'th match from the start is counted such that
+        -: 2687: * there is no more than one match from each position.
+        -: 2688: */
+        -: 2689:
+        -: 2690:/**/
+        -: 2691:int
+        3: 2692:getmatch(char **sp, char *pat, int fl, int n, char *replstr)
+        -: 2693:{
+        -: 2694:    Patprog p;
+        -: 2695:
+        3: 2696:    if (!(p = compgetmatch(pat, &fl, &replstr)))
+    #####: 2697:	return 1;
+        -: 2698:
+        3: 2699:    return igetmatch(sp, p, fl, n, replstr, NULL);
+        -: 2700:}
+        -: 2701:
+        -: 2702:/*
+        -: 2703: * This is the corresponding function for array variables.
+        -: 2704: * Matching is done with the same pattern on each element.
+        -: 2705: */
+        -: 2706:
+        -: 2707:/**/
+        -: 2708:void
+    #####: 2709:getmatcharr(char ***ap, char *pat, int fl, int n, char *replstr)
+        -: 2710:{
+    #####: 2711:    char **arr = *ap, **pp;
+        -: 2712:    Patprog p;
+        -: 2713:
+    #####: 2714:    if (!(p = compgetmatch(pat, &fl, &replstr)))
+    #####: 2715:	return;
+        -: 2716:
+    #####: 2717:    *ap = pp = hcalloc(sizeof(char *) * (arrlen(arr) + 1));
+    #####: 2718:    while ((*pp = *arr++))
+    #####: 2719:	if (igetmatch(pp, p, fl, n, replstr, NULL))
+    #####: 2720:	    pp++;
+        -: 2721:}
+        -: 2722:
+        -: 2723:/*
+        -: 2724: * Match against str using pattern pp; return a list of
+        -: 2725: * Repldata matches in the linked list *repllistp; this is
+        -: 2726: * in permanent storage and to be freed by freematchlist()
+        -: 2727: */
+        -: 2728:
+        -: 2729:/**/
+        -: 2730:mod_export int
+    #####: 2731:getmatchlist(char *str, Patprog p, LinkList *repllistp)
+        -: 2732:{
+    #####: 2733:    char **sp = &str;
+        -: 2734:
+        -: 2735:    /*
+        -: 2736:     * We don't care if we have longest or shortest match, but SUB_LONG
+        -: 2737:     * is cheaper since the pattern code does that by default.
+        -: 2738:     * We need SUB_GLOBAL to get all matches.
+        -: 2739:     * We need SUB_SUBSTR to scan through for substrings.
+        -: 2740:     * We need SUB_LIST to activate the special handling of the list
+        -: 2741:     * passed in.
+        -: 2742:     */
+    #####: 2743:    return igetmatch(sp, p, SUB_LONG|SUB_GLOBAL|SUB_SUBSTR|SUB_LIST,
+        -: 2744:		     0, NULL, repllistp);
+        -: 2745:}
+        -: 2746:
+        -: 2747:static void
+    #####: 2748:freerepldata(void *ptr)
+        -: 2749:{
+    #####: 2750:    zfree(ptr, sizeof(struct repldata));
+    #####: 2751:}
+        -: 2752:
+        -: 2753:/**/
+        -: 2754:mod_export void
+    #####: 2755:freematchlist(LinkList repllist)
+        -: 2756:{
+    #####: 2757:    freelinklist(repllist, freerepldata);
+    #####: 2758:}
+        -: 2759:
+        -: 2760:/**/
+        -: 2761:static void
+       11: 2762:set_pat_start(Patprog p, int offs)
+        -: 2763:{
+        -: 2764:    /*
+        -: 2765:     * If we are messing around with the test string by advancing up
+        -: 2766:     * it from the start, we need to tell the pattern matcher that
+        -: 2767:     * a start-of-string assertion, i.e. (#s), should fail.  Hence
+        -: 2768:     * we test whether the offset of the real start of string from
+        -: 2769:     * the actual start, passed as offs, is zero.
+        -: 2770:     */
+       11: 2771:    if (offs)
+       10: 2772:	p->flags |= PAT_NOTSTART;
+        -: 2773:    else
+        1: 2774:	p->flags &= ~PAT_NOTSTART;
+       11: 2775:}
+        -: 2776:
+        -: 2777:/**/
+        -: 2778:static void
+    #####: 2779:set_pat_end(Patprog p, char null_me)
+        -: 2780:{
+        -: 2781:    /*
+        -: 2782:     * If we are messing around with the string by shortening it at the
+        -: 2783:     * tail, we need to tell the pattern matcher that an end-of-string
+        -: 2784:     * assertion, i.e. (#e), should fail.  Hence we test whether
+        -: 2785:     * the character null_me about to be zapped is or is not already a null.
+        -: 2786:     */
+    #####: 2787:    if (null_me)
+    #####: 2788:	p->flags |= PAT_NOTEND;
+        -: 2789:    else
+    #####: 2790:	p->flags &= ~PAT_NOTEND;
+    #####: 2791:}
+        -: 2792:
+        -: 2793:/**/
+        -: 2794:#ifdef MULTIBYTE_SUPPORT
+        -: 2795:
+        -: 2796:/*
+        -: 2797: * Increment *tp over character which may be multibyte.
+        -: 2798: * Return number of bytes.
+        -: 2799: * All unmetafied here.
+        -: 2800: */
+        -: 2801:
+        -: 2802:/**/
+       10: 2803:static int iincchar(char **tp, int left)
+        -: 2804:{
+       10: 2805:    char *t = *tp;
+       10: 2806:    int mbclen = mb_charlenconv(t, left, NULL);
+       10: 2807:    *tp = t + mbclen;
+        -: 2808:
+       10: 2809:    return mbclen;
+        -: 2810:}
+        -: 2811:
+        -: 2812:/**/
+        -: 2813:static int
+        3: 2814:igetmatch(char **sp, Patprog p, int fl, int n, char *replstr,
+        -: 2815:	  LinkList *repllistp)
+        -: 2816:{
+        3: 2817:    char *s = *sp, *t, *tmatch, *send;
+        -: 2818:    /*
+        -: 2819:     * Note that ioff counts (possibly multibyte) characters in the
+        -: 2820:     * character set (Meta's are not included), while l counts characters in
+        -: 2821:     * the metafied string.
+        -: 2822:     *
+        -: 2823:     * umlen is a counter for (unmetafied) byte lengths---neither characters
+        -: 2824:     * nor raw byte indices; this is simply an optimisation for allocation.
+        -: 2825:     * umltot is the full length of the string in this scheme.
+        -: 2826:     *
+        -: 2827:     * l is the raw string length, used together with any pointers into
+        -: 2828:     * the string (typically t).
+        -: 2829:     */
+        3: 2830:    int ioff, l = strlen(*sp), matched = 1, umltot = ztrlen(*sp);
+        -: 2831:    int umlen, nmatches;
+        -: 2832:    struct patstralloc patstralloc;
+        -: 2833:    struct imatchdata imd;
+        -: 2834:
+        3: 2835:    (void)patallocstr(p, s, l, umltot, 1, &patstralloc);
+        3: 2836:    s = patstralloc.alloced;
+        -: 2837:    DPUTS(!s, "forced patallocstr failed");
+        3: 2838:    send = s + umltot;
+        -: 2839:
+        3: 2840:    imd.mstr = *sp;
+        3: 2841:    imd.mlen = l;
+        3: 2842:    imd.ustr = s;
+        3: 2843:    imd.ulen = umltot;
+        3: 2844:    imd.flags = fl;
+        3: 2845:    imd.replstr = replstr;
+        3: 2846:    imd.repllist = NULL;
+        -: 2847:
+        -: 2848:    /* perform must-match test for complex closures */
+        3: 2849:    if (p->mustoff)
+        -: 2850:    {
+    #####: 2851:	char *muststr = (char *)p + p->mustoff;
+        -: 2852:
+    #####: 2853:	matched = 0;
+    #####: 2854:	if (p->patmlen <= umltot)
+        -: 2855:	{
+    #####: 2856:	    for (t = s; t <= send - p->patmlen; t++)
+        -: 2857:	    {
+    #####: 2858:		if (!memcmp(muststr, t, p->patmlen)) {
+    #####: 2859:		    matched = 1;
+    #####: 2860:		    break;
+        -: 2861:		}
+        -: 2862:	    }
+        -: 2863:	}
+        -: 2864:    }
+        -: 2865:
+        -: 2866:    /* in case we used the prog before... */
+        3: 2867:    p->flags &= ~(PAT_NOTSTART|PAT_NOTEND);
+        -: 2868:
+        3: 2869:    if (fl & SUB_ALL) {
+        2: 2870:	int i = matched && pattrylen(p, s, umltot, 0, &patstralloc, 0);
+        2: 2871:	if (!i) {
+        -: 2872:	    /* Perform under no-match conditions */
+        1: 2873:	    umltot = 0;
+        1: 2874:	    imd.replstr = NULL;
+        -: 2875:	}
+        2: 2876:	*sp = get_match_ret(&imd, 0, umltot);
+        2: 2877:	if (! **sp && (((fl & SUB_MATCH) && !i) || ((fl & SUB_REST) && i)))
+        1: 2878:	    return 0;
+        1: 2879:	return 1;
+        -: 2880:    }
+        1: 2881:    if (matched) {
+        -: 2882:	/*
+        -: 2883:	 * The default behaviour is to match at the start; this
+        -: 2884:	 * is modified by SUB_END and SUB_SUBSTR.  SUB_END matches
+        -: 2885:	 * at the end of the string instead of the start.  SUB_SUBSTR
+        -: 2886:	 * without SUB_END matches substrings searching from the start;
+        -: 2887:	 * with SUB_END it matches substrings searching from the end.
+        -: 2888:	 *
+        -: 2889:	 * The possibilities are further modified by whether we want the
+        -: 2890:	 * longest (SUB_LONG) or shortest possible match.
+        -: 2891:	 *
+        -: 2892:	 * SUB_START is only used in the case where we are also
+        -: 2893:	 * forcing a match at the end (SUB_END with no SUB_SUBSTR,
+        -: 2894:	 * with or without SUB_LONG), to indicate we should match
+        -: 2895:	 * the entire string.
+        -: 2896:	 */
+        1: 2897:	switch (fl & (SUB_END|SUB_LONG|SUB_SUBSTR)) {
+    #####: 2898:	case 0:
+        -: 2899:	case SUB_LONG:
+        -: 2900:	    /*
+        -: 2901:	     * Largest/smallest possible match at head of string.
+        -: 2902:	     * First get the longest match...
+        -: 2903:	     */
+    #####: 2904:	    if (pattrylen(p, s, umltot, 0, &patstralloc, 0)) {
+        -: 2905:		/* patmatchlen returns unmetafied length in this case */
+    #####: 2906:	        int mlen = patmatchlen();
+    #####: 2907:		if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+    #####: 2908:		    send = s + mlen;
+        -: 2909:		    /*
+        -: 2910:		     * ... now we know whether it's worth looking for the
+        -: 2911:		     * shortest, which we do by brute force.
+        -: 2912:		     */
+    #####: 2913:		    mb_charinit();
+    #####: 2914:		    for (t = s, umlen = 0; t < send; ) {
+    #####: 2915:			set_pat_end(p, *t);
+    #####: 2916:			if (pattrylen(p, s, umlen, 0, &patstralloc, 0)) {
+    #####: 2917:			    mlen = patmatchlen();
+    #####: 2918:			    break;
+        -: 2919:			}
+    #####: 2920:			umlen += iincchar(&t, send - t);
+        -: 2921:		    }
+        -: 2922:		}
+    #####: 2923:		*sp = get_match_ret(&imd, 0, mlen);
+    #####: 2924:		return 1;
+        -: 2925:	    }
+    #####: 2926:	    break;
+        -: 2927:
+        1: 2928:	case SUB_END:
+        -: 2929:	    /*
+        -: 2930:	     * Smallest possible match at tail of string.
+        -: 2931:	     * As we can only be sure we've got wide characters right
+        -: 2932:	     * when going forwards, we need to match at every point
+        -: 2933:	     * until we fail and record the last successful match.
+        -: 2934:	     *
+        -: 2935:	     * It's important that we return the last successful match
+        -: 2936:	     * so that match, mbegin, mend and MATCH, MBEGIN, MEND are
+        -: 2937:	     * correct.
+        -: 2938:	     */
+        1: 2939:	    mb_charinit();
+        1: 2940:	    tmatch = NULL;
+        1: 2941:	    set_pat_start(p, l);
+        1: 2942:	    if (pattrylen(p, send, 0, 0, &patstralloc, umltot) &&
+        -: 2943:		!--n) {
+    #####: 2944:		*sp = get_match_ret(&imd, umltot, umltot);
+    #####: 2945:		return 1;
+        -: 2946:	    }
+       11: 2947:	    for (ioff = 0, t = s, umlen = umltot; t < send; ioff++) {
+       10: 2948:		set_pat_start(p, t-s);
+       10: 2949:		if (pattrylen(p, t, umlen, 0, &patstralloc, ioff))
+        1: 2950:		    tmatch = t;
+       10: 2951:		if (fl & SUB_START)
+    #####: 2952:		    break;
+       10: 2953:		umlen -= iincchar(&t, send - t);
+        -: 2954:	    }
+        1: 2955:	    if (tmatch) {
+        1: 2956:		*sp = get_match_ret(&imd, tmatch - s, umltot);
+        1: 2957:		return 1;
+        -: 2958:	    }
+    #####: 2959:	    if (!(fl & SUB_START) && pattrylen(p, s + umltot, 0, 0,
+        -: 2960:					       &patstralloc, ioff)) {
+    #####: 2961:		*sp = get_match_ret(&imd, umltot, umltot);
+    #####: 2962:		return 1;
+        -: 2963:	    }
+    #####: 2964:	    break;
+        -: 2965:
+    #####: 2966:	case (SUB_END|SUB_LONG):
+        -: 2967:	    /* Largest possible match at tail of string:       *
+        -: 2968:	     * move forward along string until we get a match. *
+        -: 2969:	     * Again there's no optimisation.                  */
+    #####: 2970:	    mb_charinit();
+    #####: 2971:	    for (ioff = 0, t = s, umlen = umltot; t <= send ; ioff++) {
+    #####: 2972:		set_pat_start(p, t-s);
+    #####: 2973:		if (pattrylen(p, t, umlen, 0, &patstralloc, ioff)) {
+    #####: 2974:		    *sp = get_match_ret(&imd, t-s, umltot);
+    #####: 2975:		    return 1;
+        -: 2976:		}
+    #####: 2977:		if (fl & SUB_START)
+    #####: 2978:		    break;
+    #####: 2979:		if (t == send)
+    #####: 2980:		    break;
+    #####: 2981:		umlen -= iincchar(&t, send - t);
+        -: 2982:	    }
+    #####: 2983:	    if (!(fl & SUB_START) && pattrylen(p, send, 0, 0,
+        -: 2984:					       &patstralloc, ioff)) {
+    #####: 2985:		*sp = get_match_ret(&imd, umltot, umltot);
+    #####: 2986:		return 1;
+        -: 2987:	    }
+    #####: 2988:	    break;
+        -: 2989:
+    #####: 2990:	case SUB_SUBSTR:
+        -: 2991:	    /* Smallest at start, but matching substrings. */
+    #####: 2992:	    set_pat_start(p, l);
+    #####: 2993:	    if (!(fl & SUB_GLOBAL) &&
+    #####: 2994:		pattrylen(p, send, 0, 0, &patstralloc, 0) &&
+        -: 2995:		!--n) {
+    #####: 2996:		*sp = get_match_ret(&imd, 0, 0);
+    #####: 2997:		return 1;
+        -: 2998:	    } /* fall through */
+        -: 2999:	case (SUB_SUBSTR|SUB_LONG):
+        -: 3000:	    /* longest or smallest at start with substrings */
+    #####: 3001:	    t = s;
+    #####: 3002:	    if (fl & SUB_GLOBAL) {
+    #####: 3003:		imd.repllist = (fl & SUB_LIST) ? znewlinklist() : newlinklist();
+    #####: 3004:		if (repllistp)
+    #####: 3005:		     *repllistp = imd.repllist;
+        -: 3006:	    }
+    #####: 3007:	    ioff = 0;		/* offset into string */
+    #####: 3008:	    umlen = umltot;
+    #####: 3009:	    mb_charinit();
+        -: 3010:	    do {
+        -: 3011:		/* loop over all matches for global substitution */
+    #####: 3012:		matched = 0;
+    #####: 3013:		for (; t <= send; ioff++) {
+        -: 3014:		    /* Find the longest match from this position. */
+    #####: 3015:		    set_pat_start(p, t-s);
+    #####: 3016:		    if (pattrylen(p, t, umlen, 0, &patstralloc, ioff)) {
+    #####: 3017:			char *mpos = t + patmatchlen();
+    #####: 3018:			if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+        -: 3019:			    char *ptr;
+        -: 3020:			    int umlen2;
+        -: 3021:			    /*
+        -: 3022:			     * If searching for the shortest match,
+        -: 3023:			     * start with a zero length and increase
+        -: 3024:			     * it until we reach the longest possible
+        -: 3025:			     * match, accepting the first successful
+        -: 3026:			     * match.
+        -: 3027:			     */
+    #####: 3028:			    for (ptr = t, umlen2 = 0; ptr < mpos;) {
+    #####: 3029:				set_pat_end(p, *ptr);
+    #####: 3030:				if (pattrylen(p, t, umlen2, 0,
+        -: 3031:					      &patstralloc, ioff)) {
+    #####: 3032:				    mpos = t + patmatchlen();
+    #####: 3033:				    break;
+        -: 3034:				}
+    #####: 3035:				umlen2 += iincchar(&ptr, mpos - ptr);
+        -: 3036:			    }
+        -: 3037:			}
+    #####: 3038:			if (!--n || (n <= 0 && (fl & SUB_GLOBAL))) {
+    #####: 3039:			    *sp = get_match_ret(&imd, t-s, mpos-s);
+    #####: 3040:			    if (mpos == t)
+    #####: 3041:				mpos += mb_charlenconv(mpos, send - mpos, NULL);
+        -: 3042:			}
+    #####: 3043:			if (!(fl & SUB_GLOBAL)) {
+    #####: 3044:			    if (n) {
+        -: 3045:				/*
+        -: 3046:				 * Looking for a later match: in this case,
+        -: 3047:				 * we can continue looking for matches from
+        -: 3048:				 * the next character, even if it overlaps
+        -: 3049:				 * with what we just found.
+        -: 3050:				 */
+    #####: 3051:				umlen -= iincchar(&t, send - t);
+    #####: 3052:				continue;
+        -: 3053:			    } else {
+    #####: 3054:				return 1;
+        -: 3055:			    }
+        -: 3056:			}
+        -: 3057:			/*
+        -: 3058:			 * For a global match, we need to skip the stuff
+        -: 3059:			 * which is already marked for replacement.
+        -: 3060:			 */
+    #####: 3061:			matched = 1;
+    #####: 3062:			if (t == send)
+    #####: 3063:			    break;
+    #####: 3064:			while (t < mpos) {
+    #####: 3065:			    ioff++;
+    #####: 3066:			    umlen -= iincchar(&t, send - t);
+        -: 3067:			}
+    #####: 3068:			break;
+        -: 3069:		    }
+    #####: 3070:		    if (t == send)
+    #####: 3071:			break;
+    #####: 3072:		    umlen -= iincchar(&t, send - t);
+        -: 3073:		}
+    #####: 3074:	    } while (matched && t < send);
+        -: 3075:	    /*
+        -: 3076:	     * check if we can match a blank string, if so do it
+        -: 3077:	     * at the start.  Goodness knows if this is a good idea
+        -: 3078:	     * with global substitution, so it doesn't happen.
+        -: 3079:	     */
+    #####: 3080:	    set_pat_start(p, l);
+    #####: 3081:	    if ((fl & (SUB_LONG|SUB_GLOBAL)) == SUB_LONG &&
+    #####: 3082:		pattrylen(p, send, 0, 0, &patstralloc, 0) && !--n) {
+    #####: 3083:		*sp = get_match_ret(&imd, 0, 0);
+    #####: 3084:		return 1;
+        -: 3085:	    }
+    #####: 3086:	    break;
+        -: 3087:
+    #####: 3088:	case (SUB_END|SUB_SUBSTR):
+        -: 3089:	case (SUB_END|SUB_LONG|SUB_SUBSTR):
+        -: 3090:	    /* Longest/shortest at end, matching substrings.       */
+        -: 3091:	    {
+    #####: 3092:		set_pat_start(p, l);
+    #####: 3093:		if (pattrylen(p, send, 0, 0, &patstralloc, umltot) &&
+        -: 3094:		    !--n) {
+    #####: 3095:		    *sp = get_match_ret(&imd, umltot, umltot);
+    #####: 3096:		    return 1;
+        -: 3097:		}
+        -: 3098:	    }
+        -: 3099:	    /*
+        -: 3100:	     * If multibyte characters are present we need to start from the
+        -: 3101:	     * beginning.  This is a bit unpleasant because we can't tell in
+        -: 3102:	     * advance how many times it will match and from where, so if n is
+        -: 3103:	     * greater then 1 we will need to count the number of times it
+        -: 3104:	     * matched and then go through again until we reach the right
+        -: 3105:	     * point.  (Either that or record every single match in a list,
+        -: 3106:	     * which isn't stupid; it involves more memory management at this
+        -: 3107:	     * level but less use of the pattern matcher.)
+        -: 3108:	     */
+    #####: 3109:	    nmatches = 0;
+    #####: 3110:	    tmatch = NULL;
+    #####: 3111:	    mb_charinit();
+    #####: 3112:	    for (ioff = 0, t = s, umlen = umltot; t < send; ioff++) {
+    #####: 3113:		set_pat_start(p, t-s);
+    #####: 3114:		if (pattrylen(p, t, umlen, 0, &patstralloc, ioff)) {
+    #####: 3115:		    nmatches++;
+    #####: 3116:		    tmatch = t;
+        -: 3117:		}
+    #####: 3118:		umlen -= iincchar(&t, send - t);
+        -: 3119:	    }
+    #####: 3120:	    if (nmatches) {
+        -: 3121:		char *mpos;
+    #####: 3122:		if (n > 1) {
+        -: 3123:		    /*
+        -: 3124:		     * We need to find the n'th last match.
+        -: 3125:		     */
+    #####: 3126:		    n = nmatches - n;
+    #####: 3127:		    mb_charinit();
+    #####: 3128:		    for (ioff = 0, t = s, umlen = umltot; t < send; ioff++) {
+    #####: 3129:			set_pat_start(p, t-s);
+    #####: 3130:			if (pattrylen(p, t, umlen, 0, &patstralloc, ioff) &&
+    #####: 3131:			    !n--) {
+    #####: 3132:			    tmatch = t;
+    #####: 3133:			    break;
+        -: 3134:			}
+    #####: 3135:			umlen -= iincchar(&t, send - t);
+        -: 3136:		    }
+        -: 3137:		}
+    #####: 3138:		mpos = tmatch + patmatchlen();
+        -: 3139:		/* Look for the shortest match if necessary */
+    #####: 3140:		if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+    #####: 3141:		    for (t = tmatch, umlen = 0; t < mpos; ) {
+    #####: 3142:			set_pat_end(p, *t);
+    #####: 3143:			if (pattrylen(p, tmatch, umlen, 0,
+        -: 3144:				      &patstralloc, ioff)) {
+    #####: 3145:			    mpos = tmatch + patmatchlen();
+    #####: 3146:			    break;
+        -: 3147:			}
+    #####: 3148:			umlen += iincchar(&t, mpos - t);
+        -: 3149:		    }
+        -: 3150:		}
+    #####: 3151:		*sp = get_match_ret(&imd, tmatch-s, mpos-s);
+    #####: 3152:		return 1;
+        -: 3153:	    }
+    #####: 3154:	    set_pat_start(p, l);
+    #####: 3155:	    if ((fl & SUB_LONG) && pattrylen(p, send, 0, 0,
+    #####: 3156:					     &patstralloc, umltot) &&
+        -: 3157:		!--n) {
+    #####: 3158:		*sp = get_match_ret(&imd, umltot, umltot);
+    #####: 3159:		return 1;
+        -: 3160:	    }
+    #####: 3161:	    break;
+        -: 3162:	}
+        -: 3163:    }
+        -: 3164:
+    #####: 3165:    if (imd.repllist && nonempty(imd.repllist)) {
+        -: 3166:	/* Put all the bits of a global search and replace together. */
+        -: 3167:	LinkNode nd;
+        -: 3168:	Repldata rd;
+        -: 3169:	int lleft;
+        -: 3170:	char *ptr, *start;
+        -: 3171:	int i;
+        -: 3172:
+        -: 3173:	/*
+        -: 3174:	 * Use metafied string again.
+        -: 3175:	 * Results from get_match_ret in repllist are all metafied.
+        -: 3176:	 */
+    #####: 3177:	s = *sp;
+    #####: 3178:	if (!(fl & SUB_LIST)) {
+    #####: 3179:	    lleft = 0;		/* size of returned string */
+    #####: 3180:	    i = 0;	       /* start of last chunk we got from *sp */
+    #####: 3181:	    for (nd = firstnode(imd.repllist); nd; incnode(nd)) {
+    #####: 3182:		rd = (Repldata) getdata(nd);
+    #####: 3183:		lleft += rd->b - i; /* previous chunk of *sp */
+    #####: 3184:		lleft += strlen(rd->replstr);	/* the replaced bit */
+    #####: 3185:		i = rd->e;		/* start of next chunk of *sp */
+        -: 3186:	    }
+    #####: 3187:	    lleft += l - i;	/* final chunk from *sp */
+    #####: 3188:	    start = t = zhalloc(lleft+1);
+    #####: 3189:	    i = 0;
+    #####: 3190:	    for (nd = firstnode(imd.repllist); nd; incnode(nd)) {
+    #####: 3191:		rd = (Repldata) getdata(nd);
+    #####: 3192:		memcpy(t, s + i, rd->b - i);
+    #####: 3193:		t += rd->b - i;
+    #####: 3194:		ptr = rd->replstr;
+    #####: 3195:		while (*ptr)
+    #####: 3196:		    *t++ = *ptr++;
+    #####: 3197:		i = rd->e;
+        -: 3198:	    }
+    #####: 3199:	    memcpy(t, s + i, l - i);
+    #####: 3200:	    start[lleft] = '\0';
+    #####: 3201:	    *sp = (char *)start;
+        -: 3202:	}
+    #####: 3203:	return 1;
+        -: 3204:    }
+    #####: 3205:    if (fl & SUB_LIST) {	/* safety: don't think this can happen */
+    #####: 3206:	return 0;
+        -: 3207:    }
+        -: 3208:
+        -: 3209:    /* munge the whole string: no match, so no replstr */
+    #####: 3210:    imd.replstr = NULL;
+    #####: 3211:    imd.repllist = NULL;
+    #####: 3212:    *sp = get_match_ret(&imd, 0, 0);
+    #####: 3213:    return (fl & SUB_RETFAIL) ? 0 : 1;
+        -: 3214:}
+        -: 3215:
+        -: 3216:/**/
+        -: 3217:#else
+        -: 3218:
+        -: 3219:/*
+        -: 3220: * Increment pointer which may be on a Meta (x is a pointer variable),
+        -: 3221: * returning the incremented value (i.e. like pre-increment).
+        -: 3222: */
+        -: 3223:#define METAINC(x)	((x) += (*(x) == Meta) ? 2 : 1)
+        -: 3224:
+        -: 3225:/**/
+        -: 3226:static int
+        -: 3227:igetmatch(char **sp, Patprog p, int fl, int n, char *replstr,
+        -: 3228:	  LinkList *repllistp)
+        -: 3229:{
+        -: 3230:    char *s = *sp, *t, *send;
+        -: 3231:    /*
+        -: 3232:     * Note that ioff and uml count characters in the character
+        -: 3233:     * set (Meta's are not included), while l counts characters in the
+        -: 3234:     * metafied string.  umlen is a counter for (unmetafied) character
+        -: 3235:     * lengths.
+        -: 3236:     */
+        -: 3237:    int ioff, l = strlen(*sp), uml = ztrlen(*sp), matched = 1, umlen;
+        -: 3238:    struct patstralloc patstralloc;
+        -: 3239:    struct imatchdata imd;
+        -: 3240:
+        -: 3241:    (void)patallocstr(p, s, l, uml, 1, &patstralloc);
+        -: 3242:    s = patstralloc.alloced;
+        -: 3243:    DPUTS(!s, "forced patallocstr failed");
+        -: 3244:    send = s + uml;
+        -: 3245:
+        -: 3246:    imd.mstr = *sp;
+        -: 3247:    imd.mlen = l;
+        -: 3248:    imd.ustr = s;
+        -: 3249:    imd.ulen = uml;
+        -: 3250:    imd.flags = fl;
+        -: 3251:    imd.replstr = replstr;
+        -: 3252:    imd.repllist = NULL;
+        -: 3253:
+        -: 3254:    /* perform must-match test for complex closures */
+        -: 3255:    if (p->mustoff)
+        -: 3256:    {
+        -: 3257:	char *muststr = (char *)p + p->mustoff;
+        -: 3258:
+        -: 3259:	matched = 0;
+        -: 3260:	if (p->patmlen <= uml)
+        -: 3261:	{
+        -: 3262:	    for (t = s; t <= send - p->patmlen; t++)
+        -: 3263:	    {
+        -: 3264:		if (!memcmp(muststr, t, p->patmlen)) {
+        -: 3265:		    matched = 1;
+        -: 3266:		    break;
+        -: 3267:		}
+        -: 3268:	    }
+        -: 3269:	}
+        -: 3270:    }
+        -: 3271:
+        -: 3272:    /* in case we used the prog before... */
+        -: 3273:    p->flags &= ~(PAT_NOTSTART|PAT_NOTEND);
+        -: 3274:
+        -: 3275:    if (fl & SUB_ALL) {
+        -: 3276:	int i = matched && pattrylen(p, s, uml, 0, &patstralloc, 0);
+        -: 3277:	if (!i)
+        -: 3278:	    imd.replstr = NULL;
+        -: 3279:	*sp = get_match_ret(&imd, 0, i ? l : 0);
+        -: 3280:	if (! **sp && (((fl & SUB_MATCH) && !i) || ((fl & SUB_REST) && i)))
+        -: 3281:	    return 0;
+        -: 3282:	return 1;
+        -: 3283:    }
+        -: 3284:    if (matched) {
+        -: 3285:	switch (fl & (SUB_END|SUB_LONG|SUB_SUBSTR)) {
+        -: 3286:	case 0:
+        -: 3287:	case SUB_LONG:
+        -: 3288:	    /*
+        -: 3289:	     * Largest/smallest possible match at head of string.
+        -: 3290:	     * First get the longest match...
+        -: 3291:	     */
+        -: 3292:	    if (pattrylen(p, s, uml, 0, &patstralloc, 0)) {
+        -: 3293:		/* patmatchlen returns metafied length, as we need */
+        -: 3294:	        int mlen = patmatchlen();
+        -: 3295:		if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+        -: 3296:		    send = s + mlen;
+        -: 3297:		    /*
+        -: 3298:		     * ... now we know whether it's worth looking for the
+        -: 3299:		     * shortest, which we do by brute force.
+        -: 3300:		     */
+        -: 3301:		    for (t = s, umlen = 0; t < s + mlen; METAINC(t), umlen++) {
+        -: 3302:			set_pat_end(p, *t);
+        -: 3303:			if (pattrylen(p, s, umlen, 0, &patstralloc, 0)) {
+        -: 3304:			    mlen = patmatchlen();
+        -: 3305:			    break;
+        -: 3306:			}
+        -: 3307:		    }
+        -: 3308:		}
+        -: 3309:		*sp = get_match_ret(&imd, 0, mlen);
+        -: 3310:		return 1;
+        -: 3311:	    }
+        -: 3312:	    break;
+        -: 3313:
+        -: 3314:	case SUB_END:
+        -: 3315:	    /* Smallest possible match at tail of string:  *
+        -: 3316:	     * move back down string until we get a match. *
+        -: 3317:	     * There's no optimization here.               */
+        -: 3318:	    for (ioff = uml, t = send, umlen = 0; t >= s;
+        -: 3319:		 t--, ioff--, umlen++) {
+        -: 3320:		set_pat_start(p, t-s);
+        -: 3321:		if (pattrylen(p, t, umlen, 0, &patstralloc, ioff)) {
+        -: 3322:		    *sp = get_match_ret(&imd, t - s, uml);
+        -: 3323:		    return 1;
+        -: 3324:		}
+        -: 3325:	    }
+        -: 3326:	    break;
+        -: 3327:
+        -: 3328:	case (SUB_END|SUB_LONG):
+        -: 3329:	    /* Largest possible match at tail of string:       *
+        -: 3330:	     * move forward along string until we get a match. *
+        -: 3331:	     * Again there's no optimisation.                  */
+        -: 3332:	    for (ioff = 0, t = s, umlen = uml; t < send;
+        -: 3333:		 ioff++, t++, umlen--) {
+        -: 3334:		set_pat_start(p, t-s);
+        -: 3335:		if (pattrylen(p, t, send - t, umlen, &patstralloc, ioff)) {
+        -: 3336:		    *sp = get_match_ret(&imd, t-s, uml);
+        -: 3337:		    return 1;
+        -: 3338:		}
+        -: 3339:	    }
+        -: 3340:	    break;
+        -: 3341:
+        -: 3342:	case SUB_SUBSTR:
+        -: 3343:	    /* Smallest at start, but matching substrings. */
+        -: 3344:	    set_pat_start(p, l);
+        -: 3345:	    if (!(fl & SUB_GLOBAL) &&
+        -: 3346:		pattrylen(p, send, 0, 0, &patstralloc, 0) && !--n) {
+        -: 3347:		*sp = get_match_ret(&imd, 0, 0);
+        -: 3348:		return 1;
+        -: 3349:	    } /* fall through */
+        -: 3350:	case (SUB_SUBSTR|SUB_LONG):
+        -: 3351:	    /* longest or smallest at start with substrings */
+        -: 3352:	    t = s;
+        -: 3353:	    if (fl & SUB_GLOBAL) {
+        -: 3354:		imd.repllist = newlinklist();
+        -: 3355:		if (repllistp)
+        -: 3356:		    *repllistp = imd.repllist;
+        -: 3357:	    }
+        -: 3358:	    ioff = 0;		/* offset into string */
+        -: 3359:	    umlen = uml;
+        -: 3360:	    do {
+        -: 3361:		/* loop over all matches for global substitution */
+        -: 3362:		matched = 0;
+        -: 3363:		for (; t < send; t++, ioff++, umlen--) {
+        -: 3364:		    /* Find the longest match from this position. */
+        -: 3365:		    set_pat_start(p, t-s);
+        -: 3366:		    if (pattrylen(p, t, send - t, umlen, &patstralloc, ioff)) {
+        -: 3367:			char *mpos = t + patmatchlen();
+        -: 3368:			if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+        -: 3369:			    char *ptr;
+        -: 3370:			    int umlen2;
+        -: 3371:			    for (ptr = t, umlen2 = 0; ptr < mpos;
+        -: 3372:				 ptr++, umlen2++) {
+        -: 3373:				set_pat_end(p, *ptr);
+        -: 3374:				if (pattrylen(p, t, ptr - t, umlen2,
+        -: 3375:					      &patstralloc, ioff)) {
+        -: 3376:				    mpos = t + patmatchlen();
+        -: 3377:				    break;
+        -: 3378:				}
+        -: 3379:			    }
+        -: 3380:			}
+        -: 3381:			if (!--n || (n <= 0 && (fl & SUB_GLOBAL))) {
+        -: 3382:			    *sp = get_match_ret(&imd, t-s, mpos-s);
+        -: 3383:			    if (mpos == t)
+        -: 3384:				mpos++;
+        -: 3385:			}
+        -: 3386:			if (!(fl & SUB_GLOBAL)) {
+        -: 3387:			    if (n) {
+        -: 3388:				/*
+        -: 3389:				 * Looking for a later match: in this case,
+        -: 3390:				 * we can continue looking for matches from
+        -: 3391:				 * the next character, even if it overlaps
+        -: 3392:				 * with what we just found.
+        -: 3393:				 */
+        -: 3394:				continue;
+        -: 3395:			    } else {
+        -: 3396:				return 1;
+        -: 3397:			    }
+        -: 3398:			}
+        -: 3399:			/*
+        -: 3400:			 * For a global match, we need to skip the stuff
+        -: 3401:			 * which is already marked for replacement.
+        -: 3402:			 */
+        -: 3403:			matched = 1;
+        -: 3404:			while (t < mpos) {
+        -: 3405:			    ioff++;
+        -: 3406:			    umlen--;
+        -: 3407:			    t++;
+        -: 3408:			}
+        -: 3409:			break;
+        -: 3410:		    }
+        -: 3411:		}
+        -: 3412:	    } while (matched);
+        -: 3413:	    /*
+        -: 3414:	     * check if we can match a blank string, if so do it
+        -: 3415:	     * at the start.  Goodness knows if this is a good idea
+        -: 3416:	     * with global substitution, so it doesn't happen.
+        -: 3417:	     */
+        -: 3418:	    set_pat_start(p, l);
+        -: 3419:	    if ((fl & (SUB_LONG|SUB_GLOBAL)) == SUB_LONG &&
+        -: 3420:		pattrylen(p, send, 0, 0, &patstralloc, 0) && !--n) {
+        -: 3421:		*sp = get_match_ret(&imd, 0, 0);
+        -: 3422:		return 1;
+        -: 3423:	    }
+        -: 3424:	    break;
+        -: 3425:
+        -: 3426:	case (SUB_END|SUB_SUBSTR):
+        -: 3427:	case (SUB_END|SUB_LONG|SUB_SUBSTR):
+        -: 3428:	    /* Longest/shortest at end, matching substrings.       */
+        -: 3429:	    {
+        -: 3430:		set_pat_start(p, l);
+        -: 3431:		if (pattrylen(p, send, 0, 0, &patstralloc, uml) && !--n) {
+        -: 3432:		    *sp = get_match_ret(&imd, uml, uml);
+        -: 3433:		    return 1;
+        -: 3434:		}
+        -: 3435:	    }
+        -: 3436:	    for (ioff = uml - 1, t = send - 1, umlen = 1; t >= s;
+        -: 3437:		 t--, ioff--, umlen++) {
+        -: 3438:		set_pat_start(p, t-s);
+        -: 3439:		if (pattrylen(p, t, send - t, umlen, &patstralloc, ioff) &&
+        -: 3440:		    !--n) {
+        -: 3441:		    /* Found the longest match */
+        -: 3442:		    char *mpos = t + patmatchlen();
+        -: 3443:		    if (!(fl & SUB_LONG) && !(p->flags & PAT_PURES)) {
+        -: 3444:			char *ptr;
+        -: 3445:			int umlen2;
+        -: 3446:			for (ptr = t, umlen2 = 0; ptr < mpos;
+        -: 3447:			     ptr++, umlen2++) {
+        -: 3448:			    set_pat_end(p, *ptr);
+        -: 3449:			    if (pattrylen(p, t, umlen2, 0, &patstralloc,
+        -: 3450:					  ioff)) {
+        -: 3451:				mpos = t + patmatchlen();
+        -: 3452:				break;
+        -: 3453:			    }
+        -: 3454:			}
+        -: 3455:		    }
+        -: 3456:		    *sp = get_match_ret(&imd, t-s, mpos-s);
+        -: 3457:		    return 1;
+        -: 3458:		}
+        -: 3459:	    }
+        -: 3460:	    set_pat_start(p, l);
+        -: 3461:	    if ((fl & SUB_LONG) && pattrylen(p, send, 0, 0,
+        -: 3462:					     &patstralloc, uml) &&
+        -: 3463:		!--n) {
+        -: 3464:		*sp = get_match_ret(&imd, uml, uml);
+        -: 3465:		return 1;
+        -: 3466:	    }
+        -: 3467:	    break;
+        -: 3468:	}
+        -: 3469:    }
+        -: 3470:
+        -: 3471:    if (imd.repllist && nonempty(imd.repllist)) {
+        -: 3472:	/* Put all the bits of a global search and replace together. */
+        -: 3473:	LinkNode nd;
+        -: 3474:	Repldata rd;
+        -: 3475:	int lleft = 0;		/* size of returned string */
+        -: 3476:	char *ptr, *start;
+        -: 3477:	int i;
+        -: 3478:
+        -: 3479:	/*
+        -: 3480:	 * Use metafied string again.
+        -: 3481:	 * Results from get_match_ret in repllist are all metafied.
+        -: 3482:	 */
+        -: 3483:	s = *sp;
+        -: 3484:	i = 0;			/* start of last chunk we got from *sp */
+        -: 3485:	for (nd = firstnode(imd.repllist); nd; incnode(nd)) {
+        -: 3486:	    rd = (Repldata) getdata(nd);
+        -: 3487:	    lleft += rd->b - i; /* previous chunk of *sp */
+        -: 3488:	    lleft += strlen(rd->replstr);	/* the replaced bit */
+        -: 3489:	    i = rd->e;		/* start of next chunk of *sp */
+        -: 3490:	}
+        -: 3491:	lleft += l - i;	/* final chunk from *sp */
+        -: 3492:	start = t = zhalloc(lleft+1);
+        -: 3493:	i = 0;
+        -: 3494:	for (nd = firstnode(imd.repllist); nd; incnode(nd)) {
+        -: 3495:	    rd = (Repldata) getdata(nd);
+        -: 3496:	    memcpy(t, s + i, rd->b - i);
+        -: 3497:	    t += rd->b - i;
+        -: 3498:	    ptr = rd->replstr;
+        -: 3499:	    while (*ptr)
+        -: 3500:		*t++ = *ptr++;
+        -: 3501:	    i = rd->e;
+        -: 3502:	}
+        -: 3503:	memcpy(t, s + i, l - i);
+        -: 3504:	start[lleft] = '\0';
+        -: 3505:	*sp = (char *)start;
+        -: 3506:	return 1;
+        -: 3507:    }
+        -: 3508:
+        -: 3509:    /* munge the whole string: no match, so no replstr */
+        -: 3510:    imd.replstr = NULL;
+        -: 3511:    imd.repllist = NULL;
+        -: 3512:    *sp = get_match_ret(&imd, 0, 0);
+        -: 3513:    return 1;
+        -: 3514:}
+        -: 3515:
+        -: 3516:/**/
+        -: 3517:#endif /* MULTIBYTE_SUPPORT */
+        -: 3518:
+        -: 3519:/* blindly turn a string into a tokenised expression without lexing */
+        -: 3520:
+        -: 3521:/**/
+        -: 3522:mod_export void
+        1: 3523:tokenize(char *s)
+        -: 3524:{
+        1: 3525:    zshtokenize(s, 0);
+        1: 3526:}
+        -: 3527:
+        -: 3528:/*
+        -: 3529: * shtokenize is used when we tokenize a string with GLOB_SUBST set.
+        -: 3530: * In that case we need to retain backslashes when we turn the
+        -: 3531: * pattern back into a string, so that the string is not
+        -: 3532: * modified if it failed to match a pattern.
+        -: 3533: *
+        -: 3534: * It may be modified by the effect of SH_GLOB which turns off
+        -: 3535: * various zsh-specific options.
+        -: 3536: */
+        -: 3537:
+        -: 3538:/**/
+        -: 3539:mod_export void
+        1: 3540:shtokenize(char *s)
+        -: 3541:{
+        1: 3542:    int flags = ZSHTOK_SUBST;
+        1: 3543:    if (isset(SHGLOB))
+    #####: 3544:	flags |= ZSHTOK_SHGLOB;
+        1: 3545:    zshtokenize(s, flags);
+        1: 3546:}
+        -: 3547:
+        -: 3548:/**/
+        -: 3549:static void
+        2: 3550:zshtokenize(char *s, int flags)
+        -: 3551:{
+        -: 3552:    char *t;
+        2: 3553:    int bslash = 0;
+        -: 3554:
+        8: 3555:    for (; *s; s++) {
+        6: 3556:      cont:
+        6: 3557:	switch (*s) {
+    #####: 3558:	case Meta:
+        -: 3559:	    /* skip both Meta and following character */
+    #####: 3560:	    s++;
+    #####: 3561:	    break;
+    #####: 3562:	case Bnull:
+        -: 3563:	case Bnullkeep:
+        -: 3564:	case '\\':
+    #####: 3565:	    if (bslash) {
+    #####: 3566:		s[-1] = (flags & ZSHTOK_SUBST) ? Bnullkeep : Bnull;
+    #####: 3567:		break;
+        -: 3568:	    }
+    #####: 3569:	    bslash = 1;
+    #####: 3570:	    continue;
+    #####: 3571:	case '<':
+    #####: 3572:	    if (flags & ZSHTOK_SHGLOB)
+    #####: 3573:		break;
+    #####: 3574:	    if (bslash) {
+    #####: 3575:		s[-1] = (flags & ZSHTOK_SUBST) ? Bnullkeep : Bnull;
+    #####: 3576:		break;
+        -: 3577:	    }
+    #####: 3578:	    t = s;
+    #####: 3579:	    while (idigit(*++s));
+    #####: 3580:	    if (!IS_DASH(*s))
+    #####: 3581:		goto cont;
+    #####: 3582:	    while (idigit(*++s));
+    #####: 3583:	    if (*s != '>')
+    #####: 3584:		goto cont;
+    #####: 3585:	    *t = Inang;
+    #####: 3586:	    *s = Outang;
+    #####: 3587:	    break;
+    #####: 3588:	case '(':
+        -: 3589:	case '|':
+        -: 3590:	case ')':
+    #####: 3591:	    if (flags & ZSHTOK_SHGLOB)
+    #####: 3592:		break;
+        -: 3593:	    /*FALLTHROUGH*/
+        -: 3594:	case '>':
+        -: 3595:	case '^':
+        -: 3596:	case '#':
+        -: 3597:	case '~':
+        -: 3598:	case '[':
+        -: 3599:	case ']':
+        -: 3600:	case '*':
+        -: 3601:	case '?':
+        -: 3602:	case '=':
+        -: 3603:	case '-':
+        -: 3604:	case '!':
+       49: 3605:	    for (t = ztokens; *t; t++) {
+       49: 3606:		if (*t == *s) {
+        3: 3607:		    if (bslash)
+    #####: 3608:			s[-1] = (flags & ZSHTOK_SUBST) ? Bnullkeep : Bnull;
+        -: 3609:		    else
+        3: 3610:			*s = (t - ztokens) + Pound;
+        3: 3611:		    break;
+        -: 3612:		}
+        -: 3613:	    }
+        3: 3614:	    break;
+        -: 3615:	}
+        6: 3616:	bslash = 0;
+        -: 3617:    }
+        2: 3618:}
+        -: 3619:
+        -: 3620:/* remove unnecessary Nulargs */
+        -: 3621:
+        -: 3622:/**/
+        -: 3623:mod_export void
+    16695: 3624:remnulargs(char *s)
+        -: 3625:{
+    16695: 3626:    if (*s) {
+    16695: 3627:	char *o = s, c;
+        -: 3628:
+   144645: 3629:	while ((c = *s++))
+   111756: 3630:	    if (c == Bnullkeep) {
+        -: 3631:		/*
+        -: 3632:		 * An active backslash that needs to be turned back into
+        -: 3633:		 * a real backslash for output.  However, we don't
+        -: 3634:		 * do that yet since we need to ignore it during
+        -: 3635:		 * pattern matching.
+        -: 3636:		 */
+    #####: 3637:		continue;
+   111756: 3638:	    } else if (inull(c)) {
+      501: 3639:		char *t = s - 1;
+        -: 3640:
+    12929: 3641:		while ((c = *s++)) {
+    11927: 3642:		    if (c == Bnullkeep)
+    #####: 3643:			*t++ = '\\';
+    11927: 3644:		    else if (!inull(c))
+    11553: 3645:			*t++ = c;
+        -: 3646:		}
+      501: 3647:		*t = '\0';
+      501: 3648:		if (!*o) {
+       62: 3649:		    o[0] = Nularg;
+       62: 3650:		    o[1] = '\0';
+        -: 3651:		}
+      501: 3652:		break;
+        -: 3653:	    }
+        -: 3654:    }
+    16695: 3655:}
+        -: 3656:
+        -: 3657:/* qualifier functions:  mostly self-explanatory, see glob(). */
+        -: 3658:
+        -: 3659:/* device number */
+        -: 3660:
+        -: 3661:/**/
+        -: 3662:static int
+    #####: 3663:qualdev(UNUSED(char *name), struct stat *buf, off_t dv, UNUSED(char *dummy))
+        -: 3664:{
+    #####: 3665:    return (off_t)buf->st_dev == dv;
+        -: 3666:}
+        -: 3667:
+        -: 3668:/* number of hard links to file */
+        -: 3669:
+        -: 3670:/**/
+        -: 3671:static int
+    #####: 3672:qualnlink(UNUSED(char *name), struct stat *buf, off_t ct, UNUSED(char *dummy))
+        -: 3673:{
+    #####: 3674:    return (g_range < 0 ? buf->st_nlink < ct :
+    #####: 3675:	    g_range > 0 ? buf->st_nlink > ct :
+    #####: 3676:	    buf->st_nlink == ct);
+        -: 3677:}
+        -: 3678:
+        -: 3679:/* user ID */
+        -: 3680:
+        -: 3681:/**/
+        -: 3682:static int
+    #####: 3683:qualuid(UNUSED(char *name), struct stat *buf, off_t uid, UNUSED(char *dummy))
+        -: 3684:{
+    #####: 3685:    return buf->st_uid == uid;
+        -: 3686:}
+        -: 3687:
+        -: 3688:/* group ID */
+        -: 3689:
+        -: 3690:/**/
+        -: 3691:static int
+    #####: 3692:qualgid(UNUSED(char *name), struct stat *buf, off_t gid, UNUSED(char *dummy))
+        -: 3693:{
+    #####: 3694:    return buf->st_gid == gid;
+        -: 3695:}
+        -: 3696:
+        -: 3697:/* device special file? */
+        -: 3698:
+        -: 3699:/**/
+        -: 3700:static int
+    #####: 3701:qualisdev(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3702:{
+    #####: 3703:    return S_ISBLK(buf->st_mode) || S_ISCHR(buf->st_mode);
+        -: 3704:}
+        -: 3705:
+        -: 3706:/* block special file? */
+        -: 3707:
+        -: 3708:/**/
+        -: 3709:static int
+    #####: 3710:qualisblk(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3711:{
+    #####: 3712:    return S_ISBLK(buf->st_mode);
+        -: 3713:}
+        -: 3714:
+        -: 3715:/* character special file? */
+        -: 3716:
+        -: 3717:/**/
+        -: 3718:static int
+    #####: 3719:qualischr(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3720:{
+    #####: 3721:    return S_ISCHR(buf->st_mode);
+        -: 3722:}
+        -: 3723:
+        -: 3724:/* directory? */
+        -: 3725:
+        -: 3726:/**/
+        -: 3727:static int
+       44: 3728:qualisdir(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3729:{
+       44: 3730:    return S_ISDIR(buf->st_mode);
+        -: 3731:}
+        -: 3732:
+        -: 3733:/* FIFO? */
+        -: 3734:
+        -: 3735:/**/
+        -: 3736:static int
+    #####: 3737:qualisfifo(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3738:{
+    #####: 3739:    return S_ISFIFO(buf->st_mode);
+        -: 3740:}
+        -: 3741:
+        -: 3742:/* symbolic link? */
+        -: 3743:
+        -: 3744:/**/
+        -: 3745:static int
+    #####: 3746:qualislnk(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3747:{
+    #####: 3748:    return S_ISLNK(buf->st_mode);
+        -: 3749:}
+        -: 3750:
+        -: 3751:/* regular file? */
+        -: 3752:
+        -: 3753:/**/
+        -: 3754:static int
+    #####: 3755:qualisreg(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3756:{
+    #####: 3757:    return S_ISREG(buf->st_mode);
+        -: 3758:}
+        -: 3759:
+        -: 3760:/* socket? */
+        -: 3761:
+        -: 3762:/**/
+        -: 3763:static int
+    #####: 3764:qualissock(UNUSED(char *name), struct stat *buf, UNUSED(off_t junk), UNUSED(char *dummy))
+        -: 3765:{
+    #####: 3766:    return S_ISSOCK(buf->st_mode);
+        -: 3767:}
+        -: 3768:
+        -: 3769:/* given flag is set in mode */
+        -: 3770:
+        -: 3771:/**/
+        -: 3772:static int
+    #####: 3773:qualflags(UNUSED(char *name), struct stat *buf, off_t mod, UNUSED(char *dummy))
+        -: 3774:{
+    #####: 3775:    return mode_to_octal(buf->st_mode) & mod;
+        -: 3776:}
+        -: 3777:
+        -: 3778:/* mode matches specification */
+        -: 3779:
+        -: 3780:/**/
+        -: 3781:static int
+    #####: 3782:qualmodeflags(UNUSED(char *name), struct stat *buf, off_t mod, UNUSED(char *dummy))
+        -: 3783:{
+    #####: 3784:    long v = mode_to_octal(buf->st_mode), y = mod & 07777, n = mod >> 12;
+        -: 3785:
+    #####: 3786:    return ((v & y) == y && !(v & n));
+        -: 3787:}
+        -: 3788:
+        -: 3789:/* regular executable file? */
+        -: 3790:
+        -: 3791:/**/
+        -: 3792:static int
+    #####: 3793:qualiscom(UNUSED(char *name), struct stat *buf, UNUSED(off_t mod), UNUSED(char *dummy))
+        -: 3794:{
+    #####: 3795:    return S_ISREG(buf->st_mode) && (buf->st_mode & S_IXUGO);
+        -: 3796:}
+        -: 3797:
+        -: 3798:/* size in required range? */
+        -: 3799:
+        -: 3800:/**/
+        -: 3801:static int
+    #####: 3802:qualsize(UNUSED(char *name), struct stat *buf, off_t size, UNUSED(char *dummy))
+        -: 3803:{
+        -: 3804:#if defined(ZSH_64_BIT_TYPE) || defined(LONG_IS_64_BIT)
+        -: 3805:# define QS_CAST_SIZE()
+    #####: 3806:    zlong scaled = buf->st_size;
+        -: 3807:#else
+        -: 3808:# define QS_CAST_SIZE() (unsigned long)
+        -: 3809:    unsigned long scaled = (unsigned long)buf->st_size;
+        -: 3810:#endif
+        -: 3811:
+    #####: 3812:    switch (g_units) {
+    #####: 3813:    case TT_POSIX_BLOCKS:
+    #####: 3814:	scaled += 511l;
+    #####: 3815:	scaled /= 512l;
+    #####: 3816:	break;
+    #####: 3817:    case TT_KILOBYTES:
+    #####: 3818:	scaled += 1023l;
+    #####: 3819:	scaled /= 1024l;
+    #####: 3820:	break;
+    #####: 3821:    case TT_MEGABYTES:
+    #####: 3822:	scaled += 1048575l;
+    #####: 3823:	scaled /= 1048576l;
+    #####: 3824:	break;
+        -: 3825:#if defined(ZSH_64_BIT_TYPE) || defined(LONG_IS_64_BIT)
+    #####: 3826:    case TT_GIGABYTES:
+    #####: 3827:        scaled += ZLONG_CONST(1073741823);
+    #####: 3828:        scaled /= ZLONG_CONST(1073741824);
+    #####: 3829:        break;
+    #####: 3830:    case TT_TERABYTES:
+    #####: 3831:        scaled += ZLONG_CONST(1099511627775);
+    #####: 3832:        scaled /= ZLONG_CONST(1099511627776);
+    #####: 3833:        break;
+        -: 3834:#endif
+        -: 3835:    }
+        -: 3836:
+    #####: 3837:    return (g_range < 0 ? scaled < QS_CAST_SIZE() size :
+    #####: 3838:	    g_range > 0 ? scaled > QS_CAST_SIZE() size :
+    #####: 3839:	    scaled == QS_CAST_SIZE() size);
+        -: 3840:#undef QS_CAST_SIZE
+        -: 3841:}
+        -: 3842:
+        -: 3843:/* time in required range? */
+        -: 3844:
+        -: 3845:/**/
+        -: 3846:static int
+    #####: 3847:qualtime(UNUSED(char *name), struct stat *buf, off_t days, UNUSED(char *dummy))
+        -: 3848:{
+        -: 3849:    time_t now, diff;
+        -: 3850:
+    #####: 3851:    time(&now);
+    #####: 3852:    diff = now - (g_amc == 0 ? buf->st_atime : g_amc == 1 ? buf->st_mtime :
+        -: 3853:		  buf->st_ctime);
+        -: 3854:    /* handle multipliers indicating units */
+    #####: 3855:    switch (g_units) {
+    #####: 3856:    case TT_DAYS:
+    #####: 3857:	diff /= 86400l;
+    #####: 3858:	break;
+    #####: 3859:    case TT_HOURS:
+    #####: 3860:	diff /= 3600l;
+    #####: 3861:	break;
+    #####: 3862:    case TT_MINS:
+    #####: 3863:	diff /= 60l;
+    #####: 3864:	break;
+    #####: 3865:    case TT_WEEKS:
+    #####: 3866:	diff /= 604800l;
+    #####: 3867:	break;
+    #####: 3868:    case TT_MONTHS:
+    #####: 3869:	diff /= 2592000l;
+    #####: 3870:	break;
+        -: 3871:    }
+        -: 3872:
+    #####: 3873:    return (g_range < 0 ? diff < days :
+    #####: 3874:	    g_range > 0 ? diff > days :
+    #####: 3875:	    diff == days);
+        -: 3876:}
+        -: 3877:
+        -: 3878:/* evaluate a string */
+        -: 3879:
+        -: 3880:/**/
+        -: 3881:static int
+    #####: 3882:qualsheval(char *name, UNUSED(struct stat *buf), UNUSED(off_t days), char *str)
+        -: 3883:{
+        -: 3884:    Eprog prog;
+        -: 3885:
+    #####: 3886:    if ((prog = parse_string(str, 0))) {
+    #####: 3887:	int ef = errflag, lv = lastval, ret;
+    #####: 3888:	int cshglob = badcshglob;
+        -: 3889:
+    #####: 3890:	unsetparam("reply");
+    #####: 3891:	setsparam("REPLY", ztrdup(name));
+    #####: 3892:	badcshglob = 0;
+        -: 3893:
+    #####: 3894:	execode(prog, 1, 0, "globqual");
+        -: 3895:
+    #####: 3896:	if ((ret = lastval))
+    #####: 3897:	    badcshglob |= cshglob;
+        -: 3898:	/* Retain any user interrupt error status */
+    #####: 3899:	errflag = ef | (errflag & ERRFLAG_INT);
+    #####: 3900:	lastval = lv;
+        -: 3901:
+    #####: 3902:	if (!(inserts = getaparam("reply")) &&
+    #####: 3903:	    !(inserts = gethparam("reply"))) {
+        -: 3904:	    char *tmp;
+        -: 3905:
+    #####: 3906:	    if ((tmp = getsparam("reply")) || (tmp = getsparam("REPLY"))) {
+        -: 3907:		static char *tmparr[2];
+        -: 3908:
+    #####: 3909:		tmparr[0] = tmp;
+    #####: 3910:		tmparr[1] = NULL;
+        -: 3911:
+    #####: 3912:		inserts = tmparr;
+        -: 3913:	    }
+        -: 3914:	}
+        -: 3915:
+    #####: 3916:	return !ret;
+        -: 3917:    }
+    #####: 3918:    return 0;
+        -: 3919:}
+        -: 3920:
+        -: 3921:/**/
+        -: 3922:static int
+    #####: 3923:qualnonemptydir(char *name, struct stat *buf, UNUSED(off_t days), UNUSED(char *str))
+        -: 3924:{
+        -: 3925:    DIR *dirh;
+        -: 3926:    struct dirent *de;
+        -: 3927:    int unamelen;
+    #####: 3928:    char *uname = unmetafy(dupstring(name), &unamelen);
+        -: 3929:
+    #####: 3930:    if (!S_ISDIR(buf->st_mode))
+    #####: 3931:	return 0;
+        -: 3932:
+    #####: 3933:    if (buf->st_nlink > 2)
+    #####: 3934:	return 1;
+        -: 3935:
+    #####: 3936:    if (!(dirh = opendir(uname)))
+    #####: 3937:	return 0;
+        -: 3938:
+    #####: 3939:    while ((de = readdir(dirh))) {
+    #####: 3940:	if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..")) {
+    #####: 3941:	    closedir(dirh);
+    #####: 3942:	    return 1;
+        -: 3943:	}
+        -: 3944:    }
+        -: 3945:
+    #####: 3946:    closedir(dirh);
+    #####: 3947:    return 0;
+        -: 3948:}

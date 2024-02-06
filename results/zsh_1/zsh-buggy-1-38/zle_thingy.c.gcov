@@ -1,0 +1,1034 @@
+        -:    0:Source:zle_thingy.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_thingy.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_thingy.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_thingy.c - thingies
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_thingy.pro"
+        -:   32:
+        -:   33:/*
+        -:   34: * Thingies:
+        -:   35: *
+        -:   36: * From the user's point of view, a thingy is just a string.  Internally,
+        -:   37: * the thingy is a struct thingy; these structures are in a hash table
+        -:   38: * indexed by the string the user sees.  This hash table contains all
+        -:   39: * thingies currently referenced anywhere; each has a reference count,
+        -:   40: * and is deleted when it becomes unused.  Being the name of a function
+        -:   41: * counts as a reference.
+        -:   42: *
+        -:   43: * The DISABLED flag on a thingy indicates that it is not the name of a
+        -:   44: * widget.  This makes it easy to generate completion lists;
+        -:   45: * looking only at the `enabled' nodes makes the thingy table look like
+        -:   46: * a table of widgets.
+        -:   47: */
+        -:   48:
+        -:   49:/* Hashtable of thingies.  Enabled nodes are those that refer to widgets. */
+        -:   50:
+        -:   51:/**/
+        -:   52:mod_export HashTable thingytab;
+        -:   53:
+        -:   54:/**********************************/
+        -:   55:/* hashtable management functions */
+        -:   56:/**********************************/
+        -:   57:
+        -:   58:/**/
+        -:   59:static void
+    #####:   60:createthingytab(void)
+        -:   61:{
+    #####:   62:    thingytab = newhashtable(199, "thingytab", NULL);
+        -:   63:
+    #####:   64:    thingytab->hash        = hasher;
+    #####:   65:    thingytab->emptytable  = emptythingytab;
+    #####:   66:    thingytab->filltable   = NULL;
+    #####:   67:    thingytab->cmpnodes    = strcmp;
+    #####:   68:    thingytab->addnode     = addhashnode;
+    #####:   69:    thingytab->getnode     = gethashnode;
+    #####:   70:    thingytab->getnode2    = gethashnode2;
+    #####:   71:    thingytab->removenode  = removehashnode;
+    #####:   72:    thingytab->disablenode = NULL;
+    #####:   73:    thingytab->enablenode  = NULL;
+    #####:   74:    thingytab->freenode    = freethingynode;
+    #####:   75:    thingytab->printnode   = NULL;
+    #####:   76:}
+        -:   77:
+        -:   78:/**/
+        -:   79:static void
+    #####:   80:emptythingytab(UNUSED(HashTable ht))
+        -:   81:{
+        -:   82:    /* This will only be called when deleting the thingy table, which *
+        -:   83:     * is only done to unload the zle module.  A normal emptytable()  *
+        -:   84:     * function would free all the thingies, but we don't want to do  *
+        -:   85:     * that because some of them are the known thingies in the fixed  *
+        -:   86:     * `thingies' table.  As the module cleanup code deletes all the  *
+        -:   87:     * keymaps and so on before deleting the thingy table, we can     *
+        -:   88:     * just remove the user-defined widgets and then be sure that     *
+        -:   89:     * *all* the thingies left are the fixed ones.  This has the side *
+        -:   90:     * effect of freeing all resources used by user-defined widgets.  */
+    #####:   91:    scanhashtable(thingytab, 0, 0, DISABLED, scanemptythingies, 0);
+    #####:   92:}
+        -:   93:
+        -:   94:/**/
+        -:   95:static void
+    #####:   96:scanemptythingies(HashNode hn, UNUSED(int flags))
+        -:   97:{
+    #####:   98:    Thingy t = (Thingy) hn;
+        -:   99:
+        -:  100:    /* Mustn't unbind internal widgets -- we wouldn't want to free the *
+        -:  101:     * memory they use.                                                */
+    #####:  102:    if(!(t->widget->flags & WIDGET_INT))
+    #####:  103:	unbindwidget(t, 1);
+    #####:  104:}
+        -:  105:
+        -:  106:/**/
+        -:  107:static Thingy
+    #####:  108:makethingynode(void)
+        -:  109:{
+    #####:  110:    Thingy t = (Thingy) zshcalloc(sizeof(*t));
+        -:  111:
+    #####:  112:    t->flags = DISABLED;
+    #####:  113:    return t;
+        -:  114:}
+        -:  115:
+        -:  116:/**/
+        -:  117:static void
+    #####:  118:freethingynode(HashNode hn)
+        -:  119:{
+    #####:  120:    Thingy th = (Thingy) hn;
+        -:  121:
+    #####:  122:    zsfree(th->nam);
+    #####:  123:    zfree(th, sizeof(*th));
+    #####:  124:}
+        -:  125:
+        -:  126:/************************/
+        -:  127:/* referencing thingies */
+        -:  128:/************************/
+        -:  129:
+        -:  130:/* It is important to maintain the reference counts on thingies.  When *
+        -:  131: * copying a reference to a thingy, wrap the copy in refthingy(), to   *
+        -:  132: * increase its reference count.  When removing a reference,           *
+        -:  133: * unrefthingy() it.  Both of these functions handle NULL arguments    *
+        -:  134: * correctly.                                                          */
+        -:  135:
+        -:  136:/**/
+        -:  137:mod_export Thingy
+    #####:  138:refthingy(Thingy th)
+        -:  139:{
+    #####:  140:    if(th)
+    #####:  141:	th->rc++;
+    #####:  142:    return th;
+        -:  143:}
+        -:  144:
+        -:  145:/**/
+        -:  146:void
+    #####:  147:unrefthingy(Thingy th)
+        -:  148:{
+    #####:  149:    if(th && !--th->rc)
+    #####:  150:	thingytab->freenode(thingytab->removenode(thingytab, th->nam));
+    #####:  151:}
+        -:  152:
+        -:  153:/* Use rthingy() to turn a string into a thingy.  It increases the reference *
+        -:  154: * count, after creating the thingy structure if necessary.                  */
+        -:  155:
+        -:  156:/**/
+        -:  157:Thingy
+    #####:  158:rthingy(char *nam)
+        -:  159:{
+    #####:  160:    Thingy t = (Thingy) thingytab->getnode2(thingytab, nam);
+        -:  161:
+    #####:  162:    if(!t)
+    #####:  163:	thingytab->addnode(thingytab, ztrdup(nam), t = makethingynode());
+    #####:  164:    return refthingy(t);
+        -:  165:}
+        -:  166:
+        -:  167:/**/
+        -:  168:Thingy
+    #####:  169:rthingy_nocreate(char *nam)
+        -:  170:{
+    #####:  171:    Thingy t = (Thingy) thingytab->getnode2(thingytab, nam);
+        -:  172:
+    #####:  173:    if(!t)
+    #####:  174:	return NULL;
+    #####:  175:    return refthingy(t);
+        -:  176:}
+        -:  177:
+        -:  178:/***********/
+        -:  179:/* widgets */
+        -:  180:/***********/
+        -:  181:
+        -:  182:/*
+        -:  183: * Each widget is attached to one or more thingies.  Each thingy
+        -:  184: * names either zero or one widgets.  Thingies that name a widget
+        -:  185: * are treated as being referenced.  The widget type, flags and pointer
+        -:  186: * are stored in a separate structure pointed to by the thingies.  Each
+        -:  187: * thingy also has a pointer to the `next' thingy (in a circular list)
+        -:  188: * that references the same widget.  The DISABLED flag is unset in these
+        -:  189: * thingies.
+        -:  190: */
+        -:  191:
+        -:  192:/* Bind a widget to a thingy.  The thingy's reference count must already *
+        -:  193: * have been incremented.  The widget may already be bound to other      *
+        -:  194: * thingies; if it is not, then its `first' member must be NULL.  Return *
+        -:  195: * is 0 on success, or -1 if the thingy has the TH_IMMORTAL flag set.    */
+        -:  196:
+        -:  197:/**/
+        -:  198:static int
+    #####:  199:bindwidget(Widget w, Thingy t)
+        -:  200:{
+    #####:  201:    if(t->flags & TH_IMMORTAL) {
+    #####:  202:	unrefthingy(t);
+    #####:  203:	return -1;
+        -:  204:    }
+    #####:  205:    if(!(t->flags & DISABLED)) {
+    #####:  206:	if(t->widget == w)
+    #####:  207:	    return 0;
+    #####:  208:	unbindwidget(t, 1);
+        -:  209:    }
+    #####:  210:    if(w->first) {
+    #####:  211:	t->samew = w->first->samew;
+    #####:  212:	w->first->samew = t;
+        -:  213:    } else {
+    #####:  214:	w->first = t;
+    #####:  215:	t->samew = t;
+        -:  216:    }
+    #####:  217:    t->widget = w;
+    #####:  218:    t->flags &= ~DISABLED;
+    #####:  219:    return 0;
+        -:  220:}
+        -:  221:
+        -:  222:/* Unbind a widget from a thingy.  This decrements the thingy's reference *
+        -:  223: * count.  The widget will be destroyed if this is its last name.         *
+        -:  224: * TH_IMMORTAL thingies won't be touched, unless override is non-zero.    *
+        -:  225: * Returns 0 on success, or -1 if the thingy is protected.  If the thingy *
+        -:  226: * doesn't actually reference a widget, this is considered successful.    */
+        -:  227:
+        -:  228:/**/
+        -:  229:static int
+    #####:  230:unbindwidget(Thingy t, int override)
+        -:  231:{
+        -:  232:    Widget w;
+        -:  233:
+    #####:  234:    if(t->flags & DISABLED)
+    #####:  235:	return 0;
+    #####:  236:    if(!override && (t->flags & TH_IMMORTAL))
+    #####:  237:	return -1;
+    #####:  238:    w = t->widget;
+    #####:  239:    if(t->samew == t)
+    #####:  240:	freewidget(w);
+        -:  241:    else {
+        -:  242:	Thingy p;
+    #####:  243:	for(p = w->first; p->samew != t; p = p->samew) ;
+    #####:  244:	w->first = p;   /* optimised for deletezlefunction() */
+    #####:  245:	p->samew = t->samew;
+        -:  246:    }
+    #####:  247:    t->flags &= ~TH_IMMORTAL;
+    #####:  248:    t->flags |= DISABLED;
+    #####:  249:    unrefthingy(t);
+    #####:  250:    return 0;
+        -:  251:}
+        -:  252:
+        -:  253:/* Free a widget. */
+        -:  254:
+        -:  255:/**/
+        -:  256:void
+    #####:  257:freewidget(Widget w)
+        -:  258:{
+    #####:  259:    if (w->flags & WIDGET_INUSE) {
+    #####:  260:	w->flags |= WIDGET_FREE;
+    #####:  261:	return;
+        -:  262:    }
+        -:  263:
+    #####:  264:    if (w->flags & WIDGET_NCOMP) {
+    #####:  265:	zsfree(w->u.comp.wid);
+    #####:  266:	zsfree(w->u.comp.func);
+    #####:  267:    } else if(!(w->flags & WIDGET_INT))
+    #####:  268:	zsfree(w->u.fnnam);
+    #####:  269:    zfree(w, sizeof(*w));
+        -:  270:}
+        -:  271:
+        -:  272:/* Add an internal widget provided by a module.  The name given is the  *
+        -:  273: * canonical one, which must not begin with a dot.  The widget is first *
+        -:  274: * bound to the dotted canonical name; if that name is already taken by *
+        -:  275: * an internal widget, failure is indicated.  The same widget is then   *
+        -:  276: * bound to the canonical name, and a pointer to the widget structure   *
+        -:  277: * returned.                                                            */
+        -:  278:
+        -:  279:/**/
+        -:  280:mod_export Widget
+    #####:  281:addzlefunction(char *name, ZleIntFunc ifunc, int flags)
+        -:  282:{
+    #####:  283:    VARARR(char, dotn, strlen(name) + 2);
+        -:  284:    Widget w;
+        -:  285:    Thingy t;
+        -:  286:
+    #####:  287:    if(name[0] == '.')
+    #####:  288:	return NULL;
+    #####:  289:    dotn[0] = '.';
+    #####:  290:    strcpy(dotn + 1, name);
+    #####:  291:    t = (Thingy) thingytab->getnode(thingytab, dotn);
+    #####:  292:    if(t && (t->flags & TH_IMMORTAL))
+    #####:  293:	return NULL;
+    #####:  294:    w = zalloc(sizeof(*w));
+    #####:  295:    w->flags = WIDGET_INT | flags;
+    #####:  296:    w->first = NULL;
+    #####:  297:    w->u.fn = ifunc;
+    #####:  298:    t = rthingy(dotn);
+    #####:  299:    bindwidget(w, t);
+    #####:  300:    t->flags |= TH_IMMORTAL;
+    #####:  301:    bindwidget(w, rthingy(name));
+    #####:  302:    return w;
+        -:  303:}
+        -:  304:
+        -:  305:/* Delete an internal widget provided by a module.  Don't try to delete *
+        -:  306: * a widget from the fixed table -- it would be bad.  (Thanks, Egon.)   */
+        -:  307:
+        -:  308:/**/
+        -:  309:mod_export void
+    #####:  310:deletezlefunction(Widget w)
+        -:  311:{
+        -:  312:    Thingy p, n;
+        -:  313:
+    #####:  314:    p = w->first;
+        -:  315:    while(1) {
+    #####:  316:	n = p->samew;
+    #####:  317:	if(n == p) {
+    #####:  318:	    unbindwidget(p, 1);
+    #####:  319:	    return;
+        -:  320:	}
+    #####:  321:	unbindwidget(p, 1);
+    #####:  322:	p = n;
+        -:  323:    }
+        -:  324:}
+        -:  325:
+        -:  326:/***************/
+        -:  327:/* zle builtin */
+        -:  328:/***************/
+        -:  329:
+        -:  330:/*
+        -:  331: * The available operations are:
+        -:  332: *
+        -:  333: *   -l   list widgets/test for existence
+        -:  334: *   -D   delete widget names
+        -:  335: *   -A   link the two named widgets (2 arguments)
+        -:  336: *   -C   create completion widget (3 arguments)
+        -:  337: *   -N   create new user-defined widget (1 or 2 arguments)
+        -:  338: *        invoke a widget (1 argument)
+        -:  339: */
+        -:  340:
+        -:  341:/**/
+        -:  342:int
+    #####:  343:bin_zle(char *name, char **args, Options ops, UNUSED(int func))
+        -:  344:{
+        -:  345:    static struct opn {
+        -:  346:	char o;
+        -:  347:	int (*func) _((char *, char **, Options, char));
+        -:  348:	int min, max;
+        -:  349:    } const opns[] = {
+        -:  350:	{ 'l', bin_zle_list, 0, -1 },
+        -:  351:	{ 'D', bin_zle_del,  1, -1 },
+        -:  352:	{ 'A', bin_zle_link, 2,  2 },
+        -:  353:	{ 'N', bin_zle_new,  1,  2 },
+        -:  354:	{ 'C', bin_zle_complete, 3, 3 },
+        -:  355:	{ 'R', bin_zle_refresh, 0, -1 },
+        -:  356:	{ 'M', bin_zle_mesg, 1, 1 },
+        -:  357:	{ 'U', bin_zle_unget, 1, 1 },
+        -:  358:	{ 'K', bin_zle_keymap, 1, 1 },
+        -:  359:	{ 'I', bin_zle_invalidate, 0, 0 },
+        -:  360:	{ 'f', bin_zle_flags, 1, -1 },
+        -:  361:	{ 'F', bin_zle_fd, 0, 2 },
+        -:  362:	{ 'T', bin_zle_transform, 0, 2},
+        -:  363:	{ 0,   bin_zle_call, 0, -1 },
+        -:  364:    };
+        -:  365:    struct opn const *op, *opp;
+        -:  366:    int n;
+        -:  367:
+        -:  368:    /* select operation and ensure no clashing arguments */
+    #####:  369:    for(op = opns; op->o && !OPT_ISSET(ops,STOUC(op->o)); op++) ;
+    #####:  370:    if(op->o)
+    #####:  371:	for(opp = op; (++opp)->o; )
+    #####:  372:	    if(OPT_ISSET(ops,STOUC(opp->o))) {
+    #####:  373:		zwarnnam(name, "incompatible operation selection options");
+    #####:  374:		return 1;
+        -:  375:	    }
+        -:  376:
+        -:  377:    /* check number of arguments */
+    #####:  378:    for(n = 0; args[n]; n++) ;
+    #####:  379:    if(n < op->min) {
+    #####:  380:	zwarnnam(name, "not enough arguments for -%c", op->o);
+    #####:  381:	return 1;
+    #####:  382:    } else if(op->max != -1 && n > op->max) {
+    #####:  383:	zwarnnam(name, "too many arguments for -%c", op->o);
+    #####:  384:	return 1;
+        -:  385:    }
+        -:  386:
+        -:  387:    /* pass on the work to the operation function */
+    #####:  388:    return op->func(name, args, ops, op->o);
+        -:  389:}
+        -:  390:
+        -:  391:/**/
+        -:  392:static int
+    #####:  393:bin_zle_list(UNUSED(char *name), char **args, Options ops, UNUSED(char func))
+        -:  394:{
+    #####:  395:    if (!*args) {
+    #####:  396:	scanhashtable(thingytab, 1, 0, DISABLED, scanlistwidgets,
+    #####:  397:		      (OPT_ISSET(ops,'a') ? -1 : OPT_ISSET(ops,'L')));
+    #####:  398:	return 0;
+        -:  399:    } else {
+    #####:  400:	int ret = 0;
+        -:  401:	Thingy t;
+        -:  402:
+    #####:  403:	for (; *args && !ret; args++) {
+    #####:  404:	    HashNode hn = thingytab->getnode2(thingytab, *args);
+    #####:  405:	    if (!(t = (Thingy) hn) ||
+    #####:  406:		(!OPT_ISSET(ops,'a') && (t->widget->flags & WIDGET_INT)))
+    #####:  407:		ret = 1;
+    #####:  408:	    else if (OPT_ISSET(ops,'L')) {
+    #####:  409:		scanlistwidgets(hn, 1);
+        -:  410:	    }
+        -:  411:	}
+    #####:  412:	return ret;
+        -:  413:    }
+        -:  414:}
+        -:  415:
+        -:  416:/**/
+        -:  417:static int
+    #####:  418:bin_zle_refresh(UNUSED(char *name), char **args, Options ops, UNUSED(char func))
+        -:  419:{
+    #####:  420:    char *s = statusline;
+    #####:  421:    int ocl = clearlist;
+        -:  422:
+    #####:  423:    if (!zleactive)
+    #####:  424:	return 1;
+    #####:  425:    statusline = NULL;
+    #####:  426:    if (*args) {
+    #####:  427:	if (**args)
+    #####:  428:	    statusline = *args;
+    #####:  429:	if (*++args) {
+    #####:  430:	    LinkList l = newlinklist();
+    #####:  431:	    int zmultsav = zmult;
+        -:  432:
+    #####:  433:	    for (; *args; args++)
+    #####:  434:		addlinknode(l, *args);
+        -:  435:
+    #####:  436:	    zmult = 1;
+    #####:  437:	    listlist(l);
+    #####:  438:	    if (statusline)
+    #####:  439:		lastlistlen++;
+    #####:  440:	    showinglist = clearlist = 0;
+    #####:  441:	    zmult = zmultsav;
+    #####:  442:	} else if (OPT_ISSET(ops,'c')) {
+    #####:  443:	    clearlist = 1;
+    #####:  444:	    lastlistlen = 0;
+        -:  445:	}
+    #####:  446:    } else if (OPT_ISSET(ops,'c')) {
+    #####:  447:	clearlist = listshown = 1;
+    #####:  448:	lastlistlen = 0;
+        -:  449:    }
+    #####:  450:    zrefresh();
+        -:  451:
+    #####:  452:    clearlist = ocl;
+    #####:  453:    statusline = s;
+    #####:  454:    return 0;
+        -:  455:}
+        -:  456:
+        -:  457:/**/
+        -:  458:static int
+    #####:  459:bin_zle_mesg(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  460:{
+    #####:  461:    if (!zleactive) {
+    #####:  462:	zwarnnam(name, "can only be called from widget function");
+    #####:  463:	return 1;
+        -:  464:    }
+    #####:  465:    showmsg(*args);
+    #####:  466:    if (sfcontext != SFC_WIDGET)
+    #####:  467:	zrefresh();
+    #####:  468:    return 0;
+        -:  469:}
+        -:  470:
+        -:  471:/**/
+        -:  472:static int
+    #####:  473:bin_zle_unget(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  474:{
+    #####:  475:    char *b = unmeta(*args), *p = b + strlen(b);
+        -:  476:
+    #####:  477:    if (!zleactive) {
+    #####:  478:	zwarnnam(name, "can only be called from widget function");
+    #####:  479:	return 1;
+        -:  480:    }
+    #####:  481:    while (p > b)
+    #####:  482:	ungetbyte((int) *--p);
+    #####:  483:    return 0;
+        -:  484:}
+        -:  485:
+        -:  486:/**/
+        -:  487:static int
+    #####:  488:bin_zle_keymap(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  489:{
+    #####:  490:    if (!zleactive) {
+    #####:  491:	zwarnnam(name, "can only be called from widget function");
+    #####:  492:	return 1;
+        -:  493:    }
+    #####:  494:    return selectkeymap(*args, 0);
+        -:  495:}
+        -:  496:
+        -:  497:/*
+        -:  498: * List a widget.
+        -:  499: * If list is negative, just print the name.
+        -:  500: * If list is 0, use abbreviated format.
+        -:  501: * If list is positive, output as a command.
+        -:  502: */
+        -:  503:/**/
+        -:  504:static void
+    #####:  505:scanlistwidgets(HashNode hn, int list)
+        -:  506:{
+    #####:  507:    Thingy t = (Thingy) hn;
+    #####:  508:    Widget w = t->widget;
+        -:  509:
+    #####:  510:    if(list < 0) {
+    #####:  511:	printf("%s\n", hn->nam);
+    #####:  512:	return;
+        -:  513:    }
+    #####:  514:    if(w->flags & WIDGET_INT)
+    #####:  515:	return;
+    #####:  516:    if(list) {
+    #####:  517:	printf("zle -%c ", (w->flags & WIDGET_NCOMP) ? 'C' : 'N');
+    #####:  518:	if(t->nam[0] == '-')
+    #####:  519:	    fputs("-- ", stdout);
+    #####:  520:	quotedzputs(t->nam, stdout);
+    #####:  521:	if (w->flags & WIDGET_NCOMP) {
+    #####:  522:	    fputc(' ', stdout);
+    #####:  523:	    quotedzputs(w->u.comp.wid, stdout);
+    #####:  524:	    fputc(' ', stdout);
+    #####:  525:	    quotedzputs(w->u.comp.func, stdout);
+    #####:  526:	} else if(strcmp(t->nam, w->u.fnnam)) {
+    #####:  527:	    fputc(' ', stdout);
+    #####:  528:	    quotedzputs(w->u.fnnam, stdout);
+        -:  529:	}
+        -:  530:    } else {
+    #####:  531:	nicezputs(t->nam, stdout);
+    #####:  532:	if (w->flags & WIDGET_NCOMP) {
+    #####:  533:	    fputs(" -C ", stdout);
+    #####:  534:	    nicezputs(w->u.comp.wid, stdout);
+    #####:  535:	    fputc(' ', stdout);
+    #####:  536:	    nicezputs(w->u.comp.func, stdout);
+    #####:  537:	} else if(strcmp(t->nam, w->u.fnnam)) {
+    #####:  538:	    fputs(" (", stdout);
+    #####:  539:	    nicezputs(w->u.fnnam, stdout);
+    #####:  540:	    fputc(')', stdout);
+        -:  541:	}
+        -:  542:    }
+    #####:  543:    putchar('\n');
+        -:  544:}
+        -:  545:
+        -:  546:/**/
+        -:  547:static int
+    #####:  548:bin_zle_del(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  549:{
+    #####:  550:    int ret = 0;
+        -:  551:
+        -:  552:    do {
+    #####:  553:	Thingy t = (Thingy) thingytab->getnode(thingytab, *args);
+    #####:  554:	if(!t) {
+    #####:  555:	    zwarnnam(name, "no such widget `%s'", *args);
+    #####:  556:	    ret = 1;
+    #####:  557:	} else if(unbindwidget(t, 0)) {
+    #####:  558:	    zwarnnam(name, "widget name `%s' is protected", *args);
+    #####:  559:	    ret = 1;
+        -:  560:	}
+    #####:  561:    } while(*++args);
+    #####:  562:    return ret;
+        -:  563:}
+        -:  564:
+        -:  565:/**/
+        -:  566:static int
+    #####:  567:bin_zle_link(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  568:{
+    #####:  569:    Thingy t = (Thingy) thingytab->getnode(thingytab, args[0]);
+        -:  570:
+    #####:  571:    if(!t) {
+    #####:  572:	zwarnnam(name, "no such widget `%s'", args[0]);
+    #####:  573:	return 1;
+    #####:  574:    } else if(bindwidget(t->widget, rthingy(args[1]))) {
+    #####:  575:	zwarnnam(name, "widget name `%s' is protected", args[1]);
+    #####:  576:	return 1;
+        -:  577:    }
+    #####:  578:    return 0;
+        -:  579:
+        -:  580:}
+        -:  581:
+        -:  582:/**/
+        -:  583:static int
+    #####:  584:bin_zle_new(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  585:{
+    #####:  586:    Widget w = zalloc(sizeof(*w));
+        -:  587:
+    #####:  588:    w->flags = 0;
+    #####:  589:    w->first = NULL;
+    #####:  590:    w->u.fnnam = ztrdup(args[1] ? args[1] : args[0]);
+    #####:  591:    if(!bindwidget(w, rthingy(args[0])))
+    #####:  592:	return 0;
+    #####:  593:    freewidget(w);
+    #####:  594:    zwarnnam(name, "widget name `%s' is protected", args[0]);
+    #####:  595:    return 1;
+        -:  596:}
+        -:  597:
+        -:  598:/**/
+        -:  599:static int
+    #####:  600:bin_zle_complete(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  601:{
+        -:  602:    Thingy t;
+        -:  603:    Widget w, cw;
+        -:  604:
+    #####:  605:    if (require_module("zsh/complete", NULL, 0) == 1) {
+    #####:  606:	zwarnnam(name, "can't load complete module");
+    #####:  607:	return 1;
+        -:  608:    }
+    #####:  609:    t = rthingy((args[1][0] == '.') ? args[1] : dyncat(".", args[1]));
+    #####:  610:    cw = t->widget;
+    #####:  611:    unrefthingy(t);
+    #####:  612:    if (!cw || !(cw->flags & ZLE_ISCOMP)) {
+    #####:  613:	zwarnnam(name, "invalid widget `%s'", args[1]);
+    #####:  614:	return 1;
+        -:  615:    }
+    #####:  616:    w = zalloc(sizeof(*w));
+    #####:  617:    w->flags = WIDGET_NCOMP|ZLE_MENUCMP|ZLE_KEEPSUFFIX;
+    #####:  618:    w->first = NULL;
+    #####:  619:    w->u.comp.fn = cw->u.fn;
+    #####:  620:    w->u.comp.wid = ztrdup(args[1]);
+    #####:  621:    w->u.comp.func = ztrdup(args[2]);
+    #####:  622:    if (bindwidget(w, rthingy(args[0]))) {
+    #####:  623:	freewidget(w);
+    #####:  624:	zwarnnam(name, "widget name `%s' is protected", args[0]);
+    #####:  625:	return 1;
+        -:  626:    }
+    #####:  627:    hascompwidgets++;
+        -:  628:
+    #####:  629:    return 0;
+        -:  630:}
+        -:  631:
+        -:  632:/**/
+        -:  633:static int
+    #####:  634:zle_usable(void)
+        -:  635:{
+    #####:  636:    return zleactive && !incompctlfunc && !incompfunc
+        -:  637:#if 0
+        -:  638:	/*
+        -:  639:	 * PWS experiment: commenting this out allows zle widgets
+        -:  640:	 * in signals, hooks etc.  I'm not sure if this has a down side;
+        -:  641:	 * it ought to be that zleactive is good enough to test whether
+        -:  642:	 * widgets are callable.
+        -:  643:	 */
+        -:  644:	&& sfcontext == SFC_WIDGET
+        -:  645:#endif
+        -:  646:	   ;
+        -:  647:}
+        -:  648:
+        -:  649:/**/
+        -:  650:static int
+    #####:  651:bin_zle_flags(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  652:{
+    #####:  653:    int ret = 0;
+        -:  654:    char **flag;
+        -:  655:
+    #####:  656:    if (!zle_usable()) {
+    #####:  657:	zwarnnam(name, "can only set flags from a widget");
+    #####:  658:	return 1;
+        -:  659:    }
+        -:  660:
+    #####:  661:    if (bindk) {
+    #####:  662:	Widget w = bindk->widget;
+    #####:  663:	if (w) {
+    #####:  664:	    for (flag = args; *flag; flag++) {
+    #####:  665:		if (!strcmp(*flag, "yank")) {
+    #####:  666:		    w->flags |= ZLE_YANKAFTER;
+    #####:  667:		} else if (!strcmp(*flag, "yankbefore"))
+    #####:  668:		    w->flags |= ZLE_YANKBEFORE;
+    #####:  669:		else if (!strcmp(*flag, "kill"))
+    #####:  670:		    w->flags |= ZLE_KILL;
+        -:  671:		/*
+        -:  672:		 * These won't do anything yet, because of how execzlefunc
+        -:  673:		 * handles user widgets
+        -:  674:		} else if (!strcmp(*flag, "menucmp"))
+        -:  675:		    w->flags |= ZLE_MENUCMP;
+        -:  676:		else if (!strcmp(*flag, "linemove"))
+        -:  677:		    w->flags |= ZLE_LINEMOVE;
+        -:  678:		else if (!strcmp(*flag, "keepsuffix"))
+        -:  679:		    w->flags |= ZLE_KEEPSUFFIX;
+        -:  680:		*/
+        -:  681:		/* If you add magic strings here, be consistent with bin_zle_call() */
+    #####:  682:	        else if (!strcmp(*flag, "vichange")) {
+    #####:  683:		    if (invicmdmode()) {
+    #####:  684:			startvichange(-1);
+    #####:  685:			if (zmod.flags & (MOD_MULT|MOD_TMULT)) {
+    #####:  686:			    Param pm = (Param) paramtab->getnode(paramtab, "NUMERIC");
+    #####:  687:			    if (pm && pm->node.flags & PM_SPECIAL)
+    #####:  688:				pm->node.flags &= ~PM_UNSET;
+        -:  689:			}
+        -:  690:		    }
+        -:  691:		} else {
+    #####:  692:		    zwarnnam(name, "invalid flag `%s' given to zle -f", *flag);
+    #####:  693:		    ret = 1;
+        -:  694:		}
+        -:  695:	    }
+        -:  696:	}
+        -:  697:    }
+    #####:  698:    return ret;
+        -:  699:}
+        -:  700:
+        -:  701:/**/
+        -:  702:static int
+    #####:  703:bin_zle_call(char *name, char **args, UNUSED(Options ops), UNUSED(char func))
+        -:  704:{
+        -:  705:    Thingy t;
+    #####:  706:    struct modifier modsave = zmod;
+    #####:  707:    int ret, saveflag = 0, setbindk = 0, setlbindk = 0, remetafy;
+    #####:  708:    char *wname = *args++, *keymap_restore = NULL, *keymap_tmp;
+        -:  709:
+    #####:  710:    if (!wname)
+    #####:  711:	return !zle_usable();
+        -:  712:
+    #####:  713:    if(!zle_usable()) {
+    #####:  714:	zwarnnam(name, "widgets can only be called when ZLE is active");
+    #####:  715:	return 1;
+        -:  716:    }
+        -:  717:
+        -:  718:    /*
+        -:  719:     * zle is callable in traps, so we can't be sure the line is
+        -:  720:     * in its normal state.
+        -:  721:     */
+    #####:  722:    if (zlemetaline) {
+    #####:  723:	unmetafy_line();
+    #####:  724:	remetafy = 1;
+        -:  725:    } else
+    #####:  726:	remetafy = 0;
+        -:  727:
+    #####:  728:    while (*args && **args == '-') {
+    #####:  729:	char skip_this_arg[2] = "x";
+        -:  730:	char *num;
+        -:  731:	char *flag;
+    #####:  732:	if (!args[0][1] || args[0][1] == '-') {
+    #####:  733:	    args++;
+    #####:  734:	    break;
+        -:  735:	}
+    #####:  736:	while (*++(*args)) {
+    #####:  737:	    switch (**args) {
+    #####:  738:	    case 'f':
+    #####:  739:		flag = args[0][1] ? args[0]+1 : args[1];
+    #####:  740:		if (flag == NULL || strcmp(flag, "nolast")) {
+    #####:  741:		    zwarnnam(name, "%s", "'nolast' expected after -f");
+    #####:  742:		    if (remetafy)
+    #####:  743:			metafy_line();
+    #####:  744:		    return 1;
+        -:  745:		}
+    #####:  746:		if (!args[0][1])
+    #####:  747:		    *++args = skip_this_arg;
+        -:  748:		/* If you add magic strings here, be consistent with bin_zle_flags() */
+    #####:  749:		setlbindk = 1;
+    #####:  750:		break;
+    #####:  751:	    case 'n':
+    #####:  752:		num = args[0][1] ? args[0]+1 : args[1];
+    #####:  753:		if (!num) {
+    #####:  754:		    zwarnnam(name, "number expected after -%c", **args);
+    #####:  755:		    if (remetafy)
+    #####:  756:			metafy_line();
+    #####:  757:		    return 1;
+        -:  758:		}
+    #####:  759:		if (!args[0][1])
+    #####:  760:		    *++args = skip_this_arg;
+    #####:  761:		saveflag = 1;
+    #####:  762:		zmod.mult = atoi(num);
+    #####:  763:		zmod.flags |= MOD_MULT;
+    #####:  764:		break;
+    #####:  765:	    case 'N':
+    #####:  766:		saveflag = 1;
+    #####:  767:		zmod.mult = 1;
+    #####:  768:		zmod.flags &= ~MOD_MULT;
+    #####:  769:		break;
+    #####:  770:	    case 'K':
+    #####:  771:		keymap_tmp = args[0][1] ? args[0]+1 : args[1];
+    #####:  772:		if (!keymap_tmp) {
+    #####:  773:		    zwarnnam(name, "keymap expected after -%c", **args);
+    #####:  774:		    if (remetafy)
+    #####:  775:			metafy_line();
+    #####:  776:		    return 1;
+        -:  777:		}
+    #####:  778:		if (!args[0][1])
+    #####:  779:		    *++args = skip_this_arg;
+    #####:  780:		keymap_restore = dupstring(curkeymapname);
+    #####:  781:		if (selectkeymap(keymap_tmp, 0)) {
+    #####:  782:		    if (remetafy)
+    #####:  783:			metafy_line();
+    #####:  784:		    return 1;
+        -:  785:		}
+    #####:  786:		break;
+    #####:  787:	    case 'w':
+    #####:  788:		setbindk = 1;
+    #####:  789:		break;
+    #####:  790:	    default:
+    #####:  791:		zwarnnam(name, "unknown option: %s", *args);
+    #####:  792:		if (remetafy)
+    #####:  793:		    metafy_line();
+    #####:  794:		return 1;
+        -:  795:	    }
+        -:  796:	}
+    #####:  797:	args++;
+        -:  798:    }
+        -:  799:
+    #####:  800:    t = rthingy(wname);
+        -:  801:    /* for internal widgets we set bindk except for when getting
+        -:  802:     * a vi range to detect a repeated key */
+    #####:  803:    setbindk = setbindk ||
+    #####:  804:	(t->widget && (t->widget->flags & (WIDGET_INT | ZLE_VIOPER)) == WIDGET_INT);
+    #####:  805:    setlbindk |= t->widget && (t->widget->flags & ZLE_NOLAST) == ZLE_NOLAST;
+    #####:  806:    ret = execzlefunc(t, args, setbindk, setlbindk);
+    #####:  807:    unrefthingy(t);
+    #####:  808:    if (saveflag)
+    #####:  809:	zmod = modsave;
+    #####:  810:    if (keymap_restore)
+    #####:  811:	selectkeymap(keymap_restore, 0);
+    #####:  812:    if (remetafy)
+    #####:  813:	metafy_line();
+    #####:  814:    return ret;
+        -:  815:}
+        -:  816:
+        -:  817:
+        -:  818:/*
+        -:  819: * Flag that the user has requested the terminal be trashed
+        -:  820: * for whatever use.  We attempt to keep the tty settings in
+        -:  821: * this mode synced with the normal (non-zle) settings unless
+        -:  822: * they are frozen.
+        -:  823: */
+        -:  824:
+        -:  825:/**/
+        -:  826:int fetchttyinfo;
+        -:  827:
+        -:  828:/**/
+        -:  829:static int
+    #####:  830:bin_zle_invalidate(UNUSED(char *name), UNUSED(char **args), UNUSED(Options ops), UNUSED(char func))
+        -:  831:{
+        -:  832:    /*
+        -:  833:     * Trash zle if trashable, but only indicate that zle is usable
+        -:  834:     * if it's possible to call a zle widget next.  This is not
+        -:  835:     * true if a completion widget is active.
+        -:  836:     */
+    #####:  837:    if (zleactive) {
+    #####:  838:	int wastrashed = trashedzle;
+    #####:  839:	trashzle();
+    #####:  840:	if (!wastrashed && (zlereadflags & ZLRF_NOSETTY)) {
+        -:  841:	    /*
+        -:  842:	     * We normally wouldn't have restored the terminal
+        -:  843:	     * in this case, but as it's at user request we do
+        -:  844:	     * so (hence the apparently illogical sense of the
+        -:  845:	     * second part of the test).
+        -:  846:	     */
+    #####:  847:	    settyinfo(&shttyinfo);
+        -:  848:	}
+    #####:  849:	fetchttyinfo = 1;
+    #####:  850:	return 0;
+        -:  851:    } else
+    #####:  852:	return 1;
+        -:  853:}
+        -:  854:
+        -:  855:/**/
+        -:  856:static int
+    #####:  857:bin_zle_fd(char *name, char **args, Options ops, UNUSED(char func))
+        -:  858:{
+    #####:  859:    int fd = 0, i, found = 0;
+        -:  860:    char *endptr;
+        -:  861:
+    #####:  862:    if (*args) {
+    #####:  863:	fd = (int)zstrtol(*args, &endptr, 10);
+        -:  864:
+    #####:  865:	if (*endptr || fd < 0) {
+    #####:  866:	    zwarnnam(name, "Bad file descriptor number for -F: %s", *args);
+    #####:  867:	    return 1;
+        -:  868:	}
+        -:  869:    }
+        -:  870:
+    #####:  871:    if (OPT_ISSET(ops,'L') || !*args) {
+        -:  872:	/* Listing handlers. */
+    #####:  873:	if (*args && args[1]) {
+    #####:  874:	    zwarnnam(name, "too many arguments for -FL");
+    #####:  875:	    return 1;
+        -:  876:	}
+    #####:  877:	for (i = 0; i < nwatch; i++) {
+    #####:  878:	    Watch_fd watch_fd = watch_fds + i;
+    #####:  879:	    if (*args && watch_fd->fd != fd)
+    #####:  880:		continue;
+    #####:  881:	    found = 1;
+    #####:  882:	    printf("%s -F %s%d %s\n", name, watch_fd->widget ? "-w " : "",
+        -:  883:		   watch_fd->fd, watch_fd->func);
+        -:  884:	}
+        -:  885:	/* only return status 1 if fd given and not found */
+    #####:  886:	return *args && !found;
+        -:  887:    }
+        -:  888:
+    #####:  889:    if (args[1]) {
+        -:  890:	/* Adding or replacing a handler */
+    #####:  891:	char *funcnam = ztrdup(args[1]);
+    #####:  892:	if (nwatch) {
+    #####:  893:	    for (i = 0; i < nwatch; i++) {
+    #####:  894:		Watch_fd watch_fd = watch_fds + i;
+    #####:  895:		if (watch_fd->fd == fd) {
+    #####:  896:		    zsfree(watch_fd->func);
+    #####:  897:		    watch_fd->func = funcnam;
+    #####:  898:		    watch_fd->widget = OPT_ISSET(ops,'w') ? 1 : 0;
+    #####:  899:		    found = 1;
+    #####:  900:		    break;
+        -:  901:		}
+        -:  902:	    }
+        -:  903:	}
+    #####:  904:	if (!found) {
+        -:  905:	    /* zrealloc handles NULL pointers, so OK for first time through */
+    #####:  906:	    int newnwatch = nwatch+1;
+        -:  907:	    Watch_fd new_fd;
+    #####:  908:	    watch_fds = (Watch_fd)zrealloc(watch_fds, 
+        -:  909:					   newnwatch * sizeof(struct watch_fd));
+    #####:  910:	    new_fd = watch_fds + nwatch;
+    #####:  911:	    new_fd->fd = fd;
+    #####:  912:	    new_fd->func = funcnam;
+    #####:  913:	    new_fd->widget = OPT_ISSET(ops,'w') ? 1 : 0;
+    #####:  914:	    nwatch = newnwatch;
+        -:  915:	}
+        -:  916:    } else {
+        -:  917:	/* Deleting a handler */
+    #####:  918:	for (i = 0; i < nwatch; i++) {
+    #####:  919:	    Watch_fd watch_fd = watch_fds + i;
+    #####:  920:	    if (watch_fd->fd == fd) {
+    #####:  921:		int newnwatch = nwatch-1;
+        -:  922:		Watch_fd new_fds;
+        -:  923:
+    #####:  924:		zsfree(watch_fd->func);
+    #####:  925:		if (newnwatch) {
+    #####:  926:		    new_fds = zalloc(newnwatch*sizeof(struct watch_fd));
+    #####:  927:		    if (i) {
+    #####:  928:			memcpy(new_fds, watch_fds, i*sizeof(struct watch_fd));
+        -:  929:		    }
+    #####:  930:		    if (i < newnwatch) {
+    #####:  931:			memcpy(new_fds+i, watch_fds+i+1,
+    #####:  932:			       (newnwatch-i)*sizeof(struct watch_fd));
+        -:  933:		    }
+        -:  934:		} else {
+    #####:  935:		    new_fds = NULL;
+        -:  936:		}
+    #####:  937:		zfree(watch_fds, nwatch*sizeof(struct watch_fd));
+    #####:  938:		watch_fds = new_fds;
+    #####:  939:		nwatch = newnwatch;
+    #####:  940:		found = 1;
+    #####:  941:		break;
+        -:  942:	    }
+        -:  943:	}
+    #####:  944:	if (!found) {
+    #####:  945:	    zwarnnam(name, "No handler installed for fd %d", fd);
+    #####:  946:	    return 1;
+        -:  947:	}
+        -:  948:    }
+        -:  949:
+    #####:  950:    return 0;
+        -:  951:}
+        -:  952:
+        -:  953:/**/
+        -:  954:static int
+    #####:  955:bin_zle_transform(char *name, char **args, Options ops, UNUSED(char func))
+        -:  956:{
+        -:  957:    /*
+        -:  958:     * -1: too few arguments
+        -:  959:     * 0: just right
+        -:  960:     * 1: too many arguments
+        -:  961:     * 2: first argument not recognised
+        -:  962:     */
+    #####:  963:    int badargs = 0;
+        -:  964:
+    #####:  965:    if (OPT_ISSET(ops,'L')) {
+    #####:  966:	if (args[0]) {
+    #####:  967:	    if (args[1]) {
+    #####:  968:		badargs = 1;
+    #####:  969:	    } else if (strcmp(args[0], "tc")) {
+    #####:  970:		badargs = 2;
+        -:  971:	    }
+        -:  972:	}
+    #####:  973:	if (!badargs && tcout_func_name) {
+    #####:  974:	    fputs("zle -T tc ", stdout);
+    #####:  975:	    quotedzputs(tcout_func_name, stdout);
+    #####:  976:	    putchar('\n');
+        -:  977:	}
+    #####:  978:    } else if (OPT_ISSET(ops,'r')) {
+    #####:  979:	if (!args[0]) {
+    #####:  980:	    badargs = -1;
+    #####:  981:	} else if (args[1]) {
+    #####:  982:	    badargs = 1;
+    #####:  983:	} else if (tcout_func_name) {
+    #####:  984:	    zsfree(tcout_func_name);
+    #####:  985:	    tcout_func_name = NULL;
+        -:  986:	}
+        -:  987:    } else {
+    #####:  988:	if (!args[0] || !args[1]) {
+    #####:  989:	    badargs = -1;
+        -:  990:	    /* we've already checked args <= 2 */
+        -:  991:	} else {
+    #####:  992:	    if (!strcmp(args[0], "tc")) {
+    #####:  993:		if (tcout_func_name) {
+    #####:  994:		    zsfree(tcout_func_name);
+        -:  995:		}
+    #####:  996:		tcout_func_name = ztrdup(args[1]);
+        -:  997:	    } else {
+    #####:  998:		badargs = 2;
+        -:  999:	    }
+        -: 1000:	}
+        -: 1001:    }
+        -: 1002:
+    #####: 1003:    if (badargs) {
+    #####: 1004:	if (badargs == 2) {
+    #####: 1005:	    zwarnnam(name, "-T: no such transformation '%s'", args[0]);
+        -: 1006:	} else {
+    #####: 1007:	    char *way = (badargs > 0) ? "many" : "few";
+    #####: 1008:	    zwarnnam(name, "too %s arguments for option -T", way);
+        -: 1009:	}
+    #####: 1010:	return 1;
+        -: 1011:    }
+        -: 1012:
+    #####: 1013:    return 0;
+        -: 1014:}
+        -: 1015:
+        -: 1016:/*******************/
+        -: 1017:/* initialiasation */
+        -: 1018:/*******************/
+        -: 1019:
+        -: 1020:/**/
+        -: 1021:void
+    #####: 1022:init_thingies(void)
+        -: 1023:{
+        -: 1024:    Thingy t;
+        -: 1025:
+    #####: 1026:    createthingytab();
+    #####: 1027:    for(t = thingies; t->nam; t++)
+    #####: 1028:	thingytab->addnode(thingytab, t->nam, t);
+    #####: 1029:}

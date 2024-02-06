@@ -1,0 +1,945 @@
+        -:    0:Source:zpty.c
+        -:    0:Graph:/home/workspace/Src/Modules/zpty.gcno
+        -:    0:Data:/home/workspace/Src/Modules/zpty.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zpty.c - sub-processes with pseudo terminals
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 2000 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zpty.mdh"
+        -:   31:#include "zpty.pro"
+        -:   32:
+        -:   33:#ifdef __CYGWIN__
+        -:   34:#include <cygwin/version.h>
+        -:   35:#if defined(CYGWIN_VERSION_DLL_MAJOR) && CYGWIN_VERSION_DLL_MAJOR<3002
+        -:   36:#define USE_CYGWIN_FIX 1
+        -:   37:#endif
+        -:   38:#endif
+        -:   39:
+        -:   40:/* The number of bytes we normally read when given no pattern and the
+        -:   41: * upper bound on the number of bytes we read (even if we are give a
+        -:   42: * pattern). */
+        -:   43:
+        -:   44:#define READ_MAX (1024 * 1024)
+        -:   45:
+        -:   46:typedef struct ptycmd *Ptycmd;
+        -:   47:
+        -:   48:struct ptycmd {
+        -:   49:    Ptycmd next;
+        -:   50:    char *name;
+        -:   51:    char **args;
+        -:   52:    int fd;
+        -:   53:    int pid;
+        -:   54:    int echo;
+        -:   55:    int nblock;
+        -:   56:    int fin;
+        -:   57:    int read;
+        -:   58:    char *old;
+        -:   59:    int olen;
+        -:   60:};
+        -:   61:
+        -:   62:static Ptycmd ptycmds;
+        -:   63:
+        -:   64:static int
+    #####:   65:ptynonblock(int fd)
+        -:   66:{
+        -:   67:#ifdef O_NDELAY
+        -:   68:# ifdef O_NONBLOCK
+        -:   69:#  define NONBLOCK (O_NDELAY|O_NONBLOCK)
+        -:   70:# else /* !O_NONBLOCK */
+        -:   71:#  define NONBLOCK O_NDELAY
+        -:   72:# endif /* !O_NONBLOCK */
+        -:   73:#else /* !O_NDELAY */
+        -:   74:# ifdef O_NONBLOCK
+        -:   75:#  define NONBLOCK O_NONBLOCK
+        -:   76:# else /* !O_NONBLOCK */
+        -:   77:#  define NONBLOCK 0
+        -:   78:# endif /* !O_NONBLOCK */
+        -:   79:#endif /* !O_NDELAY */
+        -:   80:
+        -:   81:#if NONBLOCK
+        -:   82:    long mode;
+        -:   83:
+    #####:   84:    mode = fcntl(fd, F_GETFL, 0);
+    #####:   85:    if (mode != -1 && !(mode & NONBLOCK) &&
+    #####:   86:	!fcntl(fd, F_SETFL, mode | NONBLOCK))
+    #####:   87:	return 1;
+        -:   88:
+        -:   89:#endif /* NONBLOCK */
+    #####:   90:    return 0;
+        -:   91:
+        -:   92:#undef NONBLOCK
+        -:   93:}
+        -:   94:
+        -:   95:/**/
+        -:   96:static int
+    #####:   97:ptygettyinfo(int fd, struct ttyinfo *ti)
+        -:   98:{
+    #####:   99:    if (fd != -1) {
+        -:  100:#ifdef HAVE_TERMIOS_H
+        -:  101:# ifdef HAVE_TCGETATTR
+    #####:  102:	if (tcgetattr(fd, &ti->tio) == -1)
+        -:  103:# else
+        -:  104:	if (ioctl(fd, TCGETS, &ti->tio) == -1)
+        -:  105:# endif
+    #####:  106:	    return 1;
+        -:  107:#else
+        -:  108:# ifdef HAVE_TERMIO_H
+        -:  109:	ioctl(fd, TCGETA, &ti->tio);
+        -:  110:# else
+        -:  111:	ioctl(fd, TIOCGETP, &ti->sgttyb);
+        -:  112:	ioctl(fd, TIOCLGET, &ti->lmodes);
+        -:  113:	ioctl(fd, TIOCGETC, &ti->tchars);
+        -:  114:	ioctl(fd, TIOCGLTC, &ti->ltchars);
+        -:  115:# endif
+        -:  116:#endif
+    #####:  117:	return 0;
+        -:  118:    }
+    #####:  119:    return 1;
+        -:  120:}
+        -:  121:
+        -:  122:/**/
+        -:  123:static void
+    #####:  124:ptysettyinfo(int fd, struct ttyinfo *ti)
+        -:  125:{
+    #####:  126:    if (fd != -1) {
+        -:  127:#ifdef HAVE_TERMIOS_H
+        -:  128:# ifdef HAVE_TCGETATTR
+        -:  129:#  ifndef TCSADRAIN
+        -:  130:#   define TCSADRAIN 1	/* XXX Princeton's include files are screwed up */
+        -:  131:#  endif
+    #####:  132:	tcsetattr(fd, TCSADRAIN, &ti->tio);
+        -:  133:    /* if (tcsetattr(SHTTY, TCSADRAIN, &ti->tio) == -1) */
+        -:  134:# else
+        -:  135:	ioctl(fd, TCSETS, &ti->tio);
+        -:  136:    /* if (ioctl(SHTTY, TCSETS, &ti->tio) == -1) */
+        -:  137:# endif
+        -:  138:	/*	zerr("settyinfo: %e",errno)*/ ;
+        -:  139:#else
+        -:  140:# ifdef HAVE_TERMIO_H
+        -:  141:	ioctl(fd, TCSETA, &ti->tio);
+        -:  142:# else
+        -:  143:	ioctl(fd, TIOCSETN, &ti->sgttyb);
+        -:  144:	ioctl(fd, TIOCLSET, &ti->lmodes);
+        -:  145:	ioctl(fd, TIOCSETC, &ti->tchars);
+        -:  146:	ioctl(fd, TIOCSLTC, &ti->ltchars);
+        -:  147:# endif
+        -:  148:#endif
+        -:  149:    }
+    #####:  150:}
+        -:  151:
+        -:  152:static Ptycmd
+    #####:  153:getptycmd(char *name)
+        -:  154:{
+        -:  155:    Ptycmd p;
+        -:  156:
+    #####:  157:    for (p = ptycmds; p; p = p->next)
+    #####:  158:	if (!strcmp(p->name, name))
+    #####:  159:	    return p;
+        -:  160:
+    #####:  161:    return NULL;
+        -:  162:}
+        -:  163:
+        -:  164:/* posix_openpt() seems to have some problem on OpenBSD */
+        -:  165:#if defined(USE_DEV_PTMX) && !defined(__OpenBSD__)
+        -:  166:
+        -:  167:#ifdef HAVE_SYS_STROPTS_H
+        -:  168:#include <sys/stropts.h>
+        -:  169:#endif
+        -:  170:
+        -:  171:#if defined(I_FIND) && defined(I_PUSH)
+        -:  172:/*
+        -:  173: * These tests are ad hoc.  Unfortunately if you get the wrong ioctl,
+        -:  174: * STREAMS simply hangs up, so there's no obvious way of doing this
+        -:  175: * more systematically.
+        -:  176: *
+        -:  177: * Apparently Solaris needs all three ioctls, but HP-UX doesn't need
+        -:  178: * ttcompat.  The Solaris definition has been extended to all __SVR4
+        -:  179: * as a guess; I have no idea if this is right.
+        -:  180: */
+        -:  181:#ifdef __SVR4
+        -:  182:#define USE_STREAMS_IOCTLS
+        -:  183:#define USE_STREAMS_TTCOMPAT
+        -:  184:#endif
+        -:  185:#ifdef __hpux
+        -:  186:#define USE_STREAMS_IOCTLS
+        -:  187:#endif
+        -:  188:#endif
+        -:  189:
+        -:  190:static int
+    #####:  191:get_pty(int master, int *retfd)
+        -:  192:{
+        -:  193:    static char *name;
+        -:  194:    static int mfd, sfd;
+        -:  195:#ifdef USE_STREAMS_IOCTLS
+        -:  196:    int ret;
+        -:  197:#endif
+        -:  198:
+    #####:  199:    if (master) {
+        -:  200:#ifdef HAVE_POSIX_OPENPT
+    #####:  201:	if ((mfd = posix_openpt(O_RDWR|O_NOCTTY)) < 0)
+        -:  202:#else
+        -:  203:	if ((mfd = open("/dev/ptmx", O_RDWR|O_NOCTTY)) < 0)
+        -:  204:#endif
+    #####:  205:	    return 1;
+        -:  206:
+    #####:  207:	if (grantpt(mfd) || unlockpt(mfd) || !(name = ptsname(mfd))) {
+    #####:  208:	    close(mfd);
+    #####:  209:	    return 1;
+        -:  210:	}
+    #####:  211:	*retfd = mfd;
+        -:  212:
+    #####:  213:	return 0;
+        -:  214:    }
+    #####:  215:    if ((sfd = open(name, O_RDWR
+        -:  216:#ifndef __CYGWIN__
+        -:  217:		    /* It is not clear whether this flag is actually needed. */
+        -:  218:		    |O_NOCTTY
+        -:  219:#endif
+        -:  220:	)) < 0) {
+    #####:  221:	close(mfd);
+    #####:  222:	return 1;
+        -:  223:    }
+        -:  224:#ifdef USE_STREAMS_IOCTLS
+        -:  225:    if ((ret = ioctl(sfd, I_FIND, "ptem")) != 1)
+        -:  226:       if (ret == -1 || ioctl(sfd, I_PUSH, "ptem") == -1) {
+        -:  227:	   close(mfd);
+        -:  228:	   close(sfd);
+        -:  229:	   return 1;
+        -:  230:       }
+        -:  231:    if ((ret = ioctl(sfd, I_FIND, "ldterm")) != 1)
+        -:  232:       if (ret == -1 || ioctl(sfd, I_PUSH, "ldterm") == -1) {
+        -:  233:	   close(mfd);
+        -:  234:	   close(sfd);
+        -:  235:	   return 1;
+        -:  236:       }
+        -:  237:#ifdef USE_STREAMS_TTCOMPAT
+        -:  238:    if ((ret = ioctl(sfd, I_FIND, "ttcompat")) != 1)
+        -:  239:       if (ret == -1 || ioctl(sfd, I_PUSH, "ttcompat") == -1) {
+        -:  240:	   close(mfd);
+        -:  241:	   close(sfd);
+        -:  242:	   return 1;
+        -:  243:       }
+        -:  244:#endif
+        -:  245:#endif
+        -:  246:
+    #####:  247:    *retfd = sfd;
+        -:  248:
+    #####:  249:    return 0;
+        -:  250:}
+        -:  251:
+        -:  252:#else /* No /dev/ptmx or no pt functions */
+        -:  253:
+        -:  254:static int
+        -:  255:get_pty(int master, int *retfd)
+        -:  256:{
+        -:  257:
+        -:  258:#ifdef __linux
+        -:  259:    static char char1[] = "abcdefghijklmnopqrstuvwxyz";
+        -:  260:    static char char2[] = "0123456789abcdef";
+        -:  261:#elif defined(__FreeBSD__) || defined(__DragonFly__)
+        -:  262:    static char char1[] = "pqrsPQRS";
+        -:  263:    static char char2[] = "0123456789abcdefghijklmnopqrstuv";
+        -:  264:#elif defined(__OpenBSD__)
+        -:  265:    static char char1[] = "pqrstuvwxyzPQRST";
+        -:  266:    static char char2[] = "0123456789"
+        -:  267:                          "abcdefghijklmnopqrstuvwxyz"
+        -:  268:                          "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        -:  269:#else /* __FreeBSD__ || __DragonFly__  || __OpenBSD*/
+        -:  270:    static char char1[] = "pqrstuvwxyzPQRST";
+        -:  271:    static char char2[] = "0123456789abcdef";
+        -:  272:#endif
+        -:  273:
+        -:  274:    static char name[11];
+        -:  275:    static int mfd, sfd;
+        -:  276:    char *p1, *p2;
+        -:  277:
+        -:  278:    if (master) {
+        -:  279:	strcpy(name, "/dev/ptyxx");
+        -:  280:#if defined(__BEOS__) || defined(__HAIKU__)
+        -:  281:	name[7] = '/';
+        -:  282:#endif
+        -:  283:
+        -:  284:	for (p1 = char1; *p1; p1++) {
+        -:  285:	    name[8] = *p1;
+        -:  286:	    for (p2 = char2; *p2; p2++) {
+        -:  287:		name[9] = *p2;
+        -:  288:		if ((mfd = open(name, O_RDWR|O_NOCTTY)) >= 0) {
+        -:  289:		    *retfd = mfd;
+        -:  290:
+        -:  291:		    return 0;
+        -:  292:		}
+        -:  293:	    }
+        -:  294:	}
+        -:  295:    }
+        -:  296:    name[5] = 't';
+        -:  297:    if ((sfd = open(name, O_RDWR|O_NOCTTY)) >= 0) {
+        -:  298:	*retfd = sfd;
+        -:  299:
+        -:  300:	return 0;
+        -:  301:    }
+        -:  302:    close(mfd);
+        -:  303:
+        -:  304:    return 1;
+        -:  305:}
+        -:  306:
+        -:  307:#endif /* /dev/ptmx or alternatives */
+        -:  308:
+        -:  309:static int
+    #####:  310:newptycmd(char *nam, char *pname, char **args, int echo, int nblock)
+        -:  311:{
+        -:  312:    Ptycmd p;
+    #####:  313:    int master, slave, pid, oineval = ineval, ret;
+    #####:  314:    char *oscriptname = scriptname, syncch;
+        -:  315:    Eprog prog;
+        -:  316:
+        -:  317:    /* code borrowed from bin_eval() */
+    #####:  318:    ineval = !isset(EVALLINENO);
+    #####:  319:    if (!ineval)
+    #####:  320:	scriptname = "(zpty)";
+        -:  321:
+    #####:  322:    prog = parse_string(zjoin(args, ' ', 1), 0);
+    #####:  323:    if (!prog) {
+    #####:  324:	errflag &= ~ERRFLAG_ERROR;
+    #####:  325:	scriptname = oscriptname;
+    #####:  326:	ineval = oineval;
+    #####:  327:	return 1;
+        -:  328:    }
+        -:  329:
+    #####:  330:    if (get_pty(1, &master)) {
+    #####:  331:	zwarnnam(nam, "can't open pseudo terminal: %e", errno);
+    #####:  332:	scriptname = oscriptname;
+    #####:  333:	ineval = oineval;
+    #####:  334:	return 1;
+        -:  335:    }
+    #####:  336:    if ((pid = fork()) == -1) {
+    #####:  337:	zwarnnam(nam, "can't create pty command %s: %e", pname, errno);
+    #####:  338:	close(master);
+    #####:  339:	scriptname = oscriptname;
+    #####:  340:	ineval = oineval;
+    #####:  341:	return 1;
+    #####:  342:    } else if (!pid) {
+        -:  343:	/* This code copied from the clone module, except for getting *
+        -:  344:	 * the descriptor from get_pty() and duplicating it to 0/1/2. */
+        -:  345:
+    #####:  346:	deletehookfunc("exit", ptyhook);
+    #####:  347:	clearjobtab(0);
+    #####:  348:	ppid = getppid();
+    #####:  349:	mypid = getpid();
+        -:  350:#ifdef HAVE_SETSID
+    #####:  351:	if (setsid() != mypid) {
+    #####:  352:	    zwarnnam(nam, "failed to create new session: %e", errno);
+        -:  353:#endif
+        -:  354:#ifdef TIOCNOTTY
+    #####:  355:	    if (ioctl(SHTTY, TIOCNOTTY, 0))
+    #####:  356:		zwarnnam(nam, "%e", errno);
+    #####:  357:	    setpgrp(0L, mypid);
+        -:  358:#endif
+        -:  359:#ifdef HAVE_SETSID
+        -:  360:	}
+        -:  361:#endif
+        -:  362:
+    #####:  363:	if (get_pty(0, &slave))
+    #####:  364:	    exit(1);
+    #####:  365:	SHTTY = slave;
+    #####:  366:	attachtty(mypid);
+        -:  367:#ifdef TIOCGWINSZ
+        -:  368:	/* Set the window size before associating with the terminal *
+        -:  369:	 * so that we don't get hit with a SIGWINCH.  I'm paranoid. */
+    #####:  370:	if (interact) {
+        -:  371:	    struct ttyinfo info;
+        -:  372:
+    #####:  373:	    if (ioctl(slave, TIOCGWINSZ, (char *) &info.winsize) == 0) {
+    #####:  374:		info.winsize.ws_row = zterm_lines;
+    #####:  375:		info.winsize.ws_col = zterm_columns;
+    #####:  376:		ioctl(slave, TIOCSWINSZ, (char *) &info.winsize);
+        -:  377:	    }
+        -:  378:	}
+        -:  379:#endif /* TIOCGWINSZ */
+        -:  380:
+    #####:  381:	if (!echo) {
+        -:  382:	    struct ttyinfo info;
+        -:  383:
+    #####:  384:	    if (!ptygettyinfo(slave, &info)) {
+        -:  385:#ifdef HAVE_TERMIOS_H
+    #####:  386:		info.tio.c_lflag &= ~ECHO;
+        -:  387:#else
+        -:  388:#ifdef HAVE_TERMIO_H
+        -:  389:		info.tio.c_lflag &= ~ECHO;
+        -:  390:#else
+        -:  391:		info.tio.lmodes &= ~ECHO; /**** dunno if this is right */
+        -:  392:#endif
+        -:  393:#endif
+    #####:  394:		ptysettyinfo(slave, &info);
+        -:  395:	    }
+        -:  396:	}
+        -:  397:
+        -:  398:#ifdef TIOCSCTTY
+    #####:  399:	ioctl(slave, TIOCSCTTY, 0);
+        -:  400:#endif
+        -:  401:
+    #####:  402:	close(0);
+    #####:  403:	close(1);
+    #####:  404:	close(2);
+        -:  405:
+    #####:  406:	dup2(slave, 0);
+    #####:  407:	dup2(slave, 1);
+    #####:  408:	dup2(slave, 2);
+        -:  409:
+    #####:  410:	closem(FDT_UNUSED, 0);
+    #####:  411:	close(slave);
+    #####:  412:	close(master);
+    #####:  413:	close(coprocin);
+    #####:  414:	close(coprocout);
+    #####:  415:	init_io(NULL);
+    #####:  416:	setsparam("TTY", ztrdup(ttystrname));
+        -:  417:
+    #####:  418:	opts[INTERACTIVE] = 0;
+        -:  419:
+    #####:  420:	syncch = 0;
+        -:  421:	do {
+    #####:  422:	    ret = write(1, &syncch, 1);
+    #####:  423:	} while (ret != 1 && (
+        -:  424:#ifdef EWOULDBLOCK
+    #####:  425:	    errno == EWOULDBLOCK ||
+        -:  426:#else
+        -:  427:#ifdef EAGAIN
+        -:  428:	    errno == EAGAIN ||
+        -:  429:#endif
+        -:  430:#endif
+    #####:  431:	    errno == EINTR));
+        -:  432:
+    #####:  433:	execode(prog, 1, 0, "zpty");
+    #####:  434:	stopmsg = 2;
+    #####:  435:	mypid = 0; /* trick to ensure we _exit() */
+    #####:  436:	zexit(lastval, ZEXIT_NORMAL);
+        -:  437:    }
+        -:  438:#ifndef USE_CYGWIN_FIX
+    #####:  439:    master = movefd(master);
+    #####:  440:    if (master == -1) {
+    #####:  441:	zerrnam(nam, "cannot duplicate fd %d: %e", master, errno);
+    #####:  442:	scriptname = oscriptname;
+    #####:  443:	ineval = oineval;
+    #####:  444:	return 1;
+        -:  445:    }
+        -:  446:#else
+        -:  447:    addmodulefd(master, FDT_INTERNAL);
+        -:  448:#endif
+        -:  449:
+    #####:  450:    p = (Ptycmd) zalloc(sizeof(*p));
+        -:  451:
+    #####:  452:    p->name = ztrdup(pname);
+    #####:  453:    p->args = zarrdup(args);
+    #####:  454:    p->fd = master;
+    #####:  455:    p->pid = pid;
+    #####:  456:    p->echo = echo;
+    #####:  457:    p->nblock = nblock;
+    #####:  458:    p->fin = 0;
+    #####:  459:    p->read = -1;
+    #####:  460:    p->old = NULL;
+    #####:  461:    p->olen = 0;
+        -:  462:
+    #####:  463:    p->next = ptycmds;
+    #####:  464:    ptycmds = p;
+        -:  465:
+    #####:  466:    if (nblock)
+    #####:  467:	ptynonblock(master);
+        -:  468:
+    #####:  469:    scriptname = oscriptname;
+    #####:  470:    ineval = oineval;
+        -:  471:
+        -:  472:    do {
+    #####:  473:	ret = read(master, &syncch, 1);
+    #####:  474:    } while (ret != 1 && (
+        -:  475:#ifdef EWOULDBLOCK
+    #####:  476:	    errno == EWOULDBLOCK ||
+        -:  477:#else
+        -:  478:#ifdef EAGAIN
+        -:  479:	    errno == EAGAIN ||
+        -:  480:#endif
+        -:  481:#endif
+    #####:  482:	    errno == EINTR));
+        -:  483:
+    #####:  484:    setiparam_no_convert("REPLY", (zlong)master);
+        -:  485:
+    #####:  486:    return 0;
+        -:  487:}
+        -:  488:
+        -:  489:static void
+    #####:  490:deleteptycmd(Ptycmd cmd)
+        -:  491:{
+        -:  492:    Ptycmd p, q;
+        -:  493:
+    #####:  494:    for (q = NULL, p = ptycmds; p != cmd; q = p, p = p->next);
+        -:  495:
+    #####:  496:    if (p != cmd)
+    #####:  497:	return;
+        -:  498:
+    #####:  499:    if (q)
+    #####:  500:	q->next = p->next;
+        -:  501:    else
+    #####:  502:	ptycmds = p->next;
+        -:  503:
+    #####:  504:    zsfree(p->name);
+    #####:  505:    freearray(p->args);
+        -:  506:
+    #####:  507:    zclose(cmd->fd);
+        -:  508:
+        -:  509:    /* We kill the process group the command put itself in. */
+        -:  510:
+    #####:  511:    kill(-(p->pid), SIGHUP);
+        -:  512:
+    #####:  513:    zfree(p, sizeof(*p));
+        -:  514:}
+        -:  515:
+        -:  516:static void
+    #####:  517:deleteallptycmds(void)
+        -:  518:{
+        -:  519:    Ptycmd p, n;
+        -:  520:
+    #####:  521:    for (p = ptycmds; p; p = n) {
+    #####:  522:	n = p->next;
+    #####:  523:	deleteptycmd(p);
+        -:  524:    }
+    #####:  525:}
+        -:  526:
+        -:  527:/**** a better process handling would be nice */
+        -:  528:
+        -:  529:static void
+    #####:  530:checkptycmd(Ptycmd cmd)
+        -:  531:{
+        -:  532:    char c;
+        -:  533:    int r;
+        -:  534:
+    #####:  535:    if (cmd->read != -1 || cmd->fin)
+    #####:  536:	return;
+    #####:  537:    if ((r = read(cmd->fd, &c, 1)) <= 0) {
+    #####:  538:	if (kill(cmd->pid, 0) < 0) {
+    #####:  539:	    cmd->fin = 1;
+    #####:  540:	    zclose(cmd->fd);
+        -:  541:	}
+    #####:  542:	return;
+        -:  543:    }
+    #####:  544:    cmd->read = (int) c;
+        -:  545:}
+        -:  546:
+        -:  547:static int
+    #####:  548:ptyread(char *nam, Ptycmd cmd, char **args, int noblock, int mustmatch)
+        -:  549:{
+    #####:  550:    int blen, used, seen = 0, ret = 0, matchok = 0;
+        -:  551:    char *buf;
+    #####:  552:    Patprog prog = NULL;
+        -:  553:
+    #####:  554:    if (*args && args[1]) {
+        -:  555:	char *p;
+        -:  556:
+    #####:  557:	if (args[2]) {
+    #####:  558:	    zwarnnam(nam, "too many arguments");
+    #####:  559:	    return 1;
+        -:  560:	}
+    #####:  561:	p = dupstring(args[1]);
+    #####:  562:	tokenize(p);
+    #####:  563:	remnulargs(p);
+        -:  564:	/* Signals handlers might stomp PAT_STATIC */
+    #####:  565:	if (!(prog = patcompile(p, PAT_ZDUP, NULL))) {
+    #####:  566:	    zwarnnam(nam, "bad pattern: %s", args[1]);
+    #####:  567:	    return 1;
+        -:  568:	}
+        -:  569:    } else
+    #####:  570:	fflush(stdout);
+        -:  571:
+    #####:  572:    if (cmd->old) {
+    #####:  573:	used = cmd->olen;
+    #####:  574:	buf = (char *) zhalloc((blen = 256 + used) + 1);
+    #####:  575:	memcpy(buf, cmd->old, cmd->olen);
+    #####:  576:	zfree(cmd->old, cmd->olen);
+    #####:  577:	cmd->old = NULL;
+    #####:  578:	cmd->olen = 0;
+        -:  579:    } else {
+    #####:  580:	used = 0;
+    #####:  581:	buf = (char *) zhalloc((blen = 256) + 1);
+        -:  582:    }
+    #####:  583:    if (cmd->read != -1) {
+    #####:  584:	buf[used] = (char) cmd->read;
+    #####:  585:	buf[used + 1] = '\0';
+    #####:  586:	seen = used = 1;
+    #####:  587:	cmd->read = -1;
+        -:  588:    }
+        -:  589:    do {
+    #####:  590:	if (noblock && cmd->read == -1) {
+        -:  591:	    int pollret;
+        -:  592:	    /*
+        -:  593:	     * Check there is data available.  Borrowed from
+        -:  594:	     * poll_read() in utils.c and simplified.
+        -:  595:	     */
+        -:  596:#ifdef HAVE_SELECT
+        -:  597:	    fd_set foofd;
+        -:  598:	    struct timeval expire_tv;
+    #####:  599:	    expire_tv.tv_sec = 0;
+    #####:  600:	    expire_tv.tv_usec = 0;
+    #####:  601:	    FD_ZERO(&foofd);
+    #####:  602:	    FD_SET(cmd->fd, &foofd);
+    #####:  603:	    pollret = select(cmd->fd+1,
+        -:  604:			 (SELECT_ARG_2_T) &foofd, NULL, NULL, &expire_tv);
+        -:  605:#else
+        -:  606:#ifdef FIONREAD
+        -:  607:	    if (ioctl(cmd->fd, FIONREAD, (char *) &val) == 0)
+        -:  608:		pollret = (val > 0);
+        -:  609:#endif
+        -:  610:#endif
+        -:  611:
+    #####:  612:	    if (pollret < 0) {
+        -:  613:		/*
+        -:  614:		 * See read_poll() for this.
+        -:  615:		 * Last despairing effort to poll: attempt to
+        -:  616:		 * set nonblocking I/O and actually read the
+        -:  617:		 * character.  cmd->read stores the character read.
+        -:  618:		 */
+        -:  619:		long mode;
+        -:  620:
+    #####:  621:		if (setblock_fd(0, cmd->fd, &mode))
+    #####:  622:		    pollret = read(cmd->fd, &cmd->read, 1);
+    #####:  623:		if (mode != -1)
+    #####:  624:		    fcntl(cmd->fd, F_SETFL, mode);
+        -:  625:	    }
+    #####:  626:	    if (pollret == 0)
+    #####:  627:		break;
+        -:  628:	}
+    #####:  629:	if (!ret) {
+    #####:  630:	    checkptycmd(cmd);
+    #####:  631:	    if (cmd->fin)
+    #####:  632:		break;
+        -:  633:	}
+    #####:  634:	if (cmd->read != -1 || (ret = read(cmd->fd, buf + used, 1)) == 1) {
+        -:  635:	    int readchar;
+    #####:  636:	    if (cmd->read != -1) {
+    #####:  637:		ret = 1;
+    #####:  638:		readchar = cmd->read;
+    #####:  639:		cmd->read = -1;
+        -:  640:	    } else
+    #####:  641:		readchar = STOUC(buf[used]);
+    #####:  642:	    if (imeta(readchar)) {
+    #####:  643:		buf[used++] = Meta;
+    #####:  644:		buf[used++] = (char) (readchar ^ 32);
+        -:  645:	    } else
+    #####:  646:		buf[used++] = (char) readchar;
+    #####:  647:	    seen = 1;
+    #####:  648:	    if (used >= blen-1) {
+    #####:  649:		if (!*args) {
+    #####:  650:		    buf[used] = '\0';
+    #####:  651:		    unmetafy(buf, &used);
+    #####:  652:		    write_loop(1, buf, used);
+    #####:  653:		    used = 0;
+        -:  654:		} else {
+    #####:  655:		    buf = hrealloc(buf, blen, blen << 1);
+    #####:  656:		    blen <<= 1;
+        -:  657:		}
+        -:  658:	    }
+        -:  659:	}
+    #####:  660:	buf[used] = '\0';
+        -:  661:
+    #####:  662:	if (!prog) {
+    #####:  663:	    if (ret <= 0 || (*args && buf[used - 1] == '\n' &&
+    #####:  664:			     (used < 2 || buf[used-2] != Meta)))
+        -:  665:		break;
+        -:  666:	} else {
+    #####:  667:	    if (ret < 0
+        -:  668:#ifdef EWOULDBLOCK
+    #####:  669:		&& errno != EWOULDBLOCK
+        -:  670:#else
+        -:  671:#ifdef EAGAIN
+        -:  672:		&& errno != EAGAIN
+        -:  673:#endif
+        -:  674:#endif
+        -:  675:		)
+    #####:  676:		break;
+        -:  677:	}
+    #####:  678:    } while (!(errflag || breaks || retflag || contflag) &&
+    #####:  679:	     used < READ_MAX &&
+    #####:  680:	     !(prog && ret && (matchok = pattry(prog, buf))));
+        -:  681:
+    #####:  682:    if (prog && ret < 0 &&
+        -:  683:#ifdef EWOULDBLOCK
+    #####:  684:	errno == EWOULDBLOCK
+        -:  685:#else
+        -:  686:#ifdef EAGAIN
+        -:  687:	errno == EAGAIN
+        -:  688:#endif
+        -:  689:#endif
+        -:  690:	) {
+    #####:  691:	cmd->old = (char *) zalloc(cmd->olen = used);
+    #####:  692:	memcpy(cmd->old, buf, cmd->olen);
+        -:  693:
+    #####:  694:	return 1;
+        -:  695:    }
+    #####:  696:    if (*args)
+    #####:  697:	setsparam(*args, ztrdup(buf));
+    #####:  698:    else if (used) {
+    #####:  699:	unmetafy(buf, &used);
+    #####:  700:	write_loop(1, buf, used);
+        -:  701:    }
+        -:  702:
+        -:  703:    {
+    #####:  704:	int ret = cmd->fin + 1;
+    #####:  705:	if (seen && (!prog || matchok || !mustmatch))
+    #####:  706:	    ret = 0;
+    #####:  707:	if (prog)
+    #####:  708:	    freepatprog(prog);
+    #####:  709:	return ret;
+        -:  710:    }
+        -:  711:}
+        -:  712:
+        -:  713:static int
+    #####:  714:ptywritestr(Ptycmd cmd, char *s, int len)
+        -:  715:{
+    #####:  716:    int written, all = 0;
+        -:  717:
+    #####:  718:    for (; !errflag && !breaks && !retflag && !contflag && len;
+    #####:  719:	 len -= written, s += written) {
+    #####:  720:	if ((written = write(cmd->fd, s, len)) < 0 && cmd->nblock &&
+        -:  721:#ifdef EWOULDBLOCK
+    #####:  722:	    errno == EWOULDBLOCK
+        -:  723:#else
+        -:  724:#ifdef EAGAIN
+        -:  725:	    errno == EAGAIN
+        -:  726:#endif
+        -:  727:#endif
+        -:  728:	    )
+    #####:  729:	    return !all;
+    #####:  730:	if (written < 0) {
+    #####:  731:	    checkptycmd(cmd);
+    #####:  732:	    if (cmd->fin)
+    #####:  733:		break;
+    #####:  734:	    written = 0;
+        -:  735:	}
+    #####:  736:	if (written > 0)
+    #####:  737:	    all += written;
+        -:  738:    }
+    #####:  739:    return (all ? 0 : cmd->fin + 1);
+        -:  740:}
+        -:  741:
+        -:  742:static int
+    #####:  743:ptywrite(Ptycmd cmd, char **args, int nonl)
+        -:  744:{
+    #####:  745:    if (*args) {
+    #####:  746:	char sp = ' ', *tmp;
+        -:  747:	int len;
+        -:  748:
+    #####:  749:	while (*args) {
+    #####:  750:	    unmetafy((tmp = dupstring(*args)), &len);
+    #####:  751:	    if (ptywritestr(cmd, tmp, len) ||
+    #####:  752:		(*++args && ptywritestr(cmd, &sp, 1)))
+    #####:  753:		return 1;
+        -:  754:	}
+    #####:  755:	if (!nonl) {
+    #####:  756:	    sp = '\n';
+    #####:  757:	    if (ptywritestr(cmd, &sp, 1))
+    #####:  758:		return 1;
+        -:  759:	}
+        -:  760:    } else {
+        -:  761:	int n;
+        -:  762:	char buf[BUFSIZ];
+        -:  763:
+    #####:  764:	while ((n = read(0, buf, BUFSIZ)) > 0)
+    #####:  765:	    if (ptywritestr(cmd, buf, n))
+    #####:  766:		return 1;
+        -:  767:    }
+    #####:  768:    return 0;
+        -:  769:}
+        -:  770:
+        -:  771:/**/
+        -:  772:static int
+    #####:  773:bin_zpty(char *nam, char **args, Options ops, UNUSED(int func))
+        -:  774:{
+    #####:  775:    if ((OPT_ISSET(ops,'r') && OPT_ISSET(ops,'w')) ||
+    #####:  776:	((OPT_ISSET(ops,'r') || OPT_ISSET(ops,'w')) &&
+    #####:  777:	 (OPT_ISSET(ops,'d') || OPT_ISSET(ops,'e') ||
+    #####:  778:	  OPT_ISSET(ops,'b') || OPT_ISSET(ops,'L'))) ||
+    #####:  779:	(OPT_ISSET(ops,'w') && (OPT_ISSET(ops,'t') || OPT_ISSET(ops,'m'))) ||
+    #####:  780:	(OPT_ISSET(ops,'n') && (OPT_ISSET(ops,'b') || OPT_ISSET(ops,'e') ||
+    #####:  781:				OPT_ISSET(ops,'r') || OPT_ISSET(ops,'t') ||
+    #####:  782:				OPT_ISSET(ops,'d') || OPT_ISSET(ops,'L') ||
+    #####:  783:				OPT_ISSET(ops,'m'))) ||
+    #####:  784:	(OPT_ISSET(ops,'d') && (OPT_ISSET(ops,'b') || OPT_ISSET(ops,'e') ||
+    #####:  785:				OPT_ISSET(ops,'L') || OPT_ISSET(ops,'t') ||
+    #####:  786:				OPT_ISSET(ops,'m'))) ||
+    #####:  787:	(OPT_ISSET(ops,'L') && (OPT_ISSET(ops,'b') || OPT_ISSET(ops,'e') ||
+    #####:  788:				OPT_ISSET(ops,'m')))) {
+    #####:  789:	zwarnnam(nam, "illegal option combination");
+    #####:  790:	return 1;
+        -:  791:    }
+    #####:  792:    if (OPT_ISSET(ops,'r') || OPT_ISSET(ops,'w')) {
+        -:  793:	Ptycmd p;
+        -:  794:
+    #####:  795:	if (!*args) {
+    #####:  796:	    zwarnnam(nam, "missing pty command name");
+    #####:  797:	    return 1;
+    #####:  798:	} else if (!(p = getptycmd(*args))) {
+    #####:  799:	    zwarnnam(nam, "no such pty command: %s", *args);
+    #####:  800:	    return 1;
+        -:  801:	}
+    #####:  802:	if (p->fin)
+    #####:  803:	    return 2;
+        -:  804:
+    #####:  805:	return (OPT_ISSET(ops,'r') ?
+    #####:  806:		ptyread(nam, p, args + 1, OPT_ISSET(ops,'t'),
+    #####:  807:			OPT_ISSET(ops, 'm')) :
+    #####:  808:		ptywrite(p, args + 1, OPT_ISSET(ops,'n')));
+    #####:  809:    } else if (OPT_ISSET(ops,'d')) {
+        -:  810:	Ptycmd p;
+    #####:  811:	int ret = 0;
+        -:  812:
+    #####:  813:	if (*args) {
+    #####:  814:	    while (*args)
+    #####:  815:		if ((p = getptycmd(*args++)))
+    #####:  816:		    deleteptycmd(p);
+        -:  817:		else {
+    #####:  818:		    zwarnnam(nam, "no such pty command: %s", args[-1]);
+    #####:  819:		    ret = 1;
+        -:  820:		}
+        -:  821:	} else
+    #####:  822:	    deleteallptycmds();
+        -:  823:
+    #####:  824:	return ret;
+    #####:  825:    } else if (OPT_ISSET(ops,'t')) {
+        -:  826:	Ptycmd p;
+        -:  827:
+    #####:  828:	if (!*args) {
+    #####:  829:	    zwarnnam(nam, "missing pty command name");
+    #####:  830:	    return 1;
+    #####:  831:	} else if (!(p = getptycmd(*args))) {
+    #####:  832:	    zwarnnam(nam, "no such pty command: %s", *args);
+    #####:  833:	    return 1;
+        -:  834:	}
+    #####:  835:	checkptycmd(p);
+    #####:  836:	return p->fin;
+    #####:  837:    } else if (*args) {
+    #####:  838:	if (!args[1]) {
+    #####:  839:	    zwarnnam(nam, "missing command");
+    #####:  840:	    return 1;
+        -:  841:	}
+    #####:  842:	if (getptycmd(*args)) {
+    #####:  843:	    zwarnnam(nam, "pty command name already used: %s", *args);
+    #####:  844:	    return 1;
+        -:  845:	}
+    #####:  846:	return newptycmd(nam, *args, args + 1, OPT_ISSET(ops,'e'), 
+    #####:  847:			 OPT_ISSET(ops,'b'));
+        -:  848:    } else {
+        -:  849:	Ptycmd p;
+        -:  850:	char **a;
+        -:  851:
+    #####:  852:	for (p = ptycmds; p; p = p->next) {
+    #####:  853:	    checkptycmd(p);
+    #####:  854:	    if (OPT_ISSET(ops,'L'))
+    #####:  855:		printf("%s %s%s%s ", nam, (p->echo ? "-e " : ""),
+    #####:  856:		       (p->nblock ? "-b " : ""), p->name);
+    #####:  857:	    else if (p->fin)
+    #####:  858:		printf("(finished) %s: ", p->name);
+        -:  859:	    else
+    #####:  860:		printf("(%d) %s: ", p->pid, p->name);
+    #####:  861:	    for (a = p->args; *a; ) {
+    #####:  862:		quotedzputs(*a++, stdout);
+    #####:  863:		if (*a)
+    #####:  864:		    putchar(' ');
+        -:  865:	    }
+    #####:  866:	    putchar('\n');
+        -:  867:	}
+    #####:  868:	return 0;
+        -:  869:    }
+        -:  870:}
+        -:  871:
+        -:  872:/**/
+        -:  873:static int
+    #####:  874:ptyhook(UNUSED(Hookdef d), UNUSED(void *dummy))
+        -:  875:{
+    #####:  876:    deleteallptycmds();
+    #####:  877:    return 0;
+        -:  878:}
+        -:  879:
+        -:  880:
+        -:  881:static struct builtin bintab[] = {
+        -:  882:    BUILTIN("zpty", 0, bin_zpty, 0, -1, 0, "ebdmrwLnt", NULL),
+        -:  883:};
+        -:  884:
+        -:  885:static struct features module_features = {
+        -:  886:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -:  887:    NULL, 0,
+        -:  888:    NULL, 0,
+        -:  889:    NULL, 0,
+        -:  890:    0
+        -:  891:};
+        -:  892:
+        -:  893:
+        -:  894:/**/
+        -:  895:int
+    #####:  896:setup_(UNUSED(Module m))
+        -:  897:{
+    #####:  898:    return 0;
+        -:  899:}
+        -:  900:
+        -:  901:/**/
+        -:  902:int
+    #####:  903:features_(Module m, char ***features)
+        -:  904:{
+    #####:  905:    *features = featuresarray(m, &module_features);
+    #####:  906:    return 0;
+        -:  907:}
+        -:  908:
+        -:  909:/**/
+        -:  910:int
+    #####:  911:enables_(Module m, int **enables)
+        -:  912:{
+    #####:  913:    return handlefeatures(m, &module_features, enables);
+        -:  914:}
+        -:  915:
+        -:  916:/**/
+        -:  917:int
+    #####:  918:boot_(UNUSED(Module m))
+        -:  919:{
+    #####:  920:    ptycmds = NULL;
+        -:  921:
+    #####:  922:    addhookfunc("exit", ptyhook);
+    #####:  923:    return 0;
+        -:  924:}
+        -:  925:
+        -:  926:/**/
+        -:  927:int
+    #####:  928:cleanup_(Module m)
+        -:  929:{
+    #####:  930:    deletehookfunc("exit", ptyhook);
+    #####:  931:    deleteallptycmds();
+    #####:  932:    return setfeatureenables(m, &module_features, NULL);
+        -:  933:}
+        -:  934:
+        -:  935:/**/
+        -:  936:int
+    #####:  937:finish_(UNUSED(Module m))
+        -:  938:{
+    #####:  939:    return 0;
+        -:  940:}

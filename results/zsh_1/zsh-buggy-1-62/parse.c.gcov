@@ -1,0 +1,4053 @@
+        -:    0:Source:parse.c
+        -:    0:Graph:/home/workspace/Src/parse.gcno
+        -:    0:Data:/home/workspace/Src/parse.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * parse.c - parser
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "parse.pro"
+        -:   32:
+        -:   33:/* != 0 if we are about to read a command word */
+        -:   34:
+        -:   35:/**/
+        -:   36:mod_export int incmdpos;
+        -:   37:
+        -:   38:/**/
+        -:   39:int aliasspaceflag;
+        -:   40:
+        -:   41:/* != 0 if we are in the middle of a [[ ... ]] */
+        -:   42: 
+        -:   43:/**/
+        -:   44:mod_export int incond;
+        -:   45: 
+        -:   46:/* != 0 if we are after a redirection (for ctxtlex only) */
+        -:   47: 
+        -:   48:/**/
+        -:   49:mod_export int inredir;
+        -:   50: 
+        -:   51:/*
+        -:   52: * 1 if we are about to read a case pattern
+        -:   53: * -1 if we are not quite sure
+        -:   54: * 0 otherwise
+        -:   55: */
+        -:   56: 
+        -:   57:/**/
+        -:   58:int incasepat;
+        -:   59: 
+        -:   60:/* != 0 if we just read a newline */
+        -:   61: 
+        -:   62:/**/
+        -:   63:int isnewlin;
+        -:   64:
+        -:   65:/* != 0 if we are after a for keyword */
+        -:   66:
+        -:   67:/**/
+        -:   68:int infor;
+        -:   69:
+        -:   70:/* != 0 if we are after a repeat keyword; if it's nonzero it's a 1-based index
+        -:   71: * of the current token from the last-seen command position */
+        -:   72:
+        -:   73:/**/
+        -:   74:int inrepeat_; /* trailing underscore because of name clash with Zle/zle_vi.c */
+        -:   75:
+        -:   76:/* != 0 if parsing arguments of typeset etc. */
+        -:   77:
+        -:   78:/**/
+        -:   79:mod_export int intypeset;
+        -:   80:
+        -:   81:/* list of here-documents */
+        -:   82:
+        -:   83:/**/
+        -:   84:struct heredocs *hdocs;
+        -:   85: 
+        -:   86:
+        -:   87:#define YYERROR(O)  { tok = LEXERR; ecused = (O); return 0; }
+        -:   88:#define YYERRORV(O) { tok = LEXERR; ecused = (O); return; }
+        -:   89:#define COND_ERROR(X,Y) \
+        -:   90:    do {					\
+        -:   91:	zwarn(X,Y);				\
+        -:   92:	herrflush();				\
+        -:   93:	if (noerrs != 2)			\
+        -:   94:	    errflag |= ERRFLAG_ERROR;		\
+        -:   95:	YYERROR(ecused)				\
+        -:   96:	    } while(0)
+        -:   97:
+        -:   98:
+        -:   99:/* 
+        -:  100: * Word code.
+        -:  101: *
+        -:  102: * The parser now produces word code, reducing memory consumption compared
+        -:  103: * to the nested structs we had before.
+        -:  104: *
+        -:  105: * Word codes are represented by the "wordcode" type.
+        -:  106: *
+        -:  107: * Each wordcode variable consists of a "code", in the least-significant bits
+        -:  108: * of the value, and "data" in the other bits.  The macros wc_code() and wc_data()
+        -:  109: * access the "code" and "data" parts of a wordcode.  The macros wc_bdata() and
+        -:  110: * wc_bld() build wordcodes from code and data.
+        -:  111: *
+        -:  112: * Word code layout:
+        -:  113: *
+        -:  114: *   WC_END
+        -:  115: *     - end of program code
+        -:  116: *
+        -:  117: *   WC_LIST
+        -:  118: *     - data contains type (sync, ...)
+        -:  119: *     - followed by code for this list
+        -:  120: *     - if not (type & Z_END), followed by next WC_LIST
+        -:  121: *
+        -:  122: *   WC_SUBLIST
+        -:  123: *     - data contains type (&&, ||, END) and flags (coprog, not)
+        -:  124: *     - followed by code for sublist
+        -:  125: *     - if not (type == END), followed by next WC_SUBLIST
+        -:  126: *
+        -:  127: *   WC_PIPE
+        -:  128: *     - data contains type (end, mid) and LINENO
+        -:  129: *     - if not (type == END), followed by offset to next WC_PIPE
+        -:  130: *     - followed by command
+        -:  131: *     - if not (type == END), followed by next WC_PIPE
+        -:  132: *
+        -:  133: *   WC_REDIR
+        -:  134: *     - must precede command-code (or WC_ASSIGN)
+        -:  135: *     - data contains type (<, >, ...)
+        -:  136: *     - followed by fd1 and name from struct redir
+        -:  137: *     - for the extended form {var}>... where the fd is assigned
+        -:  138: *       to var, there is an extra item to contain var
+        -:  139: *
+        -:  140: *   WC_ASSIGN
+        -:  141: *     - data contains type (scalar, array) and number of array-elements
+        -:  142: *     - followed by name and value
+        -:  143: *     Note variant for WC_TYPESET assignments: WC_ASSIGN_INC indicates
+        -:  144: *     a name with no equals, not an =+ which isn't valid here.
+        -:  145: *
+        -:  146: *   WC_SIMPLE
+        -:  147: *     - data contains the number of arguments (plus command)
+        -:  148: *     - followed by strings
+        -:  149: *
+        -:  150: *   WC_TYPESET
+        -:  151: *     Variant of WC_SIMPLE used when TYPESET reserved word found.
+        -:  152: *     - data contains the number of string arguments (plus command)
+        -:  153: *     - followed by strings
+        -:  154: *     - followed by number of assignments
+        -:  155: *     - followed by assignments if non-zero number.
+        -:  156: *
+        -:  157: *   WC_SUBSH
+        -:  158: *     - data unused
+        -:  159: *     - followed by list
+        -:  160: *
+        -:  161: *   WC_CURSH
+        -:  162: *     - data unused
+        -:  163: *     - followed by list
+        -:  164: *
+        -:  165: *   WC_TIMED
+        -:  166: *     - data contains type (followed by pipe or not)
+        -:  167: *     - if (type == PIPE), followed by pipe
+        -:  168: *
+        -:  169: *   WC_FUNCDEF
+        -:  170: *     - data contains offset to after body
+        -:  171: *     - followed by number of names
+        -:  172: *     - followed by names
+        -:  173: *     - followed by offset to first string
+        -:  174: *     - followed by length of string table
+        -:  175: *     - followed by number of patterns for body
+        -:  176: *     - followed by an integer indicating tracing status
+        -:  177: *     - followed by codes for body
+        -:  178: *     - followed by strings for body
+        -:  179: *     - if number of names is 0, followed by:
+        -:  180: *       - the offset to the end of the funcdef
+        -:  181: *       - the number of arguments to the function
+        -:  182: *       - the arguments to the function
+        -:  183: *
+        -:  184: *   WC_FOR
+        -:  185: *     - data contains type (list, ...) and offset to after body
+        -:  186: *     - if (type == COND), followed by init, cond, advance expressions
+        -:  187: *     - else if (type == PPARAM), followed by param name
+        -:  188: *     - else if (type == LIST), followed by param name, num strings, strings
+        -:  189: *     - followed by body
+        -:  190: *
+        -:  191: *   WC_SELECT
+        -:  192: *     - data contains type (list, ...) and offset to after body
+        -:  193: *     - if (type == PPARAM), followed by param name
+        -:  194: *     - else if (type == LIST), followed by param name, num strings, strings
+        -:  195: *     - followed by body
+        -:  196: *
+        -:  197: *   WC_WHILE
+        -:  198: *     - data contains type (while, until) and offset to after body
+        -:  199: *     - followed by condition
+        -:  200: *     - followed by body
+        -:  201: *
+        -:  202: *   WC_REPEAT
+        -:  203: *     - data contains offset to after body
+        -:  204: *     - followed by number-string
+        -:  205: *     - followed by body
+        -:  206: *
+        -:  207: *   WC_CASE
+        -:  208: *     - first CASE is always of type HEAD, data contains offset to esac
+        -:  209: *     - after that CASEs of type OR (;;), AND (;&) and TESTAND (;|),
+        -:  210: *       data is offset to next case
+        -:  211: *     - each OR/AND/TESTAND case is followed by pattern, pattern-number, list
+        -:  212: *
+        -:  213: *   WC_IF
+        -:  214: *     - first IF is of type HEAD, data contains offset to fi
+        -:  215: *     - after that IFs of type IF, ELIF, ELSE, data is offset to next
+        -:  216: *     - each non-HEAD is followed by condition (only IF, ELIF) and body
+        -:  217: *
+        -:  218: *   WC_COND
+        -:  219: *     - data contains type
+        -:  220: *     - if (type == AND/OR), data contains offset to after this one,
+        -:  221: *       followed by two CONDs
+        -:  222: *     - else if (type == NOT), followed by COND
+        -:  223: *     - else if (type == MOD), followed by name and strings
+        -:  224: *     - else if (type == MODI), followed by name, left, right
+        -:  225: *     - else if (type == STR[N]EQ), followed by left, right, pattern-number
+        -:  226: *     - else if (has two args) followed by left, right
+        -:  227: *     - else followed by string
+        -:  228: *
+        -:  229: *   WC_ARITH
+        -:  230: *     - followed by string (there's only one)
+        -:  231: *
+        -:  232: *   WC_AUTOFN
+        -:  233: *     - only used by the autoload builtin
+        -:  234: *
+        -:  235: * Lists and sublists may also be simplified, indicated by the presence
+        -:  236: * of the Z_SIMPLE or WC_SUBLIST_SIMPLE flags. In this case they are only
+        -:  237: * followed by a slot containing the line number, not by a WC_SUBLIST or
+        -:  238: * WC_PIPE, respectively. The real advantage of simplified lists and
+        -:  239: * sublists is that they can be executed faster, see exec.c. In the
+        -:  240: * parser, the test if a list can be simplified is done quite simply
+        -:  241: * by passing a int* around which gets set to non-zero if the thing
+        -:  242: * just parsed is `cmplx', i.e. may need to be run by forking or 
+        -:  243: * some such.
+        -:  244: *
+        -:  245: * In each of the above, strings are encoded as one word code. For empty
+        -:  246: * strings this is the bit pattern 11x, the lowest bit is non-zero if the
+        -:  247: * string contains tokens and zero otherwise (this is true for the other
+        -:  248: * ways to encode strings, too). For short strings (one to three
+        -:  249: * characters), this is the marker 01x with the 24 bits above that
+        -:  250: * containing the characters. Longer strings are encoded as the offset
+        -:  251: * into the strs character array stored in the eprog struct shifted by
+        -:  252: * two and ored with the bit pattern 0x.
+        -:  253: * The ecstrcode() function that adds the code for a string uses a simple
+        -:  254: * binary tree of strings already added so that long strings are encoded
+        -:  255: * only once.
+        -:  256: *
+        -:  257: * Note also that in the eprog struct the pattern, code, and string
+        -:  258: * arrays all point to the same memory block.
+        -:  259: *
+        -:  260: *
+        -:  261: * To make things even faster in future versions, we could not only 
+        -:  262: * test if the strings contain tokens, but instead what kind of
+        -:  263: * expansions need to be done on strings. In the execution code we
+        -:  264: * could then use these flags for a specialized version of prefork()
+        -:  265: * to avoid a lot of string parsing and some more string duplication.
+        -:  266: */
+        -:  267:
+        -:  268:/* Number of wordcodes allocated. */
+        -:  269:static int eclen;
+        -:  270:/* Number of wordcodes populated. */
+        -:  271:static int ecused;
+        -:  272:/* Number of patterns... */
+        -:  273:static int ecnpats;
+        -:  274:
+        -:  275:static Wordcode ecbuf;
+        -:  276:
+        -:  277:static Eccstr ecstrs;
+        -:  278:
+        -:  279:static int ecsoffs, ecssub;
+        -:  280:
+        -:  281:/*
+        -:  282: * ### The number of starts and ends of function definitions up to this point.
+        -:  283: * Never decremented.
+        -:  284: */
+        -:  285:static int ecnfunc;
+        -:  286:
+        -:  287:#define EC_INIT_SIZE         256
+        -:  288:#define EC_DOUBLE_THRESHOLD  32768
+        -:  289:#define EC_INCREMENT         1024
+        -:  290:
+        -:  291:/* save parse context */
+        -:  292:
+        -:  293:/**/
+        -:  294:void
+      373:  295:parse_context_save(struct parse_stack *ps, int toplevel)
+        -:  296:{
+        -:  297:    (void)toplevel;
+        -:  298:
+      373:  299:    ps->incmdpos = incmdpos;
+      373:  300:    ps->aliasspaceflag = aliasspaceflag;
+      373:  301:    ps->incond = incond;
+      373:  302:    ps->inredir = inredir;
+      373:  303:    ps->incasepat = incasepat;
+      373:  304:    ps->isnewlin = isnewlin;
+      373:  305:    ps->infor = infor;
+      373:  306:    ps->inrepeat_ = inrepeat_;
+      373:  307:    ps->intypeset = intypeset;
+        -:  308:
+      373:  309:    ps->hdocs = hdocs;
+      373:  310:    ps->eclen = eclen;
+      373:  311:    ps->ecused = ecused;
+      373:  312:    ps->ecnpats = ecnpats;
+      373:  313:    ps->ecbuf = ecbuf;
+      373:  314:    ps->ecstrs = ecstrs;
+      373:  315:    ps->ecsoffs = ecsoffs;
+      373:  316:    ps->ecssub = ecssub;
+      373:  317:    ps->ecnfunc = ecnfunc;
+      373:  318:    ecbuf = NULL;
+      373:  319:    hdocs = NULL;
+      373:  320:}
+        -:  321:
+        -:  322:/* restore parse context */
+        -:  323:
+        -:  324:/**/
+        -:  325:void
+      373:  326:parse_context_restore(const struct parse_stack *ps, int toplevel)
+        -:  327:{
+        -:  328:    (void)toplevel;
+        -:  329:
+      373:  330:    if (ecbuf)
+       14:  331:	zfree(ecbuf, eclen);
+        -:  332:
+      373:  333:    incmdpos = ps->incmdpos;
+      373:  334:    aliasspaceflag = ps->aliasspaceflag;
+      373:  335:    incond = ps->incond;
+      373:  336:    inredir = ps->inredir;
+      373:  337:    incasepat = ps->incasepat;
+      373:  338:    isnewlin = ps->isnewlin;
+      373:  339:    infor = ps->infor;
+      373:  340:    inrepeat_ = ps->inrepeat_;
+      373:  341:    intypeset = ps->intypeset;
+        -:  342:
+      373:  343:    hdocs = ps->hdocs;
+      373:  344:    eclen = ps->eclen;
+      373:  345:    ecused = ps->ecused;
+      373:  346:    ecnpats = ps->ecnpats;
+      373:  347:    ecbuf = ps->ecbuf;
+      373:  348:    ecstrs = ps->ecstrs;
+      373:  349:    ecsoffs = ps->ecsoffs;
+      373:  350:    ecssub = ps->ecssub;
+      373:  351:    ecnfunc = ps->ecnfunc;
+        -:  352:
+      373:  353:    errflag &= ~ERRFLAG_ERROR;
+      373:  354:}
+        -:  355:
+        -:  356:/* Adjust pointers in here-doc structs. */
+        -:  357:
+        -:  358:static void
+      259:  359:ecadjusthere(int p, int d)
+        -:  360:{
+        -:  361:    struct heredocs *h;
+        -:  362:
+      259:  363:    for (h = hdocs; h; h = h->next)
+    #####:  364:	if (h->pc >= p)
+    #####:  365:	    h->pc += d;
+      259:  366:}
+        -:  367:
+        -:  368:/* Insert n free code-slots at position p. */
+        -:  369:
+        -:  370:static void
+       88:  371:ecispace(int p, int n)
+        -:  372:{
+        -:  373:    int m;
+        -:  374:
+       88:  375:    if ((eclen - ecused) < n) {
+        1:  376:	int a = (eclen < EC_DOUBLE_THRESHOLD ? eclen : EC_INCREMENT);
+        -:  377:
+        1:  378:	if (n > a) a = n;
+        -:  379:
+        1:  380:	ecbuf = (Wordcode) zrealloc((char *) ecbuf, (eclen + a) * sizeof(wordcode));
+        1:  381:	eclen += a;
+        -:  382:    }
+       88:  383:    if ((m = ecused - p) > 0)
+       53:  384:	memmove(ecbuf + p + n, ecbuf + p, m * sizeof(wordcode));
+       88:  385:    ecused += n;
+       88:  386:    ecadjusthere(p, n);
+       88:  387:}
+        -:  388:
+        -:  389:/* 
+        -:  390: * Add one wordcode.
+        -:  391: *
+        -:  392: * Return the index of the added wordcode.
+        -:  393: */
+        -:  394:
+        -:  395:static int
+     5837:  396:ecadd(wordcode c)
+        -:  397:{
+     5837:  398:    if ((eclen - ecused) < 1) {
+        4:  399:	int a = (eclen < EC_DOUBLE_THRESHOLD ? eclen : EC_INCREMENT);
+        -:  400:
+        4:  401:	ecbuf = (Wordcode) zrealloc((char *) ecbuf, (eclen + a) * sizeof(wordcode));
+        4:  402:	eclen += a;
+        -:  403:    }
+     5837:  404:    ecbuf[ecused] = c;
+        -:  405:
+     5837:  406:    return ecused++;
+        -:  407:}
+        -:  408:
+        -:  409:/* Delete a wordcode. */
+        -:  410:
+        -:  411:static void
+      171:  412:ecdel(int p)
+        -:  413:{
+      171:  414:    int n = ecused - p - 1;
+        -:  415:
+      171:  416:    if (n > 0)
+      171:  417:	memmove(ecbuf + p, ecbuf + p + 1, n * sizeof(wordcode));
+      171:  418:    ecused--;
+      171:  419:    ecadjusthere(p, -1);
+      171:  420:}
+        -:  421:
+        -:  422:/* Build the wordcode for a string. */
+        -:  423:
+        -:  424:static wordcode
+     1478:  425:ecstrcode(char *s)
+        -:  426:{
+        -:  427:    int l, t;
+        -:  428:
+     1478:  429:    unsigned val = hasher(s);
+        -:  430:
+     1478:  431:    if ((l = strlen(s) + 1) && l <= 4) {
+        -:  432:	/* Short string. */
+      486:  433:	t = has_token(s);
+      486:  434:	wordcode c = (t ? 3 : 2);
+      486:  435:	switch (l) {
+      148:  436:	case 4: c |= ((wordcode) STOUC(s[2])) << 19;
+      340:  437:	case 3: c |= ((wordcode) STOUC(s[1])) << 11;
+      479:  438:	case 2: c |= ((wordcode) STOUC(s[0])) <<  3; break;
+        7:  439:	case 1: c = (t ? 7 : 6); break;
+        -:  440:	}
+      486:  441:	return c;
+        -:  442:    } else {
+        -:  443:	/* Long string. */
+        -:  444:	Eccstr p, *pp;
+        -:  445:	long cmp;
+        -:  446:
+    12790:  447:	for (pp = &ecstrs; (p = *pp); ) {
+    10911:  448:	    if (!(cmp = p->nfunc - ecnfunc) && !(cmp = (((long)p->hashval) - ((long)val))) && !(cmp = strcmp(p->str, s))) {
+        -:  449:		/* Re-use the existing string. */
+      105:  450:		return p->offs;
+        -:  451:            }
+    10806:  452:	    pp = (cmp < 0 ? &(p->left) : &(p->right));
+        -:  453:	}
+        -:  454:
+      887:  455:        t = has_token(s);
+        -:  456:
+      887:  457:	p = *pp = (Eccstr) zhalloc(sizeof(*p));
+      887:  458:	p->left = p->right = 0;
+      887:  459:	p->offs = ((ecsoffs - ecssub) << 2) | (t ? 1 : 0);
+      887:  460:	p->aoffs = ecsoffs;
+      887:  461:	p->str = s;
+      887:  462:	p->nfunc = ecnfunc;
+      887:  463:        p->hashval = val;
+      887:  464:	ecsoffs += l;
+        -:  465:
+      887:  466:	return p->offs;
+        -:  467:    }
+        -:  468:}
+        -:  469:
+        -:  470:#define ecstr(S) ecadd(ecstrcode(S))
+        -:  471:
+        -:  472:#define par_save_list(C) \
+        -:  473:    do { \
+        -:  474:        int eu = ecused; \
+        -:  475:        par_list(C); \
+        -:  476:        if (eu == ecused) ecadd(WCB_END()); \
+        -:  477:    } while (0)
+        -:  478:#define par_save_list1(C) \
+        -:  479:    do { \
+        -:  480:        int eu = ecused; \
+        -:  481:        par_list1(C); \
+        -:  482:        if (eu == ecused) ecadd(WCB_END()); \
+        -:  483:    } while (0)
+        -:  484:
+        -:  485:
+        -:  486:/**/
+        -:  487:mod_export void
+      655:  488:init_parse_status(void)
+        -:  489:{
+        -:  490:    /*
+        -:  491:     * These variables are currently declared by the parser, so we
+        -:  492:     * initialise them here.  Possibly they are more naturally declared
+        -:  493:     * by the lexical anaylser; however, as they are used for signalling
+        -:  494:     * between the two it's a bit ambiguous.  We clear them when
+        -:  495:     * using the lexical analyser for strings as well as here.
+        -:  496:     */
+      655:  497:    incasepat = incond = inredir = infor = intypeset = 0;
+      655:  498:    inrepeat_ = 0;
+      655:  499:    incmdpos = 1;
+      655:  500:}
+        -:  501:
+        -:  502:/* Initialise wordcode buffer. */
+        -:  503:
+        -:  504:/**/
+        -:  505:void
+      300:  506:init_parse(void)
+        -:  507:{
+      300:  508:    queue_signals();
+        -:  509:
+      300:  510:    if (ecbuf) zfree(ecbuf, eclen);
+        -:  511:
+      300:  512:    ecbuf = (Wordcode) zalloc((eclen = EC_INIT_SIZE) * sizeof(wordcode));
+      300:  513:    ecused = 0;
+      300:  514:    ecstrs = NULL;
+      300:  515:    ecsoffs = ecnpats = 0;
+      300:  516:    ecssub = 0;
+      300:  517:    ecnfunc = 0;
+        -:  518:
+      300:  519:    init_parse_status();
+        -:  520:
+      300:  521:    unqueue_signals();
+      300:  522:}
+        -:  523:
+        -:  524:/* Build eprog. */
+        -:  525:
+        -:  526:/*
+        -:  527: * Copy the strings of s and all its descendants in the binary tree to the
+        -:  528: * memory block p.
+        -:  529: *
+        -:  530: * careful: copy_ecstr is from arg1 to arg2, unlike memcpy
+        -:  531: */
+        -:  532:
+        -:  533:static void
+     1038:  534:copy_ecstr(Eccstr s, char *p)
+        -:  535:{
+     2941:  536:    while (s) {
+      865:  537:	memcpy(p + s->aoffs, s->str, strlen(s->str) + 1);
+      865:  538:	copy_ecstr(s->left, p);
+      865:  539:	s = s->right;
+        -:  540:    }
+     1038:  541:}
+        -:  542:
+        -:  543:static Eprog
+      173:  544:bld_eprog(int heap)
+        -:  545:{
+        -:  546:    Eprog ret;
+        -:  547:    int l;
+        -:  548:
+      173:  549:    queue_signals();
+        -:  550:
+      173:  551:    ecadd(WCB_END());
+        -:  552:
+      173:  553:    ret = heap ? (Eprog) zhalloc(sizeof(*ret)) : (Eprog) zalloc(sizeof(*ret));
+      346:  554:    ret->len = ((ecnpats * sizeof(Patprog)) +
+      173:  555:		(ecused * sizeof(wordcode)) +
+        -:  556:		ecsoffs);
+      173:  557:    ret->npats = ecnpats;
+      173:  558:    ret->nref = heap ? -1 : 1;
+      173:  559:    ret->pats = heap ? (Patprog *) zhalloc(ret->len) :
+    #####:  560:	(Patprog *) zshcalloc(ret->len);
+      173:  561:    ret->prog = (Wordcode) (ret->pats + ecnpats);
+      173:  562:    ret->strs = (char *) (ret->prog + ecused);
+      173:  563:    ret->shf = NULL;
+      173:  564:    ret->flags = heap ? EF_HEAP : EF_REAL;
+      173:  565:    ret->dump = NULL;
+      248:  566:    for (l = 0; l < ecnpats; l++)
+       75:  567:	ret->pats[l] = dummy_patprog1;
+      173:  568:    memcpy(ret->prog, ecbuf, ecused * sizeof(wordcode));
+      173:  569:    copy_ecstr(ecstrs, ret->strs);
+        -:  570:
+      173:  571:    zfree(ecbuf, eclen);
+      173:  572:    ecbuf = NULL;
+        -:  573:
+      173:  574:    unqueue_signals();
+        -:  575:
+      173:  576:    return ret;
+        -:  577:}
+        -:  578:
+        -:  579:/**/
+        -:  580:mod_export int
+    #####:  581:empty_eprog(Eprog p)
+        -:  582:{
+    #####:  583:    return (!p || !p->prog || *p->prog == WCB_END());
+        -:  584:}
+        -:  585:
+        -:  586:static void
+      113:  587:clear_hdocs(void)
+        -:  588:{
+        -:  589:    struct heredocs *p, *n;
+        -:  590:
+      113:  591:    for (p = hdocs; p; p = n) {
+    #####:  592:        n = p->next;
+    #####:  593:        zfree(p, sizeof(struct heredocs));
+        -:  594:    }
+      113:  595:    hdocs = NULL;
+      113:  596:}
+        -:  597:
+        -:  598:/*
+        -:  599: * event	: ENDINPUT
+        -:  600: *			| SEPER
+        -:  601: *			| sublist [ SEPER | AMPER | AMPERBANG ]
+        -:  602: *
+        -:  603: * cmdsubst indicates our event is part of a command-style
+        -:  604: * substitution terminated by the token indicationg, usual closing
+        -:  605: * parenthesis.  In other cases endtok is ENDINPUT.
+        -:  606: */
+        -:  607:
+        -:  608:/**/
+        -:  609:Eprog
+      190:  610:parse_event(int endtok)
+        -:  611:{
+      190:  612:    tok = ENDINPUT;
+      190:  613:    incmdpos = 1;
+      190:  614:    aliasspaceflag = 0;
+      190:  615:    zshlex();
+      190:  616:    init_parse();
+        -:  617:
+      190:  618:    if (!par_event(endtok)) {
+      113:  619:        clear_hdocs();
+      113:  620:        return NULL;
+        -:  621:    }
+       77:  622:    if (endtok != ENDINPUT) {
+        -:  623:	/* don't need to build an eprog for this */
+       14:  624:	return &dummy_eprog;
+        -:  625:    }
+       63:  626:    return bld_eprog(1);
+        -:  627:}
+        -:  628:
+        -:  629:/**/
+        -:  630:int
+      267:  631:par_event(int endtok)
+        -:  632:{
+      267:  633:    int r = 0, p, c = 0;
+        -:  634:
+      534:  635:    while (tok == SEPER) {
+      176:  636:	if (isnewlin > 0 && endtok == ENDINPUT)
+      176:  637:	    return 0;
+    #####:  638:	zshlex();
+        -:  639:    }
+       91:  640:    if (tok == ENDINPUT)
+    #####:  641:	return 0;
+       91:  642:    if (tok == endtok)
+       14:  643:	return 1;
+        -:  644:
+       77:  645:    p = ecadd(0);
+        -:  646:
+       77:  647:    if (par_sublist(&c)) {
+       77:  648:	if (tok == ENDINPUT || tok == endtok) {
+       14:  649:	    set_list_code(p, Z_SYNC, c);
+       14:  650:	    r = 1;
+       63:  651:	} else if (tok == SEPER) {
+       63:  652:	    set_list_code(p, Z_SYNC, c);
+       63:  653:	    if (isnewlin <= 0 || endtok != ENDINPUT)
+    #####:  654:		zshlex();
+       63:  655:	    r = 1;
+    #####:  656:	} else if (tok == AMPER) {
+    #####:  657:	    set_list_code(p, Z_ASYNC, c);
+    #####:  658:	    zshlex();
+    #####:  659:	    r = 1;
+    #####:  660:	} else if (tok == AMPERBANG) {
+    #####:  661:	    set_list_code(p, (Z_ASYNC | Z_DISOWN), c);
+    #####:  662:	    zshlex();
+    #####:  663:	    r = 1;
+        -:  664:	}
+        -:  665:    }
+       77:  666:    if (!r) {
+    #####:  667:	tok = LEXERR;
+    #####:  668:	if (errflag) {
+    #####:  669:	    yyerror(0);
+    #####:  670:	    ecused--;
+    #####:  671:	    return 0;
+        -:  672:	}
+    #####:  673:	yyerror(1);
+    #####:  674:	herrflush();
+    #####:  675:	if (noerrs != 2)
+    #####:  676:	    errflag |= ERRFLAG_ERROR;
+    #####:  677:	ecused--;
+    #####:  678:	return 0;
+        -:  679:    } else {
+       77:  680:	int oec = ecused;
+        -:  681:
+       77:  682:	if (!par_event(endtok)) {
+       63:  683:	    ecused = oec;
+       63:  684:	    ecbuf[p] |= wc_bdata(Z_END);
+       63:  685:	    return errflag ? 0 : 1;
+        -:  686:	}
+        -:  687:    }
+       14:  688:    return 1;
+        -:  689:}
+        -:  690:
+        -:  691:/**/
+        -:  692:mod_export Eprog
+      106:  693:parse_list(void)
+        -:  694:{
+      106:  695:    int c = 0;
+        -:  696:
+      106:  697:    tok = ENDINPUT;
+      106:  698:    init_parse();
+      106:  699:    zshlex();
+      106:  700:    par_list(&c);
+      106:  701:    if (tok != ENDINPUT) {
+    #####:  702:        clear_hdocs();
+    #####:  703:	tok = LEXERR;
+    #####:  704:	yyerror(0);
+    #####:  705:	return NULL;
+        -:  706:    }
+      106:  707:    return bld_eprog(1);
+        -:  708:}
+        -:  709:
+        -:  710:/*
+        -:  711: * This entry point is only used for bin_test, our attempt to
+        -:  712: * provide compatibility with /bin/[ and /bin/test.  Hence
+        -:  713: * at this point condlex should always be set to testlex.
+        -:  714: */
+        -:  715:
+        -:  716:/**/
+        -:  717:mod_export Eprog
+        4:  718:parse_cond(void)
+        -:  719:{
+        4:  720:    init_parse();
+        -:  721:
+        4:  722:    if (!par_cond()) {
+    #####:  723:        clear_hdocs();
+    #####:  724:	return NULL;
+        -:  725:    }
+        4:  726:    return bld_eprog(1);
+        -:  727:}
+        -:  728:
+        -:  729:/* This adds a list wordcode. The important bit about this is that it also
+        -:  730: * tries to optimise this to a Z_SIMPLE list code. */
+        -:  731:
+        -:  732:/**/
+        -:  733:static void
+      645:  734:set_list_code(int p, int type, int cmplx)
+        -:  735:{
+      825:  736:    if (!cmplx && (type == Z_SYNC || type == (Z_SYNC | Z_END)) &&
+      351:  737:	WC_SUBLIST_TYPE(ecbuf[p + 1]) == WC_SUBLIST_END) {
+      171:  738:	int ispipe = !(WC_SUBLIST_FLAGS(ecbuf[p + 1]) & WC_SUBLIST_SIMPLE);
+      171:  739:	ecbuf[p] = WCB_LIST((type | Z_SIMPLE), ecused - 2 - p);
+      171:  740:	ecdel(p + 1);
+      171:  741:	if (ispipe)
+    #####:  742:	    ecbuf[p + 1] = WC_PIPE_LINENO(ecbuf[p + 1]);
+        -:  743:    } else
+      474:  744:	ecbuf[p] = WCB_LIST(type, 0);
+      645:  745:}
+        -:  746:
+        -:  747:/* The same for sublists. */
+        -:  748:
+        -:  749:/**/
+        -:  750:static void
+      683:  751:set_sublist_code(int p, int type, int flags, int skip, int cmplx)
+        -:  752:{
+      683:  753:    if (cmplx)
+      478:  754:	ecbuf[p] = WCB_SUBLIST(type, flags, skip);
+        -:  755:    else {
+      205:  756:	ecbuf[p] = WCB_SUBLIST(type, (flags | WC_SUBLIST_SIMPLE), skip);
+      205:  757:	ecbuf[p + 1] = WC_PIPE_LINENO(ecbuf[p + 1]);
+        -:  758:    }
+      683:  759:}
+        -:  760:
+        -:  761:/*
+        -:  762: * list	: { SEPER } [ sublist [ { SEPER | AMPER | AMPERBANG } list ] ]
+        -:  763: */
+        -:  764:
+        -:  765:/**/
+        -:  766:static void
+      368:  767:par_list(int *cmplx)
+        -:  768:{
+      368:  769:    int p, lp = -1, c;
+        -:  770:
+      792:  771: rec:
+        -:  772:
+     1722:  773:    while (tok == SEPER)
+      138:  774:	zshlex();
+        -:  775:
+      792:  776:    p = ecadd(0);
+      792:  777:    c = 0;
+        -:  778:
+      792:  779:    if (par_sublist(&c)) {
+      568:  780:	*cmplx |= c;
+      568:  781:	if (tok == SEPER || tok == AMPER || tok == AMPERBANG) {
+      424:  782:	    if (tok != SEPER)
+    #####:  783:		*cmplx = 1;
+      424:  784:	    set_list_code(p, ((tok == SEPER) ? Z_SYNC :
+    #####:  785:			      (tok == AMPER) ? Z_ASYNC :
+        -:  786:			      (Z_ASYNC | Z_DISOWN)), c);
+      424:  787:	    incmdpos = 1;
+        -:  788:	    do {
+      476:  789:		zshlex();
+      476:  790:	    } while (tok == SEPER);
+      424:  791:	    lp = p;
+      424:  792:	    goto rec;
+        -:  793:	} else
+      144:  794:	    set_list_code(p, (Z_SYNC | Z_END), c);
+        -:  795:    } else {
+      224:  796:	ecused--;
+      224:  797:	if (lp >= 0)
+      218:  798:	    ecbuf[lp] |= wc_bdata(Z_END);
+        -:  799:    }
+      368:  800:}
+        -:  801:
+        -:  802:/**/
+        -:  803:static void
+    #####:  804:par_list1(int *cmplx)
+        -:  805:{
+    #####:  806:    int p = ecadd(0), c = 0;
+        -:  807:
+    #####:  808:    if (par_sublist(&c)) {
+    #####:  809:	set_list_code(p, (Z_SYNC | Z_END), c);
+    #####:  810:	*cmplx |= c;
+        -:  811:    } else
+    #####:  812:	ecused--;
+    #####:  813:}
+        -:  814:
+        -:  815:/*
+        -:  816: * sublist	: sublist2 [ ( DBAR | DAMPER ) { SEPER } sublist ]
+        -:  817: */
+        -:  818:
+        -:  819:/**/
+        -:  820:static int
+      907:  821:par_sublist(int *cmplx)
+        -:  822:{
+      907:  823:    int f, p, c = 0;
+        -:  824:
+      907:  825:    p = ecadd(0);
+        -:  826:
+      907:  827:    if ((f = par_sublist2(&c)) != -1) {
+      683:  828:	int e = ecused;
+        -:  829:
+      683:  830:	*cmplx |= c;
+      721:  831:	if (tok == DBAR || tok == DAMPER) {
+       38:  832:	    enum lextok qtok = tok;
+        -:  833:	    int sl;
+        -:  834:
+       38:  835:	    cmdpush(tok == DBAR ? CS_CMDOR : CS_CMDAND);
+       38:  836:	    zshlex();
+       81:  837:	    while (tok == SEPER)
+        5:  838:		zshlex();
+       38:  839:	    sl = par_sublist(cmplx);
+      114:  840:	    set_sublist_code(p, (sl ? (qtok == DBAR ?
+       38:  841:				       WC_SUBLIST_OR : WC_SUBLIST_AND) :
+        -:  842:				 WC_SUBLIST_END),
+       38:  843:			     f, (e - 1 - p), c);
+       38:  844:	    cmdpop();
+        -:  845:	} else {
+      645:  846:	    if (tok == AMPER || tok == AMPERBANG) {
+    #####:  847:		c = 1;
+    #####:  848:		*cmplx |= c;
+        -:  849:	    }		
+      645:  850:	    set_sublist_code(p, WC_SUBLIST_END, f, (e - 1 - p), c);
+        -:  851:	}
+      683:  852:	return 1;
+        -:  853:    } else {
+      224:  854:	ecused--;
+      224:  855:	return 0;
+        -:  856:    }
+        -:  857:}
+        -:  858:
+        -:  859:/*
+        -:  860: * sublist2	: [ COPROC | BANG ] pline
+        -:  861: */
+        -:  862:
+        -:  863:/**/
+        -:  864:static int
+      907:  865:par_sublist2(int *cmplx)
+        -:  866:{
+      907:  867:    int f = 0;
+        -:  868:
+      907:  869:    if (tok == COPROC) {
+    #####:  870:	*cmplx = 1;
+    #####:  871:	f |= WC_SUBLIST_COPROC;
+    #####:  872:	zshlex();
+      907:  873:    } else if (tok == BANG) {
+        6:  874:	*cmplx = 1;
+        6:  875:	f |= WC_SUBLIST_NOT;
+        6:  876:	zshlex();
+        -:  877:    }
+      907:  878:    if (!par_pline(cmplx) && !f)
+      224:  879:	return -1;
+        -:  880:
+      683:  881:    return f;
+        -:  882:}
+        -:  883:
+        -:  884:/*
+        -:  885: * pline	: cmd [ ( BAR | BARAMP ) { SEPER } pline ]
+        -:  886: */
+        -:  887:
+        -:  888:/**/
+        -:  889:static int
+      912:  890:par_pline(int *cmplx)
+        -:  891:{
+        -:  892:    int p;
+      912:  893:    zlong line = toklineno;
+        -:  894:
+      912:  895:    p = ecadd(0);
+        -:  896:
+      912:  897:    if (!par_cmd(cmplx, 0)) {
+      224:  898:	ecused--;
+      224:  899:	return 0;
+        -:  900:    }
+      688:  901:    if (tok == BAR) {
+        5:  902:	*cmplx = 1;
+        5:  903:	cmdpush(CS_PIPE);
+        5:  904:	zshlex();
+       10:  905:	while (tok == SEPER)
+    #####:  906:	    zshlex();
+        5:  907:	ecbuf[p] = WCB_PIPE(WC_PIPE_MID, (line >= 0 ? line + 1 : 0));
+        5:  908:	ecispace(p + 1, 1);
+        5:  909:	ecbuf[p + 1] = ecused - 1 - p;
+        5:  910:	if (!par_pline(cmplx)) {
+    #####:  911:	    tok = LEXERR;
+        -:  912:	}
+        5:  913:	cmdpop();
+        5:  914:	return 1;
+      683:  915:    } else if (tok == BARAMP) {
+        -:  916:	int r;
+        -:  917:
+    #####:  918:	for (r = p + 1; wc_code(ecbuf[r]) == WC_REDIR;
+    #####:  919:	     r += WC_REDIR_WORDS(ecbuf[r]));
+        -:  920:
+    #####:  921:	ecispace(r, 3);
+    #####:  922:	ecbuf[r] = WCB_REDIR(REDIR_MERGEOUT);
+    #####:  923:	ecbuf[r + 1] = 2;
+    #####:  924:	ecbuf[r + 2] = ecstrcode("1");
+        -:  925:
+    #####:  926:	*cmplx = 1;
+    #####:  927:	cmdpush(CS_ERRPIPE);
+    #####:  928:	zshlex();
+    #####:  929:	while (tok == SEPER)
+    #####:  930:	    zshlex();
+    #####:  931:	ecbuf[p] = WCB_PIPE(WC_PIPE_MID, (line >= 0 ? line + 1 : 0));
+    #####:  932:	ecispace(p + 1, 1);
+    #####:  933:	ecbuf[p + 1] = ecused - 1 - p;
+    #####:  934:	if (!par_pline(cmplx)) {
+    #####:  935:	    tok = LEXERR;
+        -:  936:	}
+    #####:  937:	cmdpop();
+    #####:  938:	return 1;
+        -:  939:    } else {
+      683:  940:	ecbuf[p] = WCB_PIPE(WC_PIPE_END, (line >= 0 ? line + 1 : 0));
+      683:  941:	return 1;
+        -:  942:    }
+        -:  943:}
+        -:  944:
+        -:  945:/*
+        -:  946: * cmd	: { redir } ( for | case | if | while | repeat |
+        -:  947: *				subsh | funcdef | time | dinbrack | dinpar | simple ) { redir }
+        -:  948: *
+        -:  949: * zsh_construct is passed through to par_subsh(), q.v.
+        -:  950: */
+        -:  951:
+        -:  952:/**/
+        -:  953:static int
+      912:  954:par_cmd(int *cmplx, int zsh_construct)
+        -:  955:{
+      912:  956:    int r, nr = 0;
+        -:  957:
+      912:  958:    r = ecused;
+        -:  959:
+      912:  960:    if (IS_REDIROP(tok)) {
+       34:  961:	*cmplx = 1;
+      102:  962:	while (IS_REDIROP(tok)) {
+       34:  963:	    nr += par_redir(&r, NULL);
+        -:  964:	}
+        -:  965:    }
+      912:  966:    switch (tok) {
+        4:  967:    case FOR:
+        4:  968:	cmdpush(CS_FOR);
+        4:  969:	par_for(cmplx);
+        4:  970:	cmdpop();
+        4:  971:	break;
+    #####:  972:    case FOREACH:
+    #####:  973:	cmdpush(CS_FOREACH);
+    #####:  974:	par_for(cmplx);
+    #####:  975:	cmdpop();
+    #####:  976:	break;
+    #####:  977:    case SELECT:
+    #####:  978:	*cmplx = 1;
+    #####:  979:	cmdpush(CS_SELECT);
+    #####:  980:	par_for(cmplx);
+    #####:  981:	cmdpop();
+    #####:  982:	break;
+       10:  983:    case CASE:
+       10:  984:	cmdpush(CS_CASE);
+       10:  985:	par_case(cmplx);
+       10:  986:	cmdpop();
+       10:  987:	break;
+       54:  988:    case IF:
+       54:  989:	par_if(cmplx);
+       54:  990:	break;
+       11:  991:    case WHILE:
+       11:  992:	cmdpush(CS_WHILE);
+       11:  993:	par_while(cmplx);
+       11:  994:	cmdpop();
+       11:  995:	break;
+    #####:  996:    case UNTIL:
+    #####:  997:	cmdpush(CS_UNTIL);
+    #####:  998:	par_while(cmplx);
+    #####:  999:	cmdpop();
+    #####: 1000:	break;
+    #####: 1001:    case REPEAT:
+    #####: 1002:	cmdpush(CS_REPEAT);
+    #####: 1003:	par_repeat(cmplx);
+    #####: 1004:	cmdpop();
+    #####: 1005:	break;
+    #####: 1006:    case INPAR:
+    #####: 1007:	*cmplx = 1;
+    #####: 1008:	cmdpush(CS_SUBSH);
+    #####: 1009:	par_subsh(cmplx, zsh_construct);
+    #####: 1010:	cmdpop();
+    #####: 1011:	break;
+        2: 1012:    case INBRACE:
+        2: 1013:	cmdpush(CS_CURSH);
+        2: 1014:	par_subsh(cmplx, zsh_construct);
+        2: 1015:	cmdpop();
+        2: 1016:	break;
+    #####: 1017:    case FUNC:
+    #####: 1018:	cmdpush(CS_FUNCDEF);
+    #####: 1019:	par_funcdef(cmplx);
+    #####: 1020:	cmdpop();
+    #####: 1021:	break;
+       59: 1022:    case DINBRACK:
+       59: 1023:	cmdpush(CS_COND);
+       59: 1024:	par_dinbrack();
+       59: 1025:	cmdpop();
+       59: 1026:	break;
+       25: 1027:    case DINPAR:
+       25: 1028:	ecadd(WCB_ARITH());
+       25: 1029:	ecstr(tokstr);
+       25: 1030:	zshlex();
+       25: 1031:	break;
+    #####: 1032:    case TIME:
+        -: 1033:	{
+        -: 1034:	    static int inpartime = 0;
+        -: 1035:
+    #####: 1036:	    if (!inpartime) {
+    #####: 1037:		*cmplx = 1;
+    #####: 1038:		inpartime = 1;
+    #####: 1039:		par_time();
+    #####: 1040:		inpartime = 0;
+    #####: 1041:		break;
+        -: 1042:	    }
+        -: 1043:	}
+    #####: 1044:	tok = STRING;
+        -: 1045:	/* fall through */
+      747: 1046:    default:
+        -: 1047:	{
+        -: 1048:	    int sr;
+        -: 1049:
+      747: 1050:	    if (!(sr = par_simple(cmplx, nr))) {
+      224: 1051:		if (!nr)
+      224: 1052:		    return 0;
+        -: 1053:	    } else {
+        -: 1054:		/* Take account of redirections */
+      523: 1055:		if (sr > 1) {
+       13: 1056:		    *cmplx = 1;
+       13: 1057:		    r += sr - 1;
+        -: 1058:		}
+        -: 1059:	    }
+        -: 1060:	}
+      523: 1061:	break;
+        -: 1062:    }
+      688: 1063:    if (IS_REDIROP(tok)) {
+    #####: 1064:	*cmplx = 1;
+    #####: 1065:	while (IS_REDIROP(tok))
+    #####: 1066:	    (void)par_redir(&r, NULL);
+        -: 1067:    }
+      688: 1068:    incmdpos = 1;
+      688: 1069:    incasepat = 0;
+      688: 1070:    incond = 0;
+      688: 1071:    intypeset = 0;
+      688: 1072:    return 1;
+        -: 1073:}
+        -: 1074:
+        -: 1075:/*
+        -: 1076: * for  : ( FOR DINPAR expr SEMI expr SEMI expr DOUTPAR |
+        -: 1077: *    ( FOR[EACH] | SELECT ) name ( "in" wordlist | INPAR wordlist OUTPAR ) )
+        -: 1078: *	{ SEPER } ( DO list DONE | INBRACE list OUTBRACE | list ZEND | list1 )
+        -: 1079: */
+        -: 1080:
+        -: 1081:/**/
+        -: 1082:static void
+        4: 1083:par_for(int *cmplx)
+        -: 1084:{
+        4: 1085:    int oecused = ecused, csh = (tok == FOREACH), p, sel = (tok == SELECT);
+        -: 1086:    int type;
+        -: 1087:
+        4: 1088:    p = ecadd(0);
+        -: 1089:
+        4: 1090:    incmdpos = 0;
+        4: 1091:    infor = tok == FOR ? 2 : 0;
+        4: 1092:    zshlex();
+        4: 1093:    if (tok == DINPAR) {
+        3: 1094:	zshlex();
+        3: 1095:	if (tok != DINPAR)
+    #####: 1096:	    YYERRORV(oecused);
+        3: 1097:	ecstr(tokstr);
+        3: 1098:	zshlex();
+        3: 1099:	if (tok != DINPAR)
+    #####: 1100:	    YYERRORV(oecused);
+        3: 1101:	ecstr(tokstr);
+        3: 1102:	zshlex();
+        3: 1103:	if (tok != DOUTPAR)
+    #####: 1104:	    YYERRORV(oecused);
+        3: 1105:	ecstr(tokstr);
+        3: 1106:	infor = 0;
+        3: 1107:	incmdpos = 1;
+        3: 1108:	zshlex();
+        3: 1109:	type = WC_FOR_COND;
+        -: 1110:    } else {
+        1: 1111:	int np = 0, n, posix_in, ona = noaliases, onc = nocorrect;
+        1: 1112:	infor = 0;
+        1: 1113:	if (tok != STRING || !isident(tokstr))
+    #####: 1114:	    YYERRORV(oecused);
+        1: 1115:	if (!sel)
+        1: 1116:	    np = ecadd(0);
+        1: 1117:	n = 0;
+        1: 1118:	incmdpos = 1;
+        1: 1119:	noaliases = nocorrect = 1;
+        -: 1120:	for (;;) {
+        1: 1121:	    n++;
+        1: 1122:	    ecstr(tokstr);
+        1: 1123:	    zshlex();
+        1: 1124:	    if (tok != STRING || !strcmp(tokstr, "in") || sel)
+        -: 1125:		break;
+    #####: 1126:	    if (!isident(tokstr) || errflag)
+        -: 1127:	    {
+    #####: 1128:		noaliases = ona;
+    #####: 1129:		nocorrect = onc;
+    #####: 1130:		YYERRORV(oecused);
+        -: 1131:	    }
+        -: 1132:	}
+        1: 1133:	noaliases = ona;
+        1: 1134:	nocorrect = onc;
+        1: 1135:	if (!sel)
+        1: 1136:	    ecbuf[np] = n;
+        1: 1137:	posix_in = isnewlin;
+        2: 1138:	while (isnewlin)
+    #####: 1139:	    zshlex();
+        1: 1140:        if (tok == STRING && !strcmp(tokstr, "in")) {
+        1: 1141:	    incmdpos = 0;
+        1: 1142:	    zshlex();
+        1: 1143:	    np = ecadd(0);
+        1: 1144:	    n = par_wordlist();
+        1: 1145:	    if (tok != SEPER)
+    #####: 1146:		YYERRORV(oecused);
+        1: 1147:	    ecbuf[np] = n;
+        1: 1148:	    type = (sel ? WC_SELECT_LIST : WC_FOR_LIST);
+    #####: 1149:	} else if (!posix_in && tok == INPAR) {
+    #####: 1150:	    incmdpos = 0;
+    #####: 1151:	    zshlex();
+    #####: 1152:	    np = ecadd(0);
+    #####: 1153:	    n = par_nl_wordlist();
+    #####: 1154:	    if (tok != OUTPAR)
+    #####: 1155:		YYERRORV(oecused);
+    #####: 1156:	    ecbuf[np] = n;
+    #####: 1157:	    incmdpos = 1;
+    #####: 1158:	    zshlex();
+    #####: 1159:	    type = (sel ? WC_SELECT_LIST : WC_FOR_LIST);
+        -: 1160:	} else
+    #####: 1161:	    type = (sel ? WC_SELECT_PPARAM : WC_FOR_PPARAM);
+        -: 1162:    }
+        4: 1163:    incmdpos = 1;
+       12: 1164:    while (tok == SEPER)
+        4: 1165:	zshlex();
+        4: 1166:    if (tok == DOLOOP) {
+        4: 1167:	zshlex();
+        4: 1168:	par_save_list(cmplx);
+        4: 1169:	if (tok != DONE)
+    #####: 1170:	    YYERRORV(oecused);
+        4: 1171:	incmdpos = 0;
+        4: 1172:	zshlex();
+    #####: 1173:    } else if (tok == INBRACE) {
+    #####: 1174:	zshlex();
+    #####: 1175:	par_save_list(cmplx);
+    #####: 1176:	if (tok != OUTBRACE)
+    #####: 1177:	    YYERRORV(oecused);
+    #####: 1178:	incmdpos = 0;
+    #####: 1179:	zshlex();
+    #####: 1180:    } else if (csh || isset(CSHJUNKIELOOPS)) {
+    #####: 1181:	par_save_list(cmplx);
+    #####: 1182:	if (tok != ZEND)
+    #####: 1183:	    YYERRORV(oecused);
+    #####: 1184:	incmdpos = 0;
+    #####: 1185:	zshlex();
+    #####: 1186:    } else if (unset(SHORTLOOPS)) {
+    #####: 1187:	YYERRORV(oecused);
+        -: 1188:    } else
+    #####: 1189:	par_save_list1(cmplx);
+        -: 1190:
+        4: 1191:    ecbuf[p] = (sel ?
+        8: 1192:		WCB_SELECT(type, ecused - 1 - p) :
+        4: 1193:		WCB_FOR(type, ecused - 1 - p));
+        -: 1194:}
+        -: 1195:
+        -: 1196:/*
+        -: 1197: * case	: CASE STRING { SEPER } ( "in" | INBRACE )
+        -: 1198:				{ { SEPER } STRING { BAR STRING } OUTPAR
+        -: 1199:					list [ DSEMI | SEMIAMP | SEMIBAR ] }
+        -: 1200:				{ SEPER } ( "esac" | OUTBRACE )
+        -: 1201: */
+        -: 1202:
+        -: 1203:/**/
+        -: 1204:static void
+       10: 1205:par_case(int *cmplx)
+        -: 1206:{
+       10: 1207:    int oecused = ecused, brflag, p, pp, palts, type, nalts;
+        -: 1208:    int ona, onc;
+        -: 1209:
+       10: 1210:    p = ecadd(0);
+        -: 1211:
+       10: 1212:    incmdpos = 0;
+       10: 1213:    zshlex();
+       10: 1214:    if (tok != STRING)
+    #####: 1215:	YYERRORV(oecused);
+       10: 1216:    ecstr(tokstr);
+        -: 1217:
+       10: 1218:    incmdpos = 1;
+       10: 1219:    ona = noaliases;
+       10: 1220:    onc = nocorrect;
+       10: 1221:    noaliases = nocorrect = 1;
+       10: 1222:    zshlex();
+       20: 1223:    while (tok == SEPER)
+    #####: 1224:	zshlex();
+       10: 1225:    if (!(tok == STRING && !strcmp(tokstr, "in")) && tok != INBRACE)
+        -: 1226:    {
+    #####: 1227:	noaliases = ona;
+    #####: 1228:	nocorrect = onc;
+    #####: 1229:	YYERRORV(oecused);
+        -: 1230:    }
+       10: 1231:    brflag = (tok == INBRACE);
+       10: 1232:    incasepat = 1;
+       10: 1233:    incmdpos = 0;
+       10: 1234:    noaliases = ona;
+       10: 1235:    nocorrect = onc;
+       10: 1236:    zshlex();
+        -: 1237:
+       81: 1238:    for (;;) {
+        -: 1239:	char *str;
+        -: 1240:	int skip_zshlex;
+        -: 1241:
+      275: 1242:	while (tok == SEPER)
+       93: 1243:	    zshlex();
+       91: 1244:	if (tok == OUTBRACE)
+    #####: 1245:	    break;
+       91: 1246:	if (tok == INPAR)
+    #####: 1247:	    zshlex();
+       91: 1248:	if (tok == BAR) {
+    #####: 1249:	    str = dupstring("");
+    #####: 1250:	    skip_zshlex = 1;
+        -: 1251:	} else {
+       91: 1252:	    if (tok != STRING)
+    #####: 1253:		YYERRORV(oecused);
+       91: 1254:	    if (!strcmp(tokstr, "esac"))
+       10: 1255:		break;
+       81: 1256:	    str = dupstring(tokstr);
+       81: 1257:	    skip_zshlex = 0;
+        -: 1258:	}
+       81: 1259:	type = WC_CASE_OR;
+       81: 1260:	pp = ecadd(0);
+       81: 1261:	palts = ecadd(0);
+       81: 1262:	nalts = 0;
+        -: 1263:	/*
+        -: 1264:	 * Hack here.
+        -: 1265:	 *
+        -: 1266:	 * [Pause for astonished hubbub to subside.]
+        -: 1267:	 *
+        -: 1268:	 * The next token we get may be
+        -: 1269:	 * - ")" or "|" if we're looking at an honest-to-god
+        -: 1270:	 *   "case" pattern, either because there's no opening
+        -: 1271:	 *   parenthesis, or because SH_GLOB is set and we
+        -: 1272:	 *   managed to grab an initial "(" to mark the start
+        -: 1273:	 *   of the case pattern.
+        -: 1274:	 * - Something else --- we don't care what --- because
+        -: 1275:	 *   we're parsing a complete "(...)" as a complete
+        -: 1276:	 *   zsh pattern.  In that case, we treat this as a
+        -: 1277:	 *   single instance of a case pattern but we pretend
+        -: 1278:	 *   we're doing proper case parsing --- in which the
+        -: 1279:	 *   parentheses and bar are in different words from
+        -: 1280:	 *   the string, so may be separated by whitespace.
+        -: 1281:	 *   So we quietly massage the whitespace and hope
+        -: 1282:	 *   no one noticed.  This is horrible, but it's
+        -: 1283:	 *   unfortunately too difficult to combine traditional
+        -: 1284:	 *   zsh patterns with a properly parsed case pattern
+        -: 1285:	 *   without generating incompatibilities which aren't
+        -: 1286:	 *   all that popular (I've discovered).
+        -: 1287:	 * - We can also end up with something other than ")" or "|"
+        -: 1288:	 *   just because we're looking at garbage.
+        -: 1289:	 *
+        -: 1290:	 * Because of the second case, what happens next might
+        -: 1291:	 * be the start of the command after the pattern, so we
+        -: 1292:	 * need to treat it as in command position.  Luckily
+        -: 1293:	 * this doesn't affect our ability to match a | or ) as
+        -: 1294:	 * these are valid on command lines.
+        -: 1295:	 */
+       81: 1296:	incasepat = -1;
+       81: 1297:	incmdpos = 1;
+       81: 1298:	if (!skip_zshlex)
+       81: 1299:	    zshlex();
+        -: 1300:	for (;;) {
+       81: 1301:	    if (tok == OUTPAR) {
+        1: 1302:		ecstr(str);
+        1: 1303:		ecadd(ecnpats++);
+        1: 1304:		nalts++;
+        -: 1305:
+        1: 1306:		incasepat = 0;
+        1: 1307:		incmdpos = 1;
+        1: 1308:		zshlex();
+        1: 1309:		break;
+       80: 1310:	    } else if (tok == BAR) {
+    #####: 1311:		ecstr(str);
+    #####: 1312:		ecadd(ecnpats++);
+    #####: 1313:		nalts++;
+        -: 1314:
+    #####: 1315:		incasepat = 1;
+    #####: 1316:		incmdpos = 0;
+        -: 1317:	    } else {
+       80: 1318:		if (!nalts && str[0] == Inpar) {
+       80: 1319:		    int pct = 0, sl;
+        -: 1320:		    char *s;
+        -: 1321:
+      781: 1322:		    for (s = str; *s; s++) {
+      701: 1323:			if (*s == Inpar)
+       87: 1324:			    pct++;
+      701: 1325:			if (!pct)
+    #####: 1326:			    break;
+      701: 1327:			if (pct == 1) {
+      577: 1328:			    if (*s == Bar || *s == Inpar)
+      198: 1329:				while (iblank(s[1]))
+        4: 1330:				    chuck(s+1);
+      577: 1331:			    if (*s == Bar || *s == Outpar)
+      202: 1332:				while (iblank(s[-1]) &&
+        8: 1333:				       (s < str + 1 || s[-2] != Meta))
+        4: 1334:				    chuck(--s);
+        -: 1335:			}
+      701: 1336:			if (*s == Outpar)
+       87: 1337:			    pct--;
+        -: 1338:		    }
+       80: 1339:		    if (*s || pct || s == str)
+    #####: 1340:			YYERRORV(oecused);
+        -: 1341:		    /* Simplify pattern by removing surrounding (...) */
+       80: 1342:		    sl = strlen(str);
+        -: 1343:		    DPUTS(*str != Inpar || str[sl - 1] != Outpar,
+        -: 1344:			  "BUG: strange case pattern");
+       80: 1345:		    str[sl - 1] = '\0';
+       80: 1346:		    chuck(str);
+       80: 1347:		    ecstr(str);
+       80: 1348:		    ecadd(ecnpats++);
+       80: 1349:		    nalts++;
+       80: 1350:		    break;
+        -: 1351:		}
+    #####: 1352:		YYERRORV(oecused);
+        -: 1353:	    }
+        -: 1354:
+    #####: 1355:	    zshlex();
+    #####: 1356:	    switch (tok) {
+    #####: 1357:	    case STRING:
+        -: 1358:		/* Normal case */
+    #####: 1359:		str = dupstring(tokstr);
+    #####: 1360:		zshlex();
+    #####: 1361:		break;
+        -: 1362:
+    #####: 1363:	    case OUTPAR:
+        -: 1364:	    case BAR:
+        -: 1365:		/* Empty string */
+    #####: 1366:		str = dupstring("");
+    #####: 1367:		break;
+        -: 1368:
+    #####: 1369:	    default:
+        -: 1370:		/* Oops. */
+    #####: 1371:		YYERRORV(oecused);
+        -: 1372:		break;
+        -: 1373:	    }
+        -: 1374:	}
+       81: 1375:	incasepat = 0;
+       81: 1376:	par_save_list(cmplx);
+       81: 1377:	if (tok == SEMIAMP)
+        6: 1378:	    type = WC_CASE_AND;
+       75: 1379:	else if (tok == SEMIBAR)
+    #####: 1380:	    type = WC_CASE_TESTAND;
+       81: 1381:	ecbuf[pp] = WCB_CASE(type, ecused - 1 - pp);
+       81: 1382:	ecbuf[palts] = nalts;
+       81: 1383:	if ((tok == ESAC && !brflag) || (tok == OUTBRACE && brflag))
+        -: 1384:	    break;
+       81: 1385:	if (tok != DSEMI && tok != SEMIAMP && tok != SEMIBAR)
+    #####: 1386:	    YYERRORV(oecused);
+       81: 1387:	incasepat = 1;
+       81: 1388:	incmdpos = 0;
+       81: 1389:	zshlex();
+        -: 1390:    }
+       10: 1391:    incmdpos = 1;
+       10: 1392:    incasepat = 0;
+       10: 1393:    zshlex();
+        -: 1394:
+       10: 1395:    ecbuf[p] = WCB_CASE(WC_CASE_HEAD, ecused - 1 - p);
+        -: 1396:}
+        -: 1397:
+        -: 1398:/*
+        -: 1399: * if	: { ( IF | ELIF ) { SEPER } ( INPAR list OUTPAR | list )
+        -: 1400:			{ SEPER } ( THEN list | INBRACE list OUTBRACE | list1 ) }
+        -: 1401:			[ FI | ELSE list FI | ELSE { SEPER } INBRACE list OUTBRACE ]
+        -: 1402:			(you get the idea...?)
+        -: 1403: */
+        -: 1404:
+        -: 1405:/**/
+        -: 1406:static void
+       54: 1407:par_if(int *cmplx)
+        -: 1408:{
+       54: 1409:    int oecused = ecused, p, pp, type, usebrace = 0;
+        -: 1410:    enum lextok xtok;
+        -: 1411:    unsigned char nc;
+        -: 1412:
+       54: 1413:    p = ecadd(0);
+        -: 1414:
+        -: 1415:    for (;;) {
+      168: 1416:	xtok = tok;
+      111: 1417:	cmdpush(xtok == IF ? CS_IF : CS_ELIF);
+      111: 1418:	if (xtok == FI) {
+       35: 1419:	    incmdpos = 0;
+       35: 1420:	    zshlex();
+       35: 1421:	    break;
+        -: 1422:	}
+       76: 1423:	zshlex();
+       76: 1424:	if (xtok == ELSE)
+       19: 1425:	    break;
+      114: 1426:	while (tok == SEPER)
+    #####: 1427:	    zshlex();
+       57: 1428:	if (!(xtok == IF || xtok == ELIF)) {
+    #####: 1429:	    cmdpop();
+    #####: 1430:	    YYERRORV(oecused);
+        -: 1431:	}
+       57: 1432:	pp = ecadd(0);
+       57: 1433:	type = (xtok == IF ? WC_IF_IF : WC_IF_ELIF);
+       57: 1434:	par_save_list(cmplx);
+       57: 1435:	incmdpos = 1;
+       57: 1436:	if (tok == ENDINPUT) {
+    #####: 1437:	    cmdpop();
+    #####: 1438:	    YYERRORV(oecused);
+        -: 1439:	}
+      114: 1440:	while (tok == SEPER)
+    #####: 1441:	    zshlex();
+       57: 1442:	xtok = FI;
+       57: 1443:	nc = cmdstack[cmdsp - 1] == CS_IF ? CS_IFTHEN : CS_ELIFTHEN;
+       57: 1444:	if (tok == THEN) {
+       57: 1445:	    usebrace = 0;
+       57: 1446:	    cmdpop();
+       57: 1447:	    cmdpush(nc);
+       57: 1448:	    zshlex();
+       57: 1449:	    par_save_list(cmplx);
+       57: 1450:	    ecbuf[pp] = WCB_IF(type, ecused - 1 - pp);
+       57: 1451:	    incmdpos = 1;
+       57: 1452:	    cmdpop();
+    #####: 1453:	} else if (tok == INBRACE) {
+    #####: 1454:	    usebrace = 1;
+    #####: 1455:	    cmdpop();
+    #####: 1456:	    cmdpush(nc);
+    #####: 1457:	    zshlex();
+    #####: 1458:	    par_save_list(cmplx);
+    #####: 1459:	    if (tok != OUTBRACE) {
+    #####: 1460:		cmdpop();
+    #####: 1461:		YYERRORV(oecused);
+        -: 1462:	    }
+    #####: 1463:	    ecbuf[pp] = WCB_IF(type, ecused - 1 - pp);
+        -: 1464:	    /* command word (else) allowed to follow immediately */
+    #####: 1465:	    zshlex();
+    #####: 1466:	    incmdpos = 1;
+    #####: 1467:	    if (tok == SEPER)
+    #####: 1468:		break;
+    #####: 1469:	    cmdpop();
+    #####: 1470:	} else if (unset(SHORTLOOPS)) {
+    #####: 1471:	    cmdpop();
+    #####: 1472:	    YYERRORV(oecused);
+        -: 1473:	} else {
+    #####: 1474:	    cmdpop();
+    #####: 1475:	    cmdpush(nc);
+    #####: 1476:	    par_save_list1(cmplx);
+    #####: 1477:	    ecbuf[pp] = WCB_IF(type, ecused - 1 - pp);
+    #####: 1478:	    incmdpos = 1;
+    #####: 1479:	    break;
+        -: 1480:	}
+        -: 1481:    }
+       54: 1482:    cmdpop();
+       54: 1483:    if (xtok == ELSE || tok == ELSE) {
+       19: 1484:	pp = ecadd(0);
+       19: 1485:	cmdpush(CS_ELSE);
+       57: 1486:	while (tok == SEPER)
+       19: 1487:	    zshlex();
+       19: 1488:	if (tok == INBRACE && usebrace) {
+    #####: 1489:	    zshlex();
+    #####: 1490:	    par_save_list(cmplx);
+    #####: 1491:	    if (tok != OUTBRACE) {
+    #####: 1492:		cmdpop();
+    #####: 1493:		YYERRORV(oecused);
+        -: 1494:	    }
+        -: 1495:	} else {
+       19: 1496:	    par_save_list(cmplx);
+       19: 1497:	    if (tok != FI) {
+    #####: 1498:		cmdpop();
+    #####: 1499:		YYERRORV(oecused);
+        -: 1500:	    }
+        -: 1501:	}
+       19: 1502:	incmdpos = 0;
+       19: 1503:	ecbuf[pp] = WCB_IF(WC_IF_ELSE, ecused - 1 - pp);
+       19: 1504:	zshlex();
+       19: 1505:	cmdpop();
+        -: 1506:    }
+       54: 1507:    ecbuf[p] = WCB_IF(WC_IF_HEAD, ecused - 1 - p);
+        -: 1508:}
+        -: 1509:
+        -: 1510:/*
+        -: 1511: * while	: ( WHILE | UNTIL ) ( INPAR list OUTPAR | list ) { SEPER }
+        -: 1512:				( DO list DONE | INBRACE list OUTBRACE | list ZEND )
+        -: 1513: */
+        -: 1514:
+        -: 1515:/**/
+        -: 1516:static void
+       11: 1517:par_while(int *cmplx)
+        -: 1518:{
+       11: 1519:    int oecused = ecused, p;
+       11: 1520:    int type = (tok == UNTIL ? WC_WHILE_UNTIL : WC_WHILE_WHILE);
+        -: 1521:
+       11: 1522:    p = ecadd(0);
+       11: 1523:    zshlex();
+       11: 1524:    par_save_list(cmplx);
+       11: 1525:    incmdpos = 1;
+       22: 1526:    while (tok == SEPER)
+    #####: 1527:	zshlex();
+       11: 1528:    if (tok == DOLOOP) {
+       11: 1529:	zshlex();
+       11: 1530:	par_save_list(cmplx);
+       11: 1531:	if (tok != DONE)
+    #####: 1532:	    YYERRORV(oecused);
+       11: 1533:	incmdpos = 0;
+       11: 1534:	zshlex();
+    #####: 1535:    } else if (tok == INBRACE) {
+    #####: 1536:	zshlex();
+    #####: 1537:	par_save_list(cmplx);
+    #####: 1538:	if (tok != OUTBRACE)
+    #####: 1539:	    YYERRORV(oecused);
+    #####: 1540:	incmdpos = 0;
+    #####: 1541:	zshlex();
+    #####: 1542:    } else if (isset(CSHJUNKIELOOPS)) {
+    #####: 1543:	par_save_list(cmplx);
+    #####: 1544:	if (tok != ZEND)
+    #####: 1545:	    YYERRORV(oecused);
+    #####: 1546:	zshlex();
+    #####: 1547:    } else if (unset(SHORTLOOPS)) {
+    #####: 1548:	YYERRORV(oecused);
+        -: 1549:    } else
+    #####: 1550:	par_save_list1(cmplx);
+        -: 1551:
+       11: 1552:    ecbuf[p] = WCB_WHILE(type, ecused - 1 - p);
+        -: 1553:}
+        -: 1554:
+        -: 1555:/*
+        -: 1556: * repeat	: REPEAT STRING { SEPER } ( DO list DONE | list1 )
+        -: 1557: */
+        -: 1558:
+        -: 1559:/**/
+        -: 1560:static void
+    #####: 1561:par_repeat(int *cmplx)
+        -: 1562:{
+        -: 1563:    /* ### what to do about inrepeat_ here? */
+    #####: 1564:    int oecused = ecused, p;
+        -: 1565:
+    #####: 1566:    p = ecadd(0);
+        -: 1567:
+    #####: 1568:    incmdpos = 0;
+    #####: 1569:    zshlex();
+    #####: 1570:    if (tok != STRING)
+    #####: 1571:	YYERRORV(oecused);
+    #####: 1572:    ecstr(tokstr);
+    #####: 1573:    incmdpos = 1;
+    #####: 1574:    zshlex();
+    #####: 1575:    while (tok == SEPER)
+    #####: 1576:	zshlex();
+    #####: 1577:    if (tok == DOLOOP) {
+    #####: 1578:	zshlex();
+    #####: 1579:	par_save_list(cmplx);
+    #####: 1580:	if (tok != DONE)
+    #####: 1581:	    YYERRORV(oecused);
+    #####: 1582:	incmdpos = 0;
+    #####: 1583:	zshlex();
+    #####: 1584:    } else if (tok == INBRACE) {
+    #####: 1585:	zshlex();
+    #####: 1586:	par_save_list(cmplx);
+    #####: 1587:	if (tok != OUTBRACE)
+    #####: 1588:	    YYERRORV(oecused);
+    #####: 1589:	incmdpos = 0;
+    #####: 1590:	zshlex();
+    #####: 1591:    } else if (isset(CSHJUNKIELOOPS)) {
+    #####: 1592:	par_save_list(cmplx);
+    #####: 1593:	if (tok != ZEND)
+    #####: 1594:	    YYERRORV(oecused);
+    #####: 1595:	zshlex();
+    #####: 1596:    } else if (unset(SHORTLOOPS) && unset(SHORTREPEAT)) {
+    #####: 1597:	YYERRORV(oecused);
+        -: 1598:    } else
+    #####: 1599:	par_save_list1(cmplx);
+        -: 1600:
+    #####: 1601:    ecbuf[p] = WCB_REPEAT(ecused - 1 - p);
+        -: 1602:}
+        -: 1603:
+        -: 1604:/*
+        -: 1605: * subsh	: INPAR list OUTPAR |
+        -: 1606: *                INBRACE list OUTBRACE [ "always" INBRACE list OUTBRACE ]
+        -: 1607: *
+        -: 1608: * With zsh_construct non-zero, we're doing a zsh special in which
+        -: 1609: * the following token is not considered in command position.  This
+        -: 1610: * is used for arguments of anonymous functions.
+        -: 1611: */
+        -: 1612:
+        -: 1613:/**/
+        -: 1614:static void
+        2: 1615:par_subsh(int *cmplx, int zsh_construct)
+        -: 1616:{
+        2: 1617:    enum lextok otok = tok;
+        2: 1618:    int oecused = ecused, p, pp;
+        -: 1619:
+        2: 1620:    p = ecadd(0);
+        -: 1621:    /* Extra word only needed for always block */
+        2: 1622:    pp = ecadd(0);
+        2: 1623:    zshlex();
+        2: 1624:    par_list(cmplx);
+        2: 1625:    ecadd(WCB_END());
+        2: 1626:    if (tok != ((otok == INPAR) ? OUTPAR : OUTBRACE))
+    #####: 1627:	YYERRORV(oecused);
+        2: 1628:    incmdpos = !zsh_construct;
+        2: 1629:    zshlex();
+        -: 1630:
+        -: 1631:    /* Optional always block.  No intervening SEPERs allowed. */
+        2: 1632:    if (otok == INBRACE && tok == STRING && !strcmp(tokstr, "always")) {
+        1: 1633:	ecbuf[pp] = WCB_TRY(ecused - 1 - pp);
+        1: 1634:	incmdpos = 1;
+        -: 1635:	do {
+        1: 1636:	    zshlex();
+        1: 1637:	} while (tok == SEPER);
+        -: 1638:
+        1: 1639:	if (tok != INBRACE)
+    #####: 1640:	    YYERRORV(oecused);
+        1: 1641:	cmdpop();
+        1: 1642:	cmdpush(CS_ALWAYS);
+        -: 1643:
+        1: 1644:	zshlex();
+        1: 1645:	par_save_list(cmplx);
+        2: 1646:	while (tok == SEPER)
+    #####: 1647:	    zshlex();
+        -: 1648:
+        1: 1649:	incmdpos = 1;
+        -: 1650:
+        1: 1651:	if (tok != OUTBRACE)
+    #####: 1652:	    YYERRORV(oecused);
+        1: 1653:	zshlex();
+        1: 1654:	ecbuf[p] = WCB_TRY(ecused - 1 - p);
+        -: 1655:    } else {
+        2: 1656:	ecbuf[p] = (otok == INPAR ? WCB_SUBSH(ecused - 1 - p) :
+        1: 1657:		    WCB_CURSH(ecused - 1 - p));
+        -: 1658:    }
+        -: 1659:}
+        -: 1660:
+        -: 1661:/*
+        -: 1662: * funcdef	: FUNCTION wordlist [ INOUTPAR ] { SEPER }
+        -: 1663: *					( list1 | INBRACE list OUTBRACE )
+        -: 1664: */
+        -: 1665:
+        -: 1666:/**/
+        -: 1667:static void
+    #####: 1668:par_funcdef(int *cmplx)
+        -: 1669:{
+    #####: 1670:    int oecused = ecused, num = 0, onp, p, c = 0;
+    #####: 1671:    int so, oecssub = ecssub;
+    #####: 1672:    zlong oldlineno = lineno;
+    #####: 1673:    int do_tracing = 0;
+        -: 1674:
+    #####: 1675:    lineno = 0;
+    #####: 1676:    nocorrect = 1;
+    #####: 1677:    incmdpos = 0;
+    #####: 1678:    zshlex();
+        -: 1679:
+    #####: 1680:    p = ecadd(0);
+    #####: 1681:    ecadd(0); /* p + 1 */
+        -: 1682:
+        -: 1683:    /* Consume an initial (-T), (--), or (-T --).
+        -: 1684:     * Anything else is a literal function name.
+        -: 1685:     */
+    #####: 1686:    if (tok == STRING && tokstr[0] == Dash) {
+    #####: 1687:	if (tokstr[1] == 'T' && !tokstr[2]) {
+    #####: 1688:	    ++do_tracing;
+    #####: 1689:	    zshlex();
+        -: 1690:	}
+    #####: 1691:	if (tok == STRING && tokstr[0] == Dash &&
+    #####: 1692:	    tokstr[1] == Dash && !tokstr[2]) {
+    #####: 1693:	    zshlex();
+        -: 1694:	}
+        -: 1695:    }
+        -: 1696:
+    #####: 1697:    while (tok == STRING) {
+    #####: 1698:	if ((*tokstr == Inbrace || *tokstr == '{') &&
+    #####: 1699:	    !tokstr[1]) {
+    #####: 1700:	    tok = INBRACE;
+    #####: 1701:	    break;
+        -: 1702:	}
+    #####: 1703:	ecstr(tokstr);
+    #####: 1704:	num++;
+    #####: 1705:	zshlex();
+        -: 1706:    }
+    #####: 1707:    ecadd(0); /* p + num + 2 */
+    #####: 1708:    ecadd(0); /* p + num + 3 */
+    #####: 1709:    ecadd(0); /* p + num + 4 */
+    #####: 1710:    ecadd(0); /* p + num + 5 */
+        -: 1711:
+    #####: 1712:    nocorrect = 0;
+    #####: 1713:    incmdpos = 1;
+    #####: 1714:    if (tok == INOUTPAR)
+    #####: 1715:	zshlex();
+    #####: 1716:    while (tok == SEPER)
+    #####: 1717:	zshlex();
+        -: 1718:
+    #####: 1719:    ecnfunc++;
+    #####: 1720:    ecssub = so = ecsoffs;
+    #####: 1721:    onp = ecnpats;
+    #####: 1722:    ecnpats = 0;
+        -: 1723:
+    #####: 1724:    if (tok == INBRACE) {
+    #####: 1725:	zshlex();
+    #####: 1726:	par_list(&c);
+    #####: 1727:	if (tok != OUTBRACE) {
+    #####: 1728:	    lineno += oldlineno;
+    #####: 1729:	    ecnpats = onp;
+    #####: 1730:	    ecssub = oecssub;
+    #####: 1731:	    YYERRORV(oecused);
+        -: 1732:	}
+    #####: 1733:	if (num == 0) {
+        -: 1734:	    /* Anonymous function, possibly with arguments */
+    #####: 1735:	    incmdpos = 0;
+        -: 1736:	}
+    #####: 1737:	zshlex();
+    #####: 1738:    } else if (unset(SHORTLOOPS)) {
+    #####: 1739:	lineno += oldlineno;
+    #####: 1740:	ecnpats = onp;
+    #####: 1741:	ecssub = oecssub;
+    #####: 1742:	YYERRORV(oecused);
+        -: 1743:    } else
+    #####: 1744:	par_list1(&c);
+        -: 1745:
+    #####: 1746:    ecadd(WCB_END());
+    #####: 1747:    ecbuf[p + num + 2] = so - oecssub;
+    #####: 1748:    ecbuf[p + num + 3] = ecsoffs - so; /* "length of string table" */
+    #####: 1749:    ecbuf[p + num + 4] = ecnpats; /* "number of patterns for body" */
+    #####: 1750:    ecbuf[p + num + 5] = do_tracing;
+    #####: 1751:    ecbuf[p + 1] = num; /* "number of names" */
+        -: 1752:
+    #####: 1753:    ecnpats = onp;
+    #####: 1754:    ecssub = oecssub;
+    #####: 1755:    ecnfunc++;
+        -: 1756:
+    #####: 1757:    ecbuf[p] = WCB_FUNCDEF(ecused - 1 - p); /* "offset to after body" */
+        -: 1758:
+        -: 1759:    /* If it's an anonymous function... */
+    #####: 1760:    if (num == 0) {
+        -: 1761:	/* ... look for arguments to it. */
+    #####: 1762:	int parg = ecadd(0);
+    #####: 1763:	ecadd(0);
+    #####: 1764:	while (tok == STRING) {
+    #####: 1765:	    ecstr(tokstr);
+    #####: 1766:	    num++;
+    #####: 1767:	    zshlex();
+        -: 1768:	}
+    #####: 1769:	if (num > 0)
+    #####: 1770:	    *cmplx = 1;
+    #####: 1771:	ecbuf[parg] = ecused - parg; /*?*/
+    #####: 1772:	ecbuf[parg+1] = num;
+        -: 1773:    }
+    #####: 1774:    lineno += oldlineno;
+        -: 1775:}
+        -: 1776:
+        -: 1777:/*
+        -: 1778: * time	: TIME sublist2
+        -: 1779: */
+        -: 1780:
+        -: 1781:/**/
+        -: 1782:static void
+    #####: 1783:par_time(void)
+        -: 1784:{
+    #####: 1785:    int p, f, c = 0;
+        -: 1786:
+    #####: 1787:    zshlex();
+        -: 1788:
+    #####: 1789:    p = ecadd(0);
+    #####: 1790:    ecadd(0);
+    #####: 1791:    if ((f = par_sublist2(&c)) < 0) {
+    #####: 1792:	ecused--;
+    #####: 1793:	ecbuf[p] = WCB_TIMED(WC_TIMED_EMPTY);
+        -: 1794:    } else {
+    #####: 1795:	ecbuf[p] = WCB_TIMED(WC_TIMED_PIPE);
+    #####: 1796:	set_sublist_code(p + 1, WC_SUBLIST_END, f, ecused - 2 - p, c);
+        -: 1797:    }
+    #####: 1798:}
+        -: 1799:
+        -: 1800:/*
+        -: 1801: * dinbrack	: DINBRACK cond DOUTBRACK
+        -: 1802: */
+        -: 1803:
+        -: 1804:/**/
+        -: 1805:static void
+       59: 1806:par_dinbrack(void)
+        -: 1807:{
+       59: 1808:    int oecused = ecused;
+        -: 1809:
+       59: 1810:    incond = 1;
+       59: 1811:    incmdpos = 0;
+       59: 1812:    zshlex();
+       59: 1813:    par_cond();
+       59: 1814:    if (tok != DOUTBRACK)
+    #####: 1815:	YYERRORV(oecused);
+       59: 1816:    incond = 0;
+       59: 1817:    incmdpos = 1;
+       59: 1818:    zshlex();
+        -: 1819:}
+        -: 1820:
+        -: 1821:/*
+        -: 1822: * simple	: { COMMAND | EXEC | NOGLOB | NOCORRECT | DASH }
+        -: 1823:					{ STRING | ENVSTRING | ENVARRAY wordlist OUTPAR | redir }
+        -: 1824:					[ INOUTPAR { SEPER } ( list1 | INBRACE list OUTBRACE ) ]
+        -: 1825: *
+        -: 1826: * Returns 0 if no code, else 1 plus the number of code words
+        -: 1827: * used up by redirections.
+        -: 1828: */
+        -: 1829:
+        -: 1830:/**/
+        -: 1831:static int
+      747: 1832:par_simple(int *cmplx, int nr)
+        -: 1833:{
+      747: 1834:    int oecused = ecused, isnull = 1, r, argc = 0, p, isfunc = 0, sr = 0;
+      747: 1835:    int c = *cmplx, nrediradd, assignments = 0, ppost = 0, is_typeset = 0;
+      747: 1836:    char *hasalias = input_hasalias();
+      747: 1837:    wordcode postassigns = 0;
+        -: 1838:
+      747: 1839:    r = ecused;
+        -: 1840:    for (;;) {
+      975: 1841:	if (tok == NOCORRECT) {
+    #####: 1842:	    *cmplx = c = 1;
+    #####: 1843:	    nocorrect = 1;
+      861: 1844:	} else if (tok == ENVSTRING) {
+        -: 1845:	    char *ptr, *name, *str;
+        -: 1846:
+       99: 1847:	    name = tokstr;
+     1138: 1848:	    for (ptr = tokstr;
+     2078: 1849:		 *ptr && *ptr != Inbrack && *ptr != '=' && *ptr != '+';
+      940: 1850:	         ptr++);
+       99: 1851:	    if (*ptr == Inbrack) skipparens(Inbrack, Outbrack, &ptr);
+       99: 1852:	    if (*ptr == '+') {
+        1: 1853:	    	*ptr++ = '\0';
+        1: 1854:	    	ecadd(WCB_ASSIGN(WC_ASSIGN_SCALAR, WC_ASSIGN_INC, 0));
+        -: 1855:	    } else
+       98: 1856:		ecadd(WCB_ASSIGN(WC_ASSIGN_SCALAR, WC_ASSIGN_NEW, 0));
+        -: 1857:
+       99: 1858:	    if (*ptr == '=') {
+       99: 1859:		*ptr = '\0';
+       99: 1860:		str = ptr + 1;
+        -: 1861:	    } else
+    #####: 1862:		equalsplit(tokstr, &str);
+     1160: 1863:	    for (ptr = str; *ptr; ptr++) {
+        -: 1864:		/*
+        -: 1865:		 * We can't treat this as "simple" if it contains
+        -: 1866:		 * expansions that require process substitution, since then
+        -: 1867:		 * we need process handling.
+        -: 1868:		 */
+     1067: 1869:		if (ptr[1] == Inpar &&
+       12: 1870:		    (*ptr == Equals || *ptr == Inang || *ptr == OutangProc)) {
+    #####: 1871:		    *cmplx = 1;
+    #####: 1872:		    break;
+        -: 1873:		}
+        -: 1874:	    }
+       99: 1875:	    ecstr(name);
+       99: 1876:	    ecstr(str);
+       99: 1877:	    isnull = 0;
+       99: 1878:	    assignments = 1;
+      762: 1879:	} else if (tok == ENVARRAY) {
+       15: 1880:	    int oldcmdpos = incmdpos, n, type2;
+        -: 1881:
+        -: 1882:	    /*
+        -: 1883:	     * We consider array setting cmplx because it can
+        -: 1884:	     * contain process substitutions, which need a valid job.
+        -: 1885:	     */
+       15: 1886:	    *cmplx = c = 1;
+       15: 1887:	    p = ecadd(0);
+       15: 1888:	    incmdpos = 0;
+       15: 1889:	    if ((type2 = strlen(tokstr) - 1) && tokstr[type2] == '+') {
+    #####: 1890:	    	tokstr[type2] = '\0';
+    #####: 1891:		type2 = WC_ASSIGN_INC;
+        -: 1892:    	    } else
+       15: 1893:		type2 = WC_ASSIGN_NEW;
+       15: 1894:	    ecstr(tokstr);
+       15: 1895:	    cmdpush(CS_ARRAY);
+       15: 1896:	    zshlex();
+       15: 1897:	    n = par_nl_wordlist();
+       15: 1898:	    ecbuf[p] = WCB_ASSIGN(WC_ASSIGN_ARRAY, type2, n);
+       15: 1899:	    cmdpop();
+       15: 1900:	    if (tok != OUTPAR)
+    #####: 1901:		YYERROR(oecused);
+       15: 1902:	    incmdpos = oldcmdpos;
+       15: 1903:	    isnull = 0;
+       15: 1904:	    assignments = 1;
+      747: 1905:	} else if (IS_REDIROP(tok)) {
+    #####: 1906:	    *cmplx = c = 1;
+    #####: 1907:	    nr += par_redir(&r, NULL);
+    #####: 1908:	    continue;
+        -: 1909:	} else
+        -: 1910:	    break;
+      114: 1911:	zshlex();
+      114: 1912:	if (!hasalias)
+      114: 1913:	    hasalias = input_hasalias();
+        -: 1914:    }
+      747: 1915:    if (tok == AMPER || tok == AMPERBANG)
+    #####: 1916:	YYERROR(oecused);
+        -: 1917:
+      747: 1918:    p = ecadd(WCB_SIMPLE(0));
+        -: 1919:
+        -: 1920:    for (;;) {
+     3544: 1921:	if (tok == STRING || tok == TYPESET) {
+      915: 1922:	    int redir_var = 0;
+        -: 1923:
+      915: 1924:	    *cmplx = 1;
+      915: 1925:	    incmdpos = 0;
+        -: 1926:
+      915: 1927:	    if (tok == TYPESET)
+       24: 1928:		intypeset = is_typeset = 1;
+        -: 1929:
+      915: 1930:	    if (!isset(IGNOREBRACES) && *tokstr == Inbrace)
+        -: 1931:	    {
+        -: 1932:		/* Look for redirs of the form {var}>file etc. */
+        2: 1933:		char *eptr = tokstr + strlen(tokstr) - 1;
+        2: 1934:		char *ptr = eptr;
+        -: 1935:
+        2: 1936:		if (*ptr == Outbrace && ptr > tokstr + 1)
+        -: 1937:		{
+        2: 1938:		    if (itype_end(tokstr+1, IIDENT, 0) >= ptr)
+        -: 1939:		    {
+        2: 1940:			char *toksave = tokstr;
+        2: 1941:			char *idstring = dupstrpfx(tokstr+1, eptr-tokstr-1);
+        2: 1942:			redir_var = 1;
+        2: 1943:			zshlex();
+        2: 1944:			if (!hasalias)
+        2: 1945:			    hasalias = input_hasalias();
+        -: 1946:
+        2: 1947:			if (IS_REDIROP(tok) && tokfd == -1)
+        -: 1948:			{
+        2: 1949:			    *cmplx = c = 1;
+        2: 1950:			    nrediradd = par_redir(&r, idstring);
+        2: 1951:			    p += nrediradd;
+        2: 1952:			    sr += nrediradd;
+        -: 1953:			}
+    #####: 1954:			else if (postassigns)
+        -: 1955:			{
+        -: 1956:			    /* C.f. normal case below */
+    #####: 1957:			    postassigns++;
+    #####: 1958:			    ecadd(WCB_ASSIGN(WC_ASSIGN_SCALAR, WC_ASSIGN_INC, 0));
+    #####: 1959:			    ecstr(toksave);
+    #####: 1960:			    ecstr("");	/* TBD can possibly optimise out */
+        -: 1961:			}
+        -: 1962:			else
+        -: 1963:			{
+    #####: 1964:			    ecstr(toksave);
+    #####: 1965:			    argc++;
+        -: 1966:			}
+        -: 1967:		    }
+        -: 1968:		}
+        -: 1969:	    }
+        -: 1970:
+      915: 1971:	    if (!redir_var)
+        -: 1972:	    {
+      913: 1973:		if (postassigns) {
+        -: 1974:		    /*
+        -: 1975:		     * We're in the variable part of a typeset,
+        -: 1976:		     * but this doesn't have an assignment.
+        -: 1977:		     * We'll parse it as if it does, but mark
+        -: 1978:		     * it specially with WC_ASSIGN_INC.
+        -: 1979:		     */
+        2: 1980:		    postassigns++;
+        2: 1981:		    ecadd(WCB_ASSIGN(WC_ASSIGN_SCALAR, WC_ASSIGN_INC, 0));
+        2: 1982:		    ecstr(tokstr);
+        2: 1983:		    ecstr("");	/* TBD can possibly optimise out */
+        -: 1984:		} else {
+      911: 1985:		    ecstr(tokstr);
+      911: 1986:		    argc++;
+        -: 1987:		}
+      913: 1988:		zshlex();
+      913: 1989:		if (!hasalias)
+      913: 1990:		    hasalias = input_hasalias();
+        -: 1991:	    }
+      773: 1992:	} else if (IS_REDIROP(tok)) {
+       14: 1993:	    *cmplx = c = 1;
+       14: 1994:	    nrediradd = par_redir(&r, NULL);
+       14: 1995:	    p += nrediradd;
+       14: 1996:	    if (ppost)
+    #####: 1997:		ppost += nrediradd;
+       14: 1998:	    sr += nrediradd;
+      759: 1999:	} else if (tok == ENVSTRING) {
+        -: 2000:	    char *ptr, *name, *str;
+        -: 2001:
+       12: 2002:	    if (!postassigns++)
+        9: 2003:		ppost = ecadd(0);
+        -: 2004:
+       12: 2005:	    name = tokstr;
+       95: 2006:	    for (ptr = tokstr; *ptr && *ptr != Inbrack && *ptr != '=' && *ptr != '+';
+       71: 2007:	         ptr++);
+       12: 2008:	    if (*ptr == Inbrack) skipparens(Inbrack, Outbrack, &ptr);
+       12: 2009:	    ecadd(WCB_ASSIGN(WC_ASSIGN_SCALAR, WC_ASSIGN_NEW, 0));
+        -: 2010:
+       12: 2011:	    if (*ptr == '=') {
+       12: 2012:		*ptr = '\0';
+       12: 2013:		str = ptr + 1;
+        -: 2014:	    } else
+    #####: 2015:		equalsplit(tokstr, &str);
+       12: 2016:	    ecstr(name);
+       12: 2017:	    ecstr(str);
+       12: 2018:	    zshlex();
+       12: 2019:	    if (!hasalias)
+       12: 2020:		hasalias = input_hasalias();
+      747: 2021:	} else if (tok == ENVARRAY) {
+        -: 2022:	    int n, parr;
+        -: 2023:
+    #####: 2024:	    if (!postassigns++)
+    #####: 2025:		ppost = ecadd(0);
+        -: 2026:
+    #####: 2027:	    parr = ecadd(0);
+    #####: 2028:	    ecstr(tokstr);
+    #####: 2029:	    cmdpush(CS_ARRAY);
+        -: 2030:	    /*
+        -: 2031:	     * Careful here: this must be the typeset case,
+        -: 2032:	     * but we need to tell the lexer not to look
+        -: 2033:	     * for assignments until we've finished the
+        -: 2034:	     * present one.
+        -: 2035:	     */
+    #####: 2036:	    intypeset = 0;
+    #####: 2037:	    zshlex();
+    #####: 2038:	    n = par_nl_wordlist();
+    #####: 2039:	    ecbuf[parr] = WCB_ASSIGN(WC_ASSIGN_ARRAY, WC_ASSIGN_NEW, n);
+    #####: 2040:	    cmdpop();
+    #####: 2041:	    intypeset = 1;
+    #####: 2042:	    if (tok != OUTPAR)
+    #####: 2043:		YYERROR(oecused);
+    #####: 2044:	    zshlex();
+      747: 2045:	} else if (tok == INOUTPAR) {
+       19: 2046:	    zlong oldlineno = lineno;
+       19: 2047:	    int onp, so, oecssub = ecssub;
+        -: 2048:
+        -: 2049:	    /* Error if too many function definitions at once */
+       19: 2050:	    if (!isset(MULTIFUNCDEF) && argc > 1)
+    #####: 2051:		YYERROR(oecused);
+        -: 2052:	    /* Error if preceding assignments */
+       19: 2053:	    if (assignments || postassigns)
+    #####: 2054:		YYERROR(oecused);
+       19: 2055:	    if (isset(EXECOPT) && hasalias && !isset(ALIASFUNCDEF) && argc &&
+    #####: 2056:		hasalias != input_hasalias()) {
+    #####: 2057:		zwarn("defining function based on alias `%s'", hasalias);
+    #####: 2058:		YYERROR(oecused);
+        -: 2059:	    }
+        -: 2060:
+       19: 2061:	    *cmplx = c;
+       19: 2062:	    lineno = 0;
+       19: 2063:	    incmdpos = 1;
+       19: 2064:	    cmdpush(CS_FUNCDEF);
+       19: 2065:	    zshlex();
+       38: 2066:	    while (tok == SEPER)
+    #####: 2067:		zshlex();
+        -: 2068:
+       19: 2069:	    ecispace(p + 1, 1);
+       19: 2070:	    ecbuf[p + 1] = argc;
+       19: 2071:	    ecadd(0);
+       19: 2072:	    ecadd(0);
+       19: 2073:	    ecadd(0);
+       19: 2074:	    ecadd(0);
+        -: 2075:
+       19: 2076:	    ecnfunc++;
+       19: 2077:	    ecssub = so = ecsoffs;
+       19: 2078:	    onp = ecnpats;
+       19: 2079:	    ecnpats = 0;
+        -: 2080:
+       19: 2081:	    if (tok == INBRACE) {
+       19: 2082:		int c = 0;
+        -: 2083:
+       19: 2084:		zshlex();
+       19: 2085:		par_list(&c);
+       19: 2086:		if (tok != OUTBRACE) {
+    #####: 2087:		    cmdpop();
+    #####: 2088:		    lineno += oldlineno;
+    #####: 2089:		    ecnpats = onp;
+    #####: 2090:		    ecssub = oecssub;
+    #####: 2091:		    YYERROR(oecused);
+        -: 2092:		}
+       19: 2093:		if (argc == 0) {
+        -: 2094:		    /* Anonymous function, possibly with arguments */
+        1: 2095:		    incmdpos = 0;
+        -: 2096:		}
+       19: 2097:		zshlex();
+        -: 2098:	    } else {
+    #####: 2099:		int ll, sl, c = 0;
+        -: 2100:
+    #####: 2101:		ll = ecadd(0);
+    #####: 2102:		sl = ecadd(0);
+    #####: 2103:		(void)ecadd(WCB_PIPE(WC_PIPE_END, 0));
+        -: 2104:
+    #####: 2105:		if (!par_cmd(&c, argc == 0)) {
+    #####: 2106:		    cmdpop();
+    #####: 2107:		    YYERROR(oecused);
+        -: 2108:		}
+    #####: 2109:		if (argc == 0) {
+        -: 2110:		    /*
+        -: 2111:		     * Anonymous function, possibly with arguments.
+        -: 2112:		     * N.B. for cmplx structures in particular
+        -: 2113:		     * ( ... ) we rely on lower level code doing this
+        -: 2114:		     * to get the immediately following word (the
+        -: 2115:		     * first token after the ")" has already been
+        -: 2116:		     * read).
+        -: 2117:		     */
+    #####: 2118:		    incmdpos = 0;
+        -: 2119:		}
+        -: 2120:
+    #####: 2121:		set_sublist_code(sl, WC_SUBLIST_END, 0, ecused - 1 - sl, c);
+    #####: 2122:		set_list_code(ll, (Z_SYNC | Z_END), c);
+        -: 2123:	    }
+       19: 2124:	    cmdpop();
+        -: 2125:
+       19: 2126:	    ecadd(WCB_END());
+       19: 2127:	    ecbuf[p + argc + 2] = so - oecssub;
+       19: 2128:	    ecbuf[p + argc + 3] = ecsoffs - so;
+       19: 2129:	    ecbuf[p + argc + 4] = ecnpats;
+       19: 2130:	    ecbuf[p + argc + 5] = 0;
+        -: 2131:
+       19: 2132:	    ecnpats = onp;
+       19: 2133:	    ecssub = oecssub;
+       19: 2134:	    ecnfunc++;
+        -: 2135:
+       19: 2136:	    ecbuf[p] = WCB_FUNCDEF(ecused - 1 - p);
+        -: 2137:
+        -: 2138:	    /* If it's an anonymous function... */
+       19: 2139:	    if (argc == 0) {
+        -: 2140:		/* ... look for arguments to it. */
+        1: 2141:		int parg = ecadd(0);
+        1: 2142:		ecadd(0);
+        2: 2143:		while (tok == STRING || IS_REDIROP(tok)) {
+    #####: 2144:		    if (tok == STRING)
+        -: 2145:		    {
+    #####: 2146:			ecstr(tokstr);
+    #####: 2147:			argc++;
+    #####: 2148:			zshlex();
+        -: 2149:		    } else {
+    #####: 2150:			*cmplx = c = 1;
+    #####: 2151:			nrediradd = par_redir(&r, NULL);
+    #####: 2152:			p += nrediradd;
+    #####: 2153:			if (ppost)
+    #####: 2154:			    ppost += nrediradd;
+    #####: 2155:			sr += nrediradd;
+    #####: 2156:			parg += nrediradd;
+        -: 2157:		    }
+        -: 2158:		}
+        1: 2159:		if (argc > 0)
+    #####: 2160:		    *cmplx = 1;
+        1: 2161:		ecbuf[parg] = ecused - parg; /*?*/
+        1: 2162:		ecbuf[parg+1] = argc;
+        -: 2163:	    }
+       19: 2164:	    lineno += oldlineno;
+        -: 2165:
+       19: 2166:	    isfunc = 1;
+       19: 2167:	    isnull = 0;
+       19: 2168:	    break;
+        -: 2169:	} else
+      728: 2170:	    break;
+      941: 2171:	isnull = 0;
+        -: 2172:    }
+      747: 2173:    if (isnull && !(sr + nr)) {
+      224: 2174:	ecused = p;
+      224: 2175:	return 0;
+        -: 2176:    }
+      523: 2177:    incmdpos = 1;
+      523: 2178:    intypeset = 0;
+        -: 2179:
+      523: 2180:    if (!isfunc) {
+      504: 2181:	if (is_typeset) {
+       24: 2182:	    ecbuf[p] = WCB_TYPESET(argc);
+       24: 2183:	    if (postassigns)
+        9: 2184:		ecbuf[ppost] = postassigns;
+        -: 2185:	    else
+       15: 2186:		ecadd(0);
+        -: 2187:	} else
+      480: 2188:	    ecbuf[p] = WCB_SIMPLE(argc);
+        -: 2189:    }
+        -: 2190:
+      523: 2191:    return sr + 1;
+        -: 2192:}
+        -: 2193:
+        -: 2194:/*
+        -: 2195: * redir	: ( OUTANG | ... | TRINANG ) STRING
+        -: 2196: *
+        -: 2197: * Return number of code words required for redirection
+        -: 2198: */
+        -: 2199:
+        -: 2200:static int redirtab[TRINANG - OUTANG + 1] = {
+        -: 2201:    REDIR_WRITE,
+        -: 2202:    REDIR_WRITENOW,
+        -: 2203:    REDIR_APP,
+        -: 2204:    REDIR_APPNOW,
+        -: 2205:    REDIR_READ,
+        -: 2206:    REDIR_READWRITE,
+        -: 2207:    REDIR_HEREDOC,
+        -: 2208:    REDIR_HEREDOCDASH,
+        -: 2209:    REDIR_MERGEIN,
+        -: 2210:    REDIR_MERGEOUT,
+        -: 2211:    REDIR_ERRWRITE,
+        -: 2212:    REDIR_ERRWRITENOW,
+        -: 2213:    REDIR_ERRAPP,
+        -: 2214:    REDIR_ERRAPPNOW,
+        -: 2215:    REDIR_HERESTR,
+        -: 2216:};
+        -: 2217:
+        -: 2218:/**/
+        -: 2219:static int
+       50: 2220:par_redir(int *rp, char *idstring)
+        -: 2221:{
+       50: 2222:    int r = *rp, type, fd1, oldcmdpos, oldnc, ncodes;
+        -: 2223:    char *name;
+        -: 2224:
+       50: 2225:    oldcmdpos = incmdpos;
+       50: 2226:    incmdpos = 0;
+       50: 2227:    oldnc = nocorrect;
+       50: 2228:    if (tok != INANG && tok != INOUTANG)
+       14: 2229:	nocorrect = 1;
+       50: 2230:    type = redirtab[tok - OUTANG];
+       50: 2231:    fd1 = tokfd;
+       50: 2232:    zshlex();
+       50: 2233:    if (tok != STRING && tok != ENVSTRING)
+    #####: 2234:	YYERROR(ecused);
+       50: 2235:    incmdpos = oldcmdpos;
+       50: 2236:    nocorrect = oldnc;
+        -: 2237:
+        -: 2238:    /* assign default fd */
+       50: 2239:    if (fd1 == -1)
+       47: 2240:	fd1 = IS_READFD(type) ? 0 : 1;
+        -: 2241:
+       50: 2242:    name = tokstr;
+        -: 2243:
+       50: 2244:    switch (type) {
+    #####: 2245:    case REDIR_HEREDOC:
+        -: 2246:    case REDIR_HEREDOCDASH: {
+        -: 2247:	/* <<[-] name */
+        -: 2248:	struct heredocs **hd;
+    #####: 2249:	int htype = type;
+        -: 2250:
+        -: 2251:	/*
+        -: 2252:	 * Add two here for the string to remember the HERE
+        -: 2253:	 * terminator in raw and munged form.
+        -: 2254:	 */
+    #####: 2255:	if (idstring)
+        -: 2256:	{
+    #####: 2257:	    type |= REDIR_VARID_MASK;
+    #####: 2258:	    ncodes = 6;
+        -: 2259:	}
+        -: 2260:	else
+    #####: 2261:	    ncodes = 5;
+        -: 2262:
+        -: 2263:	/* If we ever to change the number of codes, we have to change
+        -: 2264:	 * the definition of WC_REDIR_WORDS. */
+    #####: 2265:	ecispace(r, ncodes);
+    #####: 2266:	*rp = r + ncodes;
+    #####: 2267:	ecbuf[r] = WCB_REDIR(type | REDIR_FROM_HEREDOC_MASK);
+    #####: 2268:	ecbuf[r + 1] = fd1;
+        -: 2269:
+        -: 2270:	/*
+        -: 2271:	 * r + 2: the HERE string we recover
+        -: 2272:	 * r + 3: the HERE document terminator, raw
+        -: 2273:	 * r + 4: the HERE document terminator, munged
+        -: 2274:	 */
+    #####: 2275:	if (idstring)
+    #####: 2276:	    ecbuf[r + 5] = ecstrcode(idstring);
+        -: 2277:
+    #####: 2278:	for (hd = &hdocs; *hd; hd = &(*hd)->next)
+        -: 2279:	    ;
+    #####: 2280:	*hd = zalloc(sizeof(struct heredocs));
+    #####: 2281:	(*hd)->next = NULL;
+    #####: 2282:	(*hd)->type = htype;
+    #####: 2283:	(*hd)->pc = r;
+    #####: 2284:	(*hd)->str = tokstr;
+        -: 2285:
+    #####: 2286:	zshlex();
+    #####: 2287:	return ncodes;
+        -: 2288:    }
+        9: 2289:    case REDIR_WRITE:
+        -: 2290:    case REDIR_WRITENOW:
+        9: 2291:	if (tokstr[0] == OutangProc && tokstr[1] == Inpar)
+        -: 2292:	    /* > >(...) */
+    #####: 2293:	    type = REDIR_OUTPIPE;
+        9: 2294:	else if (tokstr[0] == Inang && tokstr[1] == Inpar)
+    #####: 2295:	    YYERROR(ecused);
+        9: 2296:	break;
+       36: 2297:    case REDIR_READ:
+       36: 2298:	if (tokstr[0] == Inang && tokstr[1] == Inpar)
+        -: 2299:	    /* < <(...) */
+    #####: 2300:	    type = REDIR_INPIPE;
+       36: 2301:	else if (tokstr[0] == OutangProc && tokstr[1] == Inpar)
+    #####: 2302:	    YYERROR(ecused);
+       36: 2303:	break;
+    #####: 2304:    case REDIR_READWRITE:
+    #####: 2305:	if ((tokstr[0] == Inang || tokstr[0] == OutangProc) &&
+    #####: 2306:	    tokstr[1] == Inpar)
+    #####: 2307:	    type = tokstr[0] == Inang ? REDIR_INPIPE : REDIR_OUTPIPE;
+    #####: 2308:	break;
+        -: 2309:    }
+       50: 2310:    zshlex();
+        -: 2311:
+        -: 2312:    /* If we ever to change the number of codes, we have to change
+        -: 2313:     * the definition of WC_REDIR_WORDS. */
+       50: 2314:    if (idstring)
+        -: 2315:    {
+        2: 2316:	type |= REDIR_VARID_MASK;
+        2: 2317:	ncodes = 4;
+        -: 2318:    }
+        -: 2319:    else
+       48: 2320:	ncodes = 3;
+        -: 2321:
+       50: 2322:    ecispace(r, ncodes);
+       50: 2323:    *rp = r + ncodes;
+       50: 2324:    ecbuf[r] = WCB_REDIR(type);
+       50: 2325:    ecbuf[r + 1] = fd1;
+       50: 2326:    ecbuf[r + 2] = ecstrcode(name);
+       50: 2327:    if (idstring)
+        2: 2328:	ecbuf[r + 3] = ecstrcode(idstring);
+        -: 2329:
+       50: 2330:    return ncodes;
+        -: 2331:}
+        -: 2332:
+        -: 2333:/**/
+        -: 2334:void
+    #####: 2335:setheredoc(int pc, int type, char *str, char *termstr, char *munged_termstr)
+        -: 2336:{
+    #####: 2337:    int varid = WC_REDIR_VARID(ecbuf[pc]) ? REDIR_VARID_MASK : 0;
+    #####: 2338:    ecbuf[pc] = WCB_REDIR(type | REDIR_FROM_HEREDOC_MASK | varid);
+    #####: 2339:    ecbuf[pc + 2] = ecstrcode(str);
+    #####: 2340:    ecbuf[pc + 3] = ecstrcode(termstr);
+    #####: 2341:    ecbuf[pc + 4] = ecstrcode(munged_termstr);
+    #####: 2342:}
+        -: 2343:
+        -: 2344:/*
+        -: 2345: * wordlist	: { STRING }
+        -: 2346: */
+        -: 2347:
+        -: 2348:/**/
+        -: 2349:static int
+        1: 2350:par_wordlist(void)
+        -: 2351:{
+        1: 2352:    int num = 0;
+        3: 2353:    while (tok == STRING) {
+        1: 2354:	ecstr(tokstr);
+        1: 2355:	num++;
+        1: 2356:	zshlex();
+        -: 2357:    }
+        1: 2358:    return num;
+        -: 2359:}
+        -: 2360:
+        -: 2361:/*
+        -: 2362: * nl_wordlist	: { STRING | SEPER }
+        -: 2363: */
+        -: 2364:
+        -: 2365:/**/
+        -: 2366:static int
+       15: 2367:par_nl_wordlist(void)
+        -: 2368:{
+       15: 2369:    int num = 0;
+        -: 2370:
+       55: 2371:    while (tok == STRING || tok == SEPER) {
+       25: 2372:	if (tok != SEPER) {
+       23: 2373:	    ecstr(tokstr);
+       23: 2374:	    num++;
+        -: 2375:	}
+       25: 2376:	zshlex();
+        -: 2377:    }
+       15: 2378:    return num;
+        -: 2379:}
+        -: 2380:
+        -: 2381:/*
+        -: 2382: * condlex is zshlex for normal parsing, but is altered to allow
+        -: 2383: * the test builtin to use par_cond.
+        -: 2384: */
+        -: 2385:
+        -: 2386:/**/
+        -: 2387:void (*condlex) _((void)) = zshlex;
+        -: 2388:
+        -: 2389:/*
+        -: 2390: * cond	: cond_1 { SEPER } [ DBAR { SEPER } cond ]
+        -: 2391: */
+        -: 2392:
+        -: 2393:#define COND_SEP() (tok == SEPER && condlex != testlex && *zshlextext != ';')
+        -: 2394:
+        -: 2395:/**/
+        -: 2396:static int
+       64: 2397:par_cond(void)
+        -: 2398:{
+       64: 2399:    int p = ecused, r;
+        -: 2400:
+       64: 2401:    r = par_cond_1();
+      128: 2402:    while (COND_SEP())
+    #####: 2403:	condlex();
+       64: 2404:    if (tok == DBAR) {
+        1: 2405:	condlex();
+        2: 2406:	while (COND_SEP())
+    #####: 2407:	    condlex();
+        1: 2408:	ecispace(p, 1);
+        1: 2409:	par_cond();
+        1: 2410:	ecbuf[p] = WCB_COND(COND_OR, ecused - 1 - p);
+        1: 2411:	return 1;
+        -: 2412:    }
+       63: 2413:    return r;
+        -: 2414:}
+        -: 2415:
+        -: 2416:/*
+        -: 2417: * cond_1 : cond_2 { SEPER } [ DAMPER { SEPER } cond_1 ]
+        -: 2418: */
+        -: 2419:
+        -: 2420:/**/
+        -: 2421:static int
+       77: 2422:par_cond_1(void)
+        -: 2423:{
+       77: 2424:    int r, p = ecused;
+        -: 2425:
+       77: 2426:    r = par_cond_2();
+      154: 2427:    while (COND_SEP())
+    #####: 2428:	condlex();
+       77: 2429:    if (tok == DAMPER) {
+       13: 2430:	condlex();
+       26: 2431:	while (COND_SEP())
+    #####: 2432:	    condlex();
+       13: 2433:	ecispace(p, 1);
+       13: 2434:	par_cond_1();
+       13: 2435:	ecbuf[p] = WCB_COND(COND_AND, ecused - 1 - p);
+       13: 2436:	return 1;
+        -: 2437:    }
+       64: 2438:    return r;
+        -: 2439:}
+        -: 2440:
+        -: 2441:/*
+        -: 2442: * Return 1 if condition matches.  This also works for non-elided options.
+        -: 2443: *
+        -: 2444: * input is test string, may begin - or Dash.
+        -: 2445: * cond is condition following the -.
+        -: 2446: */
+    #####: 2447:static int check_cond(const char *input, const char *cond)
+        -: 2448:{
+    #####: 2449:    if (!IS_DASH(input[0]))
+    #####: 2450:	return 0;
+    #####: 2451:    return !strcmp(input + 1, cond);
+        -: 2452:}
+        -: 2453:
+        -: 2454:/*
+        -: 2455: * cond_2	: BANG cond_2
+        -: 2456:				| INPAR { SEPER } cond_2 { SEPER } OUTPAR
+        -: 2457:				| STRING STRING STRING
+        -: 2458:				| STRING STRING
+        -: 2459:				| STRING ( INANG | OUTANG ) STRING
+        -: 2460: */
+        -: 2461:
+        -: 2462:/**/
+        -: 2463:static int
+       78: 2464:par_cond_2(void)
+        -: 2465:{
+        -: 2466:    char *s1, *s2, *s3;
+       78: 2467:    int dble = 0;
+       78: 2468:    int n_testargs = (condlex == testlex) ? arrlen(testargs) + 1 : 0;
+        -: 2469:
+       78: 2470:    if (n_testargs) {
+        -: 2471:	/* See the description of test in POSIX 1003.2 */
+        4: 2472:	if (tok == NULLTOK)
+        -: 2473:	    /* no arguments: false */
+    #####: 2474:	    return par_cond_double(dupstring("-n"), dupstring(""));
+        4: 2475:	if (n_testargs == 1) {
+        -: 2476:	    /* one argument: [ foo ] is equivalent to [ -n foo ] */
+    #####: 2477:	    s1 = tokstr;
+    #####: 2478:	    condlex();
+        -: 2479:	    /* ksh behavior: [ -t ] means [ -t 1 ]; bash disagrees */
+    #####: 2480:	    if (unset(POSIXBUILTINS) && check_cond(s1, "t"))
+    #####: 2481:		return par_cond_double(s1, dupstring("1"));
+    #####: 2482:	    return par_cond_double(dupstring("-n"), s1);
+        -: 2483:	}
+        4: 2484:	if (n_testargs > 2) {
+        -: 2485:	    /* three arguments: if the second argument is a binary operator, *
+        -: 2486:	     * perform that binary test on the first and the third argument  */
+        8: 2487:	    if (!strcmp(*testargs, "=")  ||
+        8: 2488:		!strcmp(*testargs, "==") ||
+        8: 2489:		!strcmp(*testargs, "!=") ||
+        4: 2490:		(IS_DASH(**testargs) && get_cond_num(*testargs + 1) >= 0)) {
+        4: 2491:		s1 = tokstr;
+        4: 2492:		condlex();
+        4: 2493:		s2 = tokstr;
+        4: 2494:		condlex();
+        4: 2495:		s3 = tokstr;
+        4: 2496:		condlex();
+        4: 2497:		return par_cond_triple(s1, s2, s3);
+        -: 2498:	    }
+        -: 2499:	}
+        -: 2500:	/*
+        -: 2501:	 * We fall through here on any non-numeric infix operator
+        -: 2502:	 * or any other time there are at least two arguments.
+        -: 2503:	 */
+        -: 2504:    } else
+      148: 2505:	while (COND_SEP())
+    #####: 2506:	    condlex();
+       74: 2507:    if (tok == BANG) {
+        -: 2508:	/*
+        -: 2509:	 * In "test" compatibility mode, "! -a ..." and "! -o ..."
+        -: 2510:	 * are treated as "[string] [and] ..." and "[string] [or] ...".
+        -: 2511:	 */
+        1: 2512:	if (!(n_testargs > 2 && (check_cond(*testargs, "a") ||
+    #####: 2513:				 check_cond(*testargs, "o"))))
+        -: 2514:	{
+        1: 2515:	    condlex();
+        1: 2516:	    ecadd(WCB_COND(COND_NOT, 0));
+        1: 2517:	    return par_cond_2();
+        -: 2518:	}
+        -: 2519:    }
+       73: 2520:    if (tok == INPAR) {
+        -: 2521:	int r;
+        -: 2522:
+    #####: 2523:	condlex();
+    #####: 2524:	while (COND_SEP())
+    #####: 2525:	    condlex();
+    #####: 2526:	r = par_cond();
+    #####: 2527:	while (COND_SEP())
+    #####: 2528:	    condlex();
+    #####: 2529:	if (tok != OUTPAR)
+    #####: 2530:	    YYERROR(ecused);
+    #####: 2531:	condlex();
+    #####: 2532:	return r;
+        -: 2533:    }
+       73: 2534:    s1 = tokstr;
+      146: 2535:    dble = (s1 && IS_DASH(*s1)
+       30: 2536:	    && (!n_testargs
+    #####: 2537:		|| strspn(s1+1, "abcdefghknoprstuvwxzLONGS") == 1)
+      103: 2538:	    && !s1[2]);
+       73: 2539:    if (tok != STRING) {
+        -: 2540:	/* Check first argument for [[ STRING ]] re-interpretation */
+    #####: 2541:	if (s1 /* tok != DOUTBRACK && tok != DAMPER && tok != DBAR */
+    #####: 2542:	    && tok != LEXERR && (!dble || n_testargs)) {
+    #####: 2543:	    do condlex(); while (COND_SEP());
+    #####: 2544:	    return par_cond_double(dupstring("-n"), s1);
+        -: 2545:	} else
+    #####: 2546:	    YYERROR(ecused);
+        -: 2547:    }
+       73: 2548:    condlex();
+       73: 2549:    if (n_testargs == 2 && tok != STRING && tokstr && IS_DASH(s1[0])) {
+        -: 2550:	/*
+        -: 2551:	 * Something like "test -z" followed by a token.
+        -: 2552:	 * We'll turn the token into a string (we've also
+        -: 2553:	 * checked it does have a string representation).
+        -: 2554:	 */
+    #####: 2555:	tok = STRING;
+        -: 2556:    } else
+      146: 2557:	while (COND_SEP())
+    #####: 2558:	    condlex();
+       73: 2559:    if (tok == INANG || tok == OUTANG) {
+    #####: 2560:	enum lextok xtok = tok;
+    #####: 2561:	do condlex(); while (COND_SEP());
+    #####: 2562:	if (tok != STRING)
+    #####: 2563:	    YYERROR(ecused);
+    #####: 2564:	s3 = tokstr;
+    #####: 2565:	do condlex(); while (COND_SEP());
+    #####: 2566:	ecadd(WCB_COND((xtok == INANG ? COND_STRLT : COND_STRGTR), 0));
+    #####: 2567:	ecstr(s1);
+    #####: 2568:	ecstr(s3);
+    #####: 2569:	return 1;
+        -: 2570:    }
+       73: 2571:    if (tok != STRING) {
+        -: 2572:	/*
+        -: 2573:	 * Check second argument in case semantics e.g. [ = -a = ]
+        -: 2574:	 * mean we have to go back and fix up the first one
+        -: 2575:	 */
+    #####: 2576:	if (tok != LEXERR) {
+    #####: 2577:	    if (!dble || n_testargs)
+    #####: 2578:		return par_cond_double(dupstring("-n"), s1);
+        -: 2579:	    else
+    #####: 2580:		return par_cond_multi(s1, newlinklist());
+        -: 2581:	} else
+    #####: 2582:	    YYERROR(ecused);
+        -: 2583:    }
+       73: 2584:    s2 = tokstr;
+       73: 2585:    if (!n_testargs)
+       73: 2586:	dble = (s2 && IS_DASH(*s2) && !s2[2]);
+       73: 2587:    incond++;			/* parentheses do globbing */
+       73: 2588:    do condlex(); while (COND_SEP());
+       73: 2589:    incond--;			/* parentheses do grouping */
+       73: 2590:    if (tok == STRING && !dble) {
+       43: 2591:	s3 = tokstr;
+       43: 2592:	do condlex(); while (COND_SEP());
+       43: 2593:	if (tok == STRING) {
+    #####: 2594:	    LinkList l = newlinklist();
+        -: 2595:
+    #####: 2596:	    addlinknode(l, s2);
+    #####: 2597:	    addlinknode(l, s3);
+        -: 2598:
+    #####: 2599:	    while (tok == STRING) {
+    #####: 2600:		addlinknode(l, tokstr);
+    #####: 2601:		do condlex(); while (COND_SEP());
+        -: 2602:	    }
+    #####: 2603:	    return par_cond_multi(s1, l);
+        -: 2604:	} else
+       43: 2605:	    return par_cond_triple(s1, s2, s3);
+        -: 2606:    } else
+       30: 2607:	return par_cond_double(s1, s2);
+        -: 2608:}
+        -: 2609:
+        -: 2610:/**/
+        -: 2611:static int
+       30: 2612:par_cond_double(char *a, char *b)
+        -: 2613:{
+       30: 2614:    if (!IS_DASH(a[0]) || !a[1])
+    #####: 2615:	COND_ERROR("parse error: condition expected: %s", a);
+       30: 2616:    else if (!a[2] && strspn(a+1, "abcdefgknoprstuvwxzhLONGS") == 1) {
+       30: 2617:	ecadd(WCB_COND(a[1], 0));
+       30: 2618:	ecstr(b);
+        -: 2619:    } else {
+    #####: 2620:	ecadd(WCB_COND(COND_MOD, 1));
+    #####: 2621:	ecstr(a);
+    #####: 2622:	ecstr(b);
+        -: 2623:    }
+       30: 2624:    return 1;
+        -: 2625:}
+        -: 2626:
+        -: 2627:/**/
+        -: 2628:static int
+       12: 2629:get_cond_num(char *tst)
+        -: 2630:{
+        -: 2631:    static char *condstrs[] =
+        -: 2632:    {
+        -: 2633:	"nt", "ot", "ef", "eq", "ne", "lt", "gt", "le", "ge", NULL
+        -: 2634:    };
+        -: 2635:    int t0;
+        -: 2636:
+       61: 2637:    for (t0 = 0; condstrs[t0]; t0++)
+       61: 2638:	if (!strcmp(condstrs[t0], tst))
+       12: 2639:	    return t0;
+    #####: 2640:    return -1;
+        -: 2641:}
+        -: 2642:
+        -: 2643:/**/
+        -: 2644:static int
+       47: 2645:par_cond_triple(char *a, char *b, char *c)
+        -: 2646:{
+        -: 2647:    int t0;
+        -: 2648:
+       47: 2649:    if ((b[0] == Equals || b[0] == '=') && !b[1]) {
+       18: 2650:	ecadd(WCB_COND(COND_STREQ, 0));
+       18: 2651:	ecstr(a);
+       18: 2652:	ecstr(c);
+       18: 2653:	ecadd(ecnpats++);
+       37: 2654:    } else if ((b[0] == Equals || b[0] == '=') &&
+        8: 2655:	       (b[1] == Equals || b[1] == '=') && !b[2]) {
+        8: 2656:	ecadd(WCB_COND(COND_STRDEQ, 0));
+        8: 2657:	ecstr(a);
+        8: 2658:	ecstr(c);
+        8: 2659:	ecadd(ecnpats++);
+       21: 2660:    } else if (b[0] == '!' && (b[1] == Equals || b[1] == '=') && !b[2]) {
+       13: 2661:	ecadd(WCB_COND(COND_STRNEQ, 0));
+       13: 2662:	ecstr(a);
+       13: 2663:	ecstr(c);
+       13: 2664:	ecadd(ecnpats++);
+        8: 2665:    } else if ((b[0] == Equals || b[0] == '=') &&
+    #####: 2666:               (b[1] == '~' || b[1] == Tilde) && !b[2]) {
+        -: 2667:        /* We become an implicit COND_MODI but do not provide the first
+        -: 2668:	 * item, it's skipped */
+    #####: 2669:	ecadd(WCB_COND(COND_REGEX, 0));
+    #####: 2670:	ecstr(a);
+    #####: 2671:	ecstr(c);
+        8: 2672:    } else if (IS_DASH(b[0])) {
+       16: 2673:	if ((t0 = get_cond_num(b + 1)) > -1) {
+        8: 2674:	    ecadd(WCB_COND(t0 + COND_NT, 0));
+        8: 2675:	    ecstr(a);
+        8: 2676:	    ecstr(c);
+        -: 2677:	} else {
+    #####: 2678:	    ecadd(WCB_COND(COND_MODI, 0));
+    #####: 2679:	    ecstr(b);
+    #####: 2680:	    ecstr(a);
+    #####: 2681:	    ecstr(c);
+        -: 2682:	}
+    #####: 2683:    } else if (IS_DASH(a[0]) && a[1]) {
+    #####: 2684:	ecadd(WCB_COND(COND_MOD, 2));
+    #####: 2685:	ecstr(a);
+    #####: 2686:	ecstr(b);
+    #####: 2687:	ecstr(c);
+        -: 2688:    } else
+    #####: 2689:	COND_ERROR("condition expected: %s", b);
+        -: 2690:
+       47: 2691:    return 1;
+        -: 2692:}
+        -: 2693:
+        -: 2694:/**/
+        -: 2695:static int
+    #####: 2696:par_cond_multi(char *a, LinkList l)
+        -: 2697:{
+    #####: 2698:    if (!IS_DASH(a[0]) || !a[1])
+    #####: 2699:	COND_ERROR("condition expected: %s", a);
+        -: 2700:    else {
+        -: 2701:	LinkNode n;
+        -: 2702:
+    #####: 2703:	ecadd(WCB_COND(COND_MOD, countlinknodes(l)));
+    #####: 2704:	ecstr(a);
+    #####: 2705:	for (n = firstnode(l); n; incnode(n))
+    #####: 2706:	    ecstr((char *) getdata(n));
+        -: 2707:    }
+    #####: 2708:    return 1;
+        -: 2709:}
+        -: 2710:
+        -: 2711:/**/
+        -: 2712:static void
+    #####: 2713:yyerror(int noerr)
+        -: 2714:{
+        -: 2715:    int t0;
+        -: 2716:    char *t;
+        -: 2717:
+    #####: 2718:    if ((t = dupstring(zshlextext)))
+    #####: 2719:	untokenize(t);
+        -: 2720:
+    #####: 2721:    for (t0 = 0; t0 != 20; t0++)
+    #####: 2722:	if (!t || !t[t0] || t[t0] == '\n')
+        -: 2723:	    break;
+    #####: 2724:    if (!(histdone & HISTFLAG_NOEXEC) && !(errflag & ERRFLAG_INT)) {
+    #####: 2725:	if (t0 == 20)
+    #####: 2726:	    zwarn("parse error near `%l...'", t, 20);
+    #####: 2727:	else if (t0)
+    #####: 2728:	    zwarn("parse error near `%l'", t, t0);
+        -: 2729:	else
+    #####: 2730:	    zwarn("parse error");
+        -: 2731:    }
+    #####: 2732:    if (!noerr && noerrs != 2)
+    #####: 2733:	errflag |= ERRFLAG_ERROR;
+    #####: 2734:}
+        -: 2735:
+        -: 2736:/*
+        -: 2737: * Duplicate a programme list, on the heap if heap is 1, else
+        -: 2738: * in permanent storage.
+        -: 2739: *
+        -: 2740: * Be careful in case p is the Eprog for a function which will
+        -: 2741: * later be autoloaded.  The shf element of the returned Eprog
+        -: 2742: * must be set appropriately by the caller.  (Normally we create
+        -: 2743: * the Eprog in this case by using mkautofn.)
+        -: 2744: */
+        -: 2745:
+        -: 2746:/**/
+        -: 2747:mod_export Eprog
+        9: 2748:dupeprog(Eprog p, int heap)
+        -: 2749:{
+        -: 2750:    Eprog r;
+        -: 2751:    int i;
+        -: 2752:    Patprog *pp;
+        -: 2753:
+        9: 2754:    if (p == &dummy_eprog)
+    #####: 2755:	return p;
+        -: 2756:
+        9: 2757:    r = (heap ? (Eprog) zhalloc(sizeof(*r)) : (Eprog) zalloc(sizeof(*r)));
+        9: 2758:    r->flags = (heap ? EF_HEAP : EF_REAL) | (p->flags & EF_RUN);
+        9: 2759:    r->dump = NULL;
+        9: 2760:    r->len = p->len;
+        9: 2761:    r->npats = p->npats;
+        -: 2762:    /*
+        -: 2763:     * If Eprog is on the heap, reference count is not valid.
+        -: 2764:     * Otherwise, initialise reference count to 1 so that a freeeprog()
+        -: 2765:     * will delete it if it is not in use.
+        -: 2766:     */
+        9: 2767:    r->nref = heap ? -1 : 1;
+       18: 2768:    pp = r->pats = (heap ? (Patprog *) hcalloc(r->len) :
+        9: 2769:		    (Patprog *) zshcalloc(r->len));
+        9: 2770:    r->prog = (Wordcode) (r->pats + r->npats);
+        9: 2771:    r->strs = ((char *) r->prog) + (p->strs - ((char *) p->prog));
+        9: 2772:    memcpy(r->prog, p->prog, r->len - (p->npats * sizeof(Patprog)));
+        9: 2773:    r->shf = NULL;
+        -: 2774:
+       77: 2775:    for (i = r->npats; i--; pp++)
+       68: 2776:	*pp = dummy_patprog1;
+        -: 2777:
+        9: 2778:    return r;
+        -: 2779:}
+        -: 2780:
+        -: 2781:
+        -: 2782:/*
+        -: 2783: * Pair of functions to mark an Eprog as in use, and to delete it
+        -: 2784: * when it is no longer in use, by means of the reference count in
+        -: 2785: * then nref element.
+        -: 2786: *
+        -: 2787: * If nref is negative, the Eprog is on the heap and is never freed.
+        -: 2788: */
+        -: 2789:
+        -: 2790:/* Increase the reference count of an Eprog so it won't be deleted. */
+        -: 2791:
+        -: 2792:/**/
+        -: 2793:mod_export void
+      603: 2794:useeprog(Eprog p)
+        -: 2795:{
+      603: 2796:    if (p && p != &dummy_eprog && p->nref >= 0)
+      437: 2797:	p->nref++;
+      603: 2798:}
+        -: 2799:
+        -: 2800:/* Free an Eprog if we have finished with it */
+        -: 2801:
+        -: 2802:/**/
+        -: 2803:mod_export void
+      608: 2804:freeeprog(Eprog p)
+        -: 2805:{
+        -: 2806:    int i;
+        -: 2807:    Patprog *pp;
+        -: 2808:
+      608: 2809:    if (p && p != &dummy_eprog) {
+        -: 2810:	/* paranoia */
+        -: 2811:	DPUTS(p->nref > 0 && (p->flags & EF_HEAP), "Heap EPROG has nref > 0");
+        -: 2812:	DPUTS(p->nref < 0 && !(p->flags & EF_HEAP), "Real EPROG has nref < 0");
+        -: 2813:	DPUTS(p->nref < -1, "Uninitialised EPROG nref");
+        -: 2814:#ifdef MAX_FUNCTION_DEPTH
+        -: 2815:	DPUTS(zsh_funcnest >=0 && p->nref > zsh_funcnest + 10,
+        -: 2816:	      "Overlarge EPROG nref");
+        -: 2817:#endif
+      599: 2818:	if (p->nref > 0 && !--p->nref) {
+        9: 2819:	    for (i = p->npats, pp = p->pats; i--; pp++)
+    #####: 2820:		freepatprog(*pp);
+        9: 2821:	    if (p->dump) {
+    #####: 2822:		decrdumpcount(p->dump);
+    #####: 2823:		zfree(p->pats, p->npats * sizeof(Patprog));
+        -: 2824:	    } else
+        9: 2825:		zfree(p->pats, p->len);
+        9: 2826:	    zfree(p, sizeof(*p));
+        -: 2827:	}
+        -: 2828:    }
+      608: 2829:}
+        -: 2830:
+        -: 2831:/*
+        -: 2832: * dup is of type 'enum ec_dup_t'.
+        -: 2833: *
+        -: 2834: * If tokflag is not NULL, *tokflag will be set to 1 if the string contains
+        -: 2835: * tokens and to 0 otherwise.
+        -: 2836: */
+        -: 2837:
+        -: 2838:/**/
+        -: 2839:char *
+     6855: 2840:ecgetstr(Estate s, int dup, int *tokflag)
+        -: 2841:{
+        -: 2842:    static char buf[4];
+     6855: 2843:    wordcode c = *s->pc++;
+        -: 2844:    char *r;
+        -: 2845:
+     6855: 2846:    if (c == 6 || c == 7)
+      127: 2847:	r = "";
+     6728: 2848:    else if (c & 2) {
+     1673: 2849:	buf[0] = (char) ((c >>  3) & 0xff);
+     1673: 2850:	buf[1] = (char) ((c >> 11) & 0xff);
+     1673: 2851:	buf[2] = (char) ((c >> 19) & 0xff);
+     1673: 2852:	buf[3] = '\0';
+     1673: 2853:	r = dupstring(buf);
+     1673: 2854:	dup = EC_NODUP;
+        -: 2855:    } else {
+     5055: 2856:	r = s->strs + (c >> 2);
+        -: 2857:    }
+     6855: 2858:    if (tokflag)
+     6480: 2859:	*tokflag = (c & 1);
+        -: 2860:
+        -: 2861:    /*** Since function dump files are mapped read-only, avoiding to
+        -: 2862:     *   to duplicate strings when they don't contain tokens may fail
+        -: 2863:     *   when one of the many utility functions happens to write to
+        -: 2864:     *   one of the strings (without really modifying it).
+        -: 2865:     *   If that happens to you and you don't feel like debugging it,
+        -: 2866:     *   just change the line below to:
+        -: 2867:     *
+        -: 2868:     *     return (dup ? dupstring(r) : r);
+        -: 2869:     */
+        -: 2870:
+     6855: 2871:    return ((dup == EC_DUP || (dup && (c & 1)))  ? dupstring(r) : r);
+        -: 2872:}
+        -: 2873:
+        -: 2874:/**/
+        -: 2875:char *
+      433: 2876:ecrawstr(Eprog p, Wordcode pc, int *tokflag)
+        -: 2877:{
+        -: 2878:    static char buf[4];
+      433: 2879:    wordcode c = *pc;
+        -: 2880:
+      433: 2881:    if (c == 6 || c == 7) {
+    #####: 2882:	if (tokflag)
+    #####: 2883:	    *tokflag = (c & 1);
+    #####: 2884:	return "";
+      433: 2885:    } else if (c & 2) {
+      211: 2886:	buf[0] = (char) ((c >>  3) & 0xff);
+      211: 2887:	buf[1] = (char) ((c >> 11) & 0xff);
+      211: 2888:	buf[2] = (char) ((c >> 19) & 0xff);
+      211: 2889:	buf[3] = '\0';
+      211: 2890:	if (tokflag)
+      211: 2891:	    *tokflag = (c & 1);
+      211: 2892:	return buf;
+        -: 2893:    } else {
+      222: 2894:	if (tokflag)
+      198: 2895:	    *tokflag = (c & 1);
+      222: 2896:	return p->strs + (c >> 2);
+        -: 2897:    }
+        -: 2898:}
+        -: 2899:
+        -: 2900:/**/
+        -: 2901:char **
+    #####: 2902:ecgetarr(Estate s, int num, int dup, int *tokflag)
+        -: 2903:{
+        -: 2904:    char **ret, **rp;
+    #####: 2905:    int tf = 0, tmp = 0;
+        -: 2906:
+    #####: 2907:    ret = rp = (char **) zhalloc((num + 1) * sizeof(char *));
+        -: 2908:
+    #####: 2909:    while (num--) {
+    #####: 2910:	*rp++ = ecgetstr(s, dup, &tmp);
+    #####: 2911:	tf |=  tmp;
+        -: 2912:    }
+    #####: 2913:    *rp = NULL;
+    #####: 2914:    if (tokflag)
+    #####: 2915:	*tokflag = tf;
+        -: 2916:
+    #####: 2917:    return ret;
+        -: 2918:}
+        -: 2919:
+        -: 2920:/**/
+        -: 2921:LinkList
+     1994: 2922:ecgetlist(Estate s, int num, int dup, int *tokflag)
+        -: 2923:{
+     1994: 2924:    if (num) {
+        -: 2925:	LinkList ret;
+     1889: 2926:	int i, tf = 0, tmp = 0;
+        -: 2927:
+     1889: 2928:	ret = newsizedlist(num);
+     5628: 2929:	for (i = 0; i < num; i++) {
+     3739: 2930:	    setsizednode(ret, i, ecgetstr(s, dup, &tmp));
+     3739: 2931:	    tf |= tmp;
+        -: 2932:	}
+     1889: 2933:	if (tokflag)
+     1888: 2934:	    *tokflag = tf;
+     1889: 2935:	return ret;
+        -: 2936:    }
+      105: 2937:    if (tokflag)
+      105: 2938:	*tokflag = 0;
+      105: 2939:    return NULL;
+        -: 2940:}
+        -: 2941:
+        -: 2942:/**/
+        -: 2943:LinkList
+       46: 2944:ecgetredirs(Estate s)
+        -: 2945:{
+       46: 2946:    LinkList ret = newlinklist();
+       46: 2947:    wordcode code = *s->pc++;
+        -: 2948:
+      166: 2949:    while (wc_code(code) == WC_REDIR) {
+       74: 2950:	Redir r = (Redir) zhalloc(sizeof(*r));
+        -: 2951:
+       74: 2952:	r->type = WC_REDIR_TYPE(code);
+       74: 2953:	r->fd1 = *s->pc++;
+       74: 2954:	r->name = ecgetstr(s, EC_DUP, NULL);
+       74: 2955:	if (WC_REDIR_FROM_HEREDOC(code)) {
+    #####: 2956:	    r->flags = REDIRF_FROM_HEREDOC;
+    #####: 2957:	    r->here_terminator = ecgetstr(s, EC_DUP, NULL);
+    #####: 2958:	    r->munged_here_terminator = ecgetstr(s, EC_DUP, NULL);
+        -: 2959:	} else {
+       74: 2960:	    r->flags = 0;
+       74: 2961:	    r->here_terminator = NULL;
+       74: 2962:	    r->munged_here_terminator = NULL;
+        -: 2963:	}
+       74: 2964:	if (WC_REDIR_VARID(code))
+        4: 2965:	    r->varid = ecgetstr(s, EC_DUP, NULL);
+        -: 2966:	else
+       70: 2967:	    r->varid = NULL;
+        -: 2968:
+       74: 2969:	addlinknode(ret, r);
+        -: 2970:
+       74: 2971:	code = *s->pc++;
+        -: 2972:    }
+       46: 2973:    s->pc--;
+        -: 2974:
+       46: 2975:    return ret;
+        -: 2976:}
+        -: 2977:
+        -: 2978:/*
+        -: 2979: * Copy the consecutive set of redirections in the state at s.
+        -: 2980: * Return NULL if none, else an Eprog consisting only of the
+        -: 2981: * redirections from permanently allocated memory.
+        -: 2982: *
+        -: 2983: * s is left in the state ready for whatever follows the redirections.
+        -: 2984: */
+        -: 2985:
+        -: 2986:/**/
+        -: 2987:Eprog
+    #####: 2988:eccopyredirs(Estate s)
+        -: 2989:{
+    #####: 2990:    Wordcode pc = s->pc;
+    #####: 2991:    wordcode code = *pc;
+    #####: 2992:    int ncode, ncodes = 0, r;
+        -: 2993:
+    #####: 2994:    if (wc_code(code) != WC_REDIR)
+    #####: 2995:	return NULL;
+        -: 2996:
+    #####: 2997:    init_parse();
+        -: 2998:
+    #####: 2999:    while (wc_code(code) == WC_REDIR) {
+        -: 3000:#ifdef DEBUG
+        -: 3001:	int type = WC_REDIR_TYPE(code);
+        -: 3002:#endif
+        -: 3003:
+        -: 3004:	DPUTS(type == REDIR_HEREDOC || type == REDIR_HEREDOCDASH,
+        -: 3005:	      "unexpanded here document");
+        -: 3006:
+    #####: 3007:	if (WC_REDIR_FROM_HEREDOC(code))
+    #####: 3008:	    ncode = 5;
+        -: 3009:	else
+    #####: 3010:	    ncode = 3;
+    #####: 3011:	if (WC_REDIR_VARID(code))
+    #####: 3012:	    ncode++;
+    #####: 3013:	pc += ncode;
+    #####: 3014:	ncodes += ncode;
+    #####: 3015:	code = *pc;
+        -: 3016:    }
+    #####: 3017:    r = ecused;
+    #####: 3018:    ecispace(r, ncodes);
+        -: 3019:
+    #####: 3020:    code = *s->pc;
+    #####: 3021:    while (wc_code(code) == WC_REDIR) {
+    #####: 3022:	s->pc++;
+        -: 3023:
+    #####: 3024:	ecbuf[r++] = code;
+        -: 3025:	/* fd1 */
+    #####: 3026:	ecbuf[r++] = *s->pc++;
+        -: 3027:	/* name or HERE string */
+        -: 3028:	/* No DUP needed as we'll copy into Eprog immediately below */
+    #####: 3029:	ecbuf[r++] = ecstrcode(ecgetstr(s, EC_NODUP, NULL));
+    #####: 3030:	if (WC_REDIR_FROM_HEREDOC(code))
+        -: 3031:	{
+        -: 3032:	    /* terminator, raw */
+    #####: 3033:	    ecbuf[r++] = ecstrcode(ecgetstr(s, EC_NODUP, NULL));
+        -: 3034:	    /* terminator, munged */
+    #####: 3035:	    ecbuf[r++] = ecstrcode(ecgetstr(s, EC_NODUP, NULL));
+        -: 3036:	}
+    #####: 3037:	if (WC_REDIR_VARID(code))
+    #####: 3038:	    ecbuf[r++] = ecstrcode(ecgetstr(s, EC_NODUP, NULL));
+        -: 3039:
+    #####: 3040:	code = *s->pc;
+        -: 3041:    }
+        -: 3042:
+        -: 3043:    /* bld_eprog() appends a useful WC_END marker */
+    #####: 3044:    return bld_eprog(0);
+        -: 3045:}
+        -: 3046:
+        -: 3047:/**/
+        -: 3048:mod_export struct eprog dummy_eprog;
+        -: 3049:
+        -: 3050:static wordcode dummy_eprog_code;
+        -: 3051:
+        -: 3052:/**/
+        -: 3053:void
+        2: 3054:init_eprog(void)
+        -: 3055:{
+        2: 3056:    dummy_eprog_code = WCB_END();
+        2: 3057:    dummy_eprog.len = sizeof(wordcode);
+        2: 3058:    dummy_eprog.prog = &dummy_eprog_code;
+        2: 3059:    dummy_eprog.strs = NULL;
+        2: 3060:}
+        -: 3061:
+        -: 3062:/* Code for function dump files.
+        -: 3063: *
+        -: 3064: * Dump files consist of a header and the function bodies (the wordcode
+        -: 3065: * plus the string table) and that twice: once for the byte-order of the
+        -: 3066: * host the file was created on and once for the other byte-order. The
+        -: 3067: * header describes where the beginning of the `other' version is and it
+        -: 3068: * is up to the shell reading the file to decide which version it needs.
+        -: 3069: * This is done by checking if the first word is FD_MAGIC (then the 
+        -: 3070: * shell reading the file has the same byte order as the one that created
+        -: 3071: * the file) or if it is FD_OMAGIC, then the `other' version has to be
+        -: 3072: * read.
+        -: 3073: * The header is the magic number, a word containing the flags (if the
+        -: 3074: * file should be mapped or read and if this header is the `other' one),
+        -: 3075: * the version string in a field of 40 characters and the descriptions
+        -: 3076: * for the functions in the dump file.
+        -: 3077: *
+        -: 3078: * NOTES:
+        -: 3079: *  - This layout has to be kept; everything after it may be changed.
+        -: 3080: *  - When incompatible changes are made, the FD_MAGIC and FD_OMAGIC
+        -: 3081: *    numbers have to be changed.
+        -: 3082: *
+        -: 3083: * Each description consists of a struct fdhead followed by the name,
+        -: 3084: * aligned to sizeof(wordcode) (i.e. 4 bytes).
+        -: 3085: */
+        -: 3086:
+        -: 3087:#include "version.h"
+        -: 3088:
+        -: 3089:#define FD_EXT ".zwc"
+        -: 3090:#define FD_MINMAP 4096
+        -: 3091:
+        -: 3092:#define FD_PRELEN 12
+        -: 3093:#define FD_MAGIC  0x04050607
+        -: 3094:#define FD_OMAGIC 0x07060504
+        -: 3095:
+        -: 3096:#define FDF_MAP   1
+        -: 3097:#define FDF_OTHER 2
+        -: 3098:
+        -: 3099:typedef struct fdhead *FDHead;
+        -: 3100:
+        -: 3101:struct fdhead {
+        -: 3102:    wordcode start;		/* offset to function definition */
+        -: 3103:    wordcode len;		/* length of wordcode/strings */
+        -: 3104:    wordcode npats;		/* number of patterns needed */
+        -: 3105:    wordcode strs;		/* offset to strings */
+        -: 3106:    wordcode hlen;		/* header length (incl. name) */
+        -: 3107:    wordcode flags;		/* flags and offset to name tail */
+        -: 3108:};
+        -: 3109:
+        -: 3110:#define fdheaderlen(f) (((Wordcode) (f))[FD_PRELEN])
+        -: 3111:
+        -: 3112:#define fdmagic(f)       (((Wordcode) (f))[0])
+        -: 3113:#define fdsetbyte(f,i,v) \
+        -: 3114:    ((((unsigned char *) (((Wordcode) (f)) + 1))[i]) = ((unsigned char) (v)))
+        -: 3115:#define fdbyte(f,i)      ((wordcode) (((unsigned char *) (((Wordcode) (f)) + 1))[i]))
+        -: 3116:#define fdflags(f)       fdbyte(f, 0)
+        -: 3117:#define fdsetflags(f,v)  fdsetbyte(f, 0, v)
+        -: 3118:#define fdother(f)       (fdbyte(f, 1) + (fdbyte(f, 2) << 8) + (fdbyte(f, 3) << 16))
+        -: 3119:#define fdsetother(f, o) \
+        -: 3120:    do { \
+        -: 3121:        fdsetbyte(f, 1, ((o) & 0xff)); \
+        -: 3122:        fdsetbyte(f, 2, (((o) >> 8) & 0xff)); \
+        -: 3123:        fdsetbyte(f, 3, (((o) >> 16) & 0xff)); \
+        -: 3124:    } while (0)
+        -: 3125:#define fdversion(f)     ((char *) ((f) + 2))
+        -: 3126:
+        -: 3127:#define firstfdhead(f) ((FDHead) (((Wordcode) (f)) + FD_PRELEN))
+        -: 3128:#define nextfdhead(f)  ((FDHead) (((Wordcode) (f)) + (f)->hlen))
+        -: 3129:
+        -: 3130:#define fdhflags(f)      (((FDHead) (f))->flags)
+        -: 3131:#define fdhtail(f)       (((FDHead) (f))->flags >> 2)
+        -: 3132:#define fdhbldflags(f,t) ((f) | ((t) << 2))
+        -: 3133:
+        -: 3134:#define FDHF_KSHLOAD 1
+        -: 3135:#define FDHF_ZSHLOAD 2
+        -: 3136:
+        -: 3137:#define fdname(f)      ((char *) (((FDHead) (f)) + 1))
+        -: 3138:
+        -: 3139:/* This is used when building wordcode files. */
+        -: 3140:
+        -: 3141:typedef struct wcfunc *WCFunc;
+        -: 3142:
+        -: 3143:struct wcfunc {
+        -: 3144:    char *name;
+        -: 3145:    Eprog prog;
+        -: 3146:    int flags;
+        -: 3147:};
+        -: 3148:
+        -: 3149:/* Try to find the description for the given function name. */
+        -: 3150:
+        -: 3151:static FDHead
+    #####: 3152:dump_find_func(Wordcode h, char *name)
+        -: 3153:{
+    #####: 3154:    FDHead n, e = (FDHead) (h + fdheaderlen(h));
+        -: 3155:
+    #####: 3156:    for (n = firstfdhead(h); n < e; n = nextfdhead(n))
+    #####: 3157:	if (!strcmp(name, fdname(n) + fdhtail(n)))
+    #####: 3158:	    return n;
+        -: 3159:
+    #####: 3160:    return NULL;
+        -: 3161:}
+        -: 3162:
+        -: 3163:/**/
+        -: 3164:int
+    #####: 3165:bin_zcompile(char *nam, char **args, Options ops, UNUSED(int func))
+        -: 3166:{
+        -: 3167:    int map, flags, ret;
+        -: 3168:    char *dump;
+        -: 3169:
+    #####: 3170:    if ((OPT_ISSET(ops,'k') && OPT_ISSET(ops,'z')) ||
+    #####: 3171:	(OPT_ISSET(ops,'R') && OPT_ISSET(ops,'M')) ||
+    #####: 3172:	(OPT_ISSET(ops,'c') &&
+    #####: 3173:	 (OPT_ISSET(ops,'U') || OPT_ISSET(ops,'k') || OPT_ISSET(ops,'z'))) ||
+    #####: 3174:	(!(OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a')) && OPT_ISSET(ops,'m'))) {
+    #####: 3175:	zwarnnam(nam, "illegal combination of options");
+    #####: 3176:	return 1;
+        -: 3177:    }
+    #####: 3178:    if ((OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a')) && isset(KSHAUTOLOAD))
+    #####: 3179:	zwarnnam(nam, "functions will use zsh style autoloading");
+        -: 3180:
+    #####: 3181:    flags = (OPT_ISSET(ops,'k') ? FDHF_KSHLOAD :
+    #####: 3182:	     (OPT_ISSET(ops,'z') ? FDHF_ZSHLOAD : 0));
+        -: 3183:
+    #####: 3184:    if (OPT_ISSET(ops,'t')) {
+        -: 3185:	Wordcode f;
+        -: 3186:
+    #####: 3187:	if (!*args) {
+    #####: 3188:	    zwarnnam(nam, "too few arguments");
+    #####: 3189:	    return 1;
+        -: 3190:	}
+    #####: 3191:	if (!(f = load_dump_header(nam, (strsfx(FD_EXT, *args) ? *args :
+    #####: 3192:					 dyncat(*args, FD_EXT)), 1)))
+    #####: 3193:		return 1;
+        -: 3194:
+    #####: 3195:	if (args[1]) {
+    #####: 3196:	    for (args++; *args; args++)
+    #####: 3197:		if (!dump_find_func(f, *args))
+    #####: 3198:		    return 1;
+    #####: 3199:	    return 0;
+        -: 3200:	} else {
+    #####: 3201:	    FDHead h, e = (FDHead) (f + fdheaderlen(f));
+        -: 3202:
+    #####: 3203:	    printf("zwc file (%s) for zsh-%s\n",
+    #####: 3204:		   ((fdflags(f) & FDF_MAP) ? "mapped" : "read"), fdversion(f));
+    #####: 3205:	    for (h = firstfdhead(f); h < e; h = nextfdhead(h))
+    #####: 3206:		printf("%s\n", fdname(h));
+    #####: 3207:	    return 0;
+        -: 3208:	}
+        -: 3209:    }
+    #####: 3210:    if (!*args) {
+    #####: 3211:	zwarnnam(nam, "too few arguments");
+    #####: 3212:	return 1;
+        -: 3213:    }
+    #####: 3214:    map = (OPT_ISSET(ops,'M') ? 2 : (OPT_ISSET(ops,'R') ? 0 : 1));
+        -: 3215:
+    #####: 3216:    if (!args[1] && !(OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a'))) {
+    #####: 3217:	queue_signals();
+    #####: 3218:	ret = build_dump(nam, dyncat(*args, FD_EXT), args, OPT_ISSET(ops,'U'),
+        -: 3219:			 map, flags);
+    #####: 3220:	unqueue_signals();
+    #####: 3221:	return ret;
+        -: 3222:    }
+    #####: 3223:    dump = (strsfx(FD_EXT, *args) ? *args : dyncat(*args, FD_EXT));
+        -: 3224:
+    #####: 3225:    queue_signals();
+    #####: 3226:    ret = ((OPT_ISSET(ops,'c') || OPT_ISSET(ops,'a')) ?
+    #####: 3227:	   build_cur_dump(nam, dump, args + 1, OPT_ISSET(ops,'m'), map,
+    #####: 3228:			  (OPT_ISSET(ops,'c') ? 1 : 0) | 
+    #####: 3229:			  (OPT_ISSET(ops,'a') ? 2 : 0)) :
+    #####: 3230:	   build_dump(nam, dump, args + 1, OPT_ISSET(ops,'U'), map, flags));
+    #####: 3231:    unqueue_signals();
+        -: 3232:
+    #####: 3233:    return ret;
+        -: 3234:}
+        -: 3235:
+        -: 3236:/* Load the header of a dump file. Returns NULL if the file isn't a
+        -: 3237: * valid dump file. */
+        -: 3238:
+        -: 3239:/**/
+        -: 3240:static Wordcode
+    #####: 3241:load_dump_header(char *nam, char *name, int err)
+        -: 3242:{
+    #####: 3243:    int fd, v = 1;
+        -: 3244:    wordcode buf[FD_PRELEN + 1];
+        -: 3245:
+    #####: 3246:    if ((fd = open(name, O_RDONLY)) < 0) {
+    #####: 3247:	if (err)
+    #####: 3248:	    zwarnnam(nam, "can't open zwc file: %s", name);
+    #####: 3249:	return NULL;
+        -: 3250:    }
+    #####: 3251:    if (read(fd, buf, (FD_PRELEN + 1) * sizeof(wordcode)) !=
+    #####: 3252:	((FD_PRELEN + 1) * sizeof(wordcode)) ||
+    #####: 3253:	(v = (fdmagic(buf) != FD_MAGIC && fdmagic(buf) != FD_OMAGIC)) ||
+    #####: 3254:	strcmp(fdversion(buf), ZSH_VERSION)) {
+    #####: 3255:	if (err) {
+    #####: 3256:	    if (!v) {
+    #####: 3257:		zwarnnam(nam, "zwc file has wrong version (zsh-%s): %s",
+        -: 3258:			 fdversion(buf), name);
+        -: 3259:	    } else
+    #####: 3260:		zwarnnam(nam, "invalid zwc file: %s" , name);
+        -: 3261:	}
+    #####: 3262:	close(fd);
+    #####: 3263:	return NULL;
+        -: 3264:    } else {
+        -: 3265:	int len;
+        -: 3266:	Wordcode head;
+        -: 3267:
+    #####: 3268:	if (fdmagic(buf) == FD_MAGIC) {
+    #####: 3269:	    len = fdheaderlen(buf) * sizeof(wordcode);
+    #####: 3270:	    head = (Wordcode) zhalloc(len);
+        -: 3271:	}
+        -: 3272:	else {
+    #####: 3273:	    int o = fdother(buf);
+        -: 3274:
+    #####: 3275:	    if (lseek(fd, o, 0) == -1 ||
+    #####: 3276:		read(fd, buf, (FD_PRELEN + 1) * sizeof(wordcode)) !=
+        -: 3277:		((FD_PRELEN + 1) * sizeof(wordcode))) {
+    #####: 3278:		zwarnnam(nam, "invalid zwc file: %s" , name);
+    #####: 3279:		close(fd);
+    #####: 3280:		return NULL;
+        -: 3281:	    }
+    #####: 3282:	    len = fdheaderlen(buf) * sizeof(wordcode);
+    #####: 3283:	    head = (Wordcode) zhalloc(len);
+        -: 3284:	}
+    #####: 3285:	memcpy(head, buf, (FD_PRELEN + 1) * sizeof(wordcode));
+        -: 3286:
+    #####: 3287:	len -= (FD_PRELEN + 1) * sizeof(wordcode);
+    #####: 3288:	if (read(fd, head + (FD_PRELEN + 1), len) != len) {
+    #####: 3289:	    close(fd);
+    #####: 3290:	    zwarnnam(nam, "invalid zwc file: %s" , name);
+    #####: 3291:	    return NULL;
+        -: 3292:	}
+    #####: 3293:	close(fd);
+    #####: 3294:	return head;
+        -: 3295:    }
+        -: 3296:}
+        -: 3297:
+        -: 3298:/* Swap the bytes in a wordcode. */
+        -: 3299:
+        -: 3300:static void
+    #####: 3301:fdswap(Wordcode p, int n)
+        -: 3302:{
+        -: 3303:    wordcode c;
+        -: 3304:
+    #####: 3305:    for (; n--; p++) {
+    #####: 3306:	c = *p;
+    #####: 3307:	*p = (((c & 0xff) << 24) |
+    #####: 3308:	      ((c & 0xff00) << 8) |
+    #####: 3309:	      ((c & 0xff0000) >> 8) |
+    #####: 3310:	      ((c & 0xff000000) >> 24));
+        -: 3311:    }
+    #####: 3312:}
+        -: 3313:
+        -: 3314:/* Write a dump file. */
+        -: 3315:
+        -: 3316:static void
+    #####: 3317:write_dump(int dfd, LinkList progs, int map, int hlen, int tlen)
+        -: 3318:{
+        -: 3319:    LinkNode node;
+        -: 3320:    WCFunc wcf;
+    #####: 3321:    int other = 0, ohlen, tmp;
+        -: 3322:    wordcode pre[FD_PRELEN];
+        -: 3323:    char *tail, *n;
+        -: 3324:    struct fdhead head;
+        -: 3325:    Eprog prog;
+        -: 3326:
+    #####: 3327:    if (map == 1)
+    #####: 3328:	map = (tlen >= FD_MINMAP);
+        -: 3329:
+    #####: 3330:    memset(pre, 0, sizeof(wordcode) * FD_PRELEN);
+        -: 3331:
+    #####: 3332:    for (ohlen = hlen; ; hlen = ohlen) {
+    #####: 3333:	fdmagic(pre) = (other ? FD_OMAGIC : FD_MAGIC);
+    #####: 3334:	fdsetflags(pre, ((map ? FDF_MAP : 0) | other));
+    #####: 3335:	fdsetother(pre, tlen);
+    #####: 3336:	strcpy(fdversion(pre), ZSH_VERSION);
+    #####: 3337:	write_loop(dfd, (char *)pre, FD_PRELEN * sizeof(wordcode));
+        -: 3338:
+    #####: 3339:	for (node = firstnode(progs); node; incnode(node)) {
+    #####: 3340:	    wcf = (WCFunc) getdata(node);
+    #####: 3341:	    n = wcf->name;
+    #####: 3342:	    prog = wcf->prog;
+    #####: 3343:	    head.start = hlen;
+    #####: 3344:	    hlen += (prog->len - (prog->npats * sizeof(Patprog)) +
+    #####: 3345:		     sizeof(wordcode) - 1) / sizeof(wordcode);
+    #####: 3346:	    head.len = prog->len - (prog->npats * sizeof(Patprog));
+    #####: 3347:	    head.npats = prog->npats;
+    #####: 3348:	    head.strs = prog->strs - ((char *) prog->prog);
+    #####: 3349:	    head.hlen = (sizeof(struct fdhead) / sizeof(wordcode)) +
+    #####: 3350:		(strlen(n) + sizeof(wordcode)) / sizeof(wordcode);
+    #####: 3351:	    if ((tail = strrchr(n, '/')))
+    #####: 3352:		tail++;
+        -: 3353:	    else
+    #####: 3354:		tail = n;
+    #####: 3355:	    head.flags = fdhbldflags(wcf->flags, (tail - n));
+    #####: 3356:	    if (other)
+    #####: 3357:		fdswap((Wordcode) &head, sizeof(head) / sizeof(wordcode));
+    #####: 3358:	    write_loop(dfd, (char *)&head, sizeof(head));
+    #####: 3359:	    tmp = strlen(n) + 1;
+    #####: 3360:	    write_loop(dfd, n, tmp);
+    #####: 3361:	    if ((tmp &= (sizeof(wordcode) - 1)))
+    #####: 3362:		write_loop(dfd, (char *)&head, sizeof(wordcode) - tmp);
+        -: 3363:	}
+    #####: 3364:	for (node = firstnode(progs); node; incnode(node)) {
+    #####: 3365:	    prog = ((WCFunc) getdata(node))->prog;
+    #####: 3366:	    tmp = (prog->len - (prog->npats * sizeof(Patprog)) +
+    #####: 3367:		   sizeof(wordcode) - 1) / sizeof(wordcode);
+    #####: 3368:	    if (other)
+    #####: 3369:		fdswap(prog->prog, (((Wordcode) prog->strs) - prog->prog));
+    #####: 3370:	    write_loop(dfd, (char *)prog->prog, tmp * sizeof(wordcode));
+        -: 3371:	}
+    #####: 3372:	if (other)
+    #####: 3373:	    break;
+    #####: 3374:	other = FDF_OTHER;
+        -: 3375:    }
+    #####: 3376:}
+        -: 3377:
+        -: 3378:/**/
+        -: 3379:static int
+    #####: 3380:build_dump(char *nam, char *dump, char **files, int ali, int map, int flags)
+        -: 3381:{
+    #####: 3382:    int dfd, fd, hlen, tlen, flen, ona = noaliases;
+        -: 3383:    LinkList progs;
+        -: 3384:    char *file;
+        -: 3385:    Eprog prog;
+        -: 3386:    WCFunc wcf;
+        -: 3387:
+    #####: 3388:    if (!strsfx(FD_EXT, dump))
+    #####: 3389:	dump = dyncat(dump, FD_EXT);
+        -: 3390:
+    #####: 3391:    unlink(dump);
+    #####: 3392:    if ((dfd = open(dump, O_WRONLY|O_CREAT, 0444)) < 0) {
+    #####: 3393:	zwarnnam(nam, "can't write zwc file: %s", dump);
+    #####: 3394:	return 1;
+        -: 3395:    }
+    #####: 3396:    progs = newlinklist();
+    #####: 3397:    noaliases = ali;
+        -: 3398:
+    #####: 3399:    for (hlen = FD_PRELEN, tlen = 0; *files; files++) {
+        -: 3400:	struct stat st;
+        -: 3401:
+    #####: 3402:	if (check_cond(*files, "k")) {
+    #####: 3403:	    flags = (flags & ~(FDHF_KSHLOAD | FDHF_ZSHLOAD)) | FDHF_KSHLOAD;
+    #####: 3404:	    continue;
+    #####: 3405:	} else if (check_cond(*files, "z")) {
+    #####: 3406:	    flags = (flags & ~(FDHF_KSHLOAD | FDHF_ZSHLOAD)) | FDHF_ZSHLOAD;
+    #####: 3407:	    continue;
+        -: 3408:	}
+    #####: 3409:	if ((fd = open(*files, O_RDONLY)) < 0 ||
+    #####: 3410:	    fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+    #####: 3411:	    (flen = lseek(fd, 0, 2)) == -1) {
+    #####: 3412:	    if (fd >= 0)
+    #####: 3413:		close(fd);
+    #####: 3414:	    close(dfd);
+    #####: 3415:	    zwarnnam(nam, "can't open file: %s", *files);
+    #####: 3416:	    noaliases = ona;
+    #####: 3417:	    unlink(dump);
+    #####: 3418:	    return 1;
+        -: 3419:	}
+    #####: 3420:	file = (char *) zalloc(flen + 1);
+    #####: 3421:	file[flen] = '\0';
+    #####: 3422:	lseek(fd, 0, 0);
+    #####: 3423:	if (read(fd, file, flen) != flen) {
+    #####: 3424:	    close(fd);
+    #####: 3425:	    close(dfd);
+    #####: 3426:	    zfree(file, flen);
+    #####: 3427:	    zwarnnam(nam, "can't read file: %s", *files);
+    #####: 3428:	    noaliases = ona;
+    #####: 3429:	    unlink(dump);
+    #####: 3430:	    return 1;
+        -: 3431:	}
+    #####: 3432:	close(fd);
+    #####: 3433:	file = metafy(file, flen, META_REALLOC);
+        -: 3434:
+    #####: 3435:	if (!(prog = parse_string(file, 1)) || errflag) {
+    #####: 3436:	    errflag &= ~ERRFLAG_ERROR;
+    #####: 3437:	    close(dfd);
+    #####: 3438:	    zfree(file, flen);
+    #####: 3439:	    zwarnnam(nam, "can't read file: %s", *files);
+    #####: 3440:	    noaliases = ona;
+    #####: 3441:	    unlink(dump);
+    #####: 3442:	    return 1;
+        -: 3443:	}
+    #####: 3444:	zfree(file, flen);
+        -: 3445:
+    #####: 3446:	wcf = (WCFunc) zhalloc(sizeof(*wcf));
+    #####: 3447:	wcf->name = *files;
+    #####: 3448:	wcf->prog = prog;
+    #####: 3449:	wcf->flags = ((prog->flags & EF_RUN) ? FDHF_KSHLOAD : flags);
+    #####: 3450:	addlinknode(progs, wcf);
+        -: 3451:
+    #####: 3452:	flen = (strlen(*files) + sizeof(wordcode)) / sizeof(wordcode);
+    #####: 3453:	hlen += (sizeof(struct fdhead) / sizeof(wordcode)) + flen;
+        -: 3454:
+    #####: 3455:	tlen += (prog->len - (prog->npats * sizeof(Patprog)) +
+    #####: 3456:		 sizeof(wordcode) - 1) / sizeof(wordcode);
+        -: 3457:    }
+    #####: 3458:    noaliases = ona;
+        -: 3459:
+    #####: 3460:    tlen = (tlen + hlen) * sizeof(wordcode);
+        -: 3461:
+    #####: 3462:    write_dump(dfd, progs, map, hlen, tlen);
+        -: 3463:
+    #####: 3464:    close(dfd);
+        -: 3465:
+    #####: 3466:    return 0;
+        -: 3467:}
+        -: 3468:
+        -: 3469:static int
+    #####: 3470:cur_add_func(char *nam, Shfunc shf, LinkList names, LinkList progs,
+        -: 3471:	     int *hlen, int *tlen, int what)
+        -: 3472:{
+        -: 3473:    Eprog prog;
+        -: 3474:    WCFunc wcf;
+        -: 3475:
+    #####: 3476:    if (shf->node.flags & PM_UNDEFINED) {
+    #####: 3477:	int ona = noaliases;
+        -: 3478:
+    #####: 3479:	if (!(what & 2)) {
+    #####: 3480:	    zwarnnam(nam, "function is not loaded: %s", shf->node.nam);
+    #####: 3481:	    return 1;
+        -: 3482:	}
+    #####: 3483:	noaliases = (shf->node.flags & PM_UNALIASED);
+    #####: 3484:	if (!(prog = getfpfunc(shf->node.nam, NULL, NULL, NULL, 0)) ||
+        -: 3485:	    prog == &dummy_eprog) {
+    #####: 3486:	    noaliases = ona;
+    #####: 3487:	    zwarnnam(nam, "can't load function: %s", shf->node.nam);
+    #####: 3488:	    return 1;
+        -: 3489:	}
+    #####: 3490:	if (prog->dump)
+    #####: 3491:	    prog = dupeprog(prog, 1);
+    #####: 3492:	noaliases = ona;
+        -: 3493:    } else {
+    #####: 3494:	if (!(what & 1)) {
+    #####: 3495:	    zwarnnam(nam, "function is already loaded: %s", shf->node.nam);
+    #####: 3496:	    return 1;
+        -: 3497:	}
+    #####: 3498:	prog = dupeprog(shf->funcdef, 1);
+        -: 3499:    }
+    #####: 3500:    wcf = (WCFunc) zhalloc(sizeof(*wcf));
+    #####: 3501:    wcf->name = shf->node.nam;
+    #####: 3502:    wcf->prog = prog;
+    #####: 3503:    wcf->flags = ((prog->flags & EF_RUN) ? FDHF_KSHLOAD : FDHF_ZSHLOAD);
+    #####: 3504:    addlinknode(progs, wcf);
+    #####: 3505:    addlinknode(names, shf->node.nam);
+        -: 3506:
+    #####: 3507:    *hlen += ((sizeof(struct fdhead) / sizeof(wordcode)) +
+    #####: 3508:	      ((strlen(shf->node.nam) + sizeof(wordcode)) / sizeof(wordcode)));
+    #####: 3509:    *tlen += (prog->len - (prog->npats * sizeof(Patprog)) +
+    #####: 3510:	      sizeof(wordcode) - 1) / sizeof(wordcode);
+        -: 3511:
+    #####: 3512:    return 0;
+        -: 3513:}
+        -: 3514:
+        -: 3515:/**/
+        -: 3516:static int
+    #####: 3517:build_cur_dump(char *nam, char *dump, char **names, int match, int map,
+        -: 3518:	       int what)
+        -: 3519:{
+        -: 3520:    int dfd, hlen, tlen;
+        -: 3521:    LinkList progs, lnames;
+    #####: 3522:    Shfunc shf = NULL;
+        -: 3523:
+    #####: 3524:    if (!strsfx(FD_EXT, dump))
+    #####: 3525:	dump = dyncat(dump, FD_EXT);
+        -: 3526:
+    #####: 3527:    unlink(dump);
+    #####: 3528:    if ((dfd = open(dump, O_WRONLY|O_CREAT, 0444)) < 0) {
+    #####: 3529:	zwarnnam(nam, "can't write zwc file: %s", dump);
+    #####: 3530:	return 1;
+        -: 3531:    }
+    #####: 3532:    progs = newlinklist();
+    #####: 3533:    lnames = newlinklist();
+        -: 3534:
+    #####: 3535:    hlen = FD_PRELEN;
+    #####: 3536:    tlen = 0;
+        -: 3537:
+    #####: 3538:    if (!*names) {
+        -: 3539:	int i;
+        -: 3540:	HashNode hn;
+        -: 3541:
+    #####: 3542:	for (i = 0; i < shfunctab->hsize; i++)
+    #####: 3543:	    for (hn = shfunctab->nodes[i]; hn; hn = hn->next)
+    #####: 3544:		if (cur_add_func(nam, (Shfunc) hn, lnames, progs,
+        -: 3545:				 &hlen, &tlen, what)) {
+    #####: 3546:		    errflag &= ~ERRFLAG_ERROR;
+    #####: 3547:		    close(dfd);
+    #####: 3548:		    unlink(dump);
+    #####: 3549:		    return 1;
+        -: 3550:		}
+    #####: 3551:    } else if (match) {
+        -: 3552:	char *pat;
+        -: 3553:	Patprog pprog;
+        -: 3554:	int i;
+        -: 3555:	HashNode hn;
+        -: 3556:
+    #####: 3557:	for (; *names; names++) {
+    #####: 3558:	    tokenize(pat = dupstring(*names));
+        -: 3559:	    /* Signal-safe here, caller queues signals */
+    #####: 3560:	    if (!(pprog = patcompile(pat, PAT_STATIC, NULL))) {
+    #####: 3561:		zwarnnam(nam, "bad pattern: %s", *names);
+    #####: 3562:		close(dfd);
+    #####: 3563:		unlink(dump);
+    #####: 3564:		return 1;
+        -: 3565:	    }
+    #####: 3566:	    for (i = 0; i < shfunctab->hsize; i++)
+    #####: 3567:		for (hn = shfunctab->nodes[i]; hn; hn = hn->next)
+    #####: 3568:		    if (!linknodebydatum(lnames, hn->nam) &&
+    #####: 3569:			pattry(pprog, hn->nam) &&
+    #####: 3570:			cur_add_func(nam, (Shfunc) hn, lnames, progs,
+        -: 3571:				     &hlen, &tlen, what)) {
+    #####: 3572:			errflag &= ~ERRFLAG_ERROR;
+    #####: 3573:			close(dfd);
+    #####: 3574:			unlink(dump);
+    #####: 3575:			return 1;
+        -: 3576:		    }
+        -: 3577:	}
+        -: 3578:    } else {
+    #####: 3579:	for (; *names; names++) {
+    #####: 3580:	    if (errflag ||
+    #####: 3581:		!(shf = (Shfunc) shfunctab->getnode(shfunctab, *names))) {
+    #####: 3582:		zwarnnam(nam, "unknown function: %s", *names);
+    #####: 3583:		errflag &= ~ERRFLAG_ERROR;
+    #####: 3584:		close(dfd);
+    #####: 3585:		unlink(dump);
+    #####: 3586:		return 1;
+        -: 3587:	    }
+    #####: 3588:	    if (cur_add_func(nam, shf, lnames, progs, &hlen, &tlen, what)) {
+    #####: 3589:		errflag &= ~ERRFLAG_ERROR;
+    #####: 3590:		close(dfd);
+    #####: 3591:		unlink(dump);
+    #####: 3592:		return 1;
+        -: 3593:	    }
+        -: 3594:	}
+        -: 3595:    }
+    #####: 3596:    if (empty(progs)) {
+    #####: 3597:	zwarnnam(nam, "no functions");
+    #####: 3598:	errflag &= ~ERRFLAG_ERROR;
+    #####: 3599:	close(dfd);
+    #####: 3600:	unlink(dump);
+    #####: 3601:	return 1;
+        -: 3602:    }
+    #####: 3603:    tlen = (tlen + hlen) * sizeof(wordcode);
+        -: 3604:
+    #####: 3605:    write_dump(dfd, progs, map, hlen, tlen);
+        -: 3606:
+    #####: 3607:    close(dfd);
+        -: 3608:
+    #####: 3609:    return 0;
+        -: 3610:}
+        -: 3611:
+        -: 3612:/**/
+        -: 3613:#if defined(HAVE_SYS_MMAN_H) && defined(HAVE_MMAP) && defined(HAVE_MUNMAP)
+        -: 3614:
+        -: 3615:#include <sys/mman.h>
+        -: 3616:
+        -: 3617:/**/
+        -: 3618:#if defined(MAP_SHARED) && defined(PROT_READ)
+        -: 3619:
+        -: 3620:/**/
+        -: 3621:#define USE_MMAP 1
+        -: 3622:
+        -: 3623:/**/
+        -: 3624:#endif
+        -: 3625:/**/
+        -: 3626:#endif
+        -: 3627:
+        -: 3628:/**/
+        -: 3629:#ifdef USE_MMAP
+        -: 3630:
+        -: 3631:/* List of dump files mapped. */
+        -: 3632:
+        -: 3633:static FuncDump dumps;
+        -: 3634:
+        -: 3635:/**/
+        -: 3636:static int
+        9: 3637:zwcstat(char *filename, struct stat *buf)
+        -: 3638:{
+        9: 3639:    if (stat(filename, buf)) {
+        -: 3640:#ifdef HAVE_FSTAT
+        -: 3641:        FuncDump f;
+        -: 3642:    
+        9: 3643:	for (f = dumps; f; f = f->next) {
+    #####: 3644:	    if (!strncmp(filename, f->filename, strlen(f->filename)) &&
+    #####: 3645:		!fstat(f->fd, buf))
+    #####: 3646:		return 0;
+        -: 3647:	}
+        -: 3648:#endif
+        9: 3649:	return 1;
+    #####: 3650:    } else return 0;
+        -: 3651:}
+        -: 3652:
+        -: 3653:/* Load a dump file (i.e. map it). */
+        -: 3654:
+        -: 3655:static void
+    #####: 3656:load_dump_file(char *dump, struct stat *sbuf, int other, int len)
+        -: 3657:{
+        -: 3658:    FuncDump d;
+        -: 3659:    Wordcode addr;
+        -: 3660:    int fd, off, mlen;
+        -: 3661:
+    #####: 3662:    if (other) {
+        -: 3663:	static size_t pgsz = 0;
+        -: 3664:
+    #####: 3665:	if (!pgsz) {
+        -: 3666:
+        -: 3667:#ifdef _SC_PAGESIZE
+    #####: 3668:	    pgsz = sysconf(_SC_PAGESIZE);     /* SVR4 */
+        -: 3669:#else
+        -: 3670:# ifdef _SC_PAGE_SIZE
+        -: 3671:	    pgsz = sysconf(_SC_PAGE_SIZE);    /* HPUX */
+        -: 3672:# else
+        -: 3673:	    pgsz = getpagesize();
+        -: 3674:# endif
+        -: 3675:#endif
+        -: 3676:
+    #####: 3677:	    pgsz--;
+        -: 3678:	}
+    #####: 3679:	off = len & ~pgsz;
+    #####: 3680:        mlen = len + (len - off);
+        -: 3681:    } else {
+    #####: 3682:	off = 0;
+    #####: 3683:        mlen = len;
+        -: 3684:    }
+    #####: 3685:    if ((fd = open(dump, O_RDONLY)) < 0)
+    #####: 3686:	return;
+        -: 3687:
+    #####: 3688:    fd = movefd(fd);
+    #####: 3689:    if (fd == -1)
+    #####: 3690:	return;
+        -: 3691:
+    #####: 3692:    if ((addr = (Wordcode) mmap(NULL, mlen, PROT_READ, MAP_SHARED, fd, off)) ==
+        -: 3693:	((Wordcode) -1)) {
+    #####: 3694:	close(fd);
+    #####: 3695:	return;
+        -: 3696:    }
+    #####: 3697:    d = (FuncDump) zalloc(sizeof(*d));
+    #####: 3698:    d->next = dumps;
+    #####: 3699:    dumps = d;
+    #####: 3700:    d->dev = sbuf->st_dev;
+    #####: 3701:    d->ino = sbuf->st_ino;
+    #####: 3702:    d->fd = fd;
+        -: 3703:#ifdef FD_CLOEXEC
+    #####: 3704:    fcntl(fd, F_SETFD, FD_CLOEXEC);
+        -: 3705:#endif
+    #####: 3706:    d->map = addr + (other ? (len - off) / sizeof(wordcode) : 0);
+    #####: 3707:    d->addr = addr;
+    #####: 3708:    d->len = len;
+    #####: 3709:    d->count = 0;
+    #####: 3710:    d->filename = ztrdup(dump);
+        -: 3711:}
+        -: 3712:
+        -: 3713:#else
+        -: 3714:
+        -: 3715:#define zwcstat(f, b) (!!stat(f, b))
+        -: 3716:
+        -: 3717:/**/
+        -: 3718:#endif
+        -: 3719:
+        -: 3720:/* Try to load a function from one of the possible wordcode files for it.
+        -: 3721: * The first argument is a element of $fpath, the second one is the name
+        -: 3722: * of the function searched and the last one is the possible name for the
+        -: 3723: * uncompiled function file (<path>/<func>). */
+        -: 3724:
+        -: 3725:/**/
+        -: 3726:Eprog
+        9: 3727:try_dump_file(char *path, char *name, char *file, int *ksh, int test_only)
+        -: 3728:{
+        -: 3729:    Eprog prog;
+        -: 3730:    struct stat std, stc, stn;
+        -: 3731:    int rd, rc, rn;
+        -: 3732:    char *dig, *wc;
+        -: 3733:
+        9: 3734:    if (strsfx(FD_EXT, path)) {
+    #####: 3735:	queue_signals();
+    #####: 3736:	prog = check_dump_file(path, NULL, name, ksh, test_only);
+    #####: 3737:	unqueue_signals();
+    #####: 3738:	return prog;
+        -: 3739:    }
+        9: 3740:    dig = dyncat(path, FD_EXT);
+        9: 3741:    wc = dyncat(file, FD_EXT);
+        -: 3742:
+        9: 3743:    rd = zwcstat(dig, &std);
+        9: 3744:    rc = stat(wc, &stc);
+        9: 3745:    rn = stat(file, &stn);
+        -: 3746:
+        -: 3747:    /* See if there is a digest file for the directory, it is younger than
+        -: 3748:     * both the uncompiled function file and its compiled version (or they
+        -: 3749:     * don't exist) and the digest file contains the definition for the
+        -: 3750:     * function. */
+        9: 3751:    queue_signals();
+        9: 3752:    if (!rd &&
+    #####: 3753:	(rc || std.st_mtime >= stc.st_mtime) &&
+    #####: 3754:	(rn || std.st_mtime >= stn.st_mtime) &&
+        -: 3755:	(prog = check_dump_file(dig, &std, name, ksh, test_only))) {
+    #####: 3756:	unqueue_signals();
+    #####: 3757:	return prog;
+        -: 3758:    }
+        -: 3759:    /* No digest file. Now look for the per-function compiled file. */
+        9: 3760:    if (!rc &&
+    #####: 3761:	(rn || stc.st_mtime >= stn.st_mtime) &&
+        -: 3762:	(prog = check_dump_file(wc, &stc, name, ksh, test_only))) {
+    #####: 3763:	unqueue_signals();
+    #####: 3764:	return prog;
+        -: 3765:    }
+        -: 3766:    /* No compiled file for the function. The caller (getfpfunc() will
+        -: 3767:     * check if the directory contains the uncompiled file for it. */
+        9: 3768:    unqueue_signals();
+        9: 3769:    return NULL;
+        -: 3770:}
+        -: 3771:
+        -: 3772:/* Almost the same, but for sourced files. */
+        -: 3773:
+        -: 3774:/**/
+        -: 3775:Eprog
+        2: 3776:try_source_file(char *file)
+        -: 3777:{
+        -: 3778:    Eprog prog;
+        -: 3779:    struct stat stc, stn;
+        -: 3780:    int rc, rn;
+        -: 3781:    char *wc, *tail;
+        -: 3782:
+        2: 3783:    if ((tail = strrchr(file, '/')))
+        2: 3784:	tail++;
+        -: 3785:    else
+    #####: 3786:	tail = file;
+        -: 3787:
+        2: 3788:    if (strsfx(FD_EXT, file)) {
+    #####: 3789:	queue_signals();
+    #####: 3790:	prog = check_dump_file(file, NULL, tail, NULL, 0);
+    #####: 3791:	unqueue_signals();
+    #####: 3792:	return prog;
+        -: 3793:    }
+        2: 3794:    wc = dyncat(file, FD_EXT);
+        -: 3795:
+        2: 3796:    rc = stat(wc, &stc);
+        2: 3797:    rn = stat(file, &stn);
+        -: 3798:
+        2: 3799:    queue_signals();
+        2: 3800:    if (!rc && (rn || stc.st_mtime >= stn.st_mtime) &&
+        -: 3801:	(prog = check_dump_file(wc, &stc, tail, NULL, 0))) {
+    #####: 3802:	unqueue_signals();
+    #####: 3803:	return prog;
+        -: 3804:    }
+        2: 3805:    unqueue_signals();
+        2: 3806:    return NULL;
+        -: 3807:}
+        -: 3808:
+        -: 3809:/* See if `file' names a wordcode dump file and that contains the
+        -: 3810: * definition for the function `name'. If so, return an eprog for it. */
+        -: 3811:
+        -: 3812:/**/
+        -: 3813:static Eprog
+    #####: 3814:check_dump_file(char *file, struct stat *sbuf, char *name, int *ksh,
+        -: 3815:		int test_only)
+        -: 3816:{
+    #####: 3817:    int isrec = 0;
+        -: 3818:    Wordcode d;
+        -: 3819:    FDHead h;
+        -: 3820:    FuncDump f;
+        -: 3821:    struct stat lsbuf;
+        -: 3822:
+    #####: 3823:    if (!sbuf) {
+    #####: 3824:	if (zwcstat(file, &lsbuf))
+    #####: 3825:	    return NULL;
+    #####: 3826:	sbuf = &lsbuf;
+        -: 3827:    }
+        -: 3828:
+        -: 3829:#ifdef USE_MMAP
+        -: 3830:
+    #####: 3831: rec:
+        -: 3832:
+        -: 3833:#endif
+        -: 3834:
+    #####: 3835:    d = NULL;
+        -: 3836:
+        -: 3837:#ifdef USE_MMAP
+        -: 3838:
+    #####: 3839:    for (f = dumps; f; f = f->next)
+    #####: 3840:	if (f->dev == sbuf->st_dev && f->ino == sbuf->st_ino) {
+    #####: 3841:	    d = f->map;
+    #####: 3842:	    break;
+        -: 3843:	}
+        -: 3844:
+        -: 3845:#else
+        -: 3846:
+        -: 3847:    f = NULL;
+        -: 3848:
+        -: 3849:#endif
+        -: 3850:
+    #####: 3851:    if (!f && (isrec || !(d = load_dump_header(NULL, file, 0))))
+    #####: 3852:	return NULL;
+        -: 3853:
+    #####: 3854:    if ((h = dump_find_func(d, name))) {
+        -: 3855:	/* Found the name. If the file is already mapped, return the eprog,
+        -: 3856:	 * otherwise map it and just go up. */
+    #####: 3857:	if (test_only)
+        -: 3858:	{
+        -: 3859:	    /* This is all we need.  Just return dummy. */
+    #####: 3860:	    return &dummy_eprog;
+        -: 3861:	}
+        -: 3862:
+        -: 3863:#ifdef USE_MMAP
+        -: 3864:
+    #####: 3865:	if (f) {
+    #####: 3866:	    Eprog prog = (Eprog) zalloc(sizeof(*prog));
+        -: 3867:	    Patprog *pp;
+        -: 3868:	    int np;
+        -: 3869:
+    #####: 3870:	    prog->flags = EF_MAP;
+    #####: 3871:	    prog->len = h->len;
+    #####: 3872:	    prog->npats = np = h->npats;
+    #####: 3873:	    prog->nref = 1;	/* allocated from permanent storage */
+    #####: 3874:	    prog->pats = pp = (Patprog *) zalloc(np * sizeof(Patprog));
+    #####: 3875:	    prog->prog = f->map + h->start;
+    #####: 3876:	    prog->strs = ((char *) prog->prog) + h->strs;
+    #####: 3877:	    prog->shf = NULL;
+    #####: 3878:	    prog->dump = f;
+        -: 3879:
+    #####: 3880:	    incrdumpcount(f);
+        -: 3881:
+    #####: 3882:	    while (np--)
+    #####: 3883:		*pp++ = dummy_patprog1;
+        -: 3884:
+    #####: 3885:	    if (ksh)
+    #####: 3886:		*ksh = ((fdhflags(h) & FDHF_KSHLOAD) ? 2 :
+    #####: 3887:			((fdhflags(h) & FDHF_ZSHLOAD) ? 0 : 1));
+        -: 3888:
+    #####: 3889:	    return prog;
+    #####: 3890:	} else if (fdflags(d) & FDF_MAP) {
+    #####: 3891:	    load_dump_file(file, sbuf, (fdflags(d) & FDF_OTHER), fdother(d));
+    #####: 3892:	    isrec = 1;
+    #####: 3893:	    goto rec;
+        -: 3894:	} else
+        -: 3895:
+        -: 3896:#endif
+        -: 3897:
+        -: 3898:	{
+        -: 3899:	    Eprog prog;
+        -: 3900:	    Patprog *pp;
+    #####: 3901:	    int np, fd, po = h->npats * sizeof(Patprog);
+        -: 3902:
+    #####: 3903:	    if ((fd = open(file, O_RDONLY)) < 0 ||
+    #####: 3904:		lseek(fd, ((h->start * sizeof(wordcode)) +
+    #####: 3905:			   ((fdflags(d) & FDF_OTHER) ? fdother(d) : 0)), 0) < 0) {
+    #####: 3906:		if (fd >= 0)
+    #####: 3907:		    close(fd);
+    #####: 3908:		return NULL;
+        -: 3909:	    }
+    #####: 3910:	    d = (Wordcode) zalloc(h->len + po);
+        -: 3911:
+    #####: 3912:	    if (read(fd, ((char *) d) + po, h->len) != (int)h->len) {
+    #####: 3913:		close(fd);
+    #####: 3914:		zfree(d, h->len);
+        -: 3915:
+    #####: 3916:		return NULL;
+        -: 3917:	    }
+    #####: 3918:	    close(fd);
+        -: 3919:
+    #####: 3920:	    prog = (Eprog) zalloc(sizeof(*prog));
+        -: 3921:
+    #####: 3922:	    prog->flags = EF_REAL;
+    #####: 3923:	    prog->len = h->len + po;
+    #####: 3924:	    prog->npats = np = h->npats;
+    #####: 3925:	    prog->nref = 1; /* allocated from permanent storage */
+    #####: 3926:	    prog->pats = pp = (Patprog *) d;
+    #####: 3927:	    prog->prog = (Wordcode) (((char *) d) + po);
+    #####: 3928:	    prog->strs = ((char *) prog->prog) + h->strs;
+    #####: 3929:	    prog->shf = NULL;
+    #####: 3930:	    prog->dump = f;
+        -: 3931:
+    #####: 3932:	    while (np--)
+    #####: 3933:		*pp++ = dummy_patprog1;
+        -: 3934:
+    #####: 3935:	    if (ksh)
+    #####: 3936:		*ksh = ((fdhflags(h) & FDHF_KSHLOAD) ? 2 :
+    #####: 3937:			((fdhflags(h) & FDHF_ZSHLOAD) ? 0 : 1));
+        -: 3938:
+    #####: 3939:	    return prog;
+        -: 3940:	}
+        -: 3941:    }
+    #####: 3942:    return NULL;
+        -: 3943:}
+        -: 3944:
+        -: 3945:#ifdef USE_MMAP
+        -: 3946:
+        -: 3947:/* Increment the reference counter for a dump file. */
+        -: 3948:
+        -: 3949:/**/
+        -: 3950:void
+    #####: 3951:incrdumpcount(FuncDump f)
+        -: 3952:{
+    #####: 3953:    f->count++;
+    #####: 3954:}
+        -: 3955:
+        -: 3956:/**/
+        -: 3957:static void
+    #####: 3958:freedump(FuncDump f)
+        -: 3959:{
+    #####: 3960:    munmap((void *) f->addr, f->len);
+    #####: 3961:    zclose(f->fd);
+    #####: 3962:    zsfree(f->filename);
+    #####: 3963:    zfree(f, sizeof(*f));
+    #####: 3964:}
+        -: 3965:
+        -: 3966:/* Decrement the reference counter for a dump file. If zero, unmap the file. */
+        -: 3967:
+        -: 3968:/**/
+        -: 3969:void
+    #####: 3970:decrdumpcount(FuncDump f)
+        -: 3971:{
+    #####: 3972:    f->count--;
+    #####: 3973:    if (!f->count) {
+        -: 3974:	FuncDump p, q;
+        -: 3975:
+    #####: 3976:	for (q = NULL, p = dumps; p && p != f; q = p, p = p->next);
+    #####: 3977:	if (p) {
+    #####: 3978:	    if (q)
+    #####: 3979:		q->next = p->next;
+        -: 3980:	    else
+    #####: 3981:		dumps = p->next;
+    #####: 3982:	    freedump(f);
+        -: 3983:	}
+        -: 3984:    }
+    #####: 3985:}
+        -: 3986:
+        -: 3987:#ifndef FD_CLOEXEC
+        -: 3988:/**/
+        -: 3989:mod_export void
+        -: 3990:closedumps(void)
+        -: 3991:{
+        -: 3992:    while (dumps) {
+        -: 3993:	FuncDump p = dumps->next;
+        -: 3994:	freedump(dumps);
+        -: 3995:	dumps = p;
+        -: 3996:    }
+        -: 3997:}
+        -: 3998:#endif
+        -: 3999:
+        -: 4000:#else
+        -: 4001:
+        -: 4002:void
+        -: 4003:incrdumpcount(FuncDump f)
+        -: 4004:{
+        -: 4005:}
+        -: 4006:
+        -: 4007:void
+        -: 4008:decrdumpcount(FuncDump f)
+        -: 4009:{
+        -: 4010:}
+        -: 4011:
+        -: 4012:#ifndef FD_CLOEXEC
+        -: 4013:/**/
+        -: 4014:mod_export void
+        -: 4015:closedumps(void)
+        -: 4016:{
+        -: 4017:}
+        -: 4018:#endif
+        -: 4019:
+        -: 4020:#endif
+        -: 4021:
+        -: 4022:/**/
+        -: 4023:int
+    #####: 4024:dump_autoload(char *nam, char *file, int on, Options ops, int func)
+        -: 4025:{
+        -: 4026:    Wordcode h;
+        -: 4027:    FDHead n, e;
+        -: 4028:    Shfunc shf;
+    #####: 4029:    int ret = 0;
+        -: 4030:
+    #####: 4031:    if (!strsfx(FD_EXT, file))
+    #####: 4032:	file = dyncat(file, FD_EXT);
+        -: 4033:
+    #####: 4034:    if (!(h = load_dump_header(nam, file, 1)))
+    #####: 4035:	return 1;
+        -: 4036:
+    #####: 4037:    for (n = firstfdhead(h), e = (FDHead) (h + fdheaderlen(h)); n < e;
+    #####: 4038:	 n = nextfdhead(n)) {
+    #####: 4039:	shf = (Shfunc) zshcalloc(sizeof *shf);
+    #####: 4040:	shf->node.flags = on;
+    #####: 4041:	shf->funcdef = mkautofn(shf);
+    #####: 4042:	shf->sticky = NULL;
+    #####: 4043:	shfunctab->addnode(shfunctab, ztrdup(fdname(n) + fdhtail(n)), shf);
+    #####: 4044:	if (OPT_ISSET(ops,'X') && eval_autoload(shf, shf->node.nam, ops, func))
+    #####: 4045:	    ret = 1;
+        -: 4046:    }
+    #####: 4047:    return ret;
+        -: 4048:}

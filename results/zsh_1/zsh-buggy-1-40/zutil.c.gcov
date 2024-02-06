@@ -1,0 +1,2073 @@
+        -:    0:Source:zutil.c
+        -:    0:Graph:/home/workspace/Src/Modules/zutil.gcno
+        -:    0:Data:/home/workspace/Src/Modules/zutil.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zutil.c - misc utilities
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zutil.mdh"
+        -:   31:#include "zutil.pro"
+        -:   32:
+        -:   33:typedef struct {
+        -:   34:    char **match;
+        -:   35:    char **mbegin;
+        -:   36:    char **mend;
+        -:   37:} MatchData;
+        -:   38:
+        -:   39:static void
+      314:   40:savematch(MatchData *m)
+        -:   41:{
+        -:   42:    char **a;
+        -:   43:
+      314:   44:    queue_signals();
+      314:   45:    a = getaparam("match");
+      314:   46:    m->match = a ? zarrdup(a) : NULL;
+      314:   47:    a = getaparam("mbegin");
+      314:   48:    m->mbegin = a ? zarrdup(a) : NULL;
+      314:   49:    a = getaparam("mend");
+      314:   50:    m->mend = a ? zarrdup(a) : NULL;
+      314:   51:    unqueue_signals();
+      314:   52:}
+        -:   53:
+        -:   54:static void
+      254:   55:restorematch(MatchData *m)
+        -:   56:{
+      254:   57:    if (m->match)
+      254:   58:	setaparam("match", m->match);
+        -:   59:    else
+    #####:   60:	unsetparam("match");
+      254:   61:    if (m->mbegin)
+      254:   62:	setaparam("mbegin", m->mbegin);
+        -:   63:    else
+    #####:   64:	unsetparam("mbegin");
+      254:   65:    if (m->mend)
+      254:   66:	setaparam("mend", m->mend);
+        -:   67:    else
+    #####:   68:	unsetparam("mend");
+      254:   69:}
+        -:   70:
+        -:   71:static void
+       60:   72:freematch(MatchData *m)
+        -:   73:{
+       60:   74:    if (m->match)
+       60:   75:	freearray(m->match);
+       60:   76:    if (m->mbegin)
+       60:   77:	freearray(m->mbegin);
+       60:   78:    if (m->mend)
+       60:   79:	freearray(m->mend);
+       60:   80:}
+        -:   81:
+        -:   82:/* Style stuff. */
+        -:   83:
+        -:   84:typedef struct stypat *Stypat;
+        -:   85:typedef struct style *Style;
+        -:   86:
+        -:   87:/* A pattern and the styles for it. */
+        -:   88:
+        -:   89:struct style {
+        -:   90:    struct hashnode node;
+        -:   91:    Stypat pats;		/* patterns, sorted by weight descending, then
+        -:   92:                                   by order of definition, newest first. */
+        -:   93:};
+        -:   94:
+        -:   95:struct stypat {
+        -:   96:    Stypat next;
+        -:   97:    char *pat;			/* pattern string */
+        -:   98:    Patprog prog;		/* compiled pattern */
+        -:   99:    zulong weight;		/* how specific is the pattern? */
+        -:  100:    Eprog eval;			/* eval-on-retrieve? */
+        -:  101:    char **vals;
+        -:  102:};
+        -:  103:
+        -:  104:/* Hash table of styles and associated functions. */
+        -:  105:
+        -:  106:static HashTable zstyletab;
+        -:  107:
+        -:  108:/* Memory stuff. */
+        -:  109:
+        -:  110:static void
+    #####:  111:freestylepatnode(Stypat p)
+        -:  112:{
+    #####:  113:    zsfree(p->pat);
+    #####:  114:    freepatprog(p->prog);
+    #####:  115:    if (p->vals)
+    #####:  116:	freearray(p->vals);
+    #####:  117:    if (p->eval)
+    #####:  118:	freeeprog(p->eval);
+    #####:  119:    zfree(p, sizeof(*p));
+    #####:  120:}
+        -:  121:
+        -:  122:static void
+    #####:  123:freestylenode(HashNode hn)
+        -:  124:{
+    #####:  125:    Style s = (Style) hn;
+        -:  126:    Stypat p, pn;
+        -:  127:
+    #####:  128:    p = s->pats;
+    #####:  129:    while (p) {
+    #####:  130:	pn = p->next;
+    #####:  131:	freestylepatnode(p);
+    #####:  132:	p = pn;
+        -:  133:    }
+        -:  134:
+    #####:  135:    zsfree(s->node.nam);
+    #####:  136:    zfree(s, sizeof(struct style));
+    #####:  137:}
+        -:  138:
+        -:  139:/*
+        -:  140: * Free the information for one of the patterns associated with
+        -:  141: * a style.
+        -:  142: *
+        -:  143: * If the style s is passed, prev is the previous pattern in the list,
+        -:  144: * found when scanning.  We use this to update the list of patterns.
+        -:  145: * If this results in their being no remaining patterns, the style
+        -:  146: * itself is removed from the list of styles.  This isn't optimised,
+        -:  147: * since it's not a very frequent operation; we simply scan down the list
+        -:  148: * to find the previous entry.
+        -:  149: */
+        -:  150:static void
+    #####:  151:freestypat(Stypat p, Style s, Stypat prev)
+        -:  152:{
+    #####:  153:    if (s) {
+    #####:  154:	if (prev)
+    #####:  155:	    prev->next = p->next;
+        -:  156:	else
+    #####:  157:	    s->pats = p->next;
+        -:  158:    }
+        -:  159:
+    #####:  160:    freestylepatnode(p);
+        -:  161:
+    #####:  162:    if (s && !s->pats) {
+        -:  163:	/* No patterns left, free style */
+    #####:  164:	zstyletab->removenode(zstyletab, s->node.nam);
+    #####:  165:	zsfree(s->node.nam);
+    #####:  166:	zfree(s, sizeof(*s));
+        -:  167:    }
+    #####:  168:}
+        -:  169:
+        -:  170:/* Pattern to match context when printing nodes */
+        -:  171:
+        -:  172:static Patprog zstyle_contprog;
+        -:  173:
+        -:  174:/*
+        -:  175: * Print a node.  Print flags as shown.
+        -:  176: */
+        -:  177:enum {
+        -:  178:    ZSLIST_NONE,
+        -:  179:    ZSLIST_BASIC,
+        -:  180:    ZSLIST_SYNTAX,
+        -:  181:};
+        -:  182:
+        -:  183:static void
+    #####:  184:printstylenode(HashNode hn, int printflags)
+        -:  185:{
+    #####:  186:    Style s = (Style)hn;
+        -:  187:    Stypat p;
+        -:  188:    char **v;
+        -:  189:
+    #####:  190:    if (printflags == ZSLIST_BASIC) {
+    #####:  191:	quotedzputs(s->node.nam, stdout);
+    #####:  192:	putchar('\n');
+        -:  193:    }
+        -:  194:
+    #####:  195:    for (p = s->pats; p; p = p->next) {
+    #####:  196:	if (zstyle_contprog && !pattry(zstyle_contprog, p->pat))
+    #####:  197:	    continue;
+    #####:  198:	if (printflags == ZSLIST_BASIC)
+    #####:  199:	    printf("%s  %s", (p->eval ? "(eval)" : "      "), p->pat);
+        -:  200:	else {
+    #####:  201:	    printf("zstyle %s", (p->eval ? "-e " : ""));
+    #####:  202:	    quotedzputs(p->pat, stdout);
+    #####:  203:	    putchar(' ');
+    #####:  204:	    quotedzputs(s->node.nam, stdout);
+        -:  205:	}
+    #####:  206:	for (v = p->vals; *v; v++) {
+    #####:  207:	    putchar(' ');
+    #####:  208:	    quotedzputs(*v, stdout);
+        -:  209:	}
+    #####:  210:	putchar('\n');
+        -:  211:    }
+    #####:  212:}
+        -:  213:
+        -:  214:/*
+        -:  215: * Scan the list for a particular pattern, maybe adding matches to
+        -:  216: * the link list (heap memory).  Value to be added as
+        -:  217: * shown in enum
+        -:  218: */
+        -:  219:static LinkList zstyle_list;
+        -:  220:static char *zstyle_patname;
+        -:  221:
+        -:  222:enum {
+        -:  223:    ZSPAT_NAME,		/* Add style names for matched pattern to list */
+        -:  224:    ZSPAT_PAT,		/* Add all patterns to list, doesn't use patname */
+        -:  225:    ZSPAT_REMOVE,	/* Remove matched pattern, doesn't use list */
+        -:  226:};
+        -:  227:
+        -:  228:static void
+    #####:  229:scanpatstyles(HashNode hn, int spatflags)
+        -:  230:{
+    #####:  231:    Style s = (Style)hn;
+        -:  232:    Stypat p, q;
+        -:  233:    LinkNode n;
+        -:  234:
+    #####:  235:    for (q = NULL, p = s->pats; p; q = p, p = p->next) {
+    #####:  236:	switch (spatflags) {
+    #####:  237:	case ZSPAT_NAME:
+    #####:  238:	    if (!strcmp(p->pat, zstyle_patname)) {
+    #####:  239:		addlinknode(zstyle_list, s->node.nam);
+    #####:  240:		return;
+        -:  241:	    }
+    #####:  242:	    break;
+        -:  243:
+    #####:  244:	case ZSPAT_PAT:
+        -:  245:	    /* Check pattern isn't already there */
+    #####:  246:	    for (n = firstnode(zstyle_list); n; incnode(n))
+    #####:  247:		if (!strcmp(p->pat, (char *) getdata(n)))
+    #####:  248:		    break;
+    #####:  249:	    if (!n)
+    #####:  250:		addlinknode(zstyle_list, p->pat);
+    #####:  251:	    break;
+        -:  252:
+    #####:  253:	case ZSPAT_REMOVE:
+    #####:  254:	    if (!strcmp(p->pat, zstyle_patname)) {
+    #####:  255:		freestypat(p, s, q);
+        -:  256:		/*
+        -:  257:		 * May remove link node itself; that's OK
+        -:  258:		 * when scanning but we need to make sure
+        -:  259:		 * we don't look at it any more.
+        -:  260:		 */
+    #####:  261:		return;
+        -:  262:	    }
+    #####:  263:	    break;
+        -:  264:	}
+        -:  265:    }
+        -:  266:}
+        -:  267:
+        -:  268:
+        -:  269:static HashTable
+        1:  270:newzstyletable(int size, char const *name)
+        -:  271:{
+        -:  272:    HashTable ht;
+        1:  273:    ht = newhashtable(size, name, NULL);
+        -:  274:
+        1:  275:    ht->hash        = hasher;
+        1:  276:    ht->emptytable  = emptyhashtable;
+        1:  277:    ht->filltable   = NULL;
+        1:  278:    ht->cmpnodes    = strcmp;
+        1:  279:    ht->addnode     = addhashnode;
+        -:  280:    /* DISABLED is not supported */
+        1:  281:    ht->getnode     = gethashnode2;
+        1:  282:    ht->getnode2    = gethashnode2;
+        1:  283:    ht->removenode  = removehashnode;
+        1:  284:    ht->disablenode = NULL;
+        1:  285:    ht->enablenode  = NULL;
+        1:  286:    ht->freenode    = freestylenode;
+        1:  287:    ht->printnode   = printstylenode;
+        -:  288:
+        1:  289:    return ht;
+        -:  290:}
+        -:  291:
+        -:  292:/* Store a value for a style. */
+        -:  293:
+        -:  294:static int
+    #####:  295:setstypat(Style s, char *pat, Patprog prog, char **vals, int eval)
+        -:  296:{
+        -:  297:    zulong weight;
+        -:  298:    int tmp;
+        -:  299:    int first;
+        -:  300:    char *str;
+        -:  301:    Stypat p, q, qq;
+    #####:  302:    Eprog eprog = NULL;
+        -:  303:
+    #####:  304:    if (eval) {
+    #####:  305:	int ef = errflag;
+        -:  306:
+    #####:  307:	eprog = parse_string(zjoin(vals, ' ', 1), 0);
+        -:  308:	/* Keep any user interrupt error status */
+    #####:  309:	errflag = ef | (errflag & ERRFLAG_INT);
+        -:  310:
+    #####:  311:	if (!eprog)
+        -:  312:	{
+    #####:  313:	    freepatprog(prog);
+    #####:  314:	    return 1;
+        -:  315:	}
+        -:  316:
+    #####:  317:	eprog = dupeprog(eprog, 0);
+        -:  318:    }
+    #####:  319:    for (p = s->pats; p; p = p->next)
+    #####:  320:	if (!strcmp(pat, p->pat)) {
+        -:  321:
+        -:  322:	    /* Exists -> replace. */
+        -:  323:
+    #####:  324:	    if (p->vals)
+    #####:  325:		freearray(p->vals);
+    #####:  326:	    if (p->eval)
+    #####:  327:		freeeprog(p->eval);
+    #####:  328:	    p->vals = zarrdup(vals);
+    #####:  329:	    p->eval = eprog;
+    #####:  330:	    freepatprog(prog);
+        -:  331:
+    #####:  332:	    return 0;
+        -:  333:	}
+        -:  334:
+        -:  335:    /* New pattern. */
+        -:  336:
+    #####:  337:    p = (Stypat) zalloc(sizeof(*p));
+    #####:  338:    p->pat = ztrdup(pat);
+    #####:  339:    p->prog = prog;
+    #####:  340:    p->vals = zarrdup(vals);
+    #####:  341:    p->eval = eprog;
+    #####:  342:    p->next = NULL;
+        -:  343:
+        -:  344:    /* Calculate the weight.
+        -:  345:     *
+        -:  346:     * The weight of a pattern is scored as follows:
+        -:  347:     *
+        -:  348:     * - The pattern is split to colon-separated components.
+        -:  349:     * - A component equal to '*' (with nothing else) scores 0 points.
+        -:  350:     * - A component that's a pattern, otherwise, scores 1 point.
+        -:  351:     * - A component that's a literal string scores 2 points.
+        -:  352:     * - The score of a pattern is the sum of the score of its components.
+        -:  353:     *
+        -:  354:     * The result of this calculation is stored in the low bits of 'weight'.
+        -:  355:     * The high bits of 'weight' are used to store the number of ':'-separated
+        -:  356:     * components.  This provides a lexicographic comparison: first compare
+        -:  357:     * the number of components, and if that's equal, compare the specificity
+        -:  358:     * of the components.
+        -:  359:     *
+        -:  360:     * This corresponds to the notion of 'more specific' in the zshmodules(1)
+        -:  361:     * documentation of zstyle.
+        -:  362:     */
+        -:  363:
+    #####:  364:    for (weight = 0, tmp = 2, first = 1, str = pat; *str; str++) {
+    #####:  365:	if (first && *str == '*' && (!str[1] || str[1] == ':')) {
+        -:  366:	    /* Only `*' in this component. */
+    #####:  367:	    tmp = 0;
+    #####:  368:	    continue;
+        -:  369:	}
+    #####:  370:	first = 0;
+        -:  371:
+    #####:  372:	if (*str == '(' || *str == '|' || *str == '*' || *str == '[' ||
+    #####:  373:	    *str == '<' ||  *str == '?' || *str == '#' || *str == '^')
+        -:  374:	    /* Is pattern. */
+    #####:  375:	    tmp = 1;
+        -:  376:
+    #####:  377:	if (*str == ':') {
+        -:  378:	    /* Yet another component. */
+    #####:  379:	    weight += ZLONG_CONST(1) << (CHAR_BIT * sizeof(weight) / 2);
+        -:  380:
+    #####:  381:	    first = 1;
+    #####:  382:	    weight += tmp;
+    #####:  383:	    tmp = 2;
+        -:  384:	}
+        -:  385:    }
+    #####:  386:    p->weight = (weight += tmp);
+        -:  387:
+        -:  388:    /* Insert 'q' to 's->pats', using 'qq' as a temporary. */
+    #####:  389:    for (qq = NULL, q = s->pats; q && q->weight >= weight;
+    #####:  390:	 qq = q, q = q->next);
+    #####:  391:    p->next = q;
+    #####:  392:    if (qq)
+    #####:  393:	qq->next = p;
+        -:  394:    else
+    #####:  395:	s->pats = p;
+        -:  396:
+    #####:  397:    return 0;
+        -:  398:}
+        -:  399:
+        -:  400:/* Add a new style. */
+        -:  401:
+        -:  402:static Style
+    #####:  403:addstyle(char *name)
+        -:  404:{
+    #####:  405:    Style s = (Style) zshcalloc(sizeof(*s));
+        -:  406:
+    #####:  407:    zstyletab->addnode(zstyletab, ztrdup(name), s);
+        -:  408:
+    #####:  409:    return s;
+        -:  410:}
+        -:  411:
+        -:  412:static char **
+    #####:  413:evalstyle(Stypat p)
+        -:  414:{
+    #####:  415:    int ef = errflag;
+        -:  416:    char **ret, *str;
+        -:  417:
+    #####:  418:    unsetparam("reply");
+    #####:  419:    execode(p->eval, 1, 0, "style");
+    #####:  420:    if (errflag) {
+        -:  421:	/* Keep any user interrupt error status */
+    #####:  422:	errflag = ef | (errflag & ERRFLAG_INT);
+    #####:  423:	return NULL;
+        -:  424:    }
+    #####:  425:    errflag = ef | (errflag & ERRFLAG_INT);
+        -:  426:
+    #####:  427:    queue_signals();
+    #####:  428:    if ((ret = getaparam("reply")))
+    #####:  429:	ret = arrdup(ret);
+    #####:  430:    else if ((str = getsparam("reply"))) {
+    #####:  431:	ret = (char **) hcalloc(2 * sizeof(char *));
+    #####:  432:	ret[0] = dupstring(str);
+        -:  433:    }
+    #####:  434:    unqueue_signals();
+    #####:  435:    unsetparam("reply");
+        -:  436:
+    #####:  437:    return ret;
+        -:  438:}
+        -:  439:
+        -:  440:/* Look up a style for a context pattern. This does the matching. */
+        -:  441:
+        -:  442:static char **
+    #####:  443:lookupstyle(char *ctxt, char *style)
+        -:  444:{
+        -:  445:    Style s;
+        -:  446:    Stypat p;
+    #####:  447:    char **found = NULL;
+        -:  448:
+    #####:  449:    s = (Style)zstyletab->getnode2(zstyletab, style);
+    #####:  450:    if (s) {
+        -:  451:	MatchData match;
+    #####:  452:	savematch(&match);
+    #####:  453:	for (p = s->pats; p; p = p->next)
+    #####:  454:	    if (pattry(p->prog, ctxt)) {
+    #####:  455:		found = (p->eval ? evalstyle(p) : p->vals);
+    #####:  456:		break;
+        -:  457:	    }
+    #####:  458:	restorematch(&match);
+        -:  459:    }
+        -:  460:
+    #####:  461:    return found;
+        -:  462:}
+        -:  463:
+        -:  464:static int
+    #####:  465:bin_zstyle(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
+        -:  466:{
+    #####:  467:    int min, max, n, add = 0, list = ZSLIST_NONE, eval = 0;
+        -:  468:
+    #####:  469:    if (!args[0])
+    #####:  470:	list = ZSLIST_BASIC;
+    #####:  471:    else if (args[0][0] == '-') {
+        -:  472:	char oc;
+        -:  473:
+    #####:  474:	if ((oc = args[0][1]) && oc != '-') {
+    #####:  475:	    if (args[0][2]) {
+    #####:  476:		zwarnnam(nam, "invalid argument: %s", args[0]);
+    #####:  477:		return 1;
+        -:  478:	    }
+    #####:  479:	    if (oc == 'L') {
+    #####:  480:		list = ZSLIST_SYNTAX;
+    #####:  481:		args++;
+    #####:  482:	    } else if (oc == 'e') {
+    #####:  483:		eval = add = 1;
+    #####:  484:		args++;
+        -:  485:	    }
+        -:  486:	} else {
+    #####:  487:	    add = 1;
+    #####:  488:	    args++;
+        -:  489:	}
+        -:  490:    } else
+    #####:  491:	add = 1;
+        -:  492:
+    #####:  493:    if (add) {
+        -:  494:	Style s;
+        -:  495:	Patprog prog;
+        -:  496:	char *pat;
+        -:  497:
+    #####:  498:	if (arrlen_lt(args, 2)) {
+    #####:  499:	    zwarnnam(nam, "not enough arguments");
+    #####:  500:	    return 1;
+        -:  501:	}
+    #####:  502:	pat = dupstring(args[0]);
+    #####:  503:	tokenize(pat);
+        -:  504:
+    #####:  505:	if (!(prog = patcompile(pat, PAT_ZDUP, NULL))) {
+    #####:  506:	    zwarnnam(nam, "invalid pattern: %s", args[0]);
+    #####:  507:	    return 1;
+        -:  508:	}
+    #####:  509:	if (!(s = (Style)zstyletab->getnode2(zstyletab, args[1])))
+    #####:  510:	    s = addstyle(args[1]);
+    #####:  511:	return setstypat(s, args[0], prog, args + 2, eval);
+        -:  512:    }
+    #####:  513:    if (list) {
+        -:  514:	Style s;
+        -:  515:	char *context, *stylename;
+        -:  516:
+    #####:  517:	switch (arrlen_ge(args, 3) ? 3 : arrlen(args)) {
+    #####:  518:	case 2:
+    #####:  519:	    context = args[0];
+    #####:  520:	    stylename = args[1];
+    #####:  521:	    break;
+        -:  522:
+    #####:  523:	case 1:
+    #####:  524:	    context = args[0];
+    #####:  525:	    stylename = NULL;
+    #####:  526:	    break;
+        -:  527:
+    #####:  528:	case 0:
+    #####:  529:	    context = stylename = NULL;
+    #####:  530:	    break;
+        -:  531:
+    #####:  532:	default:
+    #####:  533:	    zwarnnam(nam, "too many arguments");
+    #####:  534:	    return 1;
+        -:  535:	}
+        -:  536:
+    #####:  537:	queue_signals();	/* Protect PAT_STATIC */
+        -:  538:
+    #####:  539:	if (context) {
+    #####:  540:	    tokenize(context);
+    #####:  541:	    zstyle_contprog = patcompile(context, PAT_STATIC, NULL);
+        -:  542:
+    #####:  543:	    if (!zstyle_contprog) {
+    #####:  544:		unqueue_signals();
+    #####:  545:		return 1;
+        -:  546:	    }
+        -:  547:	} else
+    #####:  548:	    zstyle_contprog = NULL;
+        -:  549:
+    #####:  550:	if (stylename) {
+    #####:  551:	    s = (Style)zstyletab->getnode2(zstyletab, stylename);
+    #####:  552:	    if (!s) {
+    #####:  553:		unqueue_signals();
+    #####:  554:		return 1;
+        -:  555:	    }
+    #####:  556:	    zstyletab->printnode(&s->node, list);
+        -:  557:	} else {
+    #####:  558:	    scanhashtable(zstyletab, 1, 0, 0,
+    #####:  559:			  zstyletab->printnode, list);
+        -:  560:	}
+        -:  561:
+    #####:  562:	unqueue_signals();
+    #####:  563:	return 0;
+        -:  564:    }
+    #####:  565:    switch (args[0][1]) {
+    #####:  566:    case 'd': min = 0; max = -1; break;
+    #####:  567:    case 's': min = 3; max =  4; break;
+    #####:  568:    case 'b': min = 3; max =  3; break;
+    #####:  569:    case 'a': min = 3; max =  3; break;
+    #####:  570:    case 't': min = 2; max = -1; break;
+    #####:  571:    case 'T': min = 2; max = -1; break;
+    #####:  572:    case 'm': min = 3; max =  3; break;
+    #####:  573:    case 'g': min = 1; max =  3; break;
+    #####:  574:    default:
+    #####:  575:	zwarnnam(nam, "invalid option: %s", args[0]);
+    #####:  576:	return 1;
+        -:  577:    }
+    #####:  578:    n = arrlen(args) - 1;
+    #####:  579:    if (n < min) {
+    #####:  580:	zwarnnam(nam, "not enough arguments");
+    #####:  581:	return 1;
+    #####:  582:    } else if (max >= 0 && n > max) {
+    #####:  583:	zwarnnam(nam, "too many arguments");
+    #####:  584:	return 1;
+        -:  585:    }
+    #####:  586:    switch (args[0][1]) {
+    #####:  587:    case 'd':
+        -:  588:	{
+        -:  589:	    Style s;
+        -:  590:
+    #####:  591:	    if (args[1]) {
+    #####:  592:		if (args[2]) {
+    #####:  593:		    char *pat = args[1];
+        -:  594:
+    #####:  595:		    for (args += 2; *args; args++) {
+    #####:  596:			if ((s = (Style)zstyletab->getnode2(zstyletab,
+        -:  597:							    *args))) {
+        -:  598:			    Stypat p, q;
+        -:  599:
+    #####:  600:			    for (q = NULL, p = s->pats; p;
+    #####:  601:				 q = p, p = p->next) {
+    #####:  602:				if (!strcmp(p->pat, pat)) {
+    #####:  603:				    freestypat(p, s, q);
+    #####:  604:				    break;
+        -:  605:				}
+        -:  606:			    }
+        -:  607:			}
+        -:  608:		    }
+        -:  609:		} else {
+    #####:  610:		    zstyle_patname = args[1];
+        -:  611:
+        -:  612:		    /* sorting not needed for deletion */
+    #####:  613:		    scanhashtable(zstyletab, 0, 0, 0, scanpatstyles,
+        -:  614:				  ZSPAT_REMOVE);
+        -:  615:		}
+        -:  616:	    } else
+    #####:  617:		zstyletab->emptytable(zstyletab);
+        -:  618:	}
+    #####:  619:	break;
+    #####:  620:    case 's':
+        -:  621:	{
+        -:  622:	    char **vals, *ret;
+        -:  623:	    int val;
+        -:  624:
+    #####:  625:	    if ((vals = lookupstyle(args[1], args[2])) && vals[0]) {
+    #####:  626:		ret = sepjoin(vals, (args[4] ? args[4] : " "), 0);
+    #####:  627:		val = 0;
+        -:  628:	    } else {
+    #####:  629:		ret = ztrdup("");
+    #####:  630:		val = 1;
+        -:  631:	    }
+    #####:  632:	    setsparam(args[3], ret);
+        -:  633:
+    #####:  634:	    return val;
+        -:  635:	}
+        -:  636:	break;
+    #####:  637:    case 'b':
+        -:  638:	{
+        -:  639:	    char **vals, *ret;
+        -:  640:	    int val;
+        -:  641:
+    #####:  642:	    if ((vals = lookupstyle(args[1], args[2])) &&
+    #####:  643:		vals[0] && !vals[1] &&
+    #####:  644:		(!strcmp(vals[0], "yes") ||
+    #####:  645:		 !strcmp(vals[0], "true") ||
+    #####:  646:		 !strcmp(vals[0], "on") ||
+    #####:  647:		 !strcmp(vals[0], "1"))) {
+    #####:  648:		ret = "yes";
+    #####:  649:		val = 0;
+        -:  650:	    } else {
+    #####:  651:		ret = "no";
+    #####:  652:		val = 1;
+        -:  653:	    }
+    #####:  654:	    setsparam(args[3], ztrdup(ret));
+        -:  655:
+    #####:  656:	    return val;
+        -:  657:	}
+        -:  658:	break;
+    #####:  659:    case 'a':
+        -:  660:	{
+        -:  661:	    char **vals, **ret;
+        -:  662:	    int val;
+        -:  663:
+    #####:  664:	    if ((vals = lookupstyle(args[1], args[2]))) {
+    #####:  665:		ret = zarrdup(vals);
+    #####:  666:		val = 0;
+        -:  667:	    } else {
+    #####:  668:		char *dummy = NULL;
+        -:  669:
+    #####:  670:		ret = zarrdup(&dummy);
+    #####:  671:		val = 1;
+        -:  672:	    }
+    #####:  673:	    setaparam(args[3], ret);
+        -:  674:
+    #####:  675:	    return val;
+        -:  676:	}
+        -:  677:	break;
+    #####:  678:    case 't':
+        -:  679:    case 'T':
+        -:  680:	{
+        -:  681:	    char **vals;
+        -:  682:
+    #####:  683:	    if ((vals = lookupstyle(args[1], args[2])) && vals[0]) {
+    #####:  684:		if (args[3]) {
+    #####:  685:		    char **ap = args + 3, **p;
+        -:  686:
+    #####:  687:		    while (*ap) {
+    #####:  688:			p = vals;
+    #####:  689:			while (*p)
+    #####:  690:			    if (!strcmp(*ap, *p++))
+    #####:  691:				return 0;
+    #####:  692:			ap++;
+        -:  693:		    }
+    #####:  694:		    return 1;
+        -:  695:		} else
+    #####:  696:		    return !(!strcmp(vals[0], "true") ||
+    #####:  697:			     !strcmp(vals[0], "yes") ||
+    #####:  698:			     !strcmp(vals[0], "on") ||
+    #####:  699:			     !strcmp(vals[0], "1"));
+        -:  700:	    }
+    #####:  701:	    return (args[0][1] == 't' ? (vals ? 1 : 2) : 0);
+        -:  702:	}
+        -:  703:	break;
+    #####:  704:    case 'm':
+        -:  705:	{
+        -:  706:	    char **vals;
+        -:  707:	    Patprog prog;
+        -:  708:
+    #####:  709:	    queue_signals();	/* Protect PAT_STATIC */
+        -:  710:
+    #####:  711:	    tokenize(args[3]);
+        -:  712:
+    #####:  713:	    if ((vals = lookupstyle(args[1], args[2])) &&
+    #####:  714:		(prog = patcompile(args[3], PAT_STATIC, NULL))) {
+    #####:  715:		while (*vals)
+    #####:  716:		    if (pattry(prog, *vals++)) {
+    #####:  717:			unqueue_signals();
+    #####:  718:			return 0;
+        -:  719:		    }
+        -:  720:	    }
+        -:  721:
+    #####:  722:	    unqueue_signals();
+    #####:  723:	    return 1;
+        -:  724:	}
+        -:  725:	break;
+    #####:  726:    case 'g':
+        -:  727:	{
+    #####:  728:	    int ret = 1;
+        -:  729:	    Style s;
+        -:  730:	    Stypat p;
+        -:  731:
+    #####:  732:	    zstyle_list = newlinklist();
+        -:  733:
+    #####:  734:	    if (args[2]) {
+    #####:  735:		if (args[3]) {
+    #####:  736:		    if ((s = (Style)zstyletab->getnode2(zstyletab, args[3]))) {
+    #####:  737:			for (p = s->pats; p; p = p->next) {
+    #####:  738:			    if (!strcmp(args[2], p->pat)) {
+    #####:  739:				char **v = p->vals;
+        -:  740:
+    #####:  741:				while (*v)
+    #####:  742:				    addlinknode(zstyle_list, *v++);
+        -:  743:
+    #####:  744:				ret = 0;
+    #####:  745:				break;
+        -:  746:			    }
+        -:  747:			}
+        -:  748:		    }
+        -:  749:		} else {
+    #####:  750:		    zstyle_patname = args[2];
+    #####:  751:		    scanhashtable(zstyletab, 1, 0, 0, scanpatstyles,
+        -:  752:				  ZSPAT_NAME);
+    #####:  753:		    ret = 0;
+        -:  754:		}
+        -:  755:	    } else {
+    #####:  756:		scanhashtable(zstyletab, 1, 0, 0, scanpatstyles,
+        -:  757:			      ZSPAT_PAT);
+    #####:  758:		ret = 0;
+        -:  759:	    }
+    #####:  760:	    set_list_array(args[1], zstyle_list);
+        -:  761:
+    #####:  762:	    return ret;
+        -:  763:	}
+        -:  764:    }
+    #####:  765:    return 0;
+        -:  766:}
+        -:  767:
+        -:  768:/* Format stuff. */
+        -:  769:
+        -:  770:/*
+        -:  771: * One chunk of text, to allow recursive handling of ternary
+        -:  772: * expressions in zformat -f output.
+        -:  773: *   instr	The input string.
+        -:  774: *   specs	The format specifiers, specs[c] is the string from c:string
+        -:  775: *   outp	*outp is the start of the output string
+        -:  776: *   ousedp	(*outp)[*ousedp] is where to write next
+        -:  777: *   olenp	*olenp is the size allocated for *outp
+        -:  778: *   endchar    Terminator character in addition to `\0' (may be '\0')
+        -:  779: *   skip	If 1, don't output, just parse.
+        -:  780: */
+    #####:  781:static char *zformat_substring(char* instr, char **specs, char **outp,
+        -:  782:			       int *ousedp, int *olenp, int endchar, int skip)
+        -:  783:{
+        -:  784:    char *s;
+        -:  785:
+    #####:  786:    for (s = instr; *s && *s != endchar; s++) {
+    #####:  787:	if (*s == '%') {
+    #####:  788:	    int right, min = -1, max = -1, outl, testit;
+    #####:  789:	    char *spec, *start = s;
+        -:  790:
+    #####:  791:	    if ((right = (*++s == '-')))
+    #####:  792:		s++;
+        -:  793:
+    #####:  794:	    if (idigit(*s)) {
+    #####:  795:		for (min = 0; idigit(*s); s++)
+    #####:  796:		    min = (min * 10) + (int) STOUC(*s) - '0';
+        -:  797:	    }
+        -:  798:
+        -:  799:	    /* Ternary expressions */
+    #####:  800:	    testit = (STOUC(*s) == '(');
+    #####:  801:	    if (testit && s[1] == '-')
+        -:  802:	    {
+        -:  803:		/* Allow %(-1... etc. */
+    #####:  804:		right = 1;
+    #####:  805:		s++;
+        -:  806:	    }
+    #####:  807:	    if ((*s == '.' || testit) && idigit(s[1])) {
+    #####:  808:		for (max = 0, s++; idigit(*s); s++)
+    #####:  809:		    max = (max * 10) + (int) STOUC(*s) - '0';
+    #####:  810:	    } else if (*s == '.' || testit)
+    #####:  811:		s++;
+        -:  812:
+    #####:  813:	    if (testit && STOUC(*s)) {
+        -:  814:		int actval, testval, endcharl;
+        -:  815:
+        -:  816:		/*
+        -:  817:		 * One one number is useful for ternary expressions.
+        -:  818:		 * Remember to put the sign back.
+        -:  819:		 */
+    #####:  820:		testval = (min >= 0) ? min : (max >= 0) ? max : 0;
+    #####:  821:		if (right)
+    #####:  822:		    testval *= -1;
+        -:  823:
+    #####:  824:		if (specs[STOUC(*s)])
+    #####:  825:		    actval = (int)mathevali(specs[STOUC(*s)]);
+        -:  826:		else
+    #####:  827:		    actval = 0;
+        -:  828:		/* zero means values are equal, i.e. true */
+    #####:  829:		actval -= testval;
+        -:  830:
+        -:  831:		/* careful about premature end of string */
+    #####:  832:		if (!(endcharl = *++s))
+    #####:  833:		    return NULL;
+        -:  834:
+        -:  835:		/*
+        -:  836:		 * Either skip true text and output false text, or
+        -:  837:		 * vice versa... unless we are already skipping.
+        -:  838:		 */
+    #####:  839:		if (!(s = zformat_substring(s+1, specs, outp, ousedp,
+        -:  840:					    olenp, endcharl, skip || actval)))
+    #####:  841:		    return NULL;
+    #####:  842:		if (!(s = zformat_substring(s+1, specs, outp, ousedp,
+        -:  843:					    olenp, ')', skip || !actval)))
+    #####:  844:		    return NULL;
+    #####:  845:	    } else if (skip) {
+    #####:  846:		continue;
+    #####:  847:	    } else if ((spec = specs[STOUC(*s)])) {
+        -:  848:		int len;
+        -:  849:
+    #####:  850:		if ((len = strlen(spec)) > max && max >= 0)
+    #####:  851:		    len = max;
+    #####:  852:		outl = (min >= 0 ? (min > len ? min : len) : len);
+        -:  853:
+    #####:  854:		if (*ousedp + outl >= *olenp) {
+    #####:  855:		    int nlen = *olenp + outl + 128;
+    #####:  856:		    char *tmp = (char *) zhalloc(nlen);
+        -:  857:
+    #####:  858:		    memcpy(tmp, *outp, *olenp);
+    #####:  859:		    *olenp = nlen;
+    #####:  860:		    *outp = tmp;
+        -:  861:		}
+    #####:  862:		if (len >= outl) {
+    #####:  863:		    memcpy(*outp + *ousedp, spec, outl);
+    #####:  864:		    *ousedp += outl;
+        -:  865:		} else {
+    #####:  866:		    int diff = outl - len;
+        -:  867:
+    #####:  868:		    if (right) {
+    #####:  869:			while (diff--)
+    #####:  870:			    (*outp)[(*ousedp)++] = ' ';
+    #####:  871:			memcpy(*outp + *ousedp, spec, len);
+    #####:  872:			*ousedp += len;
+        -:  873:		    } else {
+    #####:  874:			memcpy(*outp + *ousedp, spec, len);
+    #####:  875:			*ousedp += len;
+    #####:  876:			while (diff--)
+    #####:  877:			    (*outp)[(*ousedp)++] = ' ';
+        -:  878:		    }
+        -:  879:		}
+        -:  880:	    } else {
+    #####:  881:		int len = s - start + 1;
+        -:  882:
+    #####:  883:		if (*ousedp + len >= *olenp) {
+    #####:  884:		    int nlen = *olenp + len + 128;
+    #####:  885:		    char *tmp = (char *) zhalloc(nlen);
+        -:  886:
+    #####:  887:		    memcpy(tmp, *outp, *olenp);
+    #####:  888:		    *olenp = nlen;
+    #####:  889:		    *outp = tmp;
+        -:  890:		}
+    #####:  891:		memcpy(*outp + *ousedp, start, len);
+    #####:  892:		*ousedp += len;
+        -:  893:	    }
+        -:  894:	} else {
+    #####:  895:	    if (skip)
+    #####:  896:		continue;
+    #####:  897:	    if (*ousedp + 1 >= *olenp) {
+    #####:  898:		char *tmp = (char *) zhalloc((*olenp) << 1);
+        -:  899:
+    #####:  900:		memcpy(tmp, *outp, *olenp);
+    #####:  901:		*olenp <<= 1;
+    #####:  902:		*outp = tmp;
+        -:  903:	    }
+    #####:  904:	    (*outp)[(*ousedp)++] = *s;
+        -:  905:	}
+        -:  906:    }
+        -:  907:
+    #####:  908:    return s;
+        -:  909:}
+        -:  910:
+        -:  911:static int
+    #####:  912:bin_zformat(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
+        -:  913:{
+        -:  914:    char opt;
+        -:  915:
+    #####:  916:    if (args[0][0] != '-' || !(opt = args[0][1]) || args[0][2]) {
+    #####:  917:	zwarnnam(nam, "invalid argument: %s", args[0]);
+    #####:  918:	return 1;
+        -:  919:    }
+    #####:  920:    args++;
+        -:  921:
+    #####:  922:    switch (opt) {
+    #####:  923:    case 'f':
+        -:  924:	{
+    #####:  925:	    char **ap, *specs[256] = {0}, *out;
+    #####:  926:	    int olen, oused = 0;
+        -:  927:
+    #####:  928:	    specs['%'] = "%";
+    #####:  929:	    specs[')'] = ")";
+        -:  930:
+        -:  931:	    /* Parse the specs in argv. */
+    #####:  932:	    for (ap = args + 2; *ap; ap++) {
+    #####:  933:		if (!ap[0][0] || ap[0][0] == '-' || ap[0][0] == '.' ||
+    #####:  934:		    idigit(ap[0][0]) || ap[0][1] != ':') {
+    #####:  935:		    zwarnnam(nam, "invalid argument: %s", *ap);
+    #####:  936:		    return 1;
+        -:  937:		}
+    #####:  938:		specs[STOUC(ap[0][0])] = ap[0] + 2;
+        -:  939:	    }
+    #####:  940:	    out = (char *) zhalloc(olen = 128);
+        -:  941:
+    #####:  942:	    zformat_substring(args[1], specs, &out, &oused, &olen, '\0', 0);
+    #####:  943:	    out[oused] = '\0';
+        -:  944:
+    #####:  945:	    setsparam(args[0], ztrdup(out));
+    #####:  946:	    return 0;
+        -:  947:	}
+        -:  948:	break;
+    #####:  949:    case 'a':
+        -:  950:	{
+        -:  951:	    char **ap, *cp;
+    #####:  952:	    int nbc = 0, colon = 0, pre = 0, suf = 0;
+        -:  953:#ifdef MULTIBYTE_SUPPORT
+    #####:  954:	    int prechars = 0;
+        -:  955:#endif /* MULTIBYTE_SUPPORT */
+        -:  956:
+    #####:  957:	    for (ap = args + 2; *ap; ap++) {
+    #####:  958:		for (nbc = 0, cp = *ap; *cp && *cp != ':'; cp++)
+    #####:  959:		    if (*cp == '\\' && cp[1])
+    #####:  960:			cp++, nbc++;
+    #####:  961:		if (*cp == ':' && cp[1]) {
+        -:  962:		    int d;
+        -:  963:#ifdef MULTIBYTE_SUPPORT
+    #####:  964:		    int dchars = 0;
+        -:  965:#endif /* MULTIBYTE_SUPPORT */
+        -:  966:
+    #####:  967:		    colon++;
+    #####:  968:		    if ((d = cp - *ap - nbc) > pre)
+    #####:  969:			pre = d;
+        -:  970:#ifdef MULTIBYTE_SUPPORT
+    #####:  971:		    if (isset(MULTIBYTE)) {
+    #####:  972:			*cp = '\0';
+    #####:  973:			dchars = MB_METASTRWIDTH(*ap) - nbc;
+    #####:  974:			*cp = ':';
+        -:  975:		    } else
+    #####:  976:			dchars = d;
+    #####:  977:		    if (dchars > prechars)
+    #####:  978:			prechars = dchars;
+        -:  979:#endif /* MULTIBYTE_SUPPORT */
+    #####:  980:		    if ((d = strlen(cp + 1)) > suf)
+    #####:  981:			suf = d;
+        -:  982:		}
+        -:  983:	    }
+        -:  984:	    {
+    #####:  985:		int sl = strlen(args[1]);
+    #####:  986:		VARARR(char, buf, pre + suf + sl + 1);
+        -:  987:		char **ret, **rp, *copy, *cpp, oldc;
+        -:  988:
+    #####:  989:		ret = (char **) zalloc((arrlen(args + 2) + 1) *
+        -:  990:				       sizeof(char *));
+        -:  991:
+        -:  992:#ifndef MULTIBYTE_SUPPORT
+        -:  993:		memcpy(buf + pre, args[1], sl);
+        -:  994:		suf = pre + sl;
+        -:  995:#endif /* MULTIBYTE_SUPPORT */
+        -:  996:
+    #####:  997:		for (rp = ret, ap = args + 2; *ap; ap++) {
+    #####:  998:		    copy = dupstring(*ap);
+    #####:  999:		    for (cp = cpp = copy; *cp && *cp != ':'; cp++) {
+    #####: 1000:			if (*cp == '\\' && cp[1])
+    #####: 1001:			    cp++;
+    #####: 1002:			*cpp++ = *cp;
+        -: 1003:		    }
+    #####: 1004:		    oldc = *cpp;
+    #####: 1005:		    *cpp = '\0';
+    #####: 1006:		    if (((cpp == cp && oldc == ':') || *cp == ':') && cp[1]) {
+        -: 1007:#ifdef MULTIBYTE_SUPPORT
+        -: 1008:			int rempad;
+        -: 1009:			char *ptr;
+    #####: 1010:			memcpy(buf, copy, (cpp - copy));
+    #####: 1011:			*cp = '\0';
+    #####: 1012:			if (isset(MULTIBYTE))
+    #####: 1013:			    rempad = prechars - MB_METASTRWIDTH(copy);
+        -: 1014:			else
+    #####: 1015:			    rempad = prechars - strlen(copy);
+    #####: 1016:			ptr = buf + (cpp - copy);
+    #####: 1017:			if (rempad)
+    #####: 1018:			    memset(ptr, ' ', rempad);
+    #####: 1019:			ptr += rempad;
+    #####: 1020:			memcpy(ptr, args[1], sl);
+    #####: 1021:			ptr += sl;
+    #####: 1022:			strcpy(ptr, cp + 1);
+        -: 1023:#else /* MULTIBYTE_SUPPORT */
+        -: 1024:			memset(buf, ' ', pre);
+        -: 1025:			memcpy(buf, copy, (cpp - copy));
+        -: 1026:			strcpy(buf + suf, cp + 1);
+        -: 1027:#endif /* MULTIBYTE_SUPPORT */
+    #####: 1028:			*rp++ = ztrdup(buf);
+        -: 1029:		    } else
+    #####: 1030:			*rp++ = ztrdup(copy);
+        -: 1031:		}
+    #####: 1032:		*rp = NULL;
+        -: 1033:
+    #####: 1034:		setaparam(args[0], ret);
+    #####: 1035:		return 0;
+        -: 1036:	    }
+        -: 1037:	}
+        -: 1038:	break;
+        -: 1039:    }
+    #####: 1040:    zwarnnam(nam, "invalid option: -%c", opt);
+    #####: 1041:    return 1;
+        -: 1042:}
+        -: 1043:
+        -: 1044:/* Zregexparse stuff. */
+        -: 1045:
+        -: 1046:typedef struct {
+        -: 1047:    int cutoff;
+        -: 1048:    char *pattern;
+        -: 1049:    Patprog patprog;
+        -: 1050:    char *guard;
+        -: 1051:    char *action;
+        -: 1052:    LinkList branches;
+        -: 1053:} RParseState;
+        -: 1054:
+        -: 1055:typedef struct {
+        -: 1056:    RParseState *state;
+        -: 1057:    LinkList actions;
+        -: 1058:} RParseBranch;
+        -: 1059:
+        -: 1060:typedef struct {
+        -: 1061:    LinkList nullacts;
+        -: 1062:    LinkList in;
+        -: 1063:    LinkList out;
+        -: 1064:} RParseResult;
+        -: 1065:
+        -: 1066:static char **rparseargs;
+        -: 1067:static LinkList rparsestates;
+        -: 1068:
+        -: 1069:static int rparsealt(RParseResult *result, jmp_buf *perr);
+        -: 1070:
+        -: 1071:static void
+      157: 1072:connectstates(LinkList out, LinkList in)
+        -: 1073:{
+        -: 1074:    LinkNode outnode, innode, ln;
+        -: 1075:
+      239: 1076:    for (outnode = firstnode(out); outnode; outnode = nextnode(outnode)) {
+       82: 1077:	RParseBranch *outbranch = getdata(outnode);
+        -: 1078:
+      185: 1079:	for (innode = firstnode(in); innode; innode = nextnode(innode)) {
+      103: 1080:	    RParseBranch *inbranch = getdata(innode);
+      103: 1081:	    RParseBranch *br = hcalloc(sizeof(*br));
+        -: 1082:
+      103: 1083:	    br->state = inbranch->state;
+      103: 1084:	    br->actions = newlinklist();
+      155: 1085:	    for (ln = firstnode(outbranch->actions); ln; ln = nextnode(ln))
+       52: 1086:		addlinknode(br->actions, getdata(ln));
+      103: 1087:	    for (ln = firstnode(inbranch->actions); ln; ln = nextnode(ln))
+    #####: 1088:		addlinknode(br->actions, getdata(ln));
+      103: 1089:	    addlinknode(outbranch->state->branches, br);
+        -: 1090:	}
+        -: 1091:    }
+      157: 1092:}
+        -: 1093:
+        -: 1094:static int
+      228: 1095:rparseelt(RParseResult *result, jmp_buf *perr)
+        -: 1096:{
+        -: 1097:    int l;
+      228: 1098:    char *s = *rparseargs;
+        -: 1099:
+      228: 1100:    if (!s)
+       61: 1101:        return 1;
+        -: 1102:
+      167: 1103:    switch (s[0]) {
+      131: 1104:    case '/': {
+        -: 1105:	RParseState *st;
+        -: 1106:	RParseBranch *br;
+        -: 1107:	char *pattern, *lookahead;
+      131: 1108:	int patternlen, lookaheadlen = 0;
+        -: 1109:
+      131: 1110:	l = strlen(s);
+      131: 1111:	if (!((2 <= l && s[l - 1] == '/') ||
+        6: 1112:	      (3 <= l && s[l - 2] == '/' && (s[l - 1] == '+' ||
+        1: 1113:					     s[l - 1] == '-'))))
+    #####: 1114:	    return 1;
+      131: 1115:	st = hcalloc(sizeof(*st));
+      131: 1116:	st->branches = newlinklist();
+      131: 1117:	st->cutoff = s[l - 1];
+      131: 1118:	if (s[l - 1] == '/') {
+      126: 1119:	    pattern = s + 1;
+      126: 1120:	    patternlen = l - 2;
+        -: 1121:	} else {
+        5: 1122:	    pattern = s + 1;
+        5: 1123:	    patternlen = l - 3;
+        -: 1124:	}
+      131: 1125:	rparseargs++;
+      135: 1126:	if ((s = *rparseargs) && s[0] == '%' &&
+        8: 1127:	   2 <= (l = strlen(s)) && s[l - 1] == '%') {
+        4: 1128:	    rparseargs++;
+        4: 1129:	    lookahead = s + 1;
+        4: 1130:	    lookaheadlen = l - 2;
+        -: 1131:	} else {
+      127: 1132:	    lookahead = NULL;
+        -: 1133:	}
+      131: 1134:	if (patternlen == 2 && !strncmp(pattern, "[]", 2))
+        3: 1135:	    st->pattern = NULL;
+        -: 1136:	else {
+        -: 1137:	    char *cp;
+      128: 1138:	    int l = patternlen + 12; /* (#b)((#B)...)...* */
+      128: 1139:	    if(lookahead)
+        4: 1140:	        l += lookaheadlen + 4; /* (#B)... */
+      128: 1141:	    cp = st->pattern = hcalloc(l);
+      128: 1142:	    strcpy(cp, "(#b)((#B)");
+      128: 1143:	    cp += 9;
+      128: 1144:	    strcpy(cp, pattern);
+      128: 1145:	    cp += patternlen;
+      128: 1146:	    strcpy(cp, ")");
+      128: 1147:	    cp += 1;
+      128: 1148:	    if (lookahead) {
+        4: 1149:		strcpy(cp, "(#B)");
+        4: 1150:		cp += 4;
+        4: 1151:		strcpy(cp, lookahead);
+        4: 1152:		cp += lookaheadlen;
+        -: 1153:	    }
+      128: 1154:	    strcpy(cp, "*");
+        -: 1155:	}
+      131: 1156:	st->patprog = NULL;
+      131: 1157:	if ((s = *rparseargs) && *s == '-') {
+       11: 1158:	    rparseargs++;
+       11: 1159:	    l = strlen(s);
+       11: 1160:	    st->guard = hcalloc(l);
+       11: 1161:	    memcpy(st->guard, s + 1, l - 1);
+       11: 1162:	    st->guard[l - 1] = '\0';
+        -: 1163:	} else
+      120: 1164:	    st->guard = NULL;
+      131: 1165:	if ((s = *rparseargs) && *s == ':') {
+       31: 1166:	    rparseargs++;
+       31: 1167:	    l = strlen(s);
+       31: 1168:	    st->action = hcalloc(l);
+       31: 1169:	    memcpy(st->action, s + 1, l - 1);
+       31: 1170:	    st->action[l - 1] = '\0';
+        -: 1171:	} else
+      100: 1172:	    st->action = NULL;
+      131: 1173:	result->nullacts = NULL;
+      131: 1174:	result->in = newlinklist();
+      131: 1175:	br = hcalloc(sizeof(*br));
+      131: 1176:	br->state = st;
+      131: 1177:	br->actions = newlinklist();
+      131: 1178:	addlinknode(result->in, br);
+      131: 1179:	result->out = newlinklist();
+      131: 1180:	br = hcalloc(sizeof(*br));
+      131: 1181:	br->state = st;
+      131: 1182:	br->actions = newlinklist();
+      131: 1183:	addlinknode(result->out, br);
+      131: 1184:	break;
+        -: 1185:    }
+       13: 1186:    case '(':
+       13: 1187:	if (s[1])
+    #####: 1188:	    return 1;
+       13: 1189:	rparseargs++;
+       13: 1190:	if (rparsealt(result, perr))
+    #####: 1191:	    longjmp(*perr, 2);
+       13: 1192:	s = *rparseargs;
+       13: 1193:	if (!s || s[0] != ')' || s[1] != '\0')
+    #####: 1194:	    longjmp(*perr, 2);
+       13: 1195:	rparseargs++;
+       13: 1196:        break;
+       23: 1197:    default:
+       23: 1198:        return 1;
+        -: 1199:    }
+        -: 1200:
+      144: 1201:    return 0;
+        -: 1202:}
+        -: 1203:
+        -: 1204:static int
+      228: 1205:rparseclo(RParseResult *result, jmp_buf *perr)
+        -: 1206:{
+      228: 1207:    if (rparseelt(result, perr))
+       84: 1208:	return 1;
+        -: 1209:
+      144: 1210:    if (*rparseargs && !strcmp(*rparseargs, "#")) {
+       13: 1211:	rparseargs++;
+       27: 1212:	while (*rparseargs && !strcmp(*rparseargs, "#"))
+        1: 1213:	    rparseargs++;
+        -: 1214:
+       13: 1215:	connectstates(result->out, result->in);
+       13: 1216:	result->nullacts = newlinklist();
+        -: 1217:    }
+      144: 1218:    return 0;
+        -: 1219:}
+        -: 1220:
+        -: 1221:static void
+       82: 1222:prependactions(LinkList acts, LinkList branches)
+        -: 1223:{
+        -: 1224:    LinkNode aln, bln;
+        -: 1225:
+      171: 1226:    for (bln = firstnode(branches); bln; bln = nextnode(bln)) {
+       89: 1227:	RParseBranch *br = getdata(bln);
+        -: 1228:
+       90: 1229:	for (aln = lastnode(acts); aln != (LinkNode)acts; aln = prevnode(aln))
+        1: 1230:	    pushnode(br->actions, getdata(aln));
+        -: 1231:    }
+       82: 1232:}
+        -: 1233:
+        -: 1234:static void
+       13: 1235:appendactions(LinkList acts, LinkList branches)
+        -: 1236:{
+        -: 1237:    LinkNode aln, bln;
+       16: 1238:    for (bln = firstnode(branches); bln; bln = nextnode(bln)) {
+        3: 1239:	RParseBranch *br = getdata(bln);
+        -: 1240:
+        3: 1241:	for (aln = firstnode(acts); aln; aln = nextnode(aln))
+    #####: 1242:	    addlinknode(br->actions, getdata(aln));
+        -: 1243:    }
+       13: 1244:}
+        -: 1245:
+        -: 1246:static int
+       84: 1247:rparseseq(RParseResult *result, jmp_buf *perr)
+        -: 1248:{
+        -: 1249:    int l;
+        -: 1250:    char *s;
+        -: 1251:    RParseResult sub;
+        -: 1252:
+       84: 1253:    result->nullacts = newlinklist();
+       84: 1254:    result->in = newlinklist();
+       84: 1255:    result->out = newlinklist();
+        -: 1256:
+        -: 1257:    while (1) {
+      546: 1258:	if ((s = *rparseargs) && s[0] == '{' && s[(l = strlen(s)) - 1] == '}') {
+       58: 1259:	    char *action = hcalloc(l - 1);
+        -: 1260:	    LinkNode ln;
+        -: 1261:
+       58: 1262:	    rparseargs++;
+       58: 1263:	    memcpy(action, s + 1, l - 2);
+       58: 1264:	    action[l - 2] = '\0';
+       58: 1265:	    if (result->nullacts)
+        1: 1266:		addlinknode(result->nullacts, action);
+      115: 1267:	    for (ln = firstnode(result->out); ln; ln = nextnode(ln)) {
+       57: 1268:		RParseBranch *br = getdata(ln);
+       57: 1269:		addlinknode(br->actions, action);
+        -: 1270:	    }
+        -: 1271:	}
+      228: 1272:        else if (!rparseclo(&sub, perr)) {
+      144: 1273:	    connectstates(result->out, sub.in);
+        -: 1274:
+      144: 1275:	    if (result->nullacts) {
+       82: 1276:		prependactions(result->nullacts, sub.in);
+       82: 1277:		insertlinklist(sub.in, lastnode(result->in), result->in);
+        -: 1278:	    }
+      144: 1279:	    if (sub.nullacts) {
+       13: 1280:		appendactions(sub.nullacts, result->out);
+       13: 1281:		insertlinklist(sub.out, lastnode(result->out), result->out);
+        -: 1282:	    } else
+      131: 1283:		result->out = sub.out;
+        -: 1284:
+      144: 1285:	    if (result->nullacts && sub.nullacts)
+       10: 1286:		insertlinklist(sub.nullacts, lastnode(result->nullacts),
+        -: 1287:			       result->nullacts);
+        -: 1288:	    else
+      134: 1289:		result->nullacts = NULL;
+        -: 1290:	}
+        -: 1291:	else
+       84: 1292:	    break;
+        -: 1293:    }
+       84: 1294:    return 0;
+        -: 1295:}
+        -: 1296:
+        -: 1297:static int
+       74: 1298:rparsealt(RParseResult *result, jmp_buf *perr)
+        -: 1299:{
+        -: 1300:    RParseResult sub;
+        -: 1301:
+       74: 1302:    if (rparseseq(result, perr))
+    #####: 1303:	return 1;
+        -: 1304:
+      158: 1305:    while (*rparseargs && !strcmp(*rparseargs, "|")) {
+       10: 1306:	rparseargs++;
+       10: 1307:	if (rparseseq(&sub, perr))
+    #####: 1308:	    longjmp(*perr, 2);
+       10: 1309:	if (!result->nullacts && sub.nullacts)
+    #####: 1310:	    result->nullacts = sub.nullacts;
+        -: 1311:
+       10: 1312:	insertlinklist(sub.in, lastnode(result->in), result->in);
+       10: 1313:	insertlinklist(sub.out, lastnode(result->out), result->out);
+        -: 1314:    }
+       74: 1315:    return 0;
+        -: 1316:}
+        -: 1317:
+        -: 1318:static int
+       61: 1319:rmatch(RParseResult *sm, char *subj, char *var1, char *var2, int comp)
+        -: 1320:{
+        -: 1321:    LinkNode ln, lnn;
+        -: 1322:    LinkList nexts;
+        -: 1323:    LinkList nextslist;
+        -: 1324:    RParseBranch *br;
+       61: 1325:    RParseState *st = NULL;
+       61: 1326:    int point1 = 0, point2 = 0;
+        -: 1327:
+       61: 1328:    setiparam(var1, point1);
+       61: 1329:    setiparam(var2, point2);
+        -: 1330:
+       61: 1331:    if (!comp && !*subj && sm->nullacts) {
+        1: 1332:	for (ln = firstnode(sm->nullacts); ln; ln = nextnode(ln)) {
+    #####: 1333:	    char *action = getdata(ln);
+        -: 1334:
+    #####: 1335:	    if (action)
+    #####: 1336:		execstring(action, 1, 0, "zregexparse-action");
+        -: 1337:	}
+        1: 1338:	return 0;
+        -: 1339:    }
+        -: 1340:
+       60: 1341:    nextslist = newlinklist();
+       60: 1342:    nexts = sm->in;
+       60: 1343:    addlinknode(nextslist, nexts);
+        -: 1344:    do {
+        -: 1345:	MatchData match1, match2;
+        -: 1346:
+      187: 1347:	savematch(&match1);
+        -: 1348:
+      244: 1349:	for (ln = firstnode(nexts); ln; ln = nextnode(ln)) {
+        -: 1350:	    int i;
+        -: 1351:	    RParseState *next;
+        -: 1352:
+      184: 1353:	    br = getdata(ln);
+      184: 1354:	    next = br->state;
+      184: 1355:	    if (next->pattern && !next->patprog) {
+      122: 1356:	        tokenize(next->pattern);
+      122: 1357:		if (!(next->patprog = patcompile(next->pattern, 0, NULL)))
+    #####: 1358:		    return 3;
+        -: 1359:	    }
+      312: 1360:	    if (next->pattern && pattry(next->patprog, subj) &&
+      139: 1361:		(!next->guard || (execstring(next->guard, 1, 0,
+        -: 1362:					     "zregexparse-guard"), !lastval))) {
+        -: 1363:		LinkNode aln;
+        -: 1364:		char **mend;
+        -: 1365:		int len;
+        -: 1366:
+      127: 1367:		queue_signals();
+      127: 1368:		mend = getaparam("mend");
+      127: 1369:		len = atoi(mend[0]);
+      127: 1370:		unqueue_signals();
+        -: 1371:
+      290: 1372:		for (i = len; i; i--)
+      163: 1373:		  if (*subj++ == Meta)
+        9: 1374:		    subj++;
+        -: 1375:
+      127: 1376:		savematch(&match2);
+      127: 1377:		restorematch(&match1);
+        -: 1378:
+      166: 1379:		for (aln = firstnode(br->actions); aln; aln = nextnode(aln)) {
+       39: 1380:		    char *action = getdata(aln);
+        -: 1381:
+       39: 1382:		    if (action)
+       39: 1383:			execstring(action, 1, 0, "zregexparse-action");
+        -: 1384:		}
+      127: 1385:		restorematch(&match2);
+        -: 1386:
+      127: 1387:		point2 += len;
+      127: 1388:		setiparam(var2, point2);
+      127: 1389:		st = br->state;
+      127: 1390:		nexts = st->branches;
+      127: 1391:		if (next->cutoff == '-' || (next->cutoff == '/' && len)) {
+      117: 1392:		    nextslist = newlinklist();
+      117: 1393:		    point1 = point2;
+      117: 1394:		    setiparam(var1, point1);
+        -: 1395:		}
+      127: 1396:		addlinknode(nextslist, nexts);
+      127: 1397:		break;
+        -: 1398:	    }
+        -: 1399:	}
+      187: 1400:	if (!ln)
+       60: 1401:	    freematch(&match1);
+      187: 1402:    } while (ln);
+        -: 1403:
+       60: 1404:    if (!comp && !*subj)
+       35: 1405:	for (ln = firstnode(sm->out); ln; ln = nextnode(ln)) {
+       30: 1406:	    br = getdata(ln);
+       30: 1407:	    if (br->state == st) {
+       32: 1408:		for (ln = firstnode(br->actions); ln; ln = nextnode(ln)) {
+        9: 1409:		    char *action = getdata(ln);
+        -: 1410:
+        9: 1411:		    if (action)
+        9: 1412:			execstring(action, 1, 0, "zregexparse-action");
+        -: 1413:		}
+       23: 1414:		return 0;
+        -: 1415:	    }
+        -: 1416:	}
+        -: 1417:
+       83: 1418:    for (lnn = firstnode(nextslist); lnn; lnn = nextnode(lnn)) {
+       46: 1419:	nexts = getdata(lnn);
+       89: 1420:	for (ln = firstnode(nexts); ln; ln = nextnode(ln)) {
+       43: 1421:	    br = getdata(ln);
+       43: 1422:	    if (br->state->action)
+       23: 1423:		execstring(br->state->action, 1, 0, "zregexparse-action");
+        -: 1424:	}
+        -: 1425:    }
+       37: 1426:    return empty(nexts) ? 2 : 1;
+        -: 1427:}
+        -: 1428:
+        -: 1429:/*
+        -: 1430:  usage: zregexparse [-c] var1 var2 string regex...
+        -: 1431:  status:
+        -: 1432:    0: matched
+        -: 1433:    1: unmatched (all next state candidates are failed)
+        -: 1434:    2: unmatched (there is no next state candidates)
+        -: 1435:    3: regex parse error
+        -: 1436:*/
+        -: 1437:
+        -: 1438:static int
+       61: 1439:bin_zregexparse(char *nam, char **args, Options ops, UNUSED(int func))
+        -: 1440:{
+       61: 1441:    int oldextendedglob = opts[EXTENDEDGLOB];
+       61: 1442:    char *var1 = args[0];
+       61: 1443:    char *var2 = args[1];
+       61: 1444:    char *subj = args[2];
+        -: 1445:    int ret;
+        -: 1446:    jmp_buf rparseerr;
+        -: 1447:    RParseResult result;
+        -: 1448:
+       61: 1449:    opts[EXTENDEDGLOB] = 1;
+        -: 1450:
+       61: 1451:    rparseargs = args + 3;
+        -: 1452:
+       61: 1453:    pushheap();
+       61: 1454:    rparsestates = newlinklist();
+       61: 1455:    if (setjmp(rparseerr) || rparsealt(&result, &rparseerr) || *rparseargs) {
+    #####: 1456:	if (*rparseargs)
+    #####: 1457:	    zwarnnam(nam, "invalid regex : %s", *rparseargs);
+        -: 1458:	else
+    #####: 1459:	    zwarnnam(nam, "not enough regex arguments");
+    #####: 1460:	ret = 3;
+        -: 1461:    } else
+       61: 1462:	ret = 0;
+        -: 1463:
+       61: 1464:    if (!ret)
+       61: 1465:	ret = rmatch(&result, subj, var1, var2, OPT_ISSET(ops,'c'));
+       61: 1466:    popheap();
+        -: 1467:
+       61: 1468:    opts[EXTENDEDGLOB] = oldextendedglob;
+       61: 1469:    return ret;
+        -: 1470:}
+        -: 1471:
+        -: 1472:typedef struct zoptdesc *Zoptdesc;
+        -: 1473:typedef struct zoptarr *Zoptarr;
+        -: 1474:typedef struct zoptval *Zoptval;
+        -: 1475:
+        -: 1476:struct zoptdesc {
+        -: 1477:    Zoptdesc next;
+        -: 1478:    char *name;
+        -: 1479:    int flags;
+        -: 1480:    Zoptarr arr;
+        -: 1481:    Zoptval vals, last;
+        -: 1482:};
+        -: 1483:
+        -: 1484:#define ZOF_ARG  1
+        -: 1485:#define ZOF_OPT  2
+        -: 1486:#define ZOF_MULT 4
+        -: 1487:#define ZOF_SAME 8
+        -: 1488:#define ZOF_MAP 16
+        -: 1489:#define ZOF_CYC 32
+        -: 1490:
+        -: 1491:struct zoptarr {
+        -: 1492:    Zoptarr next;
+        -: 1493:    char *name;
+        -: 1494:    Zoptval vals, last;
+        -: 1495:    int num;
+        -: 1496:};
+        -: 1497:
+        -: 1498:struct zoptval {
+        -: 1499:    Zoptval next, onext;
+        -: 1500:    char *name;
+        -: 1501:    char *arg;
+        -: 1502:    char *str;
+        -: 1503:};
+        -: 1504:
+        -: 1505:static Zoptdesc opt_descs;
+        -: 1506:static Zoptarr opt_arrs;
+        -: 1507:
+        -: 1508:static Zoptdesc
+    #####: 1509:get_opt_desc(char *name)
+        -: 1510:{
+        -: 1511:    Zoptdesc p;
+        -: 1512:
+    #####: 1513:    for (p = opt_descs; p; p = p->next)
+    #####: 1514:	if (!strcmp(name, p->name))
+    #####: 1515:	    return p;
+        -: 1516:
+    #####: 1517:    return NULL;
+        -: 1518:}
+        -: 1519:
+        -: 1520:static Zoptdesc
+    #####: 1521:lookup_opt(char *str)
+        -: 1522:{
+        -: 1523:    Zoptdesc p;
+        -: 1524:
+    #####: 1525:    for (p = opt_descs; p; p = p->next) {
+    #####: 1526:	if ((p->flags & ZOF_ARG) ? strpfx(p->name, str) : !strcmp(p->name, str))
+    #####: 1527:	    return p;
+        -: 1528:    }
+    #####: 1529:    return NULL;
+        -: 1530:}
+        -: 1531:
+        -: 1532:static Zoptarr
+    #####: 1533:get_opt_arr(char *name)
+        -: 1534:{
+        -: 1535:    Zoptarr p;
+        -: 1536:
+    #####: 1537:    for (p = opt_arrs; p; p = p->next)
+    #####: 1538:	if (!strcmp(name, p->name))
+    #####: 1539:	    return p;
+        -: 1540:
+    #####: 1541:    return NULL;
+        -: 1542:}
+        -: 1543:
+        -: 1544:static Zoptdesc
+    #####: 1545:map_opt_desc(Zoptdesc start)
+        -: 1546:{
+    #####: 1547:    Zoptdesc map = NULL;
+        -: 1548:
+    #####: 1549:    if (!start || !(start->flags & ZOF_MAP))
+    #####: 1550:	return start;
+        -: 1551:
+    #####: 1552:    map = get_opt_desc(start->arr->name);
+        -: 1553:
+    #####: 1554:    if (!map)
+    #####: 1555:	return start;
+        -: 1556:
+    #####: 1557:    if (map == start) {
+    #####: 1558:	start->flags &= ~ZOF_MAP;	/* optimize */
+    #####: 1559:	return start;
+        -: 1560:    }
+        -: 1561:
+    #####: 1562:    if (map->flags & ZOF_CYC)
+    #####: 1563:	return NULL;
+        -: 1564:
+    #####: 1565:    start->flags |= ZOF_CYC;
+    #####: 1566:    map = map_opt_desc(map);
+    #####: 1567:    start->flags &= ~ZOF_CYC;
+        -: 1568:
+    #####: 1569:    return map;
+        -: 1570:}
+        -: 1571:
+        -: 1572:static void
+    #####: 1573:add_opt_val(Zoptdesc d, char *arg)
+        -: 1574:{
+    #####: 1575:    Zoptval v = NULL;
+    #####: 1576:    char *n = dyncat("-", d->name);
+    #####: 1577:    int new = 0;
+        -: 1578:
+    #####: 1579:    Zoptdesc map = map_opt_desc(d);
+    #####: 1580:    if (map)
+    #####: 1581:	d = map;
+        -: 1582:
+    #####: 1583:    if (!(d->flags & ZOF_MULT))
+    #####: 1584:	v = d->vals;
+    #####: 1585:    if (!v) {
+    #####: 1586:	v = (Zoptval) zhalloc(sizeof(*v));
+    #####: 1587:	v->next = v->onext = NULL;
+    #####: 1588:	v->name = n;
+    #####: 1589:	new = 1;
+        -: 1590:    }
+    #####: 1591:    v->arg = arg;
+    #####: 1592:    if ((d->flags & ZOF_ARG) && !(d->flags & (ZOF_OPT | ZOF_SAME))) {
+    #####: 1593:	v->str = NULL;
+    #####: 1594:	if (d->arr)
+    #####: 1595:	    d->arr->num += (arg ? 2 : 1);
+    #####: 1596:    } else if (arg) {
+    #####: 1597:	char *s = (char *) zhalloc(strlen(d->name) + strlen(arg) + 2);
+        -: 1598:
+    #####: 1599:	*s = '-';
+    #####: 1600:	strcpy(s + 1, d->name);
+    #####: 1601:	strcat(s, arg);
+    #####: 1602:	v->str = s;
+    #####: 1603:	if (d->arr)
+    #####: 1604:	    d->arr->num += 1;
+        -: 1605:    } else {
+    #####: 1606:	v->str = NULL;
+    #####: 1607:	if (d->arr)
+    #####: 1608:	    d->arr->num += 1;
+        -: 1609:    }
+    #####: 1610:    if (new) {
+    #####: 1611:	if (d->arr) {
+    #####: 1612:	    if (d->arr->last)
+    #####: 1613:		d->arr->last->next = v;
+        -: 1614:	    else
+    #####: 1615:		d->arr->vals = v;
+    #####: 1616:	    d->arr->last = v;
+        -: 1617:	}
+    #####: 1618:	if (d->last)
+    #####: 1619:	    d->last->onext = v;
+        -: 1620:	else
+    #####: 1621:	    d->vals = v;
+    #####: 1622:	d->last = v;
+        -: 1623:    }
+    #####: 1624:}
+        -: 1625:
+        -: 1626:/*
+        -: 1627: * For "zparseopts -K -A assoc ..." this function copies the keys and
+        -: 1628: * values from the default and allocates the extra space for any parsed
+        -: 1629: * values having the same keys.  If there are no new values, creates an
+        -: 1630: * empty array.  Returns a pointer to the NULL element marking the end.
+        -: 1631: *
+        -: 1632: *  aval = pointer to the newly allocated array
+        -: 1633: *  assoc = name of the default hash param to copy
+        -: 1634: *  keep = whether we need to make the copy at all
+        -: 1635: *  num = count of new values to add space for
+        -: 1636: */
+        -: 1637:static char **
+    #####: 1638:zalloc_default_array(char ***aval, char *assoc, int keep, int num)
+        -: 1639:{
+    #####: 1640:    char **ap = 0;
+        -: 1641:
+    #####: 1642:    *aval = 0;
+    #####: 1643:    if (keep && num) {
+        -: 1644:	struct value vbuf;
+    #####: 1645:	Value v = fetchvalue(&vbuf, &assoc, 0,
+        -: 1646:			     SCANPM_WANTKEYS|SCANPM_WANTVALS|SCANPM_MATCHMANY);
+    #####: 1647:	if (v && v->isarr) {
+    #####: 1648:	    char **dp, **dval = getarrvalue(v);
+    #####: 1649:	    int dnum = (dval ? arrlen(dval) : 0) + 1;
+    #####: 1650:	    *aval = (char **) zalloc(((num * 2) + dnum) * sizeof(char *));
+    #####: 1651:	    for (ap = *aval, dp = dval; dp && *dp; dp++) {
+    #####: 1652:		*ap = (char *) zalloc(strlen(*dp) + 1);
+    #####: 1653:		strcpy(*ap++, *dp);
+        -: 1654:	    }
+    #####: 1655:	    *ap = NULL;
+        -: 1656:	}
+        -: 1657:    }
+    #####: 1658:    if (!ap) {
+    #####: 1659:	ap = *aval = (char **) zalloc(((num * 2) + 1) * sizeof(char *));
+    #####: 1660:	*ap = NULL;
+        -: 1661:    }
+    #####: 1662:    return ap;
+        -: 1663:}
+        -: 1664:
+        -: 1665:static int
+    #####: 1666:bin_zparseopts(char *nam, char **args, UNUSED(Options ops), UNUSED(int func))
+        -: 1667:{
+    #####: 1668:    char *o, *p, *n, **pp, **aval, **ap, *assoc = NULL, **cp, **np;
+    #####: 1669:    int del = 0, flags = 0, extract = 0, fail = 0, keep = 0;
+        -: 1670:    Zoptdesc sopts[256], d;
+    #####: 1671:    Zoptarr a, defarr = NULL;
+        -: 1672:    Zoptval v;
+        -: 1673:
+    #####: 1674:    opt_descs = NULL;
+    #####: 1675:    opt_arrs = NULL;
+    #####: 1676:    memset(sopts, 0, 256 * sizeof(Zoptdesc));
+        -: 1677:
+    #####: 1678:    while ((o = *args++)) {
+    #####: 1679:	if (*o == '-') {
+    #####: 1680:	    switch (o[1]) {
+    #####: 1681:	    case '\0':
+    #####: 1682:		o = NULL;
+    #####: 1683:		break;
+    #####: 1684:	    case '-':
+    #####: 1685:		if (o[2])
+    #####: 1686:		    args--;
+        -: 1687:		/* else unreachable, default parsing removes "--" */
+    #####: 1688:		o = NULL;
+    #####: 1689:		break;
+    #####: 1690:	    case 'D':
+    #####: 1691:		if (o[2]) {
+    #####: 1692:		    args--;
+    #####: 1693:		    o = NULL;
+    #####: 1694:		    break;
+        -: 1695:		}
+    #####: 1696:		del = 1;
+    #####: 1697:		break;
+    #####: 1698:	    case 'E':
+    #####: 1699:		if (o[2]) {
+    #####: 1700:		    args--;
+    #####: 1701:		    o = NULL;
+    #####: 1702:		    break;
+        -: 1703:		}
+    #####: 1704:		extract = 1;
+    #####: 1705:		break;
+    #####: 1706:	    case 'F':
+    #####: 1707:		if (o[2]) {
+    #####: 1708:		    args--;
+    #####: 1709:		    o = NULL;
+    #####: 1710:		    break;
+        -: 1711:		}
+    #####: 1712:		fail = 1;
+    #####: 1713:		break;
+    #####: 1714:	    case 'K':
+    #####: 1715:		if (o[2]) {
+    #####: 1716:		    args--;
+    #####: 1717:		    o = NULL;
+    #####: 1718:		    break;
+        -: 1719:		}
+    #####: 1720:		keep = 1;
+    #####: 1721:		break;
+    #####: 1722:	    case 'M':
+    #####: 1723:		if (o[2]) {
+    #####: 1724:		    args--;
+    #####: 1725:		    o = NULL;
+    #####: 1726:		    break;
+        -: 1727:		}
+    #####: 1728:		flags |= ZOF_MAP;
+    #####: 1729:		break;
+    #####: 1730:	    case 'a':
+    #####: 1731:		if (defarr) {
+    #####: 1732:		    zwarnnam(nam, "default array given more than once");
+    #####: 1733:		    return 1;
+        -: 1734:		}
+    #####: 1735:		if (o[2])
+    #####: 1736:		    n = o + 2;
+    #####: 1737:		else if (*args)
+    #####: 1738:		    n = *args++;
+        -: 1739:		else {
+    #####: 1740:		    zwarnnam(nam, "missing array name");
+    #####: 1741:		    return 1;
+        -: 1742:		}
+    #####: 1743:		defarr = (Zoptarr) zhalloc(sizeof(*defarr));
+    #####: 1744:		defarr->name = n;
+    #####: 1745:		defarr->num = 0;
+    #####: 1746:		defarr->vals = defarr->last = NULL;
+    #####: 1747:		defarr->next = NULL;
+    #####: 1748:		opt_arrs = defarr;
+    #####: 1749:		break;
+    #####: 1750:	    case 'A':
+    #####: 1751:		if (assoc) {
+    #####: 1752:		    zwarnnam(nam, "associative array given more than once");
+    #####: 1753:		    return 1;
+        -: 1754:		}
+    #####: 1755:		if (o[2]) 
+    #####: 1756:		    assoc = o + 2;
+    #####: 1757:		else if (*args)
+    #####: 1758:		    assoc = *args++;
+        -: 1759:		else {
+    #####: 1760:		    zwarnnam(nam, "missing array name");
+    #####: 1761:		    return 1;
+        -: 1762:		}
+    #####: 1763:		break;
+    #####: 1764:	    default:
+        -: 1765:		/* Anything else is an option description */
+    #####: 1766:		args--;
+    #####: 1767:		o = NULL;
+    #####: 1768:		break;
+        -: 1769:	    }
+    #####: 1770:	    if (!o) {
+    #####: 1771:		o = "";
+    #####: 1772:		break;
+        -: 1773:	    }
+        -: 1774:	} else {
+    #####: 1775:	    args--;
+    #####: 1776:	    break;
+        -: 1777:	}
+        -: 1778:    }
+    #####: 1779:    if (!o) {
+    #####: 1780:	zwarnnam(nam, "missing option descriptions");
+    #####: 1781:	return 1;
+        -: 1782:    }
+    #####: 1783:    while ((o = dupstring(*args++))) {
+    #####: 1784:	int f = 0;
+    #####: 1785:	if (!*o) {
+    #####: 1786:	    zwarnnam(nam, "invalid option description: %s", o);
+    #####: 1787:	    return 1;
+        -: 1788:	}
+    #####: 1789:	for (p = o; *p; p++) {
+    #####: 1790:	    if (*p == '\\' && p[1])
+    #####: 1791:		p++;
+    #####: 1792:	    else if (p > o) {	/* At least one character of option name */
+    #####: 1793:		if (*p == '+') {
+    #####: 1794:		    f |= ZOF_MULT;
+    #####: 1795:		    *p = '\0';
+    #####: 1796:		    p++;
+    #####: 1797:		    break;
+    #####: 1798:		} else if (*p == ':' || *p == '=')
+        -: 1799:		    break;
+        -: 1800:	    }
+        -: 1801:	}
+    #####: 1802:	if (*p == ':') {
+    #####: 1803:	    f |= ZOF_ARG;
+    #####: 1804:	    *p = '\0';
+    #####: 1805:	    if (*++p == ':') {
+    #####: 1806:		p++;
+    #####: 1807:		f |= ZOF_OPT;
+        -: 1808:	    }
+    #####: 1809:	    if (*p == '-') {
+    #####: 1810:		p++;
+    #####: 1811:		f |= ZOF_SAME;
+        -: 1812:	    }
+        -: 1813:	}
+    #####: 1814:	a = NULL;
+    #####: 1815:	if (*p == '=') {
+    #####: 1816:	    *p++ = '\0';
+    #####: 1817:	    f |= flags;
+    #####: 1818:	    if (!(a = get_opt_arr(p))) {
+    #####: 1819:		a = (Zoptarr) zhalloc(sizeof(*a));
+    #####: 1820:		a->name = p;
+    #####: 1821:		a->num = 0;
+    #####: 1822:		a->vals = a->last = NULL;
+    #####: 1823:		a->next = opt_arrs;
+    #####: 1824:		opt_arrs = a;
+        -: 1825:	    }
+    #####: 1826:	} else if (*p) {
+    #####: 1827:	    zwarnnam(nam, "invalid option description: %s", args[-1]);
+    #####: 1828:	    return 1;
+    #####: 1829:	} else if (!(a = defarr) && !assoc) {
+    #####: 1830:	    zwarnnam(nam, "no default array defined: %s", args[-1]);
+    #####: 1831:	    return 1;
+        -: 1832:	}
+    #####: 1833:	for (p = n = o; *p; p++) {
+    #####: 1834:	    if (*p == '\\' && p[1])
+    #####: 1835:		p++;
+    #####: 1836:	    *n++ = *p;
+        -: 1837:	}
+    #####: 1838:	*n = '\0';
+    #####: 1839:	if (get_opt_desc(o)) {
+    #####: 1840:	    zwarnnam(nam, "option defined more than once: %s", o);
+    #####: 1841:	    return 1;
+        -: 1842:	}
+    #####: 1843:	d = (Zoptdesc) zhalloc(sizeof(*d));
+    #####: 1844:	d->name = o;
+    #####: 1845:	d->flags = f;
+    #####: 1846:	d->arr = a;
+    #####: 1847:	d->next = opt_descs;
+    #####: 1848:	d->vals = d->last = NULL;
+    #####: 1849:	opt_descs = d;
+    #####: 1850:	if (!o[1])
+    #####: 1851:	    sopts[STOUC(*o)] = d;
+    #####: 1852:	if ((flags & ZOF_MAP) && !map_opt_desc(d)) {
+    #####: 1853:	    zwarnnam(nam, "cyclic option mapping: %s", args[-1]);
+    #####: 1854:	    return 1;
+        -: 1855:	}
+        -: 1856:    }
+    #####: 1857:    np = cp = pp = ((extract && del) ? arrdup(pparams) : pparams);
+    #####: 1858:    for (; (o = *pp); pp++) {
+    #####: 1859:	if (*o != '-') {
+    #####: 1860:	    if (extract) {
+    #####: 1861:		if (del)
+    #####: 1862:		    *cp++ = o;
+    #####: 1863:		continue;
+        -: 1864:	    } else
+    #####: 1865:		break;
+        -: 1866:	}
+    #####: 1867:	if (!o[1] || (o[1] == '-' && !o[2])) {
+    #####: 1868:	    if (del && extract)
+    #####: 1869:		*cp++ = o;
+    #####: 1870:	    pp++;
+    #####: 1871:	    break;
+        -: 1872:	}
+    #####: 1873:	if (!(d = lookup_opt(o + 1))) {
+    #####: 1874:	    while (*++o) {
+    #####: 1875:		if (!(d = sopts[STOUC(*o)])) {
+    #####: 1876:		    if (fail) {
+    #####: 1877:			if (*o != '-')
+    #####: 1878:			    zwarnnam(nam, "bad option: -%c", *o);
+        -: 1879:			else
+    #####: 1880:			    zwarnnam(nam, "bad option: -%s", o);
+    #####: 1881:			return 1;
+        -: 1882:		    }
+    #####: 1883:		    o = NULL;
+    #####: 1884:		    break;
+        -: 1885:		}
+    #####: 1886:		if (d->flags & ZOF_ARG) {
+    #####: 1887:		    if (o[1]) {
+    #####: 1888:			add_opt_val(d, o + 1);
+    #####: 1889:			break;
+    #####: 1890:		    } else if (!(d->flags & ZOF_OPT) ||
+    #####: 1891:			       (pp[1] && pp[1][0] != '-')) {
+    #####: 1892:			if (!pp[1]) {
+    #####: 1893:			    zwarnnam(nam, "missing argument for option: -%s",
+        -: 1894:				    d->name);
+    #####: 1895:			    return 1;
+        -: 1896:			}
+    #####: 1897:			add_opt_val(d, *++pp);
+        -: 1898:		    } else
+    #####: 1899:			add_opt_val(d, NULL);
+        -: 1900:		} else
+    #####: 1901:		    add_opt_val(d, NULL);
+        -: 1902:	    }
+    #####: 1903:	    if (!o) {
+    #####: 1904:		if (extract) {
+    #####: 1905:		    if (del)
+    #####: 1906:			*cp++ = *pp;
+    #####: 1907:		    continue;
+        -: 1908:		} else
+    #####: 1909:		    break;
+        -: 1910:	    }
+        -: 1911:	} else {
+    #####: 1912:	    if (d->flags & ZOF_ARG) {
+    #####: 1913:		char *e = o + strlen(d->name) + 1;
+        -: 1914:
+    #####: 1915:		if (*e)
+    #####: 1916:		    add_opt_val(d, e);
+    #####: 1917:		else if (!(d->flags & ZOF_OPT) ||
+    #####: 1918:			 (pp[1] && pp[1][0] != '-')) {
+    #####: 1919:		    if (!pp[1]) {
+    #####: 1920:			zwarnnam(nam, "missing argument for option: -%s",
+        -: 1921:				d->name);
+    #####: 1922:			return 1;
+        -: 1923:		    }
+    #####: 1924:		    add_opt_val(d, *++pp);
+        -: 1925:		} else
+    #####: 1926:		    add_opt_val(d, NULL);
+        -: 1927:	    } else
+    #####: 1928:		add_opt_val(d, NULL);
+        -: 1929:	}
+        -: 1930:    }
+        -: 1931:
+    #####: 1932:    if (flags & ZOF_MAP) {
+    #####: 1933:	for (d = opt_descs; d; d = d->next)
+    #####: 1934:	    if (d->arr && !d->vals && (d->flags & ZOF_MAP)) {
+    #####: 1935:		if (d->arr->num == 0 && get_opt_desc(d->arr->name))
+    #####: 1936:		    d->arr->num = -1;	/* this is not a real array */
+        -: 1937:	    }
+        -: 1938:    }
+    #####: 1939:    if (extract && del)
+    #####: 1940:	while (*pp)
+    #####: 1941:	    *cp++ = *pp++;
+        -: 1942:
+    #####: 1943:    for (a = opt_arrs; a; a = a->next) {
+    #####: 1944:	if (a->num >= 0 && (!keep || a->num)) {
+    #####: 1945:	    aval = (char **) zalloc((a->num + 1) * sizeof(char *));
+    #####: 1946:	    for (ap = aval, v = a->vals; v; ap++, v = v->next) {
+    #####: 1947:		if (v->str)
+    #####: 1948:		    *ap = ztrdup(v->str);
+        -: 1949:		else {
+    #####: 1950:		    *ap = ztrdup(v->name);
+    #####: 1951:		    if (v->arg)
+    #####: 1952:			*++ap = ztrdup(v->arg);
+        -: 1953:		}
+        -: 1954:	    }
+    #####: 1955:	    *ap = NULL;
+    #####: 1956:	    setaparam(a->name, aval);
+        -: 1957:	}
+        -: 1958:    }
+    #####: 1959:    if (assoc) {
+        -: 1960:	int num;
+        -: 1961:
+    #####: 1962:	for (num = 0, d = opt_descs; d; d = d->next)
+    #####: 1963:	    if (d->vals)
+    #####: 1964:		num++;
+        -: 1965:
+    #####: 1966:	if (!keep || num) {
+    #####: 1967:	    ap = zalloc_default_array(&aval, assoc, keep, num);
+    #####: 1968:	    for (d = opt_descs; d; d = d->next) {
+    #####: 1969:		if (d->vals) {
+    #####: 1970:		    *ap++ = n = (char *) zalloc(strlen(d->name) + 2);
+    #####: 1971:		    *n = '-';
+    #####: 1972:		    strcpy(n + 1, d->name);
+        -: 1973:
+    #####: 1974:		    for (num = 1, v = d->vals; v; v = v->onext) {
+    #####: 1975:			num += (v->arg ? strlen(v->arg) : 0);
+    #####: 1976:			if (v->next)
+    #####: 1977:			    num++;
+        -: 1978:		    }
+    #####: 1979:		    *ap++ = n = (char *) zalloc(num);
+    #####: 1980:		    for (v = d->vals; v; v = v->onext) {
+    #####: 1981:			if (v->arg) {
+    #####: 1982:			    strcpy(n, v->arg);
+    #####: 1983:			    n += strlen(v->arg);
+        -: 1984:			}
+    #####: 1985:			*n = ' ';
+        -: 1986:		    }
+    #####: 1987:		    *n = '\0';
+        -: 1988:		}
+        -: 1989:	    }
+    #####: 1990:	    *ap = NULL;
+    #####: 1991:	    sethparam(assoc, aval);
+        -: 1992:	}
+        -: 1993:    }
+    #####: 1994:    if (del) {
+    #####: 1995:	if (extract) {
+    #####: 1996:	    *cp = NULL;
+    #####: 1997:	    freearray(pparams);
+    #####: 1998:	    pparams = zarrdup(np);
+        -: 1999:	} else {
+    #####: 2000:	    pp = zarrdup(pp);
+    #####: 2001:	    freearray(pparams);
+    #####: 2002:	    pparams = pp;
+        -: 2003:	}
+        -: 2004:    }
+    #####: 2005:    return 0;
+        -: 2006:}
+        -: 2007:
+        -: 2008:static struct builtin bintab[] = {
+        -: 2009:    BUILTIN("zformat", 0, bin_zformat, 3, -1, 0, NULL, NULL),
+        -: 2010:    BUILTIN("zparseopts", 0, bin_zparseopts, 1, -1, 0, NULL, NULL),
+        -: 2011:    BUILTIN("zregexparse", 0, bin_zregexparse, 3, -1, 0, "c", NULL),
+        -: 2012:    BUILTIN("zstyle", 0, bin_zstyle, 0, -1, 0, NULL, NULL),
+        -: 2013:};
+        -: 2014:
+        -: 2015:static struct features module_features = {
+        -: 2016:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -: 2017:    NULL, 0,
+        -: 2018:    NULL, 0,
+        -: 2019:    NULL, 0,
+        -: 2020:    0
+        -: 2021:};
+        -: 2022:
+        -: 2023:/**/
+        -: 2024:int
+        1: 2025:setup_(UNUSED(Module m))
+        -: 2026:{
+        1: 2027:    zstyletab = newzstyletable(17, "zstyletab");
+        -: 2028:
+        1: 2029:    return 0;
+        -: 2030:}
+        -: 2031:
+        -: 2032:/**/
+        -: 2033:int
+        1: 2034:features_(Module m, char ***features)
+        -: 2035:{
+        1: 2036:    *features = featuresarray(m, &module_features);
+        1: 2037:    return 0;
+        -: 2038:}
+        -: 2039:
+        -: 2040:/**/
+        -: 2041:int
+        2: 2042:enables_(Module m, int **enables)
+        -: 2043:{
+        2: 2044:    return handlefeatures(m, &module_features, enables);
+        -: 2045:}
+        -: 2046:
+        -: 2047:/**/
+        -: 2048:int
+        1: 2049:boot_(UNUSED(Module m))
+        -: 2050:{
+        1: 2051:    return 0;
+        -: 2052:}
+        -: 2053:
+        -: 2054:/**/
+        -: 2055:int
+    #####: 2056:cleanup_(Module m)
+        -: 2057:{
+    #####: 2058:    return setfeatureenables(m, &module_features, NULL);
+        -: 2059:}
+        -: 2060:
+        -: 2061:/**/
+        -: 2062:int
+    #####: 2063:finish_(UNUSED(Module m))
+        -: 2064:{
+    #####: 2065:    deletehashtable(zstyletab);
+        -: 2066:
+    #####: 2067:    return 0;
+        -: 2068:}

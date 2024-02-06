@@ -1,0 +1,2332 @@
+        -:    0:Source:zle_main.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_main.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_main.gcda
+        -:    0:Runs:8
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_main.c - main routines for line editor
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_main.pro"
+        -:   32:
+        -:   33:#ifdef HAVE_POLL_H
+        -:   34:# include <poll.h>
+        -:   35:#endif
+        -:   36:#if defined(HAVE_POLL) && !defined(POLLIN) && !defined(POLLNORM)
+        -:   37:# undef HAVE_POLL
+        -:   38:#endif
+        -:   39:
+        -:   40:/* The input line assembled so far */
+        -:   41:
+        -:   42:/**/
+        -:   43:mod_export ZLE_STRING_T zleline;
+        -:   44:
+        -:   45:/* Cursor position and line length in zle */
+        -:   46:
+        -:   47:/**/
+        -:   48:mod_export int zlecs, zlell;
+        -:   49:
+        -:   50:/* != 0 if in a shell function called from completion, such that read -[cl]  *
+        -:   51: * will work (i.e., the line is metafied, and the above word arrays are OK). */
+        -:   52:
+        -:   53:/**/
+        -:   54:mod_export int incompctlfunc;
+        -:   55:
+        -:   56:/* != 0 if completion module is loaded */
+        -:   57:
+        -:   58:/**/
+        -:   59:mod_export int hascompmod;
+        -:   60:
+        -:   61:/* Increment for each nested recursive-edit */
+        -:   62:
+        -:   63:/**/
+        -:   64:mod_export int zle_recursive;
+        -:   65:
+        -:   66:/* ZLRF_* flags passed to zleread() */
+        -:   67:
+        -:   68:/**/
+        -:   69:int zlereadflags;
+        -:   70:
+        -:   71:/* ZLCON_* flags passed to zleread() */
+        -:   72:
+        -:   73:/**/
+        -:   74:int zlecontext;
+        -:   75:
+        -:   76:/* != 0 if we're done editing */
+        -:   77:
+        -:   78:/**/
+        -:   79:int done;
+        -:   80:
+        -:   81:/* location of mark */
+        -:   82:
+        -:   83:/**/
+        -:   84:int mark;
+        -:   85:
+        -:   86:/*
+        -:   87: * Status ($?) saved before function entry.  This is the
+        -:   88: * status we need to use in prompts.
+        -:   89: */
+        -:   90:
+        -:   91:/**/
+        -:   92:static int pre_zle_status;
+        -:   93:
+        -:   94:/*
+        -:   95: * Last character pressed.
+        -:   96: *
+        -:   97: * Depending how far we are with processing, the lastcharacter may
+        -:   98: * be a single byte read (lastchar_wide_valid is 0, lastchar_wide is not
+        -:   99: * valid) or a full wide character.  This is needed because we can't be
+        -:  100: * sure whether the user is typing old \M-style commands or multibyte
+        -:  101: * input.
+        -:  102: *
+        -:  103: * Calling getfullchar or getrestchar is guaranteed to ensure we have
+        -:  104: * a valid wide character (although this may be WEOF).  In many states
+        -:  105: * we know this and don't need to test lastchar_wide_valid.
+        -:  106: */
+        -:  107:
+        -:  108:/**/
+        -:  109:mod_export int
+        -:  110:lastchar;
+        -:  111:#ifdef MULTIBYTE_SUPPORT
+        -:  112:/**/
+        -:  113:mod_export ZLE_INT_T lastchar_wide;
+        -:  114:/**/
+        -:  115:mod_export int
+        -:  116:lastchar_wide_valid;
+        -:  117:#endif
+        -:  118:
+        -:  119:/* the bindings for the previous and for this key */
+        -:  120:
+        -:  121:/**/
+        -:  122:mod_export Thingy lbindk, bindk;
+        -:  123:
+        -:  124:/* insert mode/overwrite mode flag */
+        -:  125:
+        -:  126:/**/
+        -:  127:int insmode;
+        -:  128:
+        -:  129:/**/
+        -:  130:mod_export int eofchar;
+        -:  131:
+        -:  132:static int eofsent;
+        -:  133:/*
+        -:  134: * Key timeout in hundredths of a second:  we use time_t so
+        -:  135: * that we only have the limits on one integer type to worry about.
+        -:  136: */
+        -:  137:static time_t keytimeout;
+        -:  138:
+        -:  139:#if defined(HAVE_SELECT) || defined(HAVE_POLL)
+        -:  140:/* Terminal baud rate */
+        -:  141:
+        -:  142:static int baud;
+        -:  143:static long costmult;
+        -:  144:#endif
+        -:  145:
+        -:  146:/* flags associated with last command */
+        -:  147:
+        -:  148:/**/
+        -:  149:mod_export int lastcmd;
+        -:  150:
+        -:  151:/**/
+        -:  152:mod_export Widget compwidget;
+        -:  153:
+        -:  154:/* the status line, a null-terminated metafied string */
+        -:  155:
+        -:  156:/**/
+        -:  157:mod_export char *statusline;
+        -:  158:
+        -:  159:/* The current history line and cursor position for the top line *
+        -:  160: * on the buffer stack.                                          */
+        -:  161:
+        -:  162:/**/
+        -:  163:int stackhist, stackcs;
+        -:  164:
+        -:  165:/* position in undo stack from when the current vi change started */
+        -:  166:
+        -:  167:/**/
+        -:  168:zlong vistartchange;
+        -:  169:
+        -:  170:/* current modifier status */
+        -:  171:
+        -:  172:/**/
+        -:  173:mod_export struct modifier zmod;
+        -:  174:
+        -:  175:/* Current command prefix status.  This is normally 0.  Prefixes set *
+        -:  176: * this to 1.  Each time round the main loop, this is checked: if it *
+        -:  177: * is 0, the modifier status is reset; if it is 1, the modifier      *
+        -:  178: * status is left unchanged, and this flag is reset to 0.  The       *
+        -:  179: * effect is that several prefix commands can be executed, and have  *
+        -:  180: * cumulative effect, but any other command execution will clear the *
+        -:  181: * modifiers.                                                        */
+        -:  182:
+        -:  183:/**/
+        -:  184:int prefixflag;
+        -:  185:
+        -:  186:/* Number of characters waiting to be read by the ungetbytes mechanism */
+        -:  187:/**/
+        -:  188:int kungetct;
+        -:  189:
+        -:  190:/**/
+        -:  191:mod_export char *zlenoargs[1] = { NULL };
+        -:  192:
+        -:  193:static char **raw_lp, **raw_rp;
+        -:  194:
+        -:  195:/*
+        -:  196: * File descriptors we are watching as well as the terminal fd. 
+        -:  197: * These are all for reading; we don't watch for writes or exceptions.
+        -:  198: */
+        -:  199:/**/
+        -:  200:int nwatch;		/* Number of fd's we are watching */
+        -:  201:/*
+        -:  202: * Array of nwatch structures.
+        -:  203: */
+        -:  204:/**/
+        -:  205:Watch_fd watch_fds;
+        -:  206:
+        -:  207:/* set up terminal */
+        -:  208:
+        -:  209:/**/
+        -:  210:mod_export void
+    #####:  211:zsetterm(void)
+        -:  212:{
+        -:  213:    struct ttyinfo ti;
+        -:  214:
+    #####:  215:    if (fetchttyinfo) {
+        -:  216:	/*
+        -:  217:	 * User requested terminal to be returned to normal use,
+        -:  218:	 * so remember the terminal settings if not frozen.
+        -:  219:	 */
+    #####:  220:	if (!ttyfrozen)
+    #####:  221:	    gettyinfo(&shttyinfo);
+    #####:  222:	fetchttyinfo = 0;
+        -:  223:    }
+        -:  224:
+        -:  225:/* sanitize the tty */
+        -:  226:#ifdef HAS_TIO
+    #####:  227:    shttyinfo.tio.c_lflag |= ICANON | ECHO;
+        -:  228:# ifdef FLUSHO
+    #####:  229:    shttyinfo.tio.c_lflag &= ~FLUSHO;
+        -:  230:# endif
+        -:  231:#else				/* not HAS_TIO */
+        -:  232:    shttyinfo.sgttyb.sg_flags = (shttyinfo.sgttyb.sg_flags & ~CBREAK) | ECHO;
+        -:  233:    shttyinfo.lmodes &= ~LFLUSHO;
+        -:  234:#endif
+        -:  235:
+    #####:  236:    attachtty(mypgrp);
+    #####:  237:    ti = shttyinfo;
+        -:  238:#ifdef HAS_TIO
+    #####:  239:    if (unset(FLOWCONTROL))
+    #####:  240:	ti.tio.c_iflag &= ~IXON;
+    #####:  241:    ti.tio.c_lflag &= ~(ICANON | ECHO
+        -:  242:# ifdef FLUSHO
+        -:  243:			| FLUSHO
+        -:  244:# endif
+        -:  245:	);
+        -:  246:# ifdef TAB3
+    #####:  247:    ti.tio.c_oflag &= ~TAB3;
+        -:  248:# else
+        -:  249:#  ifdef OXTABS
+        -:  250:    ti.tio.c_oflag &= ~OXTABS;
+        -:  251:#  else
+        -:  252:#   ifdef XTABS
+        -:  253:    ti.tio.c_oflag &= ~XTABS;
+        -:  254:#   endif
+        -:  255:#  endif
+        -:  256:# endif
+        -:  257:#ifdef ONLCR
+    #####:  258:    ti.tio.c_oflag |= ONLCR;
+        -:  259:#endif
+    #####:  260:    ti.tio.c_cc[VQUIT] =
+        -:  261:# ifdef VDISCARD
+    #####:  262:	ti.tio.c_cc[VDISCARD] =
+        -:  263:# endif
+        -:  264:# ifdef VSUSP
+    #####:  265:	ti.tio.c_cc[VSUSP] =
+        -:  266:# endif
+        -:  267:# ifdef VDSUSP
+        -:  268:	ti.tio.c_cc[VDSUSP] =
+        -:  269:# endif
+        -:  270:# ifdef VSWTCH
+        -:  271:	ti.tio.c_cc[VSWTCH] =
+        -:  272:# endif
+        -:  273:# ifdef VLNEXT
+    #####:  274:	ti.tio.c_cc[VLNEXT] =
+        -:  275:# endif
+        -:  276:	VDISABLEVAL;
+        -:  277:# if defined(VSTART) && defined(VSTOP)
+    #####:  278:    if (unset(FLOWCONTROL))
+    #####:  279:	ti.tio.c_cc[VSTART] = ti.tio.c_cc[VSTOP] = VDISABLEVAL;
+        -:  280:# endif
+    #####:  281:    eofchar = ti.tio.c_cc[VEOF];
+    #####:  282:    ti.tio.c_cc[VMIN] = 1;
+    #####:  283:    ti.tio.c_cc[VTIME] = 0;
+    #####:  284:    ti.tio.c_iflag |= (INLCR | ICRNL);
+        -:  285: /* this line exchanges \n and \r; it's changed back in getbyte
+        -:  286:	so that the net effect is no change at all inside the shell.
+        -:  287:	This double swap is to allow typeahead in common cases, eg.
+        -:  288:
+        -:  289:	% bindkey -s '^J' 'echo foo^M'
+        -:  290:	% sleep 10
+        -:  291:	echo foo<return>  <--- typed before sleep returns
+        -:  292:
+        -:  293:	The shell sees \n instead of \r, since it was changed by the kernel
+        -:  294:	while zsh wasn't looking. Then in getbyte() \n is changed back to \r,
+        -:  295:	and it sees "echo foo<accept line>", as expected. Without the double
+        -:  296:	swap the shell would see "echo foo\n", which is translated to
+        -:  297:	"echo fooecho foo<accept line>" because of the binding.
+        -:  298:	Note that if you type <line-feed> during the sleep the shell just sees
+        -:  299:	\n, which is translated to \r in getbyte(), and you just get another
+        -:  300:	prompt. For type-ahead to work in ALL cases you have to use
+        -:  301:	stty inlcr.
+        -:  302:
+        -:  303:	Unfortunately it's IMPOSSIBLE to have a general solution if both
+        -:  304:	<return> and <line-feed> are mapped to the same character. The shell
+        -:  305:	could check if there is input and read it before setting it's own
+        -:  306:	terminal modes but if we get a \n we don't know whether to keep it or
+        -:  307:	change to \r :-(
+        -:  308:	*/
+        -:  309:
+        -:  310:#else				/* not HAS_TIO */
+        -:  311:    ti.sgttyb.sg_flags = (ti.sgttyb.sg_flags | CBREAK) & ~ECHO & ~XTABS;
+        -:  312:    ti.lmodes &= ~LFLUSHO;
+        -:  313:    eofchar = ti.tchars.t_eofc;
+        -:  314:    ti.tchars.t_quitc =
+        -:  315:	ti.ltchars.t_suspc =
+        -:  316:	ti.ltchars.t_flushc =
+        -:  317:	ti.ltchars.t_dsuspc = ti.ltchars.t_lnextc = -1;
+        -:  318:#endif
+        -:  319:
+        -:  320:#if defined(TIOCOUTQ) && defined(HAVE_SELECT)
+    #####:  321:    if (baud) {			/**/
+    #####:  322:	int n = 0;
+        -:  323:
+    #####:  324:	while ((ioctl(SHTTY, TIOCOUTQ, (char *)&n) >= 0) && n) {
+        -:  325:	    struct timeval tv;
+        -:  326:
+    #####:  327:	    tv.tv_sec = n / baud;
+    #####:  328:	    tv.tv_usec = ((n % baud) * 1000000) / baud;
+    #####:  329:	    select(0, NULL, NULL, NULL, &tv);
+        -:  330:	}
+        -:  331:    }
+        -:  332:#endif
+        -:  333:
+    #####:  334:    settyinfo(&ti);
+    #####:  335:}
+        -:  336:
+        -:  337:static char *kungetbuf;
+        -:  338:static int kungetsz;
+        -:  339:
+        -:  340:/*
+        -:  341: * Note on ungetbyte and ungetbytes for the confused (pws):
+        -:  342: * these are low level and deal with bytes before they
+        -:  343: * have been converted into (possibly wide) characters.
+        -:  344: * Hence the names.
+        -:  345: */
+        -:  346:
+        -:  347:/**/
+        -:  348:void
+    #####:  349:ungetbyte(int ch)
+        -:  350:{
+    #####:  351:    if (kungetct == kungetsz)
+    #####:  352:	kungetbuf = realloc(kungetbuf, kungetsz *= 2);
+    #####:  353:    kungetbuf[kungetct++] = ch;
+    #####:  354:}
+        -:  355:
+        -:  356:/**/
+        -:  357:void
+    #####:  358:ungetbytes(char *s, int len)
+        -:  359:{
+    #####:  360:    s += len;
+    #####:  361:    while (len--)
+    #####:  362:	ungetbyte(*--s);
+    #####:  363:}
+        -:  364:
+        -:  365:/**/
+        -:  366:void
+    #####:  367:ungetbytes_unmeta(char *s, int len)
+        -:  368:{
+    #####:  369:    s += len;
+    #####:  370:    while (len--) {
+    #####:  371:	if (len && s[-2] == Meta) {
+    #####:  372:	    ungetbyte(*--s ^ 32);
+    #####:  373:	    len--;
+    #####:  374:	    s--;
+        -:  375:	} else
+    #####:  376:	    ungetbyte(*--s);
+        -:  377:    }
+    #####:  378:}
+        -:  379:
+        -:  380:#if defined(pyr) && defined(HAVE_SELECT)
+        -:  381:static int
+        -:  382:breakread(int fd, char *buf, int n)
+        -:  383:{
+        -:  384:    fd_set f;
+        -:  385:
+        -:  386:    FD_ZERO(&f);
+        -:  387:    FD_SET(fd, &f);
+        -:  388:
+        -:  389:    return (select(fd + 1, (SELECT_ARG_2_T) & f, NULL, NULL, NULL) == -1 ?
+        -:  390:	    EOF : read(fd, buf, n));
+        -:  391:}
+        -:  392:
+        -:  393:# define read    breakread
+        -:  394:#endif
+        -:  395:
+        -:  396:/*
+        -:  397: * Possible forms of timeout.
+        -:  398: */
+        -:  399:enum ztmouttp {
+        -:  400:    /* No timeout in use. */
+        -:  401:    ZTM_NONE,
+        -:  402:    /*
+        -:  403:     * Key timeout in use (do_keytmout flag set).  If this goes off
+        -:  404:     * we return without anything being read.
+        -:  405:     */
+        -:  406:    ZTM_KEY,
+        -:  407:    /*
+        -:  408:     * Function timeout in use (from timedfns list).
+        -:  409:     * If this goes off we call any functions which have reached
+        -:  410:     * the time and then continue processing.
+        -:  411:     */
+        -:  412:    ZTM_FUNC,
+        -:  413:    /*
+        -:  414:     * Timeout hit the maximum allowed; if it fires we
+        -:  415:     * need to recalculate.  As we may use poll() for the timeout,
+        -:  416:     * which takes an int value in milliseconds, we might need this
+        -:  417:     * for times long in the future.  (We make no attempt to extend
+        -:  418:     * the range of time beyond that of time_t, however; that seems
+        -:  419:     * like a losing battle.)
+        -:  420:     *
+        -:  421:     * For key timeouts we just limit the value to
+        -:  422:     * ZMAXTIMEOUT; that's already absurdly large.
+        -:  423:     *
+        -:  424:     * The following is the maximum signed range over 1024 (2^10), which
+        -:  425:     * is a little more convenient than 1000, but done differently
+        -:  426:     * to avoid problems with unsigned integers.  We assume 8-bit bytes;
+        -:  427:     * there's no general way to fix up if that's wrong.
+        -:  428:     */
+        -:  429:    ZTM_MAX
+        -:  430:#define	ZMAXTIMEOUT	((time_t)1 << (sizeof(time_t)*8-11))
+        -:  431:};
+        -:  432:
+        -:  433:struct ztmout {
+        -:  434:    /* Type of timeout setting, see enum above */
+        -:  435:    enum ztmouttp tp;
+        -:  436:    /*
+        -:  437:     * Value for timeout in 100ths of a second if type is not ZTM_NONE.
+        -:  438:     */
+        -:  439:    time_t exp100ths;
+        -:  440:};
+        -:  441:
+        -:  442:/*
+        -:  443: * See if we need a timeout either for a key press or for a
+        -:  444: * timed function.
+        -:  445: *
+        -:  446: * do_keytmout is passed down from getbyte() here.  If it is positive,
+        -:  447: * we use the keytimeout value, which is in 100ths of a second (directly
+        -:  448: * set from the parameter).  If it is negative, we use -(do_keytmout+1)
+        -:  449: * (i.e. the one's complement, to allow a zero value to be set).  This
+        -:  450: * is only used when calling into zle from outside to specify an
+        -:  451: * explicit timeout.  This is also in 100ths of a second.
+        -:  452: */
+        -:  453:
+        -:  454:static void
+    #####:  455:calc_timeout(struct ztmout *tmoutp, long do_keytmout, int full)
+        -:  456:{
+    #####:  457:    if (do_keytmout && (keytimeout > 0 || do_keytmout < 0)) {
+    #####:  458:	if (do_keytmout < 0)
+    #####:  459:	    tmoutp->exp100ths = (time_t)-do_keytmout;
+    #####:  460:	else if (keytimeout > ZMAXTIMEOUT * 100 /* 24 days for a keypress???? */)
+    #####:  461:	    tmoutp->exp100ths = ZMAXTIMEOUT * 100;
+        -:  462:	else
+    #####:  463:	    tmoutp->exp100ths = keytimeout;
+    #####:  464:	tmoutp->tp = ZTM_KEY;
+        -:  465:    } else
+    #####:  466:	tmoutp->tp = ZTM_NONE;
+        -:  467:
+    #####:  468:    if (full && timedfns) {
+    #####:  469:	for (;;) {
+    #####:  470:	    LinkNode tfnode = firstnode(timedfns);
+        -:  471:	    Timedfn tfdat;
+        -:  472:	    time_t diff, exp100ths;
+        -:  473:
+    #####:  474:	    if (!tfnode)
+    #####:  475:		break;
+        -:  476:
+    #####:  477:	    tfdat = (Timedfn)getdata(tfnode);
+    #####:  478:	    diff = tfdat->when - time(NULL);
+    #####:  479:	    if (diff <= 0) {
+        -:  480:		/* Already due; call it and rescan. */
+    #####:  481:		tfdat->func();
+    #####:  482:		continue;
+        -:  483:	    }
+        -:  484:
+    #####:  485:	    if (diff > ZMAXTIMEOUT) {
+    #####:  486:		tmoutp->exp100ths = ZMAXTIMEOUT * 100;
+    #####:  487:		tmoutp->tp = ZTM_MAX;
+    #####:  488:	    } else if (diff > 0) {
+    #####:  489:		exp100ths = diff * 100;
+    #####:  490:		if (tmoutp->tp != ZTM_KEY ||
+    #####:  491:		    exp100ths < tmoutp->exp100ths) {
+    #####:  492:		    tmoutp->exp100ths = exp100ths;
+    #####:  493:		    tmoutp->tp = ZTM_FUNC;
+        -:  494:		}
+        -:  495:	    }
+    #####:  496:	    break;
+        -:  497:	}
+        -:  498:	/* In case we called a function which messed up the display... */
+    #####:  499:	if (resetneeded)
+    #####:  500:	    zrefresh();
+        -:  501:    }
+    #####:  502:}
+        -:  503:
+        -:  504:/* see calc_timeout for use of do_keytmout */
+        -:  505:
+        -:  506:static int
+    #####:  507:raw_getbyte(long do_keytmout, char *cptr, int full)
+        -:  508:{
+        -:  509:    int ret;
+        -:  510:    struct ztmout tmout;
+        -:  511:#if defined(HAS_TIO) && \
+        -:  512:  (defined(sun) || (!defined(HAVE_POLL) && !defined(HAVE_SELECT)))
+        -:  513:    struct ttyinfo ti;
+        -:  514:#endif
+        -:  515:#ifndef HAVE_POLL
+        -:  516:# ifdef HAVE_SELECT
+        -:  517:    fd_set foofd, errfd;
+        -:  518:    FD_ZERO(&errfd);
+        -:  519:# endif
+        -:  520:#endif
+        -:  521:
+    #####:  522:    calc_timeout(&tmout, do_keytmout, full);
+        -:  523:
+        -:  524:    /*
+        -:  525:     * Handle timeouts and watched fd's.  If a watched fd or a function
+        -:  526:     * timeout triggers we restart any key timeout.  This is likely to
+        -:  527:     * be harmless: the combination is extremely rare and a function
+        -:  528:     * is likely to occupy the user for a little while anyway.  We used
+        -:  529:     * to make timeouts take precedence, but we can't now that the
+        -:  530:     * timeouts may be external, so we may have both a permanent watched
+        -:  531:     * fd and a long-term timeout.
+        -:  532:     */
+    #####:  533:    if ((nwatch || tmout.tp != ZTM_NONE)) {
+        -:  534:#if defined(HAVE_SELECT) || defined(HAVE_POLL)
+    #####:  535:	int i, errtry = 0, selret;
+        -:  536:# ifdef HAVE_POLL
+        -:  537:	int nfds;
+        -:  538:	struct pollfd *fds;
+        -:  539:# endif
+        -:  540:# if defined(HAS_TIO) && defined(sun)
+        -:  541:	/*
+        -:  542:	 * Yes, I know this is complicated.  Yes, I know we
+        -:  543:	 * already have three bits of code to poll the terminal
+        -:  544:	 * down below.  No, I don't want to do this either.
+        -:  545:	 * However, it turns out on certain OSes, specifically
+        -:  546:	 * Solaris, that you can't poll typeahead for love nor
+        -:  547:	 * money without actually trying to read it.  But
+        -:  548:	 * if we are trying to select (and we need to if we
+        -:  549:	 * are watching other fd's) we won't pick that up.
+        -:  550:	 * So we just try and read it without blocking in
+        -:  551:	 * the time-honoured (i.e. absurdly baroque) termios
+        -:  552:	 * fashion.
+        -:  553:	 */
+        -:  554:	gettyinfo(&ti);
+        -:  555:	ti.tio.c_cc[VMIN] = 0;
+        -:  556:	settyinfo(&ti);
+        -:  557:	winch_unblock();
+        -:  558:	ret = read(SHTTY, cptr, 1);
+        -:  559:	winch_block();
+        -:  560:	ti.tio.c_cc[VMIN] = 1;
+        -:  561:	settyinfo(&ti);
+        -:  562:	if (ret > 0)
+        -:  563:	    return 1;
+        -:  564:# endif
+        -:  565:# ifdef HAVE_POLL
+    #####:  566:	nfds = 1 + nwatch;
+        -:  567:	/* First pollfd is SHTTY, following are the nwatch fds */
+    #####:  568:	fds = zalloc(sizeof(struct pollfd) * nfds);
+    #####:  569:	fds[0].fd = SHTTY;
+        -:  570:	/*
+        -:  571:	 * POLLIN, POLLIN, POLLIN,
+        -:  572:	 * Keep those fd's POLLIN...
+        -:  573:	 */
+    #####:  574:	fds[0].events = POLLIN;
+    #####:  575:	for (i = 0; i < nwatch; i++) {
+    #####:  576:	    fds[i+1].fd = watch_fds[i].fd;
+    #####:  577:	    fds[i+1].events = POLLIN;
+        -:  578:	}
+        -:  579:# endif
+    #####:  580:	for (;;) {
+        -:  581:# ifdef HAVE_POLL
+        -:  582:	    int poll_timeout;
+        -:  583:
+    #####:  584:	    if (tmout.tp != ZTM_NONE)
+    #####:  585:		poll_timeout = tmout.exp100ths * 10;
+        -:  586:	    else
+    #####:  587:		poll_timeout = -1;
+        -:  588:
+    #####:  589:	    winch_unblock();
+    #####:  590:	    selret = poll(fds, errtry ? 1 : nfds, poll_timeout);
+    #####:  591:	    winch_block();
+        -:  592:# else
+        -:  593:	    int fdmax = SHTTY;
+        -:  594:	    struct timeval *tvptr;
+        -:  595:	    struct timeval expire_tv;
+        -:  596:
+        -:  597:	    FD_ZERO(&foofd);
+        -:  598:	    FD_SET(SHTTY, &foofd);
+        -:  599:	    if (!errtry) {
+        -:  600:		for (i = 0; i < nwatch; i++) {
+        -:  601:		    int fd = watch_fds[i].fd;
+        -:  602:		    if (FD_ISSET(fd, &errfd))
+        -:  603:			continue;
+        -:  604:		    FD_SET(fd, &foofd);
+        -:  605:		    if (fd > fdmax)
+        -:  606:			fdmax = fd;
+        -:  607:		}
+        -:  608:	    }
+        -:  609:	    FD_ZERO(&errfd);
+        -:  610:
+        -:  611:	    if (tmout.tp != ZTM_NONE) {
+        -:  612:		expire_tv.tv_sec = tmout.exp100ths / 100;
+        -:  613:		expire_tv.tv_usec = (tmout.exp100ths % 100) * 10000L;
+        -:  614:		tvptr = &expire_tv;
+        -:  615:	    }
+        -:  616:	    else
+        -:  617:		tvptr = NULL;
+        -:  618:
+        -:  619:	    winch_unblock();
+        -:  620:	    selret = select(fdmax+1, (SELECT_ARG_2_T) & foofd,
+        -:  621:			    NULL, NULL, tvptr);
+        -:  622:	    winch_block();
+        -:  623:# endif
+        -:  624:	    /*
+        -:  625:	     * Make sure a user interrupt gets passed on straight away.
+        -:  626:	     */
+    #####:  627:	    if (selret < 0 && (errflag || retflag || breaks || exit_pending))
+        -:  628:		break;
+        -:  629:	    /*
+        -:  630:	     * Try to avoid errors on our special fd's from
+        -:  631:	     * messing up reads from the terminal.  Try first
+        -:  632:	     * with all fds, then try unsetting the special ones.
+        -:  633:	     */
+    #####:  634:	    if (selret < 0 && !errtry) {
+        -:  635:		/* Continue after irrelevant interrupt */
+    #####:  636:		if (errno != EINTR) {
+        -:  637:		    /* Don't trust special FDs */
+    #####:  638:		    errtry = 1;
+        -:  639:		}
+    #####:  640:		continue;
+        -:  641:	    }
+    #####:  642:	    if (selret == 0) {
+        -:  643:		zlong save_lastval;
+        -:  644:
+        -:  645:		/*
+        -:  646:		 * Nothing ready and no error, so we timed out.
+        -:  647:		 */
+    #####:  648:		switch (tmout.tp) {
+    #####:  649:		case ZTM_NONE:
+        -:  650:		    /* keeps compiler happy if not debugging */
+        -:  651:#ifdef DEBUG
+        -:  652:		    dputs("BUG: timeout fired with no timeout set.");
+        -:  653:#endif
+        -:  654:		    /* treat as if a key timeout triggered */
+        -:  655:		    /*FALLTHROUGH*/
+        -:  656:		case ZTM_KEY:
+        -:  657:		    /* Special value -2 signals nothing ready */
+    #####:  658:		    selret = -2;
+    #####:  659:		    break;
+        -:  660:
+    #####:  661:		case ZTM_FUNC:
+    #####:  662:		    save_lastval = lastval;
+    #####:  663:		    while (firstnode(timedfns)) {
+    #####:  664:			Timedfn tfdat = (Timedfn)getdata(firstnode(timedfns));
+        -:  665:			/*
+        -:  666:			 * It's possible a previous function took
+        -:  667:			 * a long time to run (though it can't
+        -:  668:			 * call zle recursively), so recalculate
+        -:  669:			 * the time on each iteration.
+        -:  670:			 */
+    #####:  671:			time_t now = time(NULL);
+    #####:  672:			if (tfdat->when > now)
+    #####:  673:			    break;
+    #####:  674:			tfdat->func();
+        -:  675:		    }
+    #####:  676:		    lastval = save_lastval;
+        -:  677:		    /* Function may have messed up the display */
+    #####:  678:		    if (resetneeded)
+    #####:  679:			zrefresh();
+        -:  680:		    /* We need to recalculate the timeout */
+        -:  681:		    /*FALLTHROUGH*/
+        -:  682:		case ZTM_MAX:
+        -:  683:		    /*
+        -:  684:		     * Reached the limit of our range, but not the
+        -:  685:		     * actual timeout; recalculate the timeout.
+        -:  686:		     * We're cheating with the key timeout here:
+        -:  687:		     * if one clashed with a function timeout we
+        -:  688:		     * reconsider the key timeout from scratch.
+        -:  689:		     * The effect of this is microscopic.
+        -:  690:		     */
+    #####:  691:		    calc_timeout(&tmout, do_keytmout, full);
+    #####:  692:		    break;
+        -:  693:		}
+        -:  694:		/*
+        -:  695:		 * If we handled the timeout successfully,
+        -:  696:		 * carry on.
+        -:  697:		 */
+    #####:  698:		if (selret == 0)
+    #####:  699:		    continue;
+        -:  700:	    }
+        -:  701:	    /* If error or unhandled timeout, give up. */
+    #####:  702:	    if (selret < 0)
+    #####:  703:		break;
+        -:  704:	    /*
+        -:  705:	     * If there's user input handle it straight away.
+        -:  706:	     * This improves the user's ability to handle exceptional
+        -:  707:	     * conditions like runaway output.
+        -:  708:	     */
+    #####:  709:	    if (
+        -:  710:# ifdef HAVE_POLL
+    #####:  711:		 (fds[0].revents & (POLLIN|POLLERR|POLLHUP|POLLNVAL))
+        -:  712:# else
+        -:  713:		 FD_ISSET(SHTTY, &foofd)
+        -:  714:# endif
+        -:  715:		 )
+    #####:  716:		break;
+    #####:  717:	    if (nwatch && !errtry) {
+        -:  718:		/*
+        -:  719:		 * Copy the details of the watch fds in case the
+        -:  720:		 * user decides to delete one from inside the
+        -:  721:		 * handler function.
+        -:  722:		 */
+    #####:  723:		int lnwatch = nwatch;
+    #####:  724:		Watch_fd lwatch_fds = zalloc(lnwatch*sizeof(struct watch_fd));
+    #####:  725:		memcpy(lwatch_fds, watch_fds, lnwatch*sizeof(struct watch_fd));
+    #####:  726:		for (i = 0; i < lnwatch; i++)
+    #####:  727:		    lwatch_fds[i].func = ztrdup(lwatch_fds[i].func);
+    #####:  728:		for (i = 0; i < lnwatch; i++) {
+    #####:  729:		    Watch_fd lwatch_fd = lwatch_fds + i;
+    #####:  730:		    if (
+        -:  731:# ifdef HAVE_POLL
+    #####:  732:			(fds[i+1].revents & (POLLIN|POLLERR|POLLHUP|POLLNVAL))
+        -:  733:# else
+        -:  734:			FD_ISSET(lwatch_fd->fd, &foofd) ||
+        -:  735:			FD_ISSET(lwatch_fd->fd, &errfd)
+        -:  736:# endif
+        -:  737:			) {
+        -:  738:			/* Handle the fd. */
+        -:  739:			char *fdbuf;
+        -:  740:			{
+        -:  741:			    char buf[BDIGBUFSIZE];
+    #####:  742:			    convbase(buf, lwatch_fd->fd, 10);
+    #####:  743:			    fdbuf = ztrdup(buf);
+        -:  744:			}
+        -:  745:
+    #####:  746:			if (lwatch_fd->widget) {
+    #####:  747:			    zlecallhook(lwatch_fd->func, fdbuf);
+    #####:  748:			    zsfree(fdbuf);
+        -:  749:			} else {
+    #####:  750:			    LinkList funcargs = znewlinklist();
+    #####:  751:			    zaddlinknode(funcargs, ztrdup(lwatch_fd->func));
+    #####:  752:			    zaddlinknode(funcargs, fdbuf);
+        -:  753:# ifdef HAVE_POLL
+        -:  754:#  ifdef POLLERR
+    #####:  755:			    if (fds[i+1].revents & POLLERR)
+    #####:  756:				zaddlinknode(funcargs, ztrdup("err"));
+        -:  757:#  endif
+        -:  758:#  ifdef POLLHUP
+    #####:  759:			    if (fds[i+1].revents & POLLHUP)
+    #####:  760:				zaddlinknode(funcargs, ztrdup("hup"));
+        -:  761:#  endif
+        -:  762:#  ifdef POLLNVAL
+    #####:  763:			    if (fds[i+1].revents & POLLNVAL)
+    #####:  764:				zaddlinknode(funcargs, ztrdup("nval"));
+        -:  765:#  endif
+        -:  766:# else
+        -:  767:			    if (FD_ISSET(lwatch_fd->fd, &errfd))
+        -:  768:				zaddlinknode(funcargs, ztrdup("err"));
+        -:  769:# endif
+    #####:  770:			    callhookfunc(lwatch_fd->func, funcargs, 0, NULL);
+    #####:  771:			    freelinklist(funcargs, freestr);
+        -:  772:			}
+    #####:  773:			if (errflag) {
+        -:  774:			    /* No sensible way of handling errors here */
+    #####:  775:			    errflag &= ~ERRFLAG_ERROR;
+        -:  776:			    /*
+        -:  777:			     * Paranoia: don't run the hooks again this
+        -:  778:			     * time.
+        -:  779:			     */
+    #####:  780:			    errtry = 1;
+        -:  781:			}
+        -:  782:		    }
+        -:  783:		}
+        -:  784:		/* Function may have invalidated the display. */
+    #####:  785:		if (resetneeded)
+    #####:  786:		    zrefresh();
+    #####:  787:		for (i = 0; i < lnwatch; i++)
+    #####:  788:		    zsfree(lwatch_fds[i].func);
+    #####:  789:		zfree(lwatch_fds, lnwatch*sizeof(struct watch_fd));
+        -:  790:
+        -:  791:# ifdef HAVE_POLL
+        -:  792:		/* Function may have added or removed handlers */
+    #####:  793:		nfds = 1 + nwatch;
+    #####:  794:		if (nfds > 1) {
+    #####:  795:		    fds = zrealloc(fds, sizeof(struct pollfd) * nfds);
+    #####:  796:		    for (i = 0; i < nwatch; i++) {
+        -:  797:			/*
+        -:  798:			 * This is imperfect because it assumes fds[] and
+        -:  799:			 * watch_fds[] remain in sync, which may be false
+        -:  800:			 * if handlers are shuffled.  However, it should
+        -:  801:			 * be harmless (e.g., produce one extra pass of
+        -:  802:			 * the loop) in the event they fall out of sync.
+        -:  803:			 */
+    #####:  804:			if (fds[i+1].fd == watch_fds[i].fd &&
+    #####:  805:			    (fds[i+1].revents & (POLLERR|POLLHUP|POLLNVAL))) {
+    #####:  806:			    fds[i+1].events = 0;	/* Don't poll this */
+        -:  807:			} else {
+    #####:  808:			    fds[i+1].fd = watch_fds[i].fd;
+    #####:  809:			    fds[i+1].events = POLLIN;
+        -:  810:			}
+    #####:  811:			fds[i+1].revents = 0;
+        -:  812:		    }
+        -:  813:		}
+        -:  814:# endif
+        -:  815:	    }
+        -:  816:	    /* If looping, need to recalculate timeout */
+    #####:  817:	    calc_timeout(&tmout, do_keytmout, full);
+        -:  818:	}
+        -:  819:# ifdef HAVE_POLL
+    #####:  820:	zfree(fds, sizeof(struct pollfd) * nfds);
+        -:  821:# endif
+    #####:  822:	if (selret < 0)
+    #####:  823:	    return selret;
+        -:  824:#else
+        -:  825:# ifdef HAS_TIO
+        -:  826:	ti = shttyinfo;
+        -:  827:	ti.tio.c_lflag &= ~ICANON;
+        -:  828:	ti.tio.c_cc[VMIN] = 0;
+        -:  829:	ti.tio.c_cc[VTIME] = tmout.exp100ths / 10;
+        -:  830:#  ifdef HAVE_TERMIOS_H
+        -:  831:	tcsetattr(SHTTY, TCSANOW, &ti.tio);
+        -:  832:#  else
+        -:  833:	ioctl(SHTTY, TCSETA, &ti.tio);
+        -:  834:#  endif
+        -:  835:	winch_unblock();
+        -:  836:	ret = read(SHTTY, cptr, 1);
+        -:  837:	winch_block();
+        -:  838:#  ifdef HAVE_TERMIOS_H
+        -:  839:	tcsetattr(SHTTY, TCSANOW, &shttyinfo.tio);
+        -:  840:#  else
+        -:  841:	ioctl(SHTTY, TCSETA, &shttyinfo.tio);
+        -:  842:#  endif
+        -:  843:	return (ret <= 0) ? ret : *cptr;
+        -:  844:# endif
+        -:  845:#endif
+        -:  846:    }
+        -:  847:
+    #####:  848:    winch_unblock();
+    #####:  849:    ret = read(SHTTY, cptr, 1);
+    #####:  850:    winch_block();
+        -:  851:
+    #####:  852:    return ret;
+        -:  853:}
+        -:  854:
+        -:  855:/* see calc_timeout for use of do_keytmout */
+        -:  856:
+        -:  857:/**/
+        -:  858:mod_export int
+    #####:  859:getbyte(long do_keytmout, int *timeout, int full)
+        -:  860:{
+        -:  861:    char cc;
+        -:  862:    unsigned int ret;
+    #####:  863:    int die = 0, r, icnt = 0;
+    #####:  864:    int old_errno = errno, obreaks = breaks;
+        -:  865:
+    #####:  866:    if (timeout)
+    #####:  867:	*timeout = 0;
+        -:  868:
+        -:  869:#ifdef MULTIBYTE_SUPPORT
+        -:  870:    /*
+        -:  871:     * Reading a single byte always invalidates the status
+        -:  872:     * of lastchar_wide.  We may fix this up in getrestchar
+        -:  873:     * if this is the last byte of a wide character.
+        -:  874:     */
+    #####:  875:    lastchar_wide_valid = 0;
+        -:  876:#endif
+        -:  877:
+    #####:  878:    if (kungetct)
+    #####:  879:	ret = STOUC(kungetbuf[--kungetct]);
+        -:  880:    else {
+    #####:  881:	for (;;) {
+    #####:  882:	    int q = queue_signal_level();
+    #####:  883:	    dont_queue_signals();
+    #####:  884:	    r = raw_getbyte(do_keytmout, &cc, full);
+    #####:  885:	    restore_queue_signals(q);
+    #####:  886:	    if (r == -2) {
+        -:  887:		/* timeout */
+    #####:  888:		if (timeout)
+    #####:  889:		    *timeout = 1;
+    #####:  890:		return lastchar = EOF;
+        -:  891:	    }
+    #####:  892:	    if (r == 1)
+    #####:  893:		break;
+    #####:  894:	    if (r == 0) {
+        -:  895:		/* The test for IGNOREEOF was added to make zsh ignore ^Ds
+        -:  896:		   that were typed while commands are running.  Unfortunately
+        -:  897:		   this caused trouble under at least one system (SunOS 4.1).
+        -:  898:		   Here shells that lost their xterm (e.g. if it was killed
+        -:  899:		   with -9) didn't fail to read from the terminal but instead
+        -:  900:		   happily continued to read EOFs, so that the above read
+        -:  901:		   returned with 0, and, with IGNOREEOF set, this caused
+        -:  902:		   an infinite loop.  The simple way around this was to add
+        -:  903:		   the counter (icnt) so that this happens 20 times and than
+        -:  904:		   the shell gives up (yes, this is a bit dirty...). */
+    #####:  905:		if ((zlereadflags & ZLRF_IGNOREEOF) && icnt++ < 20)
+    #####:  906:		    continue;
+    #####:  907:		stopmsg = 1;
+    #####:  908:		zexit(1, ZEXIT_NORMAL);
+        -:  909:		/* If called from an exit hook, zexit() returns, so: */
+    #####:  910:		break;
+        -:  911:	    }
+    #####:  912:	    icnt = 0;
+    #####:  913:	    if (errno == EINTR) {
+    #####:  914:		die = 0;
+    #####:  915:		if (!errflag && !retflag && !breaks && !exit_pending)
+    #####:  916:		    continue;
+    #####:  917:		errflag &= ~ERRFLAG_ERROR;
+    #####:  918:		breaks = obreaks;
+    #####:  919:		errno = old_errno;
+    #####:  920:		return lastchar = EOF;
+    #####:  921:	    } else if (errno == EWOULDBLOCK) {
+    #####:  922:		fcntl(0, F_SETFL, 0);
+    #####:  923:	    } else if (errno == EIO && !die) {
+    #####:  924:		ret = opts[MONITOR];
+    #####:  925:		opts[MONITOR] = 1;
+    #####:  926:		attachtty(mypgrp);
+    #####:  927:		zrefresh();	/* kludge! */
+    #####:  928:		opts[MONITOR] = ret;
+    #####:  929:		die = 1;
+    #####:  930:	    } else if (errno != 0) {
+    #####:  931:		zerr("error on TTY read: %e", errno);
+    #####:  932:		stopmsg = 1;
+    #####:  933:		zexit(1, ZEXIT_NORMAL);
+        -:  934:		/* If called from an exit hook, zexit() returns, so: */
+    #####:  935:		break;
+        -:  936:	    }
+        -:  937:	}
+    #####:  938:	if (cc == '\r')		/* undo the exchange of \n and \r determined by */
+    #####:  939:	    cc = '\n';		/* zsetterm() */
+    #####:  940:	else if (cc == '\n')
+    #####:  941:	    cc = '\r';
+        -:  942:
+    #####:  943:	ret = STOUC(cc);
+        -:  944:    }
+        -:  945:    /*
+        -:  946:     * curvichg.buf is raw bytes, not wide characters, so is dealt
+        -:  947:     * with here.
+        -:  948:     */
+    #####:  949:    if (vichgflag) {
+    #####:  950:	if (curvichg.bufptr == curvichg.bufsz)
+    #####:  951:	    curvichg.buf = realloc(curvichg.buf, curvichg.bufsz *= 2);
+    #####:  952:	curvichg.buf[curvichg.bufptr++] = ret;
+        -:  953:    }
+    #####:  954:    errno = old_errno;
+    #####:  955:    return lastchar = ret;
+        -:  956:}
+        -:  957:
+        -:  958:
+        -:  959:/*
+        -:  960: * Get a full character rather than just a single byte.
+        -:  961: */
+        -:  962:
+        -:  963:/**/
+        -:  964:mod_export ZLE_INT_T
+    #####:  965:getfullchar(int do_keytmout)
+        -:  966:{
+    #####:  967:    int inchar = getbyte((long)do_keytmout, NULL, 1);
+        -:  968:
+        -:  969:#ifdef MULTIBYTE_SUPPORT
+    #####:  970:    return getrestchar(inchar, NULL, NULL);
+        -:  971:#else
+        -:  972:    return inchar;
+        -:  973:#endif
+        -:  974:}
+        -:  975:
+        -:  976:
+        -:  977:/**/
+        -:  978:#ifdef MULTIBYTE_SUPPORT
+        -:  979:/*
+        -:  980: * Get the remainder of a character if we support multibyte
+        -:  981: * input strings.  It may not require any more input, but
+        -:  982: * we haven't yet checked.  The character previously returned
+        -:  983: * by getbyte() is passed down as inchar.
+        -:  984: */
+        -:  985:
+        -:  986:/**/
+        -:  987:mod_export ZLE_INT_T
+    #####:  988:getrestchar(int inchar, char *outstr, int *outcount)
+        -:  989:{
+    #####:  990:    char c = inchar;
+        -:  991:    wchar_t outchar;
+        -:  992:    int timeout;
+        -:  993:    static mbstate_t mbs;
+        -:  994:
+        -:  995:    /*
+        -:  996:     * We are guaranteed to set a valid wide last character,
+        -:  997:     * although it may be WEOF (which is technically not
+        -:  998:     * a wide character at all...)
+        -:  999:     */
+    #####: 1000:    lastchar_wide_valid = 1;
+        -: 1001:
+    #####: 1002:    if (outcount)
+    #####: 1003:	*outcount = 0;
+    #####: 1004:    if (inchar == EOF) {
+        -: 1005:	/* End of input, so reset the shift state. */
+    #####: 1006:	memset(&mbs, 0, sizeof mbs);
+    #####: 1007:	return lastchar_wide = WEOF;
+        -: 1008:    }
+        -: 1009:
+        -: 1010:    /*
+        -: 1011:     * Return may be zero if we have a NULL; handle this like
+        -: 1012:     * any other character.
+        -: 1013:     */
+    #####: 1014:    while (1) {
+    #####: 1015:	size_t cnt = mbrtowc(&outchar, &c, 1, &mbs);
+    #####: 1016:	if (cnt == MB_INVALID) {
+        -: 1017:	    /*
+        -: 1018:	     * Invalid input.  Hmm, what's the right thing to do here?
+        -: 1019:	     */
+    #####: 1020:	    memset(&mbs, 0, sizeof mbs);
+    #####: 1021:	    return lastchar_wide = WEOF;
+        -: 1022:	}
+    #####: 1023:	if (cnt != MB_INCOMPLETE)
+    #####: 1024:	    break;
+        -: 1025:
+        -: 1026:	/*
+        -: 1027:	 * Always apply KEYTIMEOUT to the remains of the input
+        -: 1028:	 * character.  The parts of a multibyte character should
+        -: 1029:	 * arrive together.  If we don't do this the input can
+        -: 1030:	 * get stuck if an invalid byte sequence arrives.
+        -: 1031:	 */
+    #####: 1032:	inchar = getbyte(1L, &timeout, 1);
+        -: 1033:	/* getbyte deliberately resets lastchar_wide_valid */
+    #####: 1034:	lastchar_wide_valid = 1;
+    #####: 1035:	if (inchar == EOF) {
+    #####: 1036:	    memset(&mbs, 0, sizeof mbs);
+    #####: 1037:	    if (timeout)
+        -: 1038:	    {
+        -: 1039:		/*
+        -: 1040:		 * This case means that we got a valid initial byte
+        -: 1041:		 * (since we tested for EOF above), but the followup
+        -: 1042:		 * timed out.  This probably indicates a duff character.
+        -: 1043:		 * Return a '?'.
+        -: 1044:		 */
+    #####: 1045:		lastchar = '?';
+    #####: 1046:		return lastchar_wide = L'?';
+        -: 1047:	    }
+        -: 1048:	    else
+    #####: 1049:		return lastchar_wide = WEOF;
+        -: 1050:	}
+    #####: 1051:	c = inchar;
+    #####: 1052:	if (outstr) {
+    #####: 1053:	    *outstr++ = c;
+    #####: 1054:	    (*outcount)++;
+        -: 1055:	}
+        -: 1056:    }
+    #####: 1057:    return lastchar_wide = (ZLE_INT_T)outchar;
+        -: 1058:}
+        -: 1059:/**/
+        -: 1060:#endif
+        -: 1061:
+        -: 1062:/**/
+        -: 1063:mod_export void
+    #####: 1064:redrawhook(void)
+        -: 1065:{
+        -: 1066:    Thingy initthingy;
+    #####: 1067:    if ((initthingy = rthingy_nocreate("zle-line-pre-redraw"))) {
+        -: 1068:	/* Duplicating most of zlecallhook() to save additional state */
+    #####: 1069:	int saverrflag = errflag, savretflag = retflag;
+    #####: 1070:	int lastcmd_prev = lastcmd;
+    #####: 1071:	int old_incompfunc = incompfunc;
+    #####: 1072:	int old_viinrepeat = viinrepeat;
+        -: 1073:	char *args[2];
+    #####: 1074:	Thingy lbindk_save = lbindk, bindk_save = bindk;
+        -: 1075:
+    #####: 1076:	refthingy(lbindk_save);
+    #####: 1077:	refthingy(bindk_save);
+    #####: 1078:	args[0] = initthingy->nam;
+    #####: 1079:	args[1] = NULL;
+        -: 1080:
+        -: 1081:	/* The generic redraw hook cannot be a completion function, so
+        -: 1082:	 * temporarily reset state for special variable handling etc.
+        -: 1083:	 */
+    #####: 1084:	incompfunc = 0;
+    #####: 1085:	execzlefunc(initthingy, args, 1, 0);
+    #####: 1086:	incompfunc = old_incompfunc;
+    #####: 1087:	viinrepeat = old_viinrepeat;
+        -: 1088:
+        -: 1089:	/* Restore errflag and retflag as zlecallhook() does */
+    #####: 1090:	errflag = saverrflag | (errflag & ERRFLAG_INT);
+    #####: 1091:	retflag = savretflag;
+        -: 1092:
+    #####: 1093:	unrefthingy(initthingy);
+    #####: 1094:	unrefthingy(lbindk);
+    #####: 1095:	unrefthingy(bindk);
+    #####: 1096:	lbindk = lbindk_save;
+    #####: 1097:	bindk = bindk_save;
+        -: 1098:
+        -: 1099:	/* we can't set ZLE_NOTCOMMAND since it's not a legit widget, so
+        -: 1100:	 * restore lastcmd manually so that we don't mess up the global state
+        -: 1101:	 */
+    #####: 1102:	lastcmd = lastcmd_prev;
+        -: 1103:    }
+    #####: 1104:}
+        -: 1105:
+        -: 1106:/**/
+        -: 1107:void
+    #####: 1108:zlecore(void)
+        -: 1109:{
+        -: 1110:    Keymap km;
+        -: 1111:#if !defined(HAVE_POLL) && defined(HAVE_SELECT)
+        -: 1112:    struct timeval tv;
+        -: 1113:    fd_set foofd;
+        -: 1114:
+        -: 1115:    FD_ZERO(&foofd);
+        -: 1116:#endif
+        -: 1117:
+    #####: 1118:    pushheap();
+        -: 1119:
+        -: 1120:    /*
+        -: 1121:     * A widget function may decide to exit the shell.
+        -: 1122:     * We never exit directly from functions, to allow
+        -: 1123:     * the shell to tidy up, so we have to test for
+        -: 1124:     * that explicitly.
+        -: 1125:     */
+    #####: 1126:    while (!done && !errflag && !exit_pending) {
+        -: 1127:	UNMETACHECK();
+        -: 1128:
+    #####: 1129:	statusline = NULL;
+    #####: 1130:	vilinerange = 0;
+    #####: 1131:	reselectkeymap();
+    #####: 1132:	selectlocalmap(invicmdmode() && region_active && (km = openkeymap("visual"))
+        -: 1133:	    ? km : NULL);
+    #####: 1134:	bindk = getkeycmd();
+    #####: 1135:	selectlocalmap(NULL);
+    #####: 1136:	if (bindk) {
+    #####: 1137:	    if (!zlell && isfirstln && !(zlereadflags & ZLRF_IGNOREEOF) &&
+    #####: 1138:		lastchar == eofchar) {
+        -: 1139:		/*
+        -: 1140:		 * Slight hack: this relies on getkeycmd returning
+        -: 1141:		 * a value for the EOF character.  However,
+        -: 1142:		 * undefined-key is fine.  That's necessary because
+        -: 1143:		 * otherwise we can't distinguish this case from
+        -: 1144:		 * a ^C.
+        -: 1145:		 */
+    #####: 1146:		eofsent = 1;
+    #####: 1147:		break;
+        -: 1148:	    }
+    #####: 1149:	    if (execzlefunc(bindk, zlenoargs, 0, 0)) {
+    #####: 1150:		handlefeep(zlenoargs);
+    #####: 1151:		if (eofsent)
+    #####: 1152:		    break;
+        -: 1153:	    }
+    #####: 1154:	    handleprefixes();
+        -: 1155:	    /* for vi mode, make sure the cursor isn't somewhere illegal */
+    #####: 1156:	    if (invicmdmode() && zlecs > findbol() &&
+    #####: 1157:		(zlecs == zlell || zleline[zlecs] == ZWC('\n')))
+    #####: 1158:		DECCS();
+    #####: 1159:	    handleundo();
+        -: 1160:	} else {
+    #####: 1161:	    errflag |= ERRFLAG_ERROR;
+    #####: 1162:	    break;
+        -: 1163:	}
+        -: 1164:
+    #####: 1165:	redrawhook();
+        -: 1166:#ifdef HAVE_POLL
+    #####: 1167:	if (baud && !(lastcmd & ZLE_MENUCMP)) {
+        -: 1168:	    struct pollfd pfd;
+    #####: 1169:	    int to = cost * costmult / 1000; /* milliseconds */
+        -: 1170:
+    #####: 1171:	    if (to > 500)
+    #####: 1172:		to = 500;
+    #####: 1173:	    pfd.fd = SHTTY;
+    #####: 1174:	    pfd.events = POLLIN;
+    #####: 1175:	    if (!kungetct && poll(&pfd, 1, to) <= 0)
+    #####: 1176:		zrefresh();
+        -: 1177:	} else
+        -: 1178:#else
+        -: 1179:# ifdef HAVE_SELECT
+        -: 1180:	if (baud && !(lastcmd & ZLE_MENUCMP)) {
+        -: 1181:	    FD_SET(SHTTY, &foofd);
+        -: 1182:	    tv.tv_sec = 0;
+        -: 1183:	    if ((tv.tv_usec = cost * costmult) > 500000)
+        -: 1184:		tv.tv_usec = 500000;
+        -: 1185:	    if (!kungetct && select(SHTTY+1, (SELECT_ARG_2_T) & foofd,
+        -: 1186:				    NULL, NULL, &tv) <= 0)
+        -: 1187:		zrefresh();
+        -: 1188:	} else
+        -: 1189:# endif
+        -: 1190:#endif
+    #####: 1191:	    if (!kungetct)
+    #####: 1192:		zrefresh();
+        -: 1193:
+    #####: 1194:	freeheap();
+        -: 1195:
+        -: 1196:    }
+        -: 1197:
+    #####: 1198:    popheap();
+    #####: 1199:}
+        -: 1200:
+        -: 1201:/* Read a line.  It is returned metafied.
+        -: 1202: *
+        -: 1203: * Parameters:
+        -: 1204: * - lp: left prompt, e.g., $PS1
+        -: 1205: * - rp: right prompt, e.g., $RPS1
+        -: 1206: * - flags: ZLRF_* flags (I think), see zlereadflags
+        -: 1207: * - context: ZLCON_* flags (I think), see zlecontext
+        -: 1208: * - init: "zle-line-init"
+        -: 1209: * - finish: "zle-line-finish"
+        -: 1210: */
+        -: 1211:
+        -: 1212:/**/
+        -: 1213:char *
+    #####: 1214:zleread(char **lp, char **rp, int flags, int context, char *init, char *finish)
+        -: 1215:{
+        -: 1216:    char *s, **bracket;
+    #####: 1217:    int old_errno = errno;
+    #####: 1218:    int tmout = getiparam("TMOUT");
+        -: 1219:
+        -: 1220:#if defined(HAVE_POLL) || defined(HAVE_SELECT)
+        -: 1221:    /* may not be set, but that's OK since getiparam() returns 0 == off */
+    #####: 1222:    baud = getiparam("BAUD");
+    #####: 1223:    costmult = (baud) ? 3840000L / baud : 0;
+        -: 1224:#endif
+        -: 1225:
+        -: 1226:    /* ZLE doesn't currently work recursively.  This is needed in case a *
+        -: 1227:     * select loop is used in a function called from ZLE.  vared handles *
+        -: 1228:     * this differently itself.                                          */
+    #####: 1229:    if(zleactive) {
+        -: 1230:	char *pptbuf;
+        -: 1231:	int pptlen;
+        -: 1232:
+    #####: 1233:	pptbuf = unmetafy(promptexpand(lp ? *lp : NULL, 0, NULL, NULL,
+        -: 1234:				       &pmpt_attr),
+        -: 1235:			  &pptlen);
+    #####: 1236:	write_loop(2, pptbuf, pptlen);
+    #####: 1237:	free(pptbuf);
+    #####: 1238:	return shingetline();
+        -: 1239:    }
+        -: 1240:    /*
+        -: 1241:     * The current status is what we need if we are going
+        -: 1242:     * to display a prompt.  We'll remember it here for
+        -: 1243:     * use further in.
+        -: 1244:     */
+    #####: 1245:    pre_zle_status = lastval;
+        -: 1246:
+    #####: 1247:    keytimeout = (time_t)getiparam("KEYTIMEOUT");
+    #####: 1248:    if (!shout) {
+    #####: 1249:	if (SHTTY != -1)
+    #####: 1250:	    init_shout();
+        -: 1251:
+    #####: 1252:	if (!shout)
+    #####: 1253:	    return NULL;
+        -: 1254:	/* We could be smarter and default to a system read. */
+        -: 1255:
+        -: 1256:	/* If we just got a new shout, make sure the terminal is set up. */
+    #####: 1257:	if (termflags & TERM_UNKNOWN)
+    #####: 1258:	    init_term();
+        -: 1259:    }
+        -: 1260:
+    #####: 1261:    fflush(shout);
+    #####: 1262:    fflush(stderr);
+    #####: 1263:    intr();
+    #####: 1264:    insmode = unset(OVERSTRIKE);
+    #####: 1265:    eofsent = 0;
+    #####: 1266:    resetneeded = 0;
+    #####: 1267:    fetchttyinfo = 0;
+    #####: 1268:    trashedzle = 0;
+    #####: 1269:    raw_lp = lp;
+    #####: 1270:    lpromptbuf = promptexpand(lp ? *lp : NULL, 1, NULL, NULL, &pmpt_attr);
+    #####: 1271:    raw_rp = rp;
+    #####: 1272:    rpmpt_attr = pmpt_attr;
+    #####: 1273:    rpromptbuf = promptexpand(rp ? *rp : NULL, 1, NULL, NULL, &rpmpt_attr);
+    #####: 1274:    free_prepostdisplay();
+        -: 1275:
+    #####: 1276:    zlereadflags = flags;
+    #####: 1277:    zlecontext = context;
+    #####: 1278:    histline = curhist;
+    #####: 1279:    vistartchange = -1;
+    #####: 1280:    zleline = (ZLE_STRING_T)zalloc(((linesz = 256) + 2) * ZLE_CHAR_SIZE);
+    #####: 1281:    *zleline = ZWC('\0');
+    #####: 1282:    virangeflag = lastcmd = done = zlecs = zlell = mark = yankb = yanke = 0;
+    #####: 1283:    vichgflag = 0;
+    #####: 1284:    viinrepeat = 0;
+    #####: 1285:    viinsbegin = 0;
+    #####: 1286:    statusline = NULL;
+    #####: 1287:    selectkeymap("main", 1);
+    #####: 1288:    initundo();
+    #####: 1289:    fixsuffix();
+    #####: 1290:    if ((s = getlinknode(bufstack))) {
+    #####: 1291:	setline(s, ZSL_TOEND);
+    #####: 1292:	zsfree(s);
+    #####: 1293:	if (stackcs != -1) {
+    #####: 1294:	    zlecs = stackcs;
+    #####: 1295:	    stackcs = -1;
+    #####: 1296:	    if (zlecs > zlell)
+    #####: 1297:		zlecs = zlell;
+    #####: 1298:	    CCLEFT();
+        -: 1299:	}
+    #####: 1300:	if (stackhist != -1) {
+    #####: 1301:	    histline = stackhist;
+    #####: 1302:	    stackhist = -1;
+        -: 1303:	}
+    #####: 1304:	handleundo();
+        -: 1305:    }
+        -: 1306:    /*
+        -: 1307:     * If main is linked to the viins keymap, we need to register
+        -: 1308:     * explicitly that we're now in vi insert mode as there's
+        -: 1309:     * no user operation to indicate this.
+        -: 1310:     */
+    #####: 1311:    if (openkeymap("main") == openkeymap("viins"))
+    #####: 1312:	viinsert_init();
+    #####: 1313:    selectlocalmap(NULL);
+    #####: 1314:    if (isset(PROMPTCR))
+    #####: 1315:	putc('\r', shout);
+    #####: 1316:    if (tmout)
+    #####: 1317:	alarm(tmout);
+        -: 1318:
+        -: 1319:    /*
+        -: 1320:     * On some windowing systems we may enter this function before the
+        -: 1321:     * terminal is fully opened and sized, resulting in an infinite
+        -: 1322:     * series of SIGWINCH when the handler prints the prompt before we
+        -: 1323:     * have done so here.  Therefore, hold any such signal until the
+        -: 1324:     * first full refresh has completed.  The important bit is that the
+        -: 1325:     * handler must not see zleactive = 1 until ZLE really is active.
+        -: 1326:     * See the end of adjustwinsize() in Src/utils.c
+        -: 1327:     */
+    #####: 1328:    queue_signals();
+        -: 1329:
+    #####: 1330:    zleactive = 1;
+    #####: 1331:    resetneeded = 1;
+        -: 1332:    /*
+        -: 1333:     * Start of the main zle read.
+        -: 1334:     * Fully reset error conditions, including user interrupt.
+        -: 1335:     */
+    #####: 1336:    errflag = retflag = 0;
+    #####: 1337:    lastcol = -1;
+    #####: 1338:    initmodifier(&zmod);
+    #####: 1339:    prefixflag = 0;
+    #####: 1340:    region_active = 0;
+        -: 1341:
+    #####: 1342:    zrefresh();
+        -: 1343:
+    #####: 1344:    unqueue_signals();	/* Should now be safe to acknowledge SIGWINCH */
+        -: 1345:
+    #####: 1346:    zlecallhook(init, NULL);
+        -: 1347:
+    #####: 1348:    if (zleline && *zleline)
+    #####: 1349:	redrawhook();
+        -: 1350:
+    #####: 1351:    if ((bracket = getaparam("zle_bracketed_paste")) && arrlen(bracket) == 2)
+    #####: 1352:	fputs(*bracket, shout);
+        -: 1353:
+    #####: 1354:    zrefresh();
+        -: 1355:
+    #####: 1356:    zlecore();
+        -: 1357:
+    #####: 1358:    if (errflag)
+    #####: 1359:	setsparam((zlecontext == ZLCON_VARED) ?
+        -: 1360:		  "ZLE_VARED_ABORTED" :
+        -: 1361:		  "ZLE_LINE_ABORTED", zlegetline(NULL, NULL));
+        -: 1362:
+    #####: 1363:    if ((bracket = getaparam("zle_bracketed_paste")) && arrlen(bracket) == 2)
+    #####: 1364:	fputs(bracket[1], shout);
+        -: 1365:
+    #####: 1366:    if (done && !exit_pending && !errflag)
+    #####: 1367:	zlecallhook(finish, NULL);
+        -: 1368:
+    #####: 1369:    statusline = NULL;
+    #####: 1370:    invalidatelist();
+    #####: 1371:    trashzle();
+    #####: 1372:    free(lpromptbuf);
+    #####: 1373:    free(rpromptbuf);
+    #####: 1374:    zleactive = zlereadflags = lastlistlen = zlecontext = 0;
+    #####: 1375:    alarm(0);
+        -: 1376:
+    #####: 1377:    freeundo();
+    #####: 1378:    if (eofsent || errflag || exit_pending) {
+    #####: 1379:	s = NULL;
+        -: 1380:    } else {
+    #####: 1381:	zleline[zlell++] = ZWC('\n');
+    #####: 1382:	s = zlegetline(NULL, NULL);
+        -: 1383:    }
+    #####: 1384:    free(zleline);
+    #####: 1385:    zleline = NULL;
+    #####: 1386:    forget_edits();
+    #####: 1387:    errno = old_errno;
+        -: 1388:    /* highlight no longer valid */
+    #####: 1389:    set_region_highlight(NULL, NULL);
+    #####: 1390:    return s;
+        -: 1391:}
+        -: 1392:
+        -: 1393:/**/
+        -: 1394:static int
+    #####: 1395:execimmortal(Thingy func, char **args)
+        -: 1396:{
+    #####: 1397:    Thingy immortal = rthingy_nocreate(dyncat(".", func->nam));
+    #####: 1398:    if (immortal)
+    #####: 1399:	return execzlefunc(immortal, args, 0, 0);
+    #####: 1400:    return 1;
+        -: 1401:}
+        -: 1402:
+        -: 1403:/*
+        -: 1404: * Execute a widget.  The third argument indicates that the global
+        -: 1405: * variable bindk should be set temporarily so that WIDGET etc.
+        -: 1406: * reflect the command being executed.
+        -: 1407: */
+        -: 1408:
+        -: 1409:/**/
+        -: 1410:int
+    #####: 1411:execzlefunc(Thingy func, char **args, int set_bindk, int set_lbindk)
+        -: 1412:{
+    #####: 1413:    int r = 0, ret = 0, remetafy = 0;
+    #####: 1414:    int nestedvichg = vichgflag;
+    #####: 1415:    int isrepeat = (viinrepeat == 3);
+        -: 1416:    Widget w;
+    #####: 1417:    Thingy save_bindk = bindk;
+    #####: 1418:    Thingy save_lbindk = lbindk;
+        -: 1419:
+    #####: 1420:    if (set_bindk)
+    #####: 1421:	bindk = func;
+    #####: 1422:    if (zlemetaline) {
+    #####: 1423:	unmetafy_line();
+    #####: 1424:	remetafy = 1;
+        -: 1425:    }
+    #####: 1426:    if (set_lbindk)
+    #####: 1427:	refthingy(save_lbindk);
+    #####: 1428:    if (isrepeat)
+    #####: 1429:	viinrepeat = 2;
+        -: 1430:
+    #####: 1431:    if (func->flags & DISABLED) {
+        -: 1432:	/* this thingy is not the name of a widget */
+    #####: 1433:	char *nm = nicedup(func->nam, 0);
+    #####: 1434:	char *msg = tricat("No such widget `", nm, "'");
+        -: 1435:
+    #####: 1436:	zsfree(nm);
+    #####: 1437:	showmsg(msg);
+    #####: 1438:	zsfree(msg);
+    #####: 1439:	ret = execimmortal(func, args);
+    #####: 1440:    } else if((w = func->widget)->flags & (WIDGET_INT|WIDGET_NCOMP)) {
+    #####: 1441:	int wflags = w->flags;
+        -: 1442:
+        -: 1443:	/*
+        -: 1444:	 * The rule is that "zle -N" widgets suppress EOF warnings.  When
+        -: 1445:	 * a "zle -N" widget invokes "zle another-widget" we pass through
+        -: 1446:	 * this code again, but with actual arguments rather than with the
+        -: 1447:	 * zlenoargs placeholder.
+        -: 1448:	 */
+    #####: 1449:	if (keybuf[0] == eofchar && !keybuf[1] && args == zlenoargs &&
+    #####: 1450:	    !zlell && isfirstln && (zlereadflags & ZLRF_IGNOREEOF)) {
+    #####: 1451:	    showmsg((!islogin) ? "zsh: use 'exit' to exit." :
+        -: 1452:		    "zsh: use 'logout' to logout.");
+    #####: 1453:	    use_exit_printed = 1;
+    #####: 1454:	    eofsent = 1;
+    #####: 1455:	    ret = 1;
+        -: 1456:	} else {
+    #####: 1457:	    int inuse = wflags & WIDGET_INUSE;
+    #####: 1458:	    w->flags |= WIDGET_INUSE;
+    #####: 1459:	    if(!(wflags & ZLE_KEEPSUFFIX))
+    #####: 1460:		removesuffix();
+    #####: 1461:	    if(!(wflags & ZLE_MENUCMP)) {
+    #####: 1462:		fixsuffix();
+    #####: 1463:		invalidatelist();
+        -: 1464:	    }
+    #####: 1465:	    if (wflags & ZLE_LINEMOVE)
+    #####: 1466:		vilinerange = 1;
+    #####: 1467:	    if(!(wflags & ZLE_LASTCOL))
+    #####: 1468:		lastcol = -1;
+    #####: 1469:	    if (wflags & WIDGET_NCOMP) {
+    #####: 1470:		int atcurhist = histline == curhist;
+    #####: 1471:		compwidget = w;
+    #####: 1472:		ret = completecall(args);
+    #####: 1473:		if (atcurhist)
+    #####: 1474:		    histline = curhist;
+    #####: 1475:	    } else if (!w->u.fn) {
+    #####: 1476:		handlefeep(zlenoargs);
+        -: 1477:	    } else {
+    #####: 1478:		queue_signals();
+    #####: 1479:		ret = w->u.fn(args);
+    #####: 1480:		unqueue_signals();
+        -: 1481:	    }
+    #####: 1482:	    if (!inuse) {
+    #####: 1483:		if (w->flags & WIDGET_FREE)
+    #####: 1484:		    freewidget(w);
+        -: 1485:		else
+    #####: 1486:		    w->flags &= ~WIDGET_INUSE;
+        -: 1487:	    }
+    #####: 1488:	    if (!(wflags & ZLE_NOTCOMMAND))
+    #####: 1489:		lastcmd = wflags;
+        -: 1490:	}
+    #####: 1491:	r = 1;
+        -: 1492:    } else {
+    #####: 1493:	Shfunc shf = (Shfunc) shfunctab->getnode(shfunctab, w->u.fnnam);
+        -: 1494:
+    #####: 1495:	if (!shf) {
+        -: 1496:	    /* the shell function doesn't exist */
+    #####: 1497:	    char *nm = nicedup(w->u.fnnam, 0);
+    #####: 1498:	    char *msg = tricat("No such shell function `", nm, "'");
+        -: 1499:
+    #####: 1500:	    zsfree(nm);
+    #####: 1501:	    showmsg(msg);
+    #####: 1502:	    zsfree(msg);
+    #####: 1503:	    ret = execimmortal(func, args);
+        -: 1504:	} else {
+    #####: 1505:	    int osc = sfcontext, osi = movefd(0);
+    #####: 1506:	    int oxt = isset(XTRACE);
+    #####: 1507:	    LinkList largs = NULL;
+    #####: 1508:	    int inuse = w->flags & WIDGET_INUSE;
+    #####: 1509:	    w->flags |= WIDGET_INUSE;
+        -: 1510:
+    #####: 1511:	    if (osi > 0) {
+        -: 1512:		/*
+        -: 1513:		 * Many commands don't like having a closed stdin, open on
+        -: 1514:		 * /dev/null instead
+        -: 1515:		 */
+    #####: 1516:		open("/dev/null", O_RDWR | O_NOCTTY); /* ignore failure */
+        -: 1517:	    }
+    #####: 1518:	    if (*args) {
+    #####: 1519:		largs = newlinklist();
+    #####: 1520:		addlinknode(largs, dupstring(w->u.fnnam));
+    #####: 1521:		while (*args)
+    #####: 1522:		    addlinknode(largs, dupstring(*args++));
+        -: 1523:	    }
+    #####: 1524:	    startparamscope();
+    #####: 1525:	    makezleparams(0);
+    #####: 1526:	    sfcontext = SFC_WIDGET;
+    #####: 1527:	    opts[XTRACE] = 0;
+    #####: 1528:	    ret = doshfunc(shf, largs, 1);
+    #####: 1529:	    opts[XTRACE] = oxt;
+    #####: 1530:	    sfcontext = osc;
+    #####: 1531:	    endparamscope();
+    #####: 1532:	    if (errflag == ERRFLAG_ERROR) {
+    #####: 1533:		int saverr = errflag;
+    #####: 1534:		errflag &= ~ERRFLAG_ERROR;
+    #####: 1535:		if ((ret = execimmortal(func, args)) != 0)
+    #####: 1536:		    errflag |= saverr;
+        -: 1537:	    }
+    #####: 1538:	    lastcmd = w->flags & ~(WIDGET_INUSE|WIDGET_FREE);
+    #####: 1539:	    if (inuse) {
+    #####: 1540:		w->flags &= WIDGET_INUSE|WIDGET_FREE;
+        -: 1541:	    } else {
+    #####: 1542:		if (w->flags & WIDGET_FREE)
+    #####: 1543:		    freewidget(w);
+        -: 1544:		else
+    #####: 1545:		    w->flags = 0;
+        -: 1546:	    }
+    #####: 1547:	    r = 1;
+    #####: 1548:	    redup(osi, 0);
+        -: 1549:	}
+        -: 1550:    }
+    #####: 1551:    if (set_lbindk) {
+    #####: 1552:	unrefthingy(lbindk);
+    #####: 1553:	lbindk = save_lbindk;
+    #####: 1554:    } else if (r) {
+    #####: 1555:	unrefthingy(lbindk);
+    #####: 1556:	refthingy(func);
+    #####: 1557:	lbindk = func;
+        -: 1558:    }
+    #####: 1559:    if (set_bindk)
+    #####: 1560:	bindk = save_bindk;
+        -: 1561:    /*
+        -: 1562:     * Goodness knows where the user's left us; make sure
+        -: 1563:     * it's not on a combining character that won't be displayed
+        -: 1564:     * directly.
+        -: 1565:     */
+    #####: 1566:    CCRIGHT();
+    #####: 1567:    if (remetafy)
+    #####: 1568:	metafy_line();
+        -: 1569:
+        -: 1570:    /* if this widget constituted the vi change, end it */
+    #####: 1571:    if (vichgflag == 2 && !nestedvichg) {
+    #####: 1572:	if (invicmdmode()) {
+    #####: 1573:	    if (ret) {
+    #####: 1574:		free(curvichg.buf);
+        -: 1575:	    } else {
+    #####: 1576:		if (lastvichg.buf)
+    #####: 1577:		    free(lastvichg.buf);
+    #####: 1578:		lastvichg = curvichg;
+        -: 1579:	    }
+    #####: 1580:	    vichgflag = 0;
+    #####: 1581:	    curvichg.buf = NULL;
+        -: 1582:	} else
+    #####: 1583:	    vichgflag = 1; /* vi change continues while in insert mode */
+        -: 1584:    }
+    #####: 1585:    if (isrepeat)
+    #####: 1586:        viinrepeat = !invicmdmode();
+        -: 1587:
+    #####: 1588:    return ret;
+        -: 1589:}
+        -: 1590:
+        -: 1591:/* initialise command modifiers */
+        -: 1592:
+        -: 1593:/**/
+        -: 1594:static void
+    #####: 1595:initmodifier(struct modifier *mp)
+        -: 1596:{
+    #####: 1597:    mp->flags = 0;
+    #####: 1598:    mp->mult = 1;
+    #####: 1599:    mp->tmult = 1;
+    #####: 1600:    mp->vibuf = 0;
+    #####: 1601:    mp->base = 10;
+    #####: 1602:}
+        -: 1603:
+        -: 1604:/* Reset command modifiers, unless the command just executed was a prefix. *
+        -: 1605: * Also set zmult, if the multiplier has been amended.                     */
+        -: 1606:
+        -: 1607:/**/
+        -: 1608:static void
+    #####: 1609:handleprefixes(void)
+        -: 1610:{
+    #####: 1611:    if (prefixflag) {
+    #####: 1612:	prefixflag = 0;
+    #####: 1613:	if(zmod.flags & MOD_TMULT) {
+    #####: 1614:	    zmod.flags |= MOD_MULT;
+    #####: 1615:	    zmod.mult = zmod.tmult;
+        -: 1616:	}
+        -: 1617:    } else
+    #####: 1618:	initmodifier(&zmod);
+    #####: 1619:}
+        -: 1620:
+        -: 1621:/**/
+        -: 1622:static int
+    #####: 1623:savekeymap(char *cmdname, char *oldname, char *newname, Keymap *savemapptr)
+        -: 1624:{
+    #####: 1625:    Keymap km = openkeymap(newname);
+        -: 1626:
+    #####: 1627:    if (km) {
+    #####: 1628:	*savemapptr = openkeymap(oldname);
+        -: 1629:	/* I love special cases */
+    #####: 1630:	if (*savemapptr == km)
+    #####: 1631:	    *savemapptr = NULL;
+        -: 1632:	else {
+        -: 1633:	    /* make sure this doesn't get deleted. */
+    #####: 1634:	    if (*savemapptr)
+    #####: 1635:		refkeymap(*savemapptr);
+    #####: 1636:	    linkkeymap(km, oldname, 0);
+        -: 1637:	}
+    #####: 1638:	return 0;
+        -: 1639:    } else {
+    #####: 1640:	zwarnnam(cmdname, "no such keymap: %s", newname);
+    #####: 1641:	return 1;
+        -: 1642:    }
+        -: 1643:}
+        -: 1644:
+        -: 1645:/**/
+        -: 1646:static void
+    #####: 1647:restorekeymap(char *cmdname, char *oldname, char *newname, Keymap savemap)
+        -: 1648:{
+    #####: 1649:    if (savemap) {
+    #####: 1650:	linkkeymap(savemap, oldname, 0);
+        -: 1651:	/* we incremented the reference count above */
+    #####: 1652:	unrefkeymap(savemap);
+    #####: 1653:    } else if (newname) {
+        -: 1654:	/* urr... can this happen? */
+    #####: 1655:	zwarnnam(cmdname,
+        -: 1656:		 "keymap %s was not defined, not restored", oldname);
+        -: 1657:    }
+    #####: 1658:}
+        -: 1659:
+        -: 1660:/* this exports the argument we are currently vared'iting if != NULL */
+        -: 1661:
+        -: 1662:/**/
+        -: 1663:mod_export char *varedarg;
+        -: 1664:
+        -: 1665:/* vared: edit (literally) a parameter value */
+        -: 1666:
+        -: 1667:/**/
+        -: 1668:static int
+    #####: 1669:bin_vared(char *name, char **args, Options ops, UNUSED(int func))
+        -: 1670:{
+    #####: 1671:    char *s, *t, *ova = varedarg;
+        -: 1672:    struct value vbuf;
+        -: 1673:    Value v;
+    #####: 1674:    Param pm = 0;
+        -: 1675:    int ifl;
+    #####: 1676:    int type = PM_SCALAR, obreaks = breaks, haso = 0, oSHTTY = 0;
+        -: 1677:    int warn_flags;
+        -: 1678:    char *p1, *p2, *main_keymapname, *vicmd_keymapname, *init, *finish;
+    #####: 1679:    Keymap main_keymapsave = NULL, vicmd_keymapsave = NULL;
+    #####: 1680:    FILE *oshout = NULL;
+        -: 1681:
+    #####: 1682:    if ((interact && unset(USEZLE)) || !strcmp(term, "emacs")) {
+    #####: 1683:	zwarnnam(name, "ZLE not enabled");
+    #####: 1684:	return 1;
+        -: 1685:    }
+    #####: 1686:    if (zleactive) {
+    #####: 1687:	zwarnnam(name, "ZLE cannot be used recursively (yet)");
+    #####: 1688:	return 1;
+        -: 1689:    }
+        -: 1690:
+    #####: 1691:    warn_flags = OPT_ISSET(ops, 'g') ? 0 : ASSPM_WARN;
+    #####: 1692:    if (OPT_ISSET(ops,'A'))
+        -: 1693:    {
+    #####: 1694:	if (OPT_ISSET(ops, 'a'))
+        -: 1695:	{
+    #####: 1696:	    zwarnnam(name, "specify only one of -a and -A");
+    #####: 1697:	    return 1;
+        -: 1698:	}
+    #####: 1699:	type = PM_HASHED;
+        -: 1700:    }
+    #####: 1701:    else if (OPT_ISSET(ops,'a'))
+    #####: 1702:	type = PM_ARRAY;
+    #####: 1703:    p1 = OPT_ARG_SAFE(ops,'p');
+    #####: 1704:    p2 = OPT_ARG_SAFE(ops,'r');
+    #####: 1705:    main_keymapname = OPT_ARG_SAFE(ops,'M');
+    #####: 1706:    vicmd_keymapname = OPT_ARG_SAFE(ops,'m');
+    #####: 1707:    init = OPT_ARG_SAFE(ops,'i');
+    #####: 1708:    finish = OPT_ARG_SAFE(ops,'f');
+        -: 1709:
+    #####: 1710:    if (type != PM_SCALAR && !OPT_ISSET(ops,'c')) {
+    #####: 1711:	zwarnnam(name, "-%s ignored", type == PM_ARRAY ? "a" : "A");
+        -: 1712:    }
+        -: 1713:
+        -: 1714:    /* handle non-existent parameter */
+    #####: 1715:    s = args[0];
+    #####: 1716:    queue_signals();
+    #####: 1717:    v = fetchvalue(&vbuf, &s, (!OPT_ISSET(ops,'c') || type == PM_SCALAR),
+        -: 1718:		   SCANPM_WANTKEYS|SCANPM_WANTVALS|SCANPM_MATCHMANY);
+    #####: 1719:    if (!v && !OPT_ISSET(ops,'c')) {
+    #####: 1720:	unqueue_signals();
+    #####: 1721:	zwarnnam(name, "no such variable: %s", args[0]);
+    #####: 1722:	return 1;
+    #####: 1723:    } else if (v) {
+    #####: 1724:	if (*s) {
+    #####: 1725:	    unqueue_signals();
+    #####: 1726:	    zwarnnam(name, "not an identifier: `%s'", args[0]);
+    #####: 1727:	    return 1;
+        -: 1728:	}
+    #####: 1729:	if (v->isarr) {
+        -: 1730:	    /* Array: check for separators and quote them. */
+    #####: 1731:	    char **arr = getarrvalue(v), **aptr, **tmparr, **tptr;
+    #####: 1732:	    tptr = tmparr = (char **)zhalloc(sizeof(char *)*(arrlen(arr)+1));
+    #####: 1733:	    for (aptr = arr; *aptr; aptr++) {
+    #####: 1734:		int sepcount = 0, clen;
+        -: 1735:		convchar_t c;
+        -: 1736:		/*
+        -: 1737:		 * See if this word contains a separator character
+        -: 1738:		 * or backslash
+        -: 1739:		 */
+    #####: 1740:		MB_METACHARINIT();
+    #####: 1741:		for (t = *aptr; *t; ) {
+    #####: 1742:		    if (*t == '\\') {
+    #####: 1743:			t++;
+    #####: 1744:			sepcount++;
+        -: 1745:		    } else {
+    #####: 1746:			t += MB_METACHARLENCONV(t, &c);
+    #####: 1747:			if (WC_ZISTYPE(c, ISEP))
+    #####: 1748:			    sepcount++;
+        -: 1749:		    }
+        -: 1750:		}
+    #####: 1751:		if (sepcount) {
+        -: 1752:		    /* Yes, so allocate enough space to quote it. */
+        -: 1753:		    char *newstr, *nptr;
+    #####: 1754:		    newstr = zhalloc(strlen(*aptr)+sepcount+1);
+        -: 1755:		    /* Go through string quoting separators */
+    #####: 1756:		    MB_METACHARINIT();
+    #####: 1757:		    for (t = *aptr, nptr = newstr; *t; ) {
+    #####: 1758:			if (*t == '\\') {
+    #####: 1759:			    *nptr++ = '\\';
+    #####: 1760:			    *nptr++ = *t++;
+        -: 1761:			} else {
+    #####: 1762:			    clen = MB_METACHARLENCONV(t, &c);
+    #####: 1763:			    if (WC_ZISTYPE(c, ISEP))
+    #####: 1764:				*nptr++ = '\\';
+    #####: 1765:			    while (clen--)
+    #####: 1766:				*nptr++ = *t++;
+        -: 1767:			}
+        -: 1768:		    }
+    #####: 1769:		    *nptr = '\0';
+        -: 1770:		    /* Stick this into the array of words to join up */
+    #####: 1771:		    *tptr++ = newstr;
+        -: 1772:		} else
+    #####: 1773:		    *tptr++ = *aptr; /* No, keep original array element */
+        -: 1774:	    }
+    #####: 1775:	    *tptr = NULL;
+    #####: 1776:	    s = sepjoin(tmparr, NULL, 0);
+        -: 1777:	} else {
+    #####: 1778:	    s = ztrdup(getstrvalue(v));
+        -: 1779:	}
+    #####: 1780:	unqueue_signals();
+    #####: 1781:    } else if (*s) {
+    #####: 1782:	unqueue_signals();
+    #####: 1783:	zwarnnam(name, "invalid parameter name: %s", args[0]);
+    #####: 1784:	return 1;
+        -: 1785:    } else {
+    #####: 1786:	unqueue_signals();
+    #####: 1787:	s = ztrdup(s);
+        -: 1788:    }
+        -: 1789:
+    #####: 1790:    if (SHTTY == -1 || OPT_ISSET(ops,'t')) {
+        -: 1791:	/* need to open /dev/tty specially */
+    #####: 1792:	oSHTTY = SHTTY;
+    #####: 1793:	if ((SHTTY = open(OPT_ISSET(ops,'t') ? OPT_ARG(ops,'t') : "/dev/tty",
+        -: 1794:			  O_RDWR|O_NOCTTY)) == -1) {
+    #####: 1795:	    zwarnnam(name, "can't access terminal");
+    #####: 1796:	    zsfree(s);
+    #####: 1797:	    return 1;
+        -: 1798:	}
+    #####: 1799:	if (!isatty(SHTTY)) {
+    #####: 1800:	    zwarnnam(name, "%s: not a terminal", OPT_ARG(ops,'t'));
+    #####: 1801:	    close(SHTTY);
+    #####: 1802:	    SHTTY = oSHTTY;
+    #####: 1803:	    zsfree(s);
+    #####: 1804:	    return 1;
+        -: 1805:	}
+    #####: 1806:	oshout = shout;
+    #####: 1807:	init_shout();
+        -: 1808:
+    #####: 1809:	haso = 1;
+        -: 1810:    }
+        -: 1811:
+        -: 1812:    /* edit the parameter value */
+    #####: 1813:    zpushnode(bufstack, s);
+        -: 1814:
+    #####: 1815:    if (main_keymapname &&
+    #####: 1816:	savekeymap(name, "main", main_keymapname, &main_keymapsave))
+    #####: 1817:	main_keymapname = NULL;
+    #####: 1818:    if (vicmd_keymapname &&
+    #####: 1819:	savekeymap(name, "vicmd", vicmd_keymapname, &vicmd_keymapsave))
+    #####: 1820:	vicmd_keymapname = NULL;
+        -: 1821:
+    #####: 1822:    varedarg = *args;
+    #####: 1823:    ifl = isfirstln;
+    #####: 1824:    if (OPT_ISSET(ops,'h'))
+    #####: 1825:	hbegin(2);
+    #####: 1826:    isfirstln = OPT_ISSET(ops,'e');
+        -: 1827:
+    #####: 1828:    t = zleread(&p1, &p2, OPT_ISSET(ops,'h') ? ZLRF_HISTORY : 0, ZLCON_VARED,
+        -: 1829:		init ? init : "zle-line-init",
+        -: 1830:		finish ? finish : "zle-line-finish");
+    #####: 1831:    if (OPT_ISSET(ops,'h'))
+    #####: 1832:	hend(NULL);
+    #####: 1833:    isfirstln = ifl;
+    #####: 1834:    varedarg = ova;
+        -: 1835:
+    #####: 1836:    restorekeymap(name, "main", main_keymapname, main_keymapsave);
+    #####: 1837:    restorekeymap(name, "vicmd", vicmd_keymapname, vicmd_keymapsave);
+        -: 1838:
+    #####: 1839:    if (haso) {
+    #####: 1840:	fclose(shout);	/* close(SHTTY) */
+    #####: 1841:	shout = oshout;
+    #####: 1842:	SHTTY = oSHTTY;
+        -: 1843:    }
+    #####: 1844:    if (!t || errflag) {
+        -: 1845:	/* error in editing */
+    #####: 1846:	errflag &= ~ERRFLAG_ERROR;
+    #####: 1847:	breaks = obreaks;
+    #####: 1848:	if (t)
+    #####: 1849:	    zsfree(t);
+    #####: 1850:	return 1;
+        -: 1851:    }
+        -: 1852:    /* strip off trailing newline, if any */
+    #####: 1853:    if (t[strlen(t) - 1] == '\n')
+    #####: 1854:	t[strlen(t) - 1] = '\0';
+        -: 1855:    /* final assignment of parameter value */
+    #####: 1856:    if (OPT_ISSET(ops,'c')) {
+    #####: 1857:	unsetparam(args[0]);
+    #####: 1858:	createparam(args[0], type);
+        -: 1859:    }
+    #####: 1860:    queue_signals();
+    #####: 1861:    pm = (Param) paramtab->getnode(paramtab, args[0]);
+    #####: 1862:    if (pm && (PM_TYPE(pm->node.flags) & (PM_ARRAY|PM_HASHED))) {
+        -: 1863:	char **a;
+        -: 1864:
+        -: 1865:	/*
+        -: 1866:	 * Use spacesplit with fourth argument 1: identify quoted separators,
+        -: 1867:	 * and unquote.  This duplicates the string, so we still need to free.
+        -: 1868:	 */
+    #####: 1869:	a = spacesplit(t, 1, 0, 1);
+    #####: 1870:	zsfree(t);
+    #####: 1871:	if (PM_TYPE(pm->node.flags) == PM_ARRAY)
+    #####: 1872:	    assignaparam(args[0], a, warn_flags);
+        -: 1873:	else
+    #####: 1874:	    sethparam(args[0], a);
+        -: 1875:    } else
+    #####: 1876:	assignsparam(args[0], t, warn_flags);
+    #####: 1877:    unqueue_signals();
+    #####: 1878:    return 0;
+        -: 1879:}
+        -: 1880:
+        -: 1881:/**/
+        -: 1882:int
+    #####: 1883:describekeybriefly(UNUSED(char **args))
+        -: 1884:{
+        -: 1885:    char *seq, *str, *msg, *is;
+        -: 1886:    Thingy func;
+        -: 1887:    Keymap km;
+        -: 1888:
+    #####: 1889:    if (statusline)
+    #####: 1890:	return 1;
+    #####: 1891:    clearlist = 1;
+    #####: 1892:    statusline = "Describe key briefly: _";
+    #####: 1893:    zrefresh();
+    #####: 1894:    if (invicmdmode() && region_active && (km = openkeymap("visual")))
+    #####: 1895:        selectlocalmap(km);
+    #####: 1896:    seq = getkeymapcmd(curkeymap, &func, &str);
+    #####: 1897:    selectlocalmap(NULL);
+    #####: 1898:    statusline = NULL;
+    #####: 1899:    if(!*seq)
+    #####: 1900:	return 1;
+    #####: 1901:    msg = bindztrdup(seq);
+    #####: 1902:    msg = appstr(msg, " is ");
+    #####: 1903:    if (!func)
+    #####: 1904:	is = bindztrdup(str);
+        -: 1905:    else
+    #####: 1906:	is = nicedup(func->nam, 0);
+    #####: 1907:    msg = appstr(msg, is);
+    #####: 1908:    zsfree(is);
+    #####: 1909:    showmsg(msg);
+    #####: 1910:    zsfree(msg);
+    #####: 1911:    return 0;
+        -: 1912:}
+        -: 1913:
+        -: 1914:#define MAXFOUND 4
+        -: 1915:
+        -: 1916:struct findfunc {
+        -: 1917:    Thingy func;
+        -: 1918:    int found;
+        -: 1919:    char *msg;
+        -: 1920:};
+        -: 1921:
+        -: 1922:/**/
+        -: 1923:static void
+    #####: 1924:scanfindfunc(char *seq, Thingy func, UNUSED(char *str), void *magic)
+        -: 1925:{
+    #####: 1926:    struct findfunc *ff = magic;
+        -: 1927:
+    #####: 1928:    if(func != ff->func)
+    #####: 1929:	return;
+    #####: 1930:    if (!ff->found++)
+    #####: 1931:	ff->msg = appstr(ff->msg, " is on");
+    #####: 1932:    if(ff->found <= MAXFOUND) {
+    #####: 1933:	char *b = bindztrdup(seq);
+        -: 1934:
+    #####: 1935:	ff->msg = appstr(ff->msg, " ");
+    #####: 1936:	ff->msg = appstr(ff->msg, b);
+    #####: 1937:	zsfree(b);
+        -: 1938:    }
+        -: 1939:}
+        -: 1940:
+        -: 1941:/**/
+        -: 1942:int
+    #####: 1943:whereis(UNUSED(char **args))
+        -: 1944:{
+        -: 1945:    struct findfunc ff;
+        -: 1946:
+    #####: 1947:    if (!(ff.func = executenamedcommand("Where is: ")))
+    #####: 1948:	return 1;
+    #####: 1949:    ff.found = 0;
+    #####: 1950:    ff.msg = nicedup(ff.func->nam, 0);
+    #####: 1951:    scankeymap(curkeymap, 1, scanfindfunc, &ff);
+    #####: 1952:    if (!ff.found)
+    #####: 1953:	ff.msg = appstr(ff.msg, " is not bound to any key");
+    #####: 1954:    else if(ff.found > MAXFOUND)
+    #####: 1955:	ff.msg = appstr(ff.msg, " et al");
+    #####: 1956:    showmsg(ff.msg);
+    #####: 1957:    zsfree(ff.msg);
+    #####: 1958:    return 0;
+        -: 1959:}
+        -: 1960:
+        -: 1961:/**/
+        -: 1962:int
+    #####: 1963:recursiveedit(UNUSED(char **args))
+        -: 1964:{
+        -: 1965:    int locerror;
+    #####: 1966:    int q = queue_signal_level();
+        -: 1967:
+    #####: 1968:    ++zle_recursive;
+        -: 1969:
+        -: 1970:    /* zlecore() expects to be entered with signal queue disabled */
+    #####: 1971:    dont_queue_signals();
+        -: 1972:
+    #####: 1973:    redrawhook();
+    #####: 1974:    zrefresh();
+    #####: 1975:    zlecore();
+        -: 1976:
+    #####: 1977:    restore_queue_signals(q);
+        -: 1978:
+    #####: 1979:    --zle_recursive;
+        -: 1980:
+    #####: 1981:    locerror = errflag ? 1 : 0;
+    #####: 1982:    errflag = done = eofsent = 0;
+        -: 1983:
+    #####: 1984:    return locerror;
+        -: 1985:}
+        -: 1986:
+        -: 1987:/**/
+        -: 1988:void
+    #####: 1989:reexpandprompt(void)
+        -: 1990:{
+        -: 1991:    static int reexpanding;
+        -: 1992:    static int looping;
+        -: 1993:
+    #####: 1994:    if (!reexpanding++) {
+        -: 1995:	/*
+        -: 1996:	 * If we're displaying a status in the prompt, it
+        -: 1997:	 * needs to be the toplevel one, not the one from
+        -: 1998:	 * any status set within the local zle function.
+        -: 1999:	 */
+    #####: 2000:	int local_lastval = lastval;
+    #####: 2001:	lastval = pre_zle_status;
+        -: 2002:
+        -: 2003:	do {
+        -: 2004:	    /* A new SIGWINCH may arrive while in promptexpand(), causing
+        -: 2005:	     * looping to increment.  This only happens when a command
+        -: 2006:	     * substitution is used in a PROMPT_SUBST prompt, but
+        -: 2007:	     * nevertheless keep trying until we see no more changes.
+        -: 2008:	     */
+        -: 2009:	    char *new_lprompt, *new_rprompt;
+    #####: 2010:	    looping = reexpanding;
+        -: 2011:
+    #####: 2012:	    new_lprompt = promptexpand(raw_lp ? *raw_lp : NULL, 1, NULL, NULL,
+        -: 2013:				       &pmpt_attr);
+    #####: 2014:	    free(lpromptbuf);
+    #####: 2015:	    lpromptbuf = new_lprompt;
+        -: 2016:
+    #####: 2017:	    if (looping != reexpanding)
+    #####: 2018:		continue;
+        -: 2019:
+    #####: 2020:	    rpmpt_attr = pmpt_attr;
+    #####: 2021:	    new_rprompt = promptexpand(raw_rp ? *raw_rp : NULL, 1, NULL, NULL,
+        -: 2022:				       &rpmpt_attr);
+    #####: 2023:	    free(rpromptbuf);
+    #####: 2024:	    rpromptbuf = new_rprompt;
+    #####: 2025:	} while (looping != reexpanding);
+        -: 2026:
+    #####: 2027:	lastval = local_lastval;
+        -: 2028:    } else
+    #####: 2029:	looping = reexpanding;
+    #####: 2030:    reexpanding--;
+    #####: 2031:}
+        -: 2032:
+        -: 2033:/**/
+        -: 2034:int
+    #####: 2035:resetprompt(UNUSED(char **args))
+        -: 2036:{
+    #####: 2037:    reexpandprompt();
+    #####: 2038:    return redisplay(NULL);
+        -: 2039:}
+        -: 2040:
+        -: 2041:/* same bug called from outside zle */
+        -: 2042:
+        -: 2043:/**/
+        -: 2044:mod_export void
+    #####: 2045:zle_resetprompt(void)
+        -: 2046:{
+    #####: 2047:    reexpandprompt();
+    #####: 2048:    if (zleactive)
+    #####: 2049:        redisplay(NULL);
+    #####: 2050:}
+        -: 2051:
+        -: 2052:
+        -: 2053:/**/
+        -: 2054:mod_export void
+    #####: 2055:trashzle(void)
+        -: 2056:{
+    #####: 2057:    if (zleactive && !trashedzle) {
+        -: 2058:	/* This zrefresh() is just to get the main editor display right and *
+        -: 2059:	 * get the cursor in the right place.  For that reason, we disable  *
+        -: 2060:	 * list display (which would otherwise result in infinite           *
+        -: 2061:	 * recursion [at least, it would if zrefresh() didn't have its      *
+        -: 2062:	 * extra `inlist' check]).                                          */
+    #####: 2063:	int sl = showinglist;
+    #####: 2064:	showinglist = 0;
+    #####: 2065:	trashedzle = 1;
+    #####: 2066:	zrefresh();
+    #####: 2067:	showinglist = sl;
+    #####: 2068:	moveto(nlnct, 0);
+    #####: 2069:	if (clearflag && tccan(TCCLEAREOD)) {
+    #####: 2070:	    tcout(TCCLEAREOD);
+    #####: 2071:	    clearflag = listshown = 0;
+        -: 2072:	}
+    #####: 2073:	if (postedit)
+    #####: 2074:	    fprintf(shout, "%s", unmeta(postedit));
+    #####: 2075:	fflush(shout);
+    #####: 2076:	resetneeded = 1;
+    #####: 2077:	if (!(zlereadflags & ZLRF_NOSETTY))
+    #####: 2078:	  settyinfo(&shttyinfo);
+        -: 2079:    }
+    #####: 2080:    if (errflag)
+    #####: 2081:	kungetct = 0;
+    #####: 2082:}
+        -: 2083:
+        -: 2084:
+        -: 2085:/* Hook functions. Used to allow access to zle parameters if zle is
+        -: 2086: * active. */
+        -: 2087:
+        -: 2088:static int
+    #####: 2089:zlebeforetrap(UNUSED(Hookdef dummy), UNUSED(void *dat))
+        -: 2090:{
+    #####: 2091:    if (zleactive) {
+    #####: 2092:	startparamscope();
+    #####: 2093:	makezleparams(1);
+        -: 2094:    }
+    #####: 2095:    return 0;
+        -: 2096:}
+        -: 2097:
+        -: 2098:static int
+    #####: 2099:zleaftertrap(UNUSED(Hookdef dummy), UNUSED(void *dat))
+        -: 2100:{
+    #####: 2101:    if (zleactive)
+    #####: 2102:	endparamscope();
+        -: 2103:
+    #####: 2104:    return 0;
+        -: 2105:}
+        -: 2106:
+        -: 2107:static char *
+    #####: 2108:zle_main_entry(int cmd, va_list ap)
+        -: 2109:{
+    #####: 2110:    switch (cmd) {
+    #####: 2111:    case ZLE_CMD_GET_LINE:
+        -: 2112:    {
+        -: 2113:	int *ll, *cs;
+    #####: 2114:	ll = va_arg(ap, int *);
+    #####: 2115:	cs = va_arg(ap, int *);
+    #####: 2116:	return zlegetline(ll, cs);
+        -: 2117:    }
+        -: 2118:
+    #####: 2119:    case ZLE_CMD_READ:
+        -: 2120:    {
+        -: 2121:	char **lp, **rp;
+        -: 2122:	int flags, context;
+        -: 2123:
+    #####: 2124:	lp = va_arg(ap, char **);
+    #####: 2125:	rp = va_arg(ap, char **);
+    #####: 2126:	flags = va_arg(ap, int);
+    #####: 2127:	context = va_arg(ap, int);
+        -: 2128:
+    #####: 2129:	return zleread(lp, rp, flags, context,
+        -: 2130:		       "zle-line-init", "zle-line-finish");
+        -: 2131:    }
+        -: 2132:
+    #####: 2133:    case ZLE_CMD_ADD_TO_LINE:
+    #####: 2134:	zleaddtoline(va_arg(ap, int));
+    #####: 2135:	break;
+        -: 2136:
+    #####: 2137:    case ZLE_CMD_TRASH:
+    #####: 2138:	trashzle();
+    #####: 2139:	break;
+        -: 2140:
+    #####: 2141:    case ZLE_CMD_RESET_PROMPT:
+    #####: 2142:	zle_resetprompt();
+    #####: 2143:	break;
+        -: 2144:
+    #####: 2145:    case ZLE_CMD_REFRESH:
+    #####: 2146:	zrefresh();
+    #####: 2147:	break;
+        -: 2148:
+    #####: 2149:    case ZLE_CMD_SET_KEYMAP:
+    #####: 2150:	zlesetkeymap(va_arg(ap, int));
+    #####: 2151:	break;
+        -: 2152:
+    #####: 2153:    case ZLE_CMD_GET_KEY:
+        -: 2154:    {
+        -: 2155:	long do_keytmout;
+        -: 2156:	int *timeout, *chrp;
+        -: 2157:
+    #####: 2158:	do_keytmout = va_arg(ap, long);
+    #####: 2159:	timeout = va_arg(ap, int *);
+    #####: 2160:	chrp = va_arg(ap, int *);
+    #####: 2161:	*chrp = getbyte(do_keytmout, timeout, 0);
+    #####: 2162:	break;
+        -: 2163:    }
+        -: 2164:
+    #####: 2165:    case ZLE_CMD_SET_HIST_LINE:
+        -: 2166:    {
+    #####: 2167:	histline = va_arg(ap, zlong);
+        -: 2168:
+    #####: 2169:	break;
+        -: 2170:    }
+        -: 2171:
+    #####: 2172:    default:
+        -: 2173:#ifdef DEBUG
+        -: 2174:	    dputs("Bad command %d in zle_main_entry", cmd);
+        -: 2175:#endif
+    #####: 2176:	    break;
+        -: 2177:    }
+    #####: 2178:    return NULL;
+        -: 2179:}
+        -: 2180:
+        -: 2181:static struct builtin bintab[] = {
+        -: 2182:    BUILTIN("bindkey", 0, bin_bindkey, 0, -1, 0, "evaM:ldDANmrsLRp", NULL),
+        -: 2183:    BUILTIN("vared",   0, bin_vared,   1,  1, 0, "aAcef:ghi:M:m:p:r:t:", NULL),
+        -: 2184:    BUILTIN("zle",     0, bin_zle,     0, -1, 0, "aAcCDfFgGIKlLmMNrRTUw", NULL),
+        -: 2185:};
+        -: 2186:
+        -: 2187:/* The order of the entries in this table has to match the *HOOK
+        -: 2188: * macros in zle.h */
+        -: 2189:
+        -: 2190:/**/
+        -: 2191:mod_export struct hookdef zlehooks[] = {
+        -: 2192:    /* LISTMATCHESHOOK */
+        -: 2193:    HOOKDEF("list_matches", NULL, 0),
+        -: 2194:    /* COMPLETEHOOK */
+        -: 2195:    HOOKDEF("complete", NULL, 0),
+        -: 2196:    /* BEFORECOMPLETEHOOK */
+        -: 2197:    HOOKDEF("before_complete", NULL, 0),
+        -: 2198:    /* AFTERCOMPLETEHOOK */
+        -: 2199:    HOOKDEF("after_complete", NULL, 0),
+        -: 2200:    /* ACCEPTCOMPHOOK */
+        -: 2201:    HOOKDEF("accept_completion", NULL, 0),
+        -: 2202:    /* INVALIDATELISTHOOK */
+        -: 2203:    HOOKDEF("invalidate_list", NULL, 0),
+        -: 2204:};
+        -: 2205:
+        -: 2206:static struct features module_features = {
+        -: 2207:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -: 2208:    NULL, 0,
+        -: 2209:    NULL, 0,
+        -: 2210:    NULL, 0,
+        -: 2211:    0
+        -: 2212:};
+        -: 2213:
+        -: 2214:/**/
+        -: 2215:int
+    #####: 2216:setup_(UNUSED(Module m))
+        -: 2217:{
+        -: 2218:    char **bpaste;
+        -: 2219:
+        -: 2220:    /* Set up editor entry points */
+    #####: 2221:    zle_entry_ptr = zle_main_entry;
+    #####: 2222:    zle_load_state = 1;
+        -: 2223:
+        -: 2224:    /* initialise the thingies */
+    #####: 2225:    init_thingies();
+    #####: 2226:    lbindk = NULL;
+        -: 2227:
+        -: 2228:    /* miscellaneous initialisations */
+    #####: 2229:    stackhist = stackcs = -1;
+    #####: 2230:    kungetbuf = (char *) zalloc(kungetsz = 32);
+    #####: 2231:    comprecursive = 0;
+    #####: 2232:    rdstrs = NULL;
+        -: 2233:
+        -: 2234:    /* initialise the keymap system */
+    #####: 2235:    init_keymaps();
+        -: 2236:
+    #####: 2237:    varedarg = NULL;
+        -: 2238:
+    #####: 2239:    incompfunc = incompctlfunc = hascompmod = 0;
+    #####: 2240:    hascompwidgets = 0;
+        -: 2241:
+    #####: 2242:    clwords = (char **) zshcalloc((clwsize = 16) * sizeof(char *));
+        -: 2243:
+    #####: 2244:    bpaste = zshcalloc(3*sizeof(char *));
+    #####: 2245:    bpaste[0] = ztrdup("\033[?2004h");
+    #####: 2246:    bpaste[1] = ztrdup("\033[?2004l");
+        -: 2247:    /* Intended to be global, no WARNCREATEGLOBAL check. */
+    #####: 2248:    assignaparam("zle_bracketed_paste", bpaste, 0);
+        -: 2249:
+    #####: 2250:    return 0;
+        -: 2251:}
+        -: 2252:
+        -: 2253:/**/
+        -: 2254:int
+    #####: 2255:features_(Module m, char ***features)
+        -: 2256:{
+    #####: 2257:    *features = featuresarray(m, &module_features);
+    #####: 2258:    return 0;
+        -: 2259:}
+        -: 2260:
+        -: 2261:/**/
+        -: 2262:int
+    #####: 2263:enables_(Module m, int **enables)
+        -: 2264:{
+    #####: 2265:    return handlefeatures(m, &module_features, enables);
+        -: 2266:}
+        -: 2267:
+        -: 2268:/**/
+        -: 2269:int
+    #####: 2270:boot_(Module m)
+        -: 2271:{
+    #####: 2272:    addhookfunc("before_trap", (Hookfn) zlebeforetrap);
+    #####: 2273:    addhookfunc("after_trap", (Hookfn) zleaftertrap);
+    #####: 2274:    (void)addhookdefs(m, zlehooks, sizeof(zlehooks)/sizeof(*zlehooks));
+    #####: 2275:    zle_refresh_boot();
+    #####: 2276:    return 0;
+        -: 2277:}
+        -: 2278:
+        -: 2279:/**/
+        -: 2280:int
+    #####: 2281:cleanup_(Module m)
+        -: 2282:{
+    #####: 2283:    if(zleactive) {
+    #####: 2284:	zerrnam(m->node.nam,
+        -: 2285:		"can't unload the zle module while zle is active");
+    #####: 2286:	return 1;
+        -: 2287:    }
+    #####: 2288:    deletehookfunc("before_trap", (Hookfn) zlebeforetrap);
+    #####: 2289:    deletehookfunc("after_trap", (Hookfn) zleaftertrap);
+    #####: 2290:    (void)deletehookdefs(m, zlehooks, sizeof(zlehooks)/sizeof(*zlehooks));
+    #####: 2291:    return setfeatureenables(m, &module_features, NULL);
+        -: 2292:}
+        -: 2293:
+        -: 2294:/**/
+        -: 2295:int
+    #####: 2296:finish_(UNUSED(Module m))
+        -: 2297:{
+        -: 2298:    int i;
+        -: 2299:
+    #####: 2300:    unrefthingy(lbindk);
+        -: 2301:
+    #####: 2302:    cleanup_keymaps();
+    #####: 2303:    deletehashtable(thingytab);
+        -: 2304:
+    #####: 2305:    zfree(lastvichg.buf, lastvichg.bufsz);
+    #####: 2306:    zfree(kungetbuf, kungetsz);
+    #####: 2307:    free_isrch_spots();
+    #####: 2308:    if (rdstrs)
+    #####: 2309:        freelinklist(rdstrs, freestr);
+    #####: 2310:    free(cutbuf.buf);
+    #####: 2311:    if (kring) {
+    #####: 2312:	for(i = kringsize; i--; )
+    #####: 2313:	    free(kring[i].buf);
+    #####: 2314:	zfree(kring, kringsize * sizeof(struct cutbuffer));
+        -: 2315:    }
+    #####: 2316:    for(i = 36; i--; )
+    #####: 2317:	zfree(vibuf[i].buf, vibuf[i].len);
+        -: 2318:
+        -: 2319:    /* editor entry points */
+    #####: 2320:    zle_entry_ptr = (ZleEntryPoint)0;
+    #####: 2321:    zle_load_state = 0;
+        -: 2322:
+    #####: 2323:    zfree(clwords, clwsize * sizeof(char *));
+    #####: 2324:    zle_refresh_finish();
+        -: 2325:
+    #####: 2326:    return 0;
+        -: 2327:}

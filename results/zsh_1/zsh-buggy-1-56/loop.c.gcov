@@ -1,0 +1,803 @@
+        -:    0:Source:loop.c
+        -:    0:Graph:/home/workspace/Src/loop.gcno
+        -:    0:Data:/home/workspace/Src/loop.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * loop.c - loop execution
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "loop.pro"
+        -:   32:
+        -:   33:/* # of nested loops we are in */
+        -:   34: 
+        -:   35:/**/
+        -:   36:int loops;
+        -:   37: 
+        -:   38:/* # of continue levels */
+        -:   39: 
+        -:   40:/**/
+        -:   41:mod_export int contflag;
+        -:   42: 
+        -:   43:/* # of break levels */
+        -:   44: 
+        -:   45:/**/
+        -:   46:mod_export volatile int breaks;
+        -:   47:
+        -:   48:/**/
+        -:   49:int
+       73:   50:execfor(Estate state, int do_exec)
+        -:   51:{
+        -:   52:    Wordcode end, loop;
+       73:   53:    wordcode code = state->pc[-1];
+       73:   54:    int iscond = (WC_FOR_TYPE(code) == WC_FOR_COND), ctok = 0, atok = 0;
+       73:   55:    int last = 0;
+       73:   56:    char *name, *str, *cond = NULL, *advance = NULL;
+       73:   57:    zlong val = 0;
+       73:   58:    LinkList vars = NULL, args = NULL;
+       73:   59:    int old_simple_pline = simple_pline;
+        -:   60:
+        -:   61:    /* See comments in execwhile() */
+       73:   62:    simple_pline = 1;
+        -:   63:
+       73:   64:    end = state->pc + WC_FOR_SKIP(code);
+        -:   65:
+       73:   66:    if (iscond) {
+    #####:   67:	str = dupstring(ecgetstr(state, EC_NODUP, NULL));
+    #####:   68:	singsub(&str);
+    #####:   69:	if (isset(XTRACE)) {
+    #####:   70:	    char *str2 = dupstring(str);
+    #####:   71:	    untokenize(str2);
+    #####:   72:	    printprompt4();
+    #####:   73:	    fprintf(xtrerr, "%s\n", str2);
+    #####:   74:	    fflush(xtrerr);
+        -:   75:	}
+    #####:   76:	if (!errflag) {
+    #####:   77:	    matheval(str);
+        -:   78:	}
+    #####:   79:	if (errflag) {
+    #####:   80:	    state->pc = end;
+    #####:   81:	    simple_pline = old_simple_pline;
+    #####:   82:	    return 1;
+        -:   83:	}
+    #####:   84:	cond = ecgetstr(state, EC_NODUP, &ctok);
+    #####:   85:	advance = ecgetstr(state, EC_NODUP, &atok);
+        -:   86:    } else {
+       73:   87:	vars = ecgetlist(state, *state->pc++, EC_NODUP, NULL);
+        -:   88:
+       73:   89:	if (WC_FOR_TYPE(code) == WC_FOR_LIST) {
+       55:   90:	    int htok = 0;
+        -:   91:
+       55:   92:	    if (!(args = ecgetlist(state, *state->pc++, EC_DUPTOK, &htok))) {
+    #####:   93:		state->pc = end;
+    #####:   94:		simple_pline = old_simple_pline;
+    #####:   95:		return 0;
+        -:   96:	    }
+       55:   97:	    if (htok) {
+       54:   98:		execsubst(args);
+       54:   99:		if (errflag) {
+    #####:  100:		    state->pc = end;
+    #####:  101:		    simple_pline = old_simple_pline;
+    #####:  102:		    return 1;
+        -:  103:		}
+        -:  104:	    }
+        -:  105:	} else {
+        -:  106:	    char **x;
+        -:  107:
+       18:  108:	    args = newlinklist();
+       36:  109:	    for (x = pparams; *x; x++)
+       18:  110:		addlinknode(args, dupstring(*x));
+        -:  111:	}
+        -:  112:    }
+        -:  113:
+       73:  114:    if (!args || empty(args))
+       14:  115:	lastval = 0;
+        -:  116:
+       73:  117:    loops++;
+       73:  118:    pushheap();
+       73:  119:    cmdpush(CS_FOR);
+       73:  120:    loop = state->pc;
+     2958:  121:    while (!last) {
+     2885:  122:	if (iscond) {
+    #####:  123:	    if (ctok) {
+    #####:  124:		str = dupstring(cond);
+    #####:  125:		singsub(&str);
+        -:  126:	    } else
+    #####:  127:		str = cond;
+    #####:  128:	    if (!errflag) {
+    #####:  129:		while (iblank(*str))
+    #####:  130:		    str++;
+    #####:  131:		if (*str) {
+    #####:  132:		    if (isset(XTRACE)) {
+    #####:  133:			printprompt4();
+    #####:  134:			fprintf(xtrerr, "%s\n", str);
+    #####:  135:			fflush(xtrerr);
+        -:  136:		    }
+    #####:  137:		    val = mathevali(str);
+        -:  138:		} else
+    #####:  139:		    val = 1;
+        -:  140:	    }
+    #####:  141:	    if (errflag) {
+    #####:  142:		if (breaks)
+    #####:  143:		    breaks--;
+    #####:  144:		lastval = 1;
+    #####:  145:		break;
+        -:  146:	    }
+    #####:  147:	    if (!val)
+    #####:  148:		break;
+        -:  149:	} else {
+        -:  150:	    LinkNode node;
+     2885:  151:	    int count = 0;
+     5698:  152:	    for (node = firstnode(vars); node; incnode(node))
+        -:  153:	    {
+     2885:  154:		name = (char *)getdata(node);
+     2885:  155:		if (!args || !(str = (char *) ugetnode(args)))
+        -:  156:		{
+       72:  157:		    if (count) { 
+    #####:  158:			str = "";
+    #####:  159:			last = 1;
+        -:  160:		    } else
+       72:  161:			break;
+        -:  162:		}
+     2813:  163:		if (isset(XTRACE)) {
+    #####:  164:		    printprompt4();
+    #####:  165:		    fprintf(xtrerr, "%s=%s\n", name, str);
+    #####:  166:		    fflush(xtrerr);
+        -:  167:		}
+     2813:  168:		setsparam(name, ztrdup(str));
+     2813:  169:		count++;
+        -:  170:	    }
+     2885:  171:	    if (!count)
+       72:  172:		break;
+        -:  173:	}
+     2813:  174:	state->pc = loop;
+     2813:  175:	execlist(state, 1, do_exec && args && empty(args));
+     2813:  176:	if (breaks) {
+        1:  177:	    breaks--;
+        1:  178:	    if (breaks || !contflag)
+        -:  179:		break;
+    #####:  180:	    contflag = 0;
+        -:  181:	}
+     2812:  182:	if (retflag)
+    #####:  183:	    break;
+     2812:  184:	if (iscond && !errflag) {
+    #####:  185:	    if (atok) {
+    #####:  186:		str = dupstring(advance);
+    #####:  187:		singsub(&str);
+        -:  188:	    } else
+    #####:  189:		str = advance;
+    #####:  190:	    if (isset(XTRACE)) {
+    #####:  191:		printprompt4();
+    #####:  192:		fprintf(xtrerr, "%s\n", str);
+    #####:  193:		fflush(xtrerr);
+        -:  194:	    }
+    #####:  195:	    if (!errflag)
+    #####:  196:		matheval(str);
+        -:  197:	}
+     2812:  198:	if (errflag) {
+    #####:  199:	    if (breaks)
+    #####:  200:		breaks--;
+    #####:  201:	    lastval = 1;
+    #####:  202:	    break;
+        -:  203:	}
+     2812:  204:	freeheap();
+        -:  205:    }
+       73:  206:    popheap();
+       73:  207:    cmdpop();
+       73:  208:    loops--;
+       73:  209:    simple_pline = old_simple_pline;
+       73:  210:    state->pc = end;
+       73:  211:    this_noerrexit = 1;
+       73:  212:    return lastval;
+        -:  213:}
+        -:  214:
+        -:  215:/**/
+        -:  216:int
+    #####:  217:execselect(Estate state, UNUSED(int do_exec))
+        -:  218:{
+        -:  219:    Wordcode end, loop;
+    #####:  220:    wordcode code = state->pc[-1];
+        -:  221:    char *str, *s, *name;
+        -:  222:    LinkNode n;
+        -:  223:    int i, usezle;
+        -:  224:    FILE *inp;
+        -:  225:    size_t more;
+        -:  226:    LinkList args;
+    #####:  227:    int old_simple_pline = simple_pline;
+        -:  228:
+        -:  229:    /* See comments in execwhile() */
+    #####:  230:    simple_pline = 1;
+        -:  231:
+    #####:  232:    end = state->pc + WC_FOR_SKIP(code);
+    #####:  233:    name = ecgetstr(state, EC_NODUP, NULL);
+        -:  234:
+    #####:  235:    if (WC_SELECT_TYPE(code) == WC_SELECT_PPARAM) {
+        -:  236:	char **x;
+        -:  237:
+    #####:  238:	args = newlinklist();
+    #####:  239:	for (x = pparams; *x; x++)
+    #####:  240:	    addlinknode(args, dupstring(*x));
+        -:  241:    } else {
+    #####:  242:	int htok = 0;
+        -:  243:
+    #####:  244:	if (!(args = ecgetlist(state, *state->pc++, EC_DUPTOK, &htok))) {
+    #####:  245:	    state->pc = end;
+    #####:  246:	    simple_pline = old_simple_pline;
+    #####:  247:	    return 0;
+        -:  248:	}
+    #####:  249:	if (htok) {
+    #####:  250:	    execsubst(args);
+    #####:  251:	    if (errflag) {
+    #####:  252:		state->pc = end;
+    #####:  253:		simple_pline = old_simple_pline;
+    #####:  254:		return 1;
+        -:  255:	    }
+        -:  256:	}
+        -:  257:    }
+    #####:  258:    if (!args || empty(args)) {
+    #####:  259:	state->pc = end;
+    #####:  260:	simple_pline = old_simple_pline;
+    #####:  261:	return 0;
+        -:  262:    }
+    #####:  263:    loops++;
+        -:  264:
+    #####:  265:    pushheap();
+    #####:  266:    cmdpush(CS_SELECT);
+    #####:  267:    usezle = interact && SHTTY != -1 && isset(USEZLE);
+    #####:  268:    inp = fdopen(dup(usezle ? SHTTY : 0), "r");
+    #####:  269:    more = selectlist(args, 0);
+    #####:  270:    loop = state->pc;
+    #####:  271:    for (;;) {
+        -:  272:	for (;;) {
+    #####:  273:	    if (empty(bufstack)) {
+    #####:  274:	    	if (usezle) {
+    #####:  275:		    int oef = errflag;
+        -:  276:
+    #####:  277:		    isfirstln = 1;
+    #####:  278:		    str = zleentry(ZLE_CMD_READ, &prompt3, NULL,
+        -:  279:				   0, ZLCON_SELECT);
+    #####:  280:		    if (errflag)
+    #####:  281:			str = NULL;
+        -:  282:		    /* Keep any user interrupt error status */
+    #####:  283:		    errflag = oef | (errflag & ERRFLAG_INT);
+        -:  284:	    	} else {
+    #####:  285:		    str = promptexpand(prompt3, 0, NULL, NULL, NULL);
+    #####:  286:		    zputs(str, stderr);
+    #####:  287:		    free(str);
+    #####:  288:		    fflush(stderr);
+    #####:  289:		    str = fgets(zhalloc(256), 256, inp);
+        -:  290:	    	}
+        -:  291:	    } else
+    #####:  292:		str = (char *)getlinknode(bufstack);
+    #####:  293:            if (!str && !errflag)
+    #####:  294:                setsparam("REPLY", ztrdup("")); /* EOF (user pressed Ctrl+D) */
+    #####:  295:	    if (!str || errflag) {
+    #####:  296:		if (breaks)
+    #####:  297:		    breaks--;
+    #####:  298:		fprintf(stderr, "\n");
+    #####:  299:		fflush(stderr);
+    #####:  300:		goto done;
+        -:  301:	    }
+    #####:  302:	    if ((s = strchr(str, '\n')))
+    #####:  303:		*s = '\0';
+    #####:  304:	    if (*str)
+    #####:  305:	      break;
+    #####:  306:	    more = selectlist(args, more);
+        -:  307:	}
+    #####:  308:	setsparam("REPLY", ztrdup(str));
+    #####:  309:	i = atoi(str);
+    #####:  310:	if (!i)
+    #####:  311:	    str = "";
+        -:  312:	else {
+    #####:  313:	    for (i--, n = firstnode(args); n && i; incnode(n), i--);
+    #####:  314:	    if (n)
+    #####:  315:		str = (char *) getdata(n);
+        -:  316:	    else
+    #####:  317:		str = "";
+        -:  318:	}
+    #####:  319:	setsparam(name, ztrdup(str));
+    #####:  320:	state->pc = loop;
+    #####:  321:	execlist(state, 1, 0);
+    #####:  322:	freeheap();
+    #####:  323:	if (breaks) {
+    #####:  324:	    breaks--;
+    #####:  325:	    if (breaks || !contflag)
+        -:  326:		break;
+    #####:  327:	    contflag = 0;
+        -:  328:	}
+    #####:  329:	if (retflag || errflag)
+        -:  330:	    break;
+        -:  331:    }
+    #####:  332:  done:
+    #####:  333:    cmdpop();
+    #####:  334:    popheap();
+    #####:  335:    fclose(inp);
+    #####:  336:    loops--;
+    #####:  337:    simple_pline = old_simple_pline;
+    #####:  338:    state->pc = end;
+    #####:  339:    this_noerrexit = 1;
+    #####:  340:    return lastval;
+        -:  341:}
+        -:  342:
+        -:  343:/* And this is used to print select lists. */
+        -:  344:
+        -:  345:/**/
+        -:  346:size_t
+    #####:  347:selectlist(LinkList l, size_t start)
+        -:  348:{
+    #####:  349:    size_t longest = 1, fct, fw = 0, colsz, t0, t1, ct;
+        -:  350:    char **arr, **ap;
+        -:  351:
+    #####:  352:    zleentry(ZLE_CMD_TRASH);
+    #####:  353:    arr = hlinklist2array(l, 0);
+    #####:  354:    for (ap = arr; *ap; ap++)
+    #####:  355:	if (strlen(*ap) > longest)
+    #####:  356:	    longest = strlen(*ap);
+    #####:  357:    t0 = ct = ap - arr;
+    #####:  358:    longest++;
+    #####:  359:    while (t0)
+    #####:  360:	t0 /= 10, longest++;
+        -:  361:    /* to compensate for added ')' */
+    #####:  362:    fct = (zterm_columns - 1) / (longest + 3);
+    #####:  363:    if (fct == 0)
+    #####:  364:	fct = 1;
+        -:  365:    else
+    #####:  366:	fw = (zterm_columns - 1) / fct;
+    #####:  367:    colsz = (ct + fct - 1) / fct;
+    #####:  368:    for (t1 = start; t1 != colsz && t1 - start < zterm_lines - 2; t1++) {
+    #####:  369:	ap = arr + t1;
+        -:  370:	do {
+    #####:  371:	    size_t t2 = strlen(*ap) + 2;
+        -:  372:	    int t3;
+        -:  373:
+    #####:  374:	    fprintf(stderr, "%d) %s", t3 = ap - arr + 1, *ap);
+    #####:  375:	    while (t3)
+    #####:  376:		t2++, t3 /= 10;
+    #####:  377:	    for (; t2 < fw; t2++)
+    #####:  378:		fputc(' ', stderr);
+    #####:  379:	    for (t0 = colsz; t0 && *ap; t0--, ap++);
+        -:  380:	}
+    #####:  381:	while (*ap);
+    #####:  382:	fputc('\n', stderr);
+        -:  383:    }
+        -:  384:
+        -:  385: /* Below is a simple attempt at doing it the Korn Way..
+        -:  386:       ap = arr;
+        -:  387:       t0 = 0;
+        -:  388:       do {
+        -:  389:           t0++;
+        -:  390:           fprintf(stderr,"%d) %s\n",t0,*ap);
+        -:  391:           ap++;
+        -:  392:       }
+        -:  393:       while (*ap);*/
+    #####:  394:    fflush(stderr);
+        -:  395:
+    #####:  396:    return t1 < colsz ? t1 : 0;
+        -:  397:}
+        -:  398:
+        -:  399:/**/
+        -:  400:int
+     1765:  401:execwhile(Estate state, UNUSED(int do_exec))
+        -:  402:{
+        -:  403:    Wordcode end, loop;
+     1765:  404:    wordcode code = state->pc[-1];
+     1765:  405:    int olderrexit, oldval, isuntil = (WC_WHILE_TYPE(code) == WC_WHILE_UNTIL);
+     1765:  406:    int old_simple_pline = simple_pline;
+        -:  407:
+     1765:  408:    end = state->pc + WC_WHILE_SKIP(code);
+     1765:  409:    olderrexit = noerrexit;
+     1765:  410:    oldval = 0;
+     1765:  411:    pushheap();
+     1765:  412:    cmdpush(isuntil ? CS_UNTIL : CS_WHILE);
+     1765:  413:    loops++;
+     1765:  414:    loop = state->pc;
+        -:  415:
+     1765:  416:    if (loop[0] == WC_END && loop[1] == WC_END) {
+        -:  417:
+        -:  418:        /* This is an empty loop.  Make sure the signal handler sets the
+        -:  419:        * flags and then just wait for someone hitting ^C. */
+        -:  420:
+    #####:  421:        simple_pline = 1;
+        -:  422:
+    #####:  423:        while (!breaks)
+        -:  424:            ;
+    #####:  425:        breaks--;
+        -:  426:
+    #####:  427:        simple_pline = old_simple_pline;
+        -:  428:    } else {
+        -:  429:        for (;;) {
+    11009:  430:            state->pc = loop;
+     6387:  431:            noerrexit = NOERREXIT_EXIT | NOERREXIT_RETURN;
+        -:  432:
+        -:  433:	    /* In case the test condition is a functional no-op,
+        -:  434:	     * make sure signal handlers recognize ^C to end the loop. */
+     6387:  435:	    simple_pline = 1;
+        -:  436:
+     6387:  437:            execlist(state, 1, 0);
+        -:  438:
+     6387:  439:	    simple_pline = old_simple_pline;
+     6387:  440:            noerrexit = olderrexit;
+     6387:  441:            if (!((lastval == 0) ^ isuntil)) {
+     1592:  442:                if (breaks)
+    #####:  443:                    breaks--;
+     1592:  444:		if (!retflag)
+     1592:  445:		    lastval = oldval;
+     1592:  446:                break;
+        -:  447:            }
+     4795:  448:            if (retflag) {
+    #####:  449:		if (breaks)
+    #####:  450:		    breaks--;
+    #####:  451:                break;
+        -:  452:	    }
+        -:  453:
+        -:  454:	    /* In case the loop body is also a functional no-op,
+        -:  455:	     * make sure signal handlers recognize ^C as above. */
+     4795:  456:	    simple_pline = 1;
+        -:  457:
+     4795:  458:            execlist(state, 1, 0);
+        -:  459:
+     4795:  460:	    simple_pline = old_simple_pline;
+     4795:  461:            if (breaks) {
+      183:  462:                breaks--;
+      183:  463:                if (breaks || !contflag)
+        -:  464:                    break;
+       10:  465:                contflag = 0;
+        -:  466:            }
+     4622:  467:            if (errflag) {
+    #####:  468:                lastval = 1;
+    #####:  469:                break;
+        -:  470:            }
+     4622:  471:            if (retflag)
+    #####:  472:                break;
+     4622:  473:            freeheap();
+     4622:  474:            oldval = lastval;
+        -:  475:        }
+        -:  476:    }
+     1765:  477:    cmdpop();
+     1765:  478:    popheap();
+     1765:  479:    loops--;
+     1765:  480:    state->pc = end;
+     1765:  481:    this_noerrexit = 1;
+     1765:  482:    return lastval;
+        -:  483:}
+        -:  484:
+        -:  485:/**/
+        -:  486:int
+    #####:  487:execrepeat(Estate state, UNUSED(int do_exec))
+        -:  488:{
+        -:  489:    Wordcode end, loop;
+    #####:  490:    wordcode code = state->pc[-1];
+    #####:  491:    int count, htok = 0;
+        -:  492:    char *tmp;
+    #####:  493:    int old_simple_pline = simple_pline;
+        -:  494:
+        -:  495:    /* See comments in execwhile() */
+    #####:  496:    simple_pline = 1;
+        -:  497:
+    #####:  498:    end = state->pc + WC_REPEAT_SKIP(code);
+        -:  499:
+    #####:  500:    tmp = ecgetstr(state, EC_DUPTOK, &htok);
+    #####:  501:    if (htok) {
+    #####:  502:	singsub(&tmp);
+    #####:  503:	untokenize(tmp);
+        -:  504:    }
+    #####:  505:    count = mathevali(tmp);
+    #####:  506:    if (errflag)
+    #####:  507:	return 1;
+    #####:  508:    lastval = 0; /* used when the repeat count is zero */
+    #####:  509:    pushheap();
+    #####:  510:    cmdpush(CS_REPEAT);
+    #####:  511:    loops++;
+    #####:  512:    loop = state->pc;
+    #####:  513:    while (count-- > 0) {
+    #####:  514:	state->pc = loop;
+    #####:  515:	execlist(state, 1, 0);
+    #####:  516:	freeheap();
+    #####:  517:	if (breaks) {
+    #####:  518:	    breaks--;
+    #####:  519:	    if (breaks || !contflag)
+        -:  520:		break;
+    #####:  521:	    contflag = 0;
+        -:  522:	}
+    #####:  523:	if (errflag) {
+    #####:  524:	    lastval = 1;
+    #####:  525:	    break;
+        -:  526:	}
+    #####:  527:	if (retflag)
+    #####:  528:	    break;
+        -:  529:    }
+    #####:  530:    cmdpop();
+    #####:  531:    popheap();
+    #####:  532:    loops--;
+    #####:  533:    simple_pline = old_simple_pline;
+    #####:  534:    state->pc = end;
+    #####:  535:    this_noerrexit = 1;
+    #####:  536:    return lastval;
+        -:  537:}
+        -:  538:
+        -:  539:/**/
+        -:  540:int
+    11570:  541:execif(Estate state, int do_exec)
+        -:  542:{
+        -:  543:    Wordcode end, next;
+    11570:  544:    wordcode code = state->pc[-1];
+    11570:  545:    int olderrexit, s = 0, run = 0;
+        -:  546:
+    11570:  547:    olderrexit = noerrexit;
+    11570:  548:    end = state->pc + WC_IF_SKIP(code);
+        -:  549:
+    11570:  550:    noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN;
+    34433:  551:    while (state->pc < end) {
+    19352:  552:	code = *state->pc++;
+    38704:  553:	if (wc_code(code) != WC_IF ||
+    19352:  554:	    (run = (WC_IF_TYPE(code) == WC_IF_ELSE))) {
+     4251:  555:	    if (run)
+     4251:  556:		run = 2;
+     4251:  557:	    break;
+        -:  558:	}
+    15101:  559:	next = state->pc + WC_IF_SKIP(code);
+    15101:  560:	cmdpush(s ? CS_ELIF : CS_IF);
+    15101:  561:	execlist(state, 1, 0);
+    15101:  562:	cmdpop();
+    15101:  563:	if (!lastval) {
+     3808:  564:	    run = 1;
+     3808:  565:	    break;
+        -:  566:	}
+    11293:  567:	if (retflag)
+    #####:  568:	    break;
+    11293:  569:	s = 1;
+    11293:  570:	state->pc = next;
+        -:  571:    }
+        -:  572:
+    11570:  573:    if (run) {
+        -:  574:	/* we need to ignore lastval until we reach execcmd() */
+     8059:  575:	if (olderrexit || run == 2)
+     4255:  576:	    noerrexit = olderrexit;
+     3804:  577:	else if (lastval)
+    #####:  578:	    noerrexit |= NOERREXIT_EXIT | NOERREXIT_RETURN | NOERREXIT_UNTIL_EXEC;
+        -:  579:	else
+     3804:  580:	    noerrexit &= ~ (NOERREXIT_EXIT | NOERREXIT_RETURN);
+     8059:  581:	cmdpush(run == 2 ? CS_ELSE : (s ? CS_ELIFTHEN : CS_IFTHEN));
+     8059:  582:	execlist(state, 1, do_exec);
+     8059:  583:	cmdpop();
+        -:  584:    } else {
+     3511:  585:	noerrexit = olderrexit;
+     3511:  586:	if (!retflag && !errflag)
+     3511:  587:	    lastval = 0;
+        -:  588:    }
+    11570:  589:    state->pc = end;
+    11570:  590:    this_noerrexit = 1;
+        -:  591:
+    11570:  592:    return lastval;
+        -:  593:}
+        -:  594:
+        -:  595:/**/
+        -:  596:int
+     5125:  597:execcase(Estate state, int do_exec)
+        -:  598:{
+        -:  599:    Wordcode end, next;
+     5125:  600:    wordcode code = state->pc[-1];
+        -:  601:    char *word, *pat;
+        -:  602:    int npat, save, nalts, ialt, patok, anypatok;
+        -:  603:    Patprog *spprog, pprog;
+        -:  604:
+     5125:  605:    end = state->pc + WC_CASE_SKIP(code);
+        -:  606:
+     5125:  607:    word = ecgetstr(state, EC_DUP, NULL);
+     5125:  608:    singsub(&word);
+     5125:  609:    untokenize(word);
+     5125:  610:    anypatok = 0;
+        -:  611:
+     5125:  612:    cmdpush(CS_CASE);
+    16352:  613:    while (state->pc < end) {
+    11227:  614:	code = *state->pc++;
+    11227:  615:	if (wc_code(code) != WC_CASE)
+    #####:  616:	    break;
+        -:  617:
+    11227:  618:	save = 0;
+    11227:  619:	next = state->pc + WC_CASE_SKIP(code);
+    11227:  620:	nalts = *state->pc++;
+    11227:  621:	ialt = patok = 0;
+        -:  622:
+    11227:  623:	if (isset(XTRACE)) {
+    #####:  624:	    printprompt4();
+    #####:  625:	    fprintf(xtrerr, "case %s (", word);
+        -:  626:	}
+        -:  627:
+    33681:  628:	while (!patok && nalts) {
+    11227:  629:	    npat = state->pc[1];
+    11227:  630:	    spprog = state->prog->pats + npat;
+    11227:  631:	    pprog = NULL;
+    11227:  632:	    pat = NULL;
+        -:  633:
+    11227:  634:	    queue_signals();
+        -:  635:
+    11227:  636:	    if (isset(XTRACE)) {
+    #####:  637:		int htok = 0;
+    #####:  638:		pat = dupstring(ecrawstr(state->prog, state->pc, &htok));
+    #####:  639:		if (htok)
+    #####:  640:		    singsub(&pat);
+        -:  641:
+    #####:  642:		if (ialt++)
+    #####:  643:		    fprintf(stderr, " | ");
+    #####:  644:		quote_tokenized_output(pat, xtrerr);
+        -:  645:	    }
+        -:  646:
+    11227:  647:	    if (*spprog != dummy_patprog1 && *spprog != dummy_patprog2)
+    10039:  648:		pprog = *spprog;
+        -:  649:
+    11227:  650:	    if (!pprog) {
+     1188:  651:		if (!pat) {
+        -:  652:		    char *opat;
+     1188:  653:		    int htok = 0;
+        -:  654:
+     1188:  655:		    pat = dupstring(opat = ecrawstr(state->prog,
+        -:  656:						    state->pc, &htok));
+     1188:  657:		    if (htok)
+     1176:  658:			singsub(&pat);
+     3561:  659:		    save = (!(state->prog->flags & EF_HEAP) &&
+     1207:  660:			    !strcmp(pat, opat) && *spprog != dummy_patprog2);
+        -:  661:		}
+     1188:  662:		if (!(pprog = patcompile(pat, (save ? PAT_ZDUP : PAT_STATIC),
+        -:  663:					 NULL)))
+    #####:  664:		    zerr("bad pattern: %s", pat);
+     1188:  665:		else if (save)
+       19:  666:		    *spprog = pprog;
+        -:  667:	    }
+    11227:  668:	    if (pprog && pattry(pprog, word))
+     5125:  669:		patok = anypatok = 1;
+    11227:  670:	    state->pc += 2;
+    11227:  671:	    nalts--;
+        -:  672:
+    11227:  673:	    unqueue_signals();
+        -:  674:	}
+    11227:  675:	state->pc += 2 * nalts;
+    11227:  676:	if (isset(XTRACE)) {
+    #####:  677:	    fprintf(xtrerr, ")\n");
+    #####:  678:	    fflush(xtrerr);
+        -:  679:	}
+    11227:  680:	if (patok) {
+     5125:  681:	    execlist(state, 1, ((WC_CASE_TYPE(code) == WC_CASE_OR) &&
+        -:  682:				do_exec));
+    15375:  683:	    while (!retflag && wc_code(code) == WC_CASE &&
+     5125:  684:		   WC_CASE_TYPE(code) == WC_CASE_AND && state->pc < end) {
+    #####:  685:		state->pc = next;
+    #####:  686:		code = *state->pc++;
+    #####:  687:		next = state->pc + WC_CASE_SKIP(code);
+    #####:  688:		nalts = *state->pc++;
+    #####:  689:		state->pc += 2 * nalts;
+    #####:  690:		execlist(state, 1, ((WC_CASE_TYPE(code) == WC_CASE_OR) &&
+        -:  691:				    do_exec));
+        -:  692:	    }
+     5125:  693:	    if (WC_CASE_TYPE(code) != WC_CASE_TESTAND)
+     5125:  694:		break;
+        -:  695:	}
+     6102:  696:	state->pc = next;
+        -:  697:    }
+     5125:  698:    cmdpop();
+        -:  699:
+     5125:  700:    state->pc = end;
+        -:  701:
+     5125:  702:    if (!anypatok)
+    #####:  703:	lastval = 0;
+     5125:  704:    this_noerrexit = 1;
+        -:  705:
+     5125:  706:    return lastval;
+        -:  707:}
+        -:  708:
+        -:  709:/*
+        -:  710: * Errflag from `try' block, may be reset in `always' block.
+        -:  711: * Accessible from an integer parameter, so needs to be a zlong.
+        -:  712: */
+        -:  713:
+        -:  714:/**/
+        -:  715:zlong
+        -:  716:try_errflag = -1;
+        -:  717:
+        -:  718:/**
+        -:  719: * Corresponding interrupt error status form `try' block.
+        -:  720: */
+        -:  721:
+        -:  722:/**/
+        -:  723:zlong
+        -:  724:try_interrupt = -1;
+        -:  725:
+        -:  726:/**/
+        -:  727:zlong
+        -:  728:try_tryflag = 0;
+        -:  729:
+        -:  730:/**/
+        -:  731:int
+        1:  732:exectry(Estate state, int do_exec)
+        -:  733:{
+        -:  734:    Wordcode end, always;
+        -:  735:    int endval;
+        -:  736:    int save_retflag, save_breaks, save_contflag;
+        -:  737:    zlong save_try_errflag, save_try_interrupt;
+        -:  738:
+        1:  739:    end = state->pc + WC_TRY_SKIP(state->pc[-1]);
+        1:  740:    always = state->pc + 1 + WC_TRY_SKIP(*state->pc);
+        1:  741:    state->pc++;
+        1:  742:    pushheap();
+        1:  743:    cmdpush(CS_CURSH);
+        -:  744:
+        -:  745:    /* The :try clause */
+        1:  746:    ++try_tryflag;
+        1:  747:    execlist(state, 1, 0);
+        1:  748:    --try_tryflag;
+        -:  749:
+        -:  750:    /* Don't record errflag here, may be reset.  However, */
+        -:  751:    /* endval should show failure when there is an error. */
+        1:  752:    endval = lastval ? lastval : errflag;
+        -:  753:
+        1:  754:    freeheap();
+        -:  755:
+        1:  756:    cmdpop();
+        1:  757:    cmdpush(CS_ALWAYS);
+        -:  758:
+        -:  759:    /* The always clause. */
+        1:  760:    save_try_errflag = try_errflag;
+        1:  761:    save_try_interrupt = try_interrupt;
+        1:  762:    try_errflag = (zlong)(errflag & ERRFLAG_ERROR);
+        1:  763:    try_interrupt = (zlong)((errflag & ERRFLAG_INT) ? 1 : 0);
+        -:  764:    /* We need to reset all errors to allow the block to execute */
+        1:  765:    errflag = 0;
+        1:  766:    save_retflag = retflag;
+        1:  767:    retflag = 0;
+        1:  768:    save_breaks = breaks;
+        1:  769:    breaks = 0;
+        1:  770:    save_contflag = contflag;
+        1:  771:    contflag = 0;
+        -:  772:
+        1:  773:    state->pc = always;
+        1:  774:    execlist(state, 1, do_exec);
+        -:  775:
+        1:  776:    if (try_errflag)
+    #####:  777:	errflag |= ERRFLAG_ERROR;
+        -:  778:    else
+        1:  779:	errflag &= ~ERRFLAG_ERROR;
+        1:  780:    if (try_interrupt)
+    #####:  781:	errflag |= ERRFLAG_INT;
+        -:  782:    else
+        1:  783:	errflag &= ~ERRFLAG_INT;
+        1:  784:    try_errflag = save_try_errflag;
+        1:  785:    try_interrupt = save_try_interrupt;
+        1:  786:    if (!retflag)
+        1:  787:	retflag = save_retflag;
+        1:  788:    if (!breaks)
+        1:  789:	breaks = save_breaks;
+        1:  790:    if (!contflag)
+        1:  791:	contflag = save_contflag;
+        -:  792:
+        1:  793:    cmdpop();
+        1:  794:    popheap();
+        1:  795:    state->pc = end;
+        -:  796:
+        1:  797:    return endval;
+        -:  798:}

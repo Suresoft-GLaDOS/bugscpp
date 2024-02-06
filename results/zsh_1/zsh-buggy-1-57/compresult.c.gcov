@@ -1,0 +1,2356 @@
+        -:    0:Source:compresult.c
+        -:    0:Graph:/home/workspace/Src/Zle/compresult.gcno
+        -:    0:Data:/home/workspace/Src/Zle/compresult.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * compresult.c - the complete module, completion result handling
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1999 Sven Wischnowsky
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Sven Wischnowsky or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Sven Wischnowsky and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Sven Wischnowsky and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Sven Wischnowsky and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "complete.mdh"
+        -:   31:#include "compresult.pro"
+        -:   32:
+        -:   33:/* This counts how often the list of completions was invalidated.
+        -:   34: * Can be used to detect if we have a new list.  */
+        -:   35:
+        -:   36:/**/
+        -:   37:mod_export int invcount;
+        -:   38:
+        -:   39:#define inststr(X) inststrlen((X),1,-1)
+        -:   40:
+        -:   41:/* This cuts the cline list before the stuff that isn't worth
+        -:   42: * inserting in the line. */
+        -:   43:
+        -:   44:/**/
+        -:   45:static Cline
+       70:   46:cut_cline(Cline l)
+        -:   47:{
+       70:   48:    Cline q, p, e = NULL, maxp = NULL;
+       70:   49:    int sum = 0, max = 0, tmp, ls = 0, miss = 0;
+        -:   50:
+        -:   51:    /* If no match was added with matching, we don't really know
+        -:   52:     * which parts of the unambiguous string are worth keeping,
+        -:   53:     * so for now we keep everything (in the hope that this
+        -:   54:     * produces a string containing at least everything that was 
+        -:   55:     * originally on the line). */
+        -:   56:
+       70:   57:    if (!hasmatched) {
+        7:   58:	cline_setlens(l, 0);
+        7:   59:	return l;
+        -:   60:    }
+       63:   61:    e = l = cp_cline(l, 0);
+        -:   62:
+        -:   63:    /* First, search the last struct for which we have something on
+        -:   64:     * the line. Anything before that is kept. */
+        -:   65:
+      135:   66:    for (q = NULL, p = l; p; p = p->next) {
+       72:   67:	if (p->orig || p->olen || !(p->flags & CLF_NEW))
+        7:   68:	    e = p->next;
+       72:   69:	if (!p->suffix && (p->wlen || p->llen || p->prefix))
+       47:   70:	    q = p;
+        -:   71:    }
+       63:   72:    if (!e && q && !q->orig && !q->olen && (q->flags & CLF_MISS) &&
+    #####:   73:	(!(q->flags & CLF_MATCHED) || (!q->prefix && !q->suffix)) &&
+    #####:   74:	(q->word ? q->wlen : q->llen) < 3) {
+    #####:   75:	q->word = q->line = NULL;
+    #####:   76:	q->wlen = q->llen = 0;
+        -:   77:    }
+        -:   78:    /* Then keep all structs without missing characters. */
+        -:   79:
+      138:   80:    while (e && !(e->flags & CLF_MISS))
+       12:   81:	e = e->next;
+        -:   82:
+       63:   83:    if (e) {
+        -:   84:	/* Then we see if there is another struct with missing
+        -:   85:	 * characters. If not, we keep the whole list. */
+        -:   86:
+       51:   87:	for (p = e->next; p && !(p->flags & CLF_MISS); p = p->next);
+        -:   88:
+       51:   89:	if (p) {
+    #####:   90:	    for (p = e; p; p = p->next) {
+    #####:   91:		if (!(p->flags & CLF_MISS))
+    #####:   92:		    sum += p->max;
+        -:   93:		else {
+    #####:   94:		    tmp = cline_sublen(p);
+    #####:   95:		    if (tmp > 2 && tmp > ((p->max + p->min) >> 1))
+    #####:   96:			sum += tmp - (p->max - tmp);
+    #####:   97:		    else if (tmp < p->min)
+    #####:   98:			sum -= (((p->max + p->min) >> 1) - tmp) << (tmp < 2);
+        -:   99:		}
+    #####:  100:		if (sum > max) {
+    #####:  101:		    max = sum;
+    #####:  102:		    maxp = p;
+        -:  103:		}
+        -:  104:	    }
+    #####:  105:	    if (max)
+    #####:  106:		e = maxp;
+        -:  107:	    else {
+    #####:  108:		int len = 0;
+        -:  109:
+    #####:  110:		cline_setlens(l, 0);
+    #####:  111:		ls = 1;
+        -:  112:
+    #####:  113:		for (p = e; p; p = p->next)
+    #####:  114:		    len += p->min;
+        -:  115:
+    #####:  116:		if (len > ((minmlen << 1) / 3))
+    #####:  117:		    goto end;
+        -:  118:	    }
+    #####:  119:	    e->line = e->word = NULL;
+    #####:  120:	    e->llen = e->wlen = e->olen = 0;
+    #####:  121:	    e->next = NULL;
+        -:  122:	}
+        -:  123:    }
+      126:  124: end:
+        -:  125:
+        -:  126:    /* Sanity check. If there are no parts with missing characters but
+        -:  127:     * parts with joined substrings, remove those. */
+        -:  128:
+      135:  129:    for (p = l, e = 0, tmp = 0; p; p = p->next) {
+       72:  130:	if (p->flags & (CLF_MISS|CLF_DIFF))
+       51:  131:	    miss = 1;
+      140:  132:	for (q = p->prefix; q; q = q->next)
+       68:  133:	    if (q->flags & CLF_JOIN) {
+    #####:  134:		e = p;
+    #####:  135:		tmp = 0;
+    #####:  136:		break;
+        -:  137:	    }
+       72:  138:	for (q = p->suffix; q; q = q->next)
+    #####:  139:	    if (q->flags & CLF_JOIN) {
+    #####:  140:		e = p;
+    #####:  141:		tmp = 1;
+    #####:  142:		break;
+        -:  143:	    }
+        -:  144:    }
+       63:  145:    if (e && (!miss || cline_sublen(e) == e->min)) {
+    #####:  146:	for (p = (tmp ? e->suffix : e->prefix);
+    #####:  147:	     p && p->next && !(p->next->flags & CLF_JOIN); p = p->next);
+    #####:  148:	if (p)
+    #####:  149:	    p->next = NULL;
+        -:  150:    }
+       63:  151:    if (!ls)
+       63:  152:	cline_setlens(l, 0);
+        -:  153:
+       63:  154:    return l;
+        -:  155:}
+        -:  156:
+        -:  157:/* This builds the unambiguous string. If ins is one, it is immediately
+        -:  158: * inserted into the line. Otherwise csp is used to return the relative
+        -:  159: * cursor position in the string returned and posl contains all 
+        -:  160: * positions with missing or ambiguous characters. If ins is two, csp
+        -:  161: * and posl contain real command line positions (including braces). */
+        -:  162:
+        -:  163:/**/
+        -:  164:static char *
+       70:  165:cline_str(Cline l, int ins, int *csp, LinkList posl)
+        -:  166:{
+        -:  167:    Cline s;
+       70:  168:    int ocs = zlemetacs, ncs, pcs, scs, opos = -1, npos;
+        -:  169:    int pm, pmax, pmm, pma, sm, smax, smm, sma, d, dm, mid;
+       70:  170:    int i, j, li = 0, cbr, padd = (ins ? wb - ocs : -ocs);
+        -:  171:    Brinfo brp, brs;
+        -:  172:
+        -:  173:    METACHECK();
+        -:  174:
+       70:  175:    l = cut_cline(l);
+        -:  176:
+       70:  177:    pmm = pma = smm = sma = dm = pcs = scs = 0;
+       70:  178:    pm = pmax = sm = smax = d = mid = cbr = -1;
+       70:  179:    brp = brs = NULL;
+        -:  180:
+        -:  181:    /* Get the information about the brace beginning and end we have
+        -:  182:     * to re-insert. */
+       70:  183:    if (ins) {
+        -:  184:	Brinfo bp;
+       43:  185:	int olen = we - wb;
+        -:  186:
+       43:  187:	if ((brp = brbeg)) {
+    #####:  188:	    for (bp = brbeg; bp; bp = bp->next) {
+    #####:  189:		bp->curpos = (hasunqu ? bp->pos : bp->qpos);
+    #####:  190:		olen -= strlen(bp->str);
+        -:  191:	    }
+        -:  192:	}
+       43:  193:	if ((brs = lastbrend)) {
+    #####:  194:	    for (bp = brend; bp; bp = bp->next)
+    #####:  195:		olen -= strlen(bp->str);
+        -:  196:
+    #####:  197:	    for (bp = brend; bp; bp = bp->next)
+    #####:  198:		bp->curpos = olen - (hasunqu ? bp->pos : bp->qpos);
+        -:  199:	}
+       86:  200:	while (brp && !brp->curpos) {
+    #####:  201:	    inststrlen(brp->str, 1, -1);
+    #####:  202:	    brp = brp->next;
+        -:  203:	}
+       86:  204:	while (brs && !brs->curpos) {
+    #####:  205:	    if (cbr < 0)
+    #####:  206:		cbr = zlemetacs;
+    #####:  207:	    inststrlen(brs->str, 1, -1);
+    #####:  208:	    brs = brs->prev;
+        -:  209:	}
+        -:  210:    }
+        -:  211:    /* Walk through the top-level cline list. */
+      221:  212:    while (l) {
+        -:  213:	/* Insert the original string if no prefix. */
+       81:  214:	if (l->olen && !(l->flags & CLF_SUF) && !l->prefix) {
+    #####:  215:	    pcs = zlemetacs + l->olen;
+    #####:  216:	    inststrlen(l->orig, 1, l->olen);
+        -:  217:	} else {
+        -:  218:	    /* Otherwise insert the prefix. */
+      155:  219:	    for (s = l->prefix; s; s = s->next) {
+       74:  220:		pcs = zlemetacs + s->llen;
+       74:  221:		if (s->flags & CLF_LINE)
+    #####:  222:		    inststrlen(s->line, 1, s->llen);
+        -:  223:		else
+       74:  224:		    inststrlen(s->word, 1, s->wlen);
+       74:  225:		scs = zlemetacs;
+        -:  226:
+       74:  227:		if ((s->flags & CLF_DIFF) && (!dm || (s->flags & CLF_MATCHED))) {
+    #####:  228:		    d = zlemetacs; dm = s->flags & CLF_MATCHED;
+    #####:  229:		    if (posl && (npos = zlemetacs + padd) != opos) {
+    #####:  230:			opos = npos;
+    #####:  231:			addlinknode(posl, (void *) ((long) npos));
+        -:  232:		    }
+        -:  233:		}
+       74:  234:		li += s->llen;
+        -:  235:	    }
+        -:  236:	}
+       81:  237:	if (ins) {
+        -:  238:	    int ocs, bl;
+        -:  239:
+       98:  240:	    while (brp && li >= brp->curpos) {
+    #####:  241:		ocs = zlemetacs;
+    #####:  242:		bl = strlen(brp->str);
+    #####:  243:		zlemetacs = pcs - (li - brp->curpos);
+    #####:  244:		inststrlen(brp->str, 1, bl);
+    #####:  245:		zlemetacs = ocs + bl;
+    #####:  246:		pcs += bl;
+    #####:  247:		scs += bl;
+    #####:  248:		brp = brp->next;
+        -:  249:	    }
+        -:  250:	}
+        -:  251:	/* Remember the position if this is the first prefix with
+        -:  252:	 * missing characters. */
+       81:  253:	if ((l->flags & CLF_MISS) && !(l->flags & CLF_SUF)) {
+       56:  254:	    if (posl && (npos = zlemetacs + padd) != opos) {
+       40:  255:		opos = npos;
+       40:  256:		addlinknode(posl, (void *) ((long) npos));
+        -:  257:	    }
+       56:  258:	    if (((pmax <= (l->max - l->min) || (pma && l->max != l->min)) &&
+    #####:  259:		 (!pmm || (l->flags & CLF_MATCHED))) ||
+    #####:  260:		((l->flags & CLF_MATCHED) && !pmm)) {
+       56:  261:		pm = zlemetacs; pmax = l->max - l->min; pmm = l->flags & CLF_MATCHED;
+       56:  262:		pma = ((l->prefix || l->suffix) && l->min == cline_sublen(l));
+        -:  263:	    }
+        -:  264:	}
+       81:  265:	if (ins) {
+        -:  266:	    int ocs, bl;
+        -:  267:
+       98:  268:	    while (brs && li >= brs->curpos) {
+    #####:  269:		ocs = zlemetacs;
+    #####:  270:		bl = strlen(brs->str);
+    #####:  271:		zlemetacs = scs - (li - brs->curpos);
+    #####:  272:		if (cbr < 0)
+    #####:  273:		    cbr = zlemetacs;
+    #####:  274:		inststrlen(brs->str, 1, bl);
+    #####:  275:		zlemetacs = ocs + bl;
+    #####:  276:		pcs += bl;
+    #####:  277:		brs = brs->prev;
+        -:  278:	    }
+        -:  279:	}
+       81:  280:	pcs = zlemetacs;
+        -:  281:	/* Insert the anchor. */
+       81:  282:	if (l->flags & CLF_LINE)
+    #####:  283:	    inststrlen(l->line, 1, l->llen);
+        -:  284:	else
+       81:  285:	    inststrlen(l->word, 1, l->wlen);
+       81:  286:	scs = zlemetacs;
+       81:  287:	if (ins) {
+        -:  288:	    int ocs, bl;
+        -:  289:
+       49:  290:	    li += l->llen;
+        -:  291:
+       98:  292:	    while (brp && li >= brp->curpos) {
+    #####:  293:		ocs = zlemetacs;
+    #####:  294:		bl = strlen(brp->str);
+    #####:  295:		zlemetacs = pcs + l->llen - (li - brp->curpos);
+    #####:  296:		inststrlen(brp->str, 1, bl);
+    #####:  297:		zlemetacs = ocs + bl;
+    #####:  298:		pcs += bl;
+    #####:  299:		scs += bl;
+    #####:  300:		brp = brp->next;
+        -:  301:	    }
+        -:  302:	}
+        -:  303:	/* Remember the cursor position for suffixes and mids. */
+       81:  304:	if (l->flags & CLF_MISS) {
+       56:  305:	    if (l->flags & CLF_MID)
+    #####:  306:		mid = zlemetacs;
+       56:  307:	    else if (l->flags & CLF_SUF) {
+    #####:  308:		if (posl && (npos = zlemetacs + padd) != opos) {
+    #####:  309:		    opos = npos;
+    #####:  310:		    addlinknode(posl, (void *) ((long) npos));
+        -:  311:		}
+    #####:  312:		if (((smax <= (l->min - l->max) || (sma && l->max != l->min)) &&
+    #####:  313:		     (!smm || (l->flags & CLF_MATCHED))) ||
+    #####:  314:		    ((l->flags & CLF_MATCHED) && !smm)) {
+    #####:  315:		    sm = zlemetacs; smax = l->min - l->max; smm = l->flags & CLF_MATCHED;
+    #####:  316:		    sma = ((l->prefix || l->suffix) && l->min == cline_sublen(l));
+        -:  317:		}
+        -:  318:	    }
+        -:  319:	}
+       81:  320:	if (ins) {
+        -:  321:	    int ocs, bl;
+        -:  322:
+       98:  323:	    while (brs && li >= brs->curpos) {
+    #####:  324:		ocs = zlemetacs;
+    #####:  325:		bl = strlen(brs->str);
+    #####:  326:		zlemetacs = scs - (li - brs->curpos);
+    #####:  327:		if (cbr < 0)
+    #####:  328:		    cbr = zlemetacs;
+    #####:  329:		inststrlen(brs->str, 1, bl);
+    #####:  330:		zlemetacs = ocs + bl;
+    #####:  331:		pcs += bl;
+    #####:  332:		brs = brs->prev;
+        -:  333:	    }
+        -:  334:	}
+        -:  335:	/* And now insert the suffix or the original string. */
+       81:  336:	if (l->olen && (l->flags & CLF_SUF) && !l->suffix) {
+    #####:  337:	    pcs = zlemetacs;
+    #####:  338:	    inststrlen(l->orig, 1, l->olen);
+    #####:  339:	    if (ins) {
+        -:  340:		int ocs, bl;
+        -:  341:
+    #####:  342:		li += l->olen;
+        -:  343:
+    #####:  344:		while (brp && li >= brp->curpos) {
+    #####:  345:		    ocs = zlemetacs;
+    #####:  346:		    bl = strlen(brp->str);
+    #####:  347:		    zlemetacs = pcs + l->olen - (li - brp->curpos);
+    #####:  348:		    inststrlen(brp->str, 1, bl);
+    #####:  349:		    zlemetacs = ocs + bl;
+    #####:  350:		    pcs += bl;
+    #####:  351:		    brp = brp->next;
+        -:  352:		}
+    #####:  353:		while (brs && li >= brs->curpos) {
+    #####:  354:		    ocs = zlemetacs;
+    #####:  355:		    bl = strlen(brs->str);
+    #####:  356:		    zlemetacs = pcs + l->olen - (li - brs->curpos);
+    #####:  357:		    if (cbr < 0)
+    #####:  358:			cbr = zlemetacs;
+    #####:  359:		    inststrlen(brs->str, 1, bl);
+    #####:  360:		    zlemetacs = ocs + bl;
+    #####:  361:		    pcs += bl;
+    #####:  362:		    brs = brs->prev;
+        -:  363:		}
+        -:  364:	    }
+        -:  365:	} else {
+       81:  366:	    Cline js = NULL;
+        -:  367:
+       81:  368:	    for (j = -1, i = 0, s = l->suffix; s; s = s->next) {
+    #####:  369:		if (j < 0 && (s->flags & CLF_DIFF))
+    #####:  370:		    j = i, js = s;
+    #####:  371:		pcs = zlemetacs;
+    #####:  372:		if (s->flags & CLF_LINE) {
+    #####:  373:		    inststrlen(s->line, 0, s->llen);
+    #####:  374:		    i += s->llen; scs = zlemetacs + s->llen;
+        -:  375:		} else {
+    #####:  376:		    inststrlen(s->word, 0, s->wlen);
+    #####:  377:		    i += s->wlen; scs = zlemetacs + s->wlen;
+        -:  378:		}
+    #####:  379:		if (ins) {
+        -:  380:		    int ocs, bl;
+        -:  381:
+    #####:  382:		    li += s->llen;
+        -:  383:
+    #####:  384:		    while (brp && li >= brp->curpos) {
+    #####:  385:			ocs = zlemetacs;
+    #####:  386:			bl = strlen(brp->str);
+    #####:  387:			zlemetacs = pcs + (li - brp->curpos);
+    #####:  388:			inststrlen(brp->str, 1, bl);
+    #####:  389:			zlemetacs = ocs + bl;
+    #####:  390:			pcs += bl;
+    #####:  391:			scs += bl;
+    #####:  392:			brp = brp->next;
+        -:  393:		    }
+    #####:  394:		    while (brs && li >= brs->curpos) {
+    #####:  395:			ocs = zlemetacs;
+    #####:  396:			bl = strlen(brs->str);
+    #####:  397:			zlemetacs = scs - (li - brs->curpos);
+    #####:  398:			if (cbr < 0)
+    #####:  399:			    cbr = zlemetacs;
+    #####:  400:			inststrlen(brs->str, 1, bl);
+    #####:  401:			zlemetacs = ocs + bl;
+    #####:  402:			pcs += bl;
+    #####:  403:			brs = brs->prev;
+        -:  404:		    }
+        -:  405:		}
+        -:  406:	    }
+       81:  407:	    zlemetacs += i;
+       81:  408:	    if (j >= 0 && (!dm || (js->flags & CLF_MATCHED))) {
+    #####:  409:		d = zlemetacs - j; dm = js->flags & CLF_MATCHED;
+    #####:  410:		if (posl && (npos = zlemetacs - j + padd) != opos) {
+    #####:  411:		    opos = npos;
+    #####:  412:		    addlinknode(posl, (void *) ((long) npos));
+        -:  413:		}
+        -:  414:	    }
+        -:  415:	}
+       81:  416:	l = l->next;
+        -:  417:    }
+       70:  418:    if (posl && (npos = zlemetacs + padd) != opos)
+        -:  419:#if 0
+        -:  420:	/* This could be used to put an extra colon before the end-of-word
+        -:  421:	 * position if there is nothing missing. */
+        -:  422:	addlinknode(posl, (void *) ((long) -npos));
+        -:  423:#endif
+       14:  424:	addlinknode(posl, (void *) ((long) npos));
+        -:  425:
+       70:  426:    if (ins) {
+       43:  427:	int ocs = zlemetacs;
+        -:  428:
+       43:  429:	for (; brp; brp = brp->next)
+    #####:  430:	    inststrlen(brp->str, 1, -1);
+       43:  431:	for (; brs; brs = brs->prev) {
+    #####:  432:	    if (cbr < 0)
+    #####:  433:		cbr = zlemetacs;
+    #####:  434:	    inststrlen(brs->str, 1, -1);
+        -:  435:	}
+       43:  436:	if (mid >= ocs)
+    #####:  437:	    mid += zlemetacs - ocs;
+       43:  438:	if (pm >= ocs)
+       36:  439:	    pm += zlemetacs - ocs;
+       43:  440:	if (sm >= ocs)
+    #####:  441:	    sm += zlemetacs - ocs;
+       43:  442:	if (d >= ocs)
+    #####:  443:	    d += zlemetacs - ocs;
+        -:  444:
+       43:  445:	if (posl) {
+        -:  446:	    LinkNode node;
+        -:  447:	    long p;
+        -:  448:
+       54:  449:	    for (node = firstnode(posl); node; incnode(node)) {
+       27:  450:		p = (long) getdata(node);
+       27:  451:		if (p >= ocs)
+       11:  452:		    setdata(node, (void *) (p + zlemetacs - ocs));
+        -:  453:	    }
+        -:  454:	}
+        -:  455:    }
+        -:  456:    /* This calculates the new cursor position. If we had a mid cline
+        -:  457:     * with missing characters, we take this, otherwise if we have a
+        -:  458:     * prefix with missing characters, we take that, the same for a
+        -:  459:     * suffix, and finally a place where the matches differ. */
+      140:  460:    ncs = (mid >= 0 ? mid :
+      140:  461:	   (cbr >= 0 ? cbr :
+       70:  462:	    (pm >= 0 ? pm : (sm >= 0 ? sm : (d >= 0 ? d : zlemetacs)))));
+        -:  463:
+       70:  464:    if (ins != 1) {
+        -:  465:	/* We always inserted the string in the line. If that was not
+        -:  466:	 * requested, we copy it and remove from the line. */
+       54:  467:	char *r = zalloc((i = zlemetacs - ocs) + 1);
+        -:  468:
+       54:  469:	memcpy(r, zlemetaline + ocs, i);
+       54:  470:	r[i] = '\0';
+       54:  471:	zlemetacs = ocs;
+       54:  472:	foredel(i, CUT_RAW);
+        -:  473:
+       54:  474:	if (csp)
+       27:  475:	    *csp = ncs - ocs;
+        -:  476:
+       54:  477:	return r;
+        -:  478:    }
+       16:  479:    lastend = zlemetacs;
+       16:  480:    zlemetacs = ncs;
+        -:  481:
+       16:  482:    return NULL;
+        -:  483:}
+        -:  484:
+        -:  485:/* Small utility function turning a list of positions into a colon
+        -:  486: * separated string. */
+        -:  487:
+        -:  488:static char *
+       54:  489:build_pos_string(LinkList list)
+        -:  490:{
+        -:  491:    LinkNode node;
+        -:  492:    int l;
+        -:  493:    char buf[40], *s;
+        -:  494:    long p;
+        -:  495:
+      108:  496:    for (node = firstnode(list), l = 0; node; incnode(node)) {
+       54:  497:	p = (long) getdata(node);
+        -:  498:#if 0
+        -:  499:	/* This could be used to put an extra colon before the end-of-word
+        -:  500:	 * position if there is nothing missing. */
+        -:  501:	if (p < 0)
+        -:  502:	    sprintf(buf, ":%ld", -p);
+        -:  503:	else
+        -:  504:#endif
+       54:  505:	    sprintf(buf, "%ld", p);
+       54:  506:	setdata(node, dupstring(buf));
+       54:  507:	l += 1 + strlen(buf);
+        -:  508:    }
+       54:  509:    s = (char *) zalloc(l * sizeof(char));
+       54:  510:    *s = 0;
+      162:  511:    for (node = firstnode(list); node;) {
+       54:  512:	strcat(s, (char *) getdata(node));
+       54:  513:	incnode(node);
+       54:  514:	if (node)
+    #####:  515:	    strcat(s, ":");
+        -:  516:    }
+       54:  517:    return s;
+        -:  518:}
+        -:  519:
+        -:  520:/* This is a utility function using the function above to allow access
+        -:  521: * to the unambiguous string and cursor position via compstate. */
+        -:  522:
+        -:  523:/**/
+        -:  524:char *
+      124:  525:unambig_data(int *cp, char **pp, char **ip)
+        -:  526:{
+        -:  527:    static char *scache = NULL, *pcache = NULL, *icache = NULL;
+        -:  528:    static int ccache;
+        -:  529:
+      124:  530:    if (mnum && ainfo) {
+      216:  531:	if (mnum != unambig_mnum) {
+       27:  532:	    LinkList list = newlinklist();
+        -:  533:
+       27:  534:	    zsfree(scache);
+       27:  535:	    scache = cline_str((ainfo->count ? ainfo->line : fainfo->line),
+        -:  536:			       0, &ccache, list);
+       27:  537:	    zsfree(pcache);
+       27:  538:	    if (empty(list))
+    #####:  539:		pcache = ztrdup("");
+        -:  540:	    else
+       27:  541:		pcache = build_pos_string(list);
+        -:  542:
+       27:  543:	    zsfree(icache);
+        -:  544:
+       27:  545:	    list = newlinklist();
+       27:  546:	    zsfree(cline_str((ainfo->count ? ainfo->line : fainfo->line),
+        -:  547:			     2, NULL, list));
+       27:  548:	    if (empty(list))
+    #####:  549:		icache = ztrdup("");
+        -:  550:	    else
+       27:  551:		icache = build_pos_string(list);
+        -:  552:	}
+       16:  553:    } else if (mnum != unambig_mnum || !ainfo || !scache) {
+        4:  554:	zsfree(scache);
+        4:  555:	scache = ztrdup("");
+        4:  556:	zsfree(pcache);
+        4:  557:	pcache = ztrdup("");
+        4:  558:	zsfree(icache);
+        4:  559:	icache = ztrdup("");
+        4:  560:	ccache = 0;
+        -:  561:    }
+      124:  562:    unambig_mnum = mnum;
+      124:  563:    if (cp)
+       31:  564:	*cp = ccache + 1;
+      124:  565:    if (pp)
+       31:  566:	*pp = pcache;
+      124:  567:    if (ip)
+       31:  568:	*ip = icache;
+      124:  569:    return scache;
+        -:  570:}
+        -:  571:
+        -:  572:/* Insert the given match. This returns the number of bytes inserted.
+        -:  573: * scs is used to return the position where a automatically created suffix
+        -:  574: * has to be inserted. */
+        -:  575:
+        -:  576:/**/
+        -:  577:static int
+       23:  578:instmatch(Cmatch m, int *scs)
+        -:  579:{
+       23:  580:    int l, r = 0, ocs, a = zlemetacs, brb = 0, bradd, *brpos;
+        -:  581:    Brinfo bp;
+        -:  582:
+        -:  583:    METACHECK();
+        -:  584:
+       23:  585:    zsfree(lastprebr);
+       23:  586:    zsfree(lastpostbr);
+       23:  587:    lastprebr = lastpostbr = NULL;
+        -:  588:
+        -:  589:    /* Ignored prefix. */
+       23:  590:    if (m->ipre) {
+        6:  591:	char *p = m->ipre + (menuacc ? m->qipl : 0);
+        -:  592:
+        6:  593:	inststrlen(p, 1, (l = strlen(p)));
+        6:  594:	r += l;
+        -:  595:    }
+        -:  596:    /* -P prefix. */
+       23:  597:    if (m->pre) {
+    #####:  598:	inststrlen(m->pre, 1, (l = strlen(m->pre)));
+    #####:  599:	r += l;
+        -:  600:    }
+        -:  601:    /* Path prefix. */
+       23:  602:    if (m->ppre) {
+        1:  603:	inststrlen(m->ppre, 1, (l = strlen(m->ppre)));
+        1:  604:	r += l;
+        -:  605:    }
+        -:  606:    /* The string itself. */
+       23:  607:    inststrlen(m->str, 1, (l = strlen(m->str)));
+       23:  608:    r += l;
+       23:  609:    ocs = zlemetacs;
+        -:  610:    /* Re-insert the brace beginnings, if any. */
+       23:  611:    if (brbeg) {
+    #####:  612:	int pcs = zlemetacs;
+        -:  613:
+    #####:  614:	l = 0;
+    #####:  615:	for (bp = brbeg, brpos = m->brpl,
+    #####:  616:		 bradd = (m->pre ? strlen(m->pre) : 0);
+    #####:  617:	     bp; bp = bp->next, brpos++) {
+    #####:  618:	    zlemetacs = a + *brpos + bradd;
+    #####:  619:	    pcs = zlemetacs;
+    #####:  620:	    l = strlen(bp->str);
+    #####:  621:	    bradd += l;
+    #####:  622:	    brpcs = zlemetacs;
+    #####:  623:	    inststrlen(bp->str, 1, l);
+    #####:  624:	    r += l;
+    #####:  625:	    ocs += l;
+        -:  626:	}
+    #####:  627:	lastprebr = (char *) zalloc(pcs - a + 1);
+    #####:  628:	memcpy(lastprebr, zlemetaline + a, pcs - a);
+    #####:  629:	lastprebr[pcs - a] = '\0';
+    #####:  630:	zlemetacs = ocs;
+        -:  631:    }
+        -:  632:    /* Path suffix. */
+       23:  633:    if (m->psuf) {
+        2:  634:	inststrlen(m->psuf, 1, (l = strlen(m->psuf)));
+        2:  635:	r += l;
+        -:  636:    }
+        -:  637:    /* Re-insert the brace end. */
+       23:  638:    if (brend) {
+    #####:  639:	a = zlemetacs;
+    #####:  640:	for (bp = brend, brpos = m->brsl, bradd = 0; bp; bp = bp->next, brpos++) {
+    #####:  641:	    zlemetacs = a - *brpos;
+    #####:  642:	    ocs = brscs = zlemetacs;
+    #####:  643:	    l = strlen(bp->str);
+    #####:  644:	    bradd += l;
+    #####:  645:	    inststrlen(bp->str, 1, l);
+    #####:  646:	    brb = zlemetacs;
+    #####:  647:	    r += l;
+        -:  648:	}
+    #####:  649:	zlemetacs = a + bradd;
+    #####:  650:	if (scs)
+    #####:  651:	    *scs = ocs;
+        -:  652:    } else {
+       23:  653:	brscs = -1;
+        -:  654:
+       23:  655:	if (scs)
+       23:  656:	    *scs = zlemetacs;
+        -:  657:    }
+        -:  658:    /* -S suffix */
+       23:  659:    if (m->suf) {
+        7:  660:	inststrlen(m->suf, 1, (l = strlen(m->suf)));
+        7:  661:	r += l;
+        -:  662:    }
+        -:  663:    /* ignored suffix */
+       23:  664:    if (m->isuf) {
+        1:  665:	inststrlen(m->isuf, 1, (l = strlen(m->isuf)));
+        1:  666:	r += l;
+        -:  667:    }
+       23:  668:    if (brend) {
+    #####:  669:	lastpostbr = (char *) zalloc(zlemetacs - brb + 1);
+    #####:  670:	memcpy(lastpostbr, zlemetaline + brb, zlemetacs - brb);
+    #####:  671:	lastpostbr[zlemetacs - brb] = '\0';
+        -:  672:    }
+       23:  673:    lastend = zlemetacs;
+       23:  674:    zlemetacs = ocs;
+        -:  675:
+       23:  676:    return r;
+        -:  677:}
+        -:  678:
+        -:  679:/* Check if the match has the given prefix/suffix before/after the
+        -:  680: * braces. */
+        -:  681:
+        -:  682:/**/
+        -:  683:mod_export int
+    #####:  684:hasbrpsfx(Cmatch m, char *pre, char *suf)
+        -:  685:{
+        -:  686:    int was_meta;
+        -:  687:
+    #####:  688:    if (m->flags & CMF_ALL)
+    #####:  689:	return 1;
+        -:  690:
+        -:  691:    /* May not be metafied if calculating whether to show a list. */
+    #####:  692:    if (zlemetaline == NULL) {
+    #####:  693:	was_meta = 0;
+    #####:  694:	metafy_line();
+        -:  695:    } else
+    #####:  696:	was_meta = 1;
+        -:  697:
+        -:  698:    {
+    #####:  699:	char *op = lastprebr, *os = lastpostbr;
+    #####:  700:	VARARR(char, oline, zlemetall);
+    #####:  701:	int oll = zlemetall, newll, ole = lastend;
+    #####:  702:	int opcs = brpcs, oscs = brscs, ret;
+        -:  703:
+    #####:  704:	zle_save_positions();
+    #####:  705:	memcpy(oline, zlemetaline, zlemetall);
+        -:  706:
+    #####:  707:	lastprebr = lastpostbr = NULL;
+        -:  708:
+    #####:  709:	instmatch(m, NULL);
+        -:  710:
+    #####:  711:	zlemetacs = 0;
+    #####:  712:	foredel(zlemetall, CUT_RAW);
+    #####:  713:	spaceinline(oll);
+    #####:  714:	memcpy(zlemetaline, oline, oll);
+        -:  715:	/* we do not want to restore zlemetall */
+    #####:  716:	newll = zlemetall;
+    #####:  717:	zle_restore_positions();
+    #####:  718:	zlemetall = newll;
+    #####:  719:	lastend = ole;
+    #####:  720:	brpcs = opcs;
+    #####:  721:	brscs = oscs;
+        -:  722:
+    #####:  723:	ret = (((!pre && !lastprebr) ||
+    #####:  724:		(pre && lastprebr && !strcmp(pre, lastprebr))) &&
+    #####:  725:	       ((!suf && !lastpostbr) ||
+    #####:  726:		(suf && lastpostbr && !strcmp(suf, lastpostbr))));
+        -:  727:
+    #####:  728:	zsfree(lastprebr);
+    #####:  729:	zsfree(lastpostbr);
+    #####:  730:	lastprebr = op;
+    #####:  731:	lastpostbr = os;
+        -:  732:
+    #####:  733:	if (!was_meta)
+    #####:  734:	    unmetafy_line();
+    #####:  735:	return ret;
+        -:  736:    }
+        -:  737:}
+        -:  738:
+        -:  739:/* Handle the case were we found more than one match. */
+        -:  740:
+        -:  741:/**/
+        -:  742:int
+       20:  743:do_ambiguous(void)
+        -:  744:{
+       20:  745:    int ret = 0;
+        -:  746:
+       20:  747:    menucmp = menuacc = 0;
+        -:  748:
+        -:  749:    /* If we have to insert the first match, call do_single().  This is *
+        -:  750:     * how REC_EXACT takes effect.  We effectively turn the ambiguous   *
+        -:  751:     * completion into an unambiguous one.                              */
+       20:  752:    if (ainfo && ainfo->exact == 1 && !(fromcomp & FC_LINE)) {
+    #####:  753:	minfo.cur = NULL;
+    #####:  754:	do_single(ainfo->exactm);
+    #####:  755:	invalidatelist();
+    #####:  756:	return ret;
+        -:  757:    }
+        -:  758:    /* Setting lastambig here means that the completion is ambiguous and *
+        -:  759:     * AUTO_MENU might want to start a menu completion next time round,  *
+        -:  760:     * but this might be overridden below if we can complete an          *
+        -:  761:     * unambiguous prefix.                                               */
+       20:  762:    lastambig = 1;
+        -:  763:
+       40:  764:    if (iforcemenu != -1 &&
+       36:  765:        (usemenu || (haspattern && comppatinsert &&
+    #####:  766:                     !strcmp(comppatinsert, "menu")))) {
+        -:  767:	/* We are in a position to start using menu completion due to one  *
+        -:  768:	 * of the menu completion options, or due to the menu-complete-    *
+        -:  769:	 * word command, or due to using GLOB_COMPLETE which does menu-    *
+        -:  770:	 * style completion regardless of the setting of the normal menu   *
+        -:  771:	 * completion options.                                             */
+        4:  772:	do_ambig_menu();
+       16:  773:    } else if (ainfo) {
+       16:  774:	int atend = (zlemetacs == we), la, eq, tcs;
+       16:  775:	VARARR(char, old, we - wb);
+        -:  776:
+       16:  777:	minfo.cur = NULL;
+       16:  778:	minfo.asked = 0;
+        -:  779:
+       16:  780:	fixsuffix();
+        -:  781:
+        -:  782:	/* First remove the old string from the line. */
+       16:  783:	tcs = zlemetacs;
+       16:  784:	zlemetacs = wb;
+       16:  785:	memcpy(old, zlemetaline + wb, we - wb);
+       16:  786:	foredel(we - wb, CUT_RAW);
+        -:  787:
+        -:  788:	/* Now get the unambiguous string and insert it into the line. */
+       16:  789:	cline_str(ainfo->line, 1, NULL, NULL);
+        -:  790:
+        -:  791:	/* Sometimes the different match specs used may result in a cline
+        -:  792:	 * that gives an empty string. If that happened, we re-insert the
+        -:  793:         * old string. Unless there were matches added with -U, that is. */
+        -:  794:
+       16:  795:	if (lastend < we && !lenchanged && !hasunmatched) {
+    #####:  796:	    zlemetacs = wb;
+    #####:  797:	    foredel(lastend - wb, CUT_RAW);
+    #####:  798:	    inststrlen(old, 0, we - wb);
+    #####:  799:	    lastend = we;
+    #####:  800:	    zlemetacs = tcs;
+        -:  801:	}
+       16:  802:	if (eparq) {
+    #####:  803:	    tcs = zlemetacs;
+    #####:  804:	    zlemetacs = lastend;
+    #####:  805:	    for (eq = eparq; eq; eq--)
+    #####:  806:		inststrlen("\"", 0, 1);
+    #####:  807:	    zlemetacs = tcs;
+        -:  808:	}
+        -:  809:	/* la is non-zero if listambiguous may be used. Copying and
+        -:  810:	 * comparing the line looks like BFI but it is the easiest
+        -:  811:	 * solution. Really. */
+       16:  812:	la = (zlemetall != origll || strncmp(origline, zlemetaline, zlemetall));
+        -:  813:
+        -:  814:	/* If REC_EXACT and AUTO_MENU are set and what we inserted is an  *
+        -:  815:	 * exact match, we want menu completion the next time round       *
+        -:  816:	 * so we set fromcomp, to ensure that the word on the line is not *
+        -:  817:	 * taken as an exact match. Also we remember if we just moved the *
+        -:  818:	 * cursor into the word.                                          */
+       32:  819:	fromcomp = ((isset(AUTOMENU) ? FC_LINE : 0) |
+       16:  820:		    ((atend && zlemetacs != lastend) ? FC_INWORD : 0));
+        -:  821:
+        -:  822:	/* Probably move the cursor to the end. */
+       16:  823:	if (movetoend == 3)
+    #####:  824:	    zlemetacs = lastend;
+        -:  825:
+        -:  826:	/* If the LIST_AMBIGUOUS option (meaning roughly `show a list only *
+        -:  827:	 * if the completion is completely ambiguous') is set, and some    *
+        -:  828:	 * prefix was inserted, return now, bypassing the list-displaying  *
+        -:  829:	 * code.  On the way, invalidate the list and note that we don't   *
+        -:  830:	 * want to enter an AUTO_MENU immediately.                          */
+       16:  831:	if ((uselist == 3 ||
+    #####:  832:	     (!uselist && isset(BASHAUTOLIST) && isset(LISTAMBIGUOUS))) &&
+        1:  833:	    la && iforcemenu != -1) {
+        1:  834:	    int fc = fromcomp;
+        -:  835:
+        1:  836:	    invalidatelist();
+        1:  837:	    fromcomp = fc;
+        1:  838:	    lastambig = 0;
+        1:  839:	    clearlist = 1;
+        1:  840:	    return ret;
+        -:  841:	}
+        -:  842:    } else
+    #####:  843:	return ret;
+        -:  844:
+        -:  845:    /* At this point, we might want a completion listing.  Show the listing *
+        -:  846:     * if it is needed.                                                     */
+       19:  847:    if (isset(LISTBEEP) && !oldlist)
+       19:  848:	ret = 1;
+        -:  849:
+       36:  850:    if (uselist && (usemenu != 2 || (!listshown && !oldlist)) &&
+       34:  851:	((!showinglist && (!listshown || !oldlist)) ||
+       17:  852:	 (usemenu == 3 && !oldlist)) &&
+       17:  853:	(smatches >= 2 || forcelist))
+       17:  854:	showinglist = -2;
+        -:  855:
+       19:  856:    return ret;
+        -:  857:}
+        -:  858:
+        -:  859:/* This is a stat that ignores backslashes in the filename.  The `ls' *
+        -:  860: * parameter says if we have to do lstat() or stat().  I think this   *
+        -:  861: * should instead be done by use of a general function to expand a    *
+        -:  862: * filename (stripping backslashes), combined with the actual         *
+        -:  863: * (l)stat().                                                         *
+        -:  864: * Make sure input is unmetafied                                      */
+        -:  865:
+        -:  866:/**/
+        -:  867:mod_export int
+       85:  868:ztat(char *nam, struct stat *buf, int ls)
+        -:  869:{
+        -:  870:    int ret;
+        -:  871:
+       85:  872:    nam = unmeta(nam);
+       85:  873:    if (!nam)
+    #####:  874:	return -1;
+        -:  875:
+       85:  876:    if ((ret = ls ? lstat(nam, buf) : stat(nam, buf))) {
+        -:  877:	char *p, *q;
+        -:  878:
+       90:  879:	for (p = q = nam; *q; q++)
+       85:  880:	    if (*q == '\\' && q[1])
+        5:  881:		*p++ = *++q;
+        -:  882:	    else
+       80:  883:		*p++ = *q;
+        5:  884:	*p = '\0';
+        -:  885:	
+        5:  886:	ret = ls ? lstat(nam, buf) : stat(nam, buf);
+        -:  887:    }
+        -:  888:
+       85:  889:    return ret;
+        -:  890:}
+        -:  891:
+        -:  892:/* Insert all matches in the command line. */
+        -:  893:
+        -:  894:/**/
+        -:  895:void
+    #####:  896:do_allmatches(UNUSED(int end))
+        -:  897:{
+    #####:  898:    int first = 1, nm = nmatches - 1, omc = menucmp, oma = menuacc, e;
+        -:  899:    Cmatch *mc;
+        -:  900:    struct menuinfo mi;
+    #####:  901:    char *p = (brbeg ? ztrdup(lastbrbeg->str) : NULL);
+        -:  902:
+    #####:  903:    memcpy(&mi, &minfo, sizeof(struct menuinfo));
+    #####:  904:    menucmp = 1;
+    #####:  905:    menuacc = 0;
+        -:  906:
+    #####:  907:    for (minfo.group = amatches;
+    #####:  908:	 minfo.group && !(minfo.group)->mcount;
+    #####:  909:	 minfo.group = (minfo.group)->next) {
+        -:  910:#ifdef ZSH_HEAP_DEBUG
+        -:  911:	if (memory_validate(minfo.group->heap_id)) {
+        -:  912:	    HEAP_ERROR(minfo.group->heap_id);
+        -:  913:	}
+        -:  914:#endif
+        -:  915:    }
+        -:  916:
+        -:  917:
+    #####:  918:    mc = (minfo.group)->matches;
+        -:  919:
+        -:  920:    while (1) {
+    #####:  921:	if (!((*mc)->flags & CMF_ALL)) {
+    #####:  922:	    if (!first)
+    #####:  923:		accept_last();
+    #####:  924:	    first = 0;
+        -:  925:
+    #####:  926:	    if (!omc && !--nm)
+    #####:  927:		menucmp = 0;
+        -:  928:
+    #####:  929:	    do_single(*mc);
+        -:  930:	}
+    #####:  931:	minfo.cur = mc;
+        -:  932:
+    #####:  933:	if (!*++(minfo.cur)) {
+        -:  934:	    do {
+    #####:  935:		if (!(minfo.group = (minfo.group)->next))
+    #####:  936:		    break;
+    #####:  937:	    } while (!(minfo.group)->mcount);
+    #####:  938:	    if (!minfo.group)
+    #####:  939:		break;
+    #####:  940:	    minfo.cur = minfo.group->matches;
+        -:  941:	}
+    #####:  942:	mc = minfo.cur;
+        -:  943:    }
+    #####:  944:    menucmp = omc;
+    #####:  945:    menuacc = oma;
+        -:  946:
+    #####:  947:    e = minfo.end;
+    #####:  948:    memcpy(&minfo, &mi, sizeof(struct menuinfo));
+    #####:  949:    minfo.end = e;
+    #####:  950:    minfo.len = e - minfo.pos;
+        -:  951:
+    #####:  952:    if (p) {
+    #####:  953:	zsfree(lastbrbeg->str);
+    #####:  954:	lastbrbeg->str = p;
+        -:  955:    }
+    #####:  956:}
+        -:  957:
+        -:  958:/* Insert a single match in the command line. */
+        -:  959:
+        -:  960:/**/
+        -:  961:mod_export void
+       23:  962:do_single(Cmatch m)
+        -:  963:{
+       23:  964:    int l, sr = 0, scs;
+       23:  965:    int havesuff = 0;
+       23:  966:    int partest = (m->ripre || ((m->flags & CMF_ISPAR) && parpre));
+       23:  967:    char *str = m->orig, *ppre = m->ppre, *psuf = m->psuf, *prpre = m->prpre;
+        -:  968:
+       23:  969:    if (!prpre) prpre = "";
+       23:  970:    if (!ppre) ppre = "";
+       23:  971:    if (!psuf) psuf = "";
+        -:  972:
+       23:  973:    fixsuffix();
+        -:  974:
+       23:  975:    if (!minfo.cur) {
+        -:  976:	/* We are currently not in a menu-completion, *
+        -:  977:	 * so set the position variables.             */
+       11:  978:	minfo.pos = wb;
+       23:  979:	minfo.we = (movetoend >= 2 || (movetoend == 1 && !menucmp) ||
+        4:  980:		    (!movetoend && zlemetacs == we));
+       11:  981:	minfo.end = we;
+        -:  982:    }
+        -:  983:    /* If we are already in a menu-completion or if we have done a *
+        -:  984:     * glob completion, we have to delete some of the stuff on the *
+        -:  985:     * command line.                                               */
+       23:  986:    if (minfo.cur)
+       12:  987:	l = minfo.len + minfo.insc;
+        -:  988:    else
+       11:  989:	l = we - wb;
+        -:  990:
+       23:  991:    minfo.insc = 0;
+       23:  992:    zlemetacs = minfo.pos;
+       23:  993:    foredel(l, CUT_RAW);
+        -:  994:
+       23:  995:    if (m->flags & CMF_ALL) {
+    #####:  996:	do_allmatches(0);
+    #####:  997:        return;
+        -:  998:    }
+        -:  999:
+        -: 1000:    /* And then we insert the new string. */
+       23: 1001:    minfo.len = instmatch(m, &scs);
+       23: 1002:    minfo.end = zlemetacs;
+       23: 1003:    zlemetacs = minfo.pos + minfo.len;
+        -: 1004:
+       23: 1005:    if (m->suf) {
+        7: 1006:	havesuff = 1;
+        -: 1007:	/*
+        -: 1008:	 * This strlen(0 got converted to a ztrlen(), but I don't
+        -: 1009:	 * think that's correct since it's dealing with raw bytes,
+        -: 1010:	 * right?
+        -: 1011:	 */
+        7: 1012:	minfo.insc = strlen(m->suf);
+        7: 1013:	minfo.len -= minfo.insc;
+        7: 1014:	if (minfo.we) {
+        6: 1015:	    minfo.end += minfo.insc;
+        6: 1016:	    if (m->flags & CMF_REMOVE) {
+        -: 1017:		/*
+        -: 1018:		 * Here we need the number of characters, not
+        -: 1019:		 * bytes in the string.
+        -: 1020:		 */
+        -: 1021:		int len;
+        5: 1022:		ZLE_STRING_T wsuf =
+        5: 1023:		    stringaszleline(m->suf, 0, &len, NULL, NULL);
+        5: 1024:		makesuffixstr(m->remf, m->rems, len);
+        5: 1025:		if (len == 1)
+        5: 1026:		    addsuffix(SUFTYP_POSSTR, 0, wsuf, 1, 1);
+        5: 1027:		free(wsuf);
+        -: 1028:	    }
+        -: 1029:	}
+        -: 1030:    } else {
+        -: 1031:	/* There is no user-specified suffix, *
+        -: 1032:	 * so generate one automagically.     */
+       16: 1033:	zlemetacs = scs;
+       16: 1034:	if (partest && (m->flags & CMF_PARBR)) {
+        -: 1035:	    int pq;
+        -: 1036:
+        -: 1037:	    /*{{*/
+        -: 1038:	    /* Completing a parameter in braces.  Add a removable `}' suffix. */
+    #####: 1039:	    zlemetacs += eparq;
+    #####: 1040:	    for (pq = parq; pq; pq--)
+    #####: 1041:		inststrlen("\"", 1, 1);
+    #####: 1042:	    minfo.insc += parq;
+    #####: 1043:	    inststrlen("}", 1, 1);
+    #####: 1044:	    minfo.insc++;
+    #####: 1045:	    if (minfo.we)
+    #####: 1046:		minfo.end += minfo.insc;
+    #####: 1047:	    if (m->flags & CMF_PARNEST)
+    #####: 1048:		havesuff = 1;
+        -: 1049:	}
+       25: 1050:	if (((m->flags & CMF_FILE) || (partest && isset(AUTOPARAMSLASH))) &&
+       18: 1051:	    zlemetacs > 0 && zlemetaline[zlemetacs - 1] != '/') {
+        -: 1052:	    /* If we have a filename or we completed a parameter name      *
+        -: 1053:	     * and AUTO_PARAM_SLASH is set, lets see if it is a directory. *
+        -: 1054:	     * If it is, we append a slash.                                */
+        -: 1055:	    struct stat buf;
+        -: 1056:	    char *p;
+        9: 1057:	    int t = 0;
+        -: 1058:
+        9: 1059:	    if (m->ipre && m->ipre[0] == '~' && !m->ipre[1])
+    #####: 1060:		t = 1;
+        -: 1061:	    else {
+        -: 1062:		/* Build the path name. */
+        9: 1063:		if (partest && !*psuf && !(m->flags & CMF_PARNEST)) {
+    #####: 1064:		    int ne = noerrs, tryit = 1;
+        -: 1065:
+    #####: 1066:		    p = (char *) zhalloc(strlen((m->flags & CMF_ISPAR) ?
+    #####: 1067:						parpre : m->ripre) +
+    #####: 1068:					 strlen(str) + 2);
+    #####: 1069:		    sprintf(p, "%s%s%c",
+    #####: 1070:			    ((m->flags & CMF_ISPAR) ? parpre : m->ripre), str,
+    #####: 1071:			    ((m->flags & CMF_PARBR) ? '}' : '\0'));
+    #####: 1072:		    if (*p == '$') {
+        -: 1073:			char *n;
+        -: 1074:			Param pm;
+        -: 1075:
+    #####: 1076:			if (p[1] == '{') {
+        -: 1077:			    char *e;
+        -: 1078:
+    #####: 1079:			    n = dupstring(p + 2);
+    #####: 1080:			    e = n + strlen(n) - 1;
+        -: 1081:
+    #####: 1082:			    if (*e == '}')
+    #####: 1083:				*e = '\0';
+        -: 1084:			} else
+    #####: 1085:			    n = p + 1;
+        -: 1086:
+    #####: 1087:			if ((pm = (Param) paramtab->getnode(paramtab, n)) &&
+    #####: 1088:			    PM_TYPE(pm->node.flags) != PM_SCALAR)
+    #####: 1089:			    tryit = 0;
+        -: 1090:		    }
+    #####: 1091:		    if (tryit) {
+    #####: 1092:			noerrs = 1;
+    #####: 1093:			p = dupstring(p);
+    #####: 1094:			parsestr(&p);
+    #####: 1095:			singsub(&p);
+    #####: 1096:			errflag &= ~ERRFLAG_ERROR;
+    #####: 1097:			noerrs = ne;
+        -: 1098:		    }
+        -: 1099:		} else {
+       18: 1100:		    p = (char *) zhalloc(strlen(prpre) + strlen(str) +
+        9: 1101:				 strlen(psuf) + 3);
+        9: 1102:		    sprintf(p, "%s%s%s", (*prpre ?
+        -: 1103:					  prpre : "./"), str, psuf);
+        -: 1104:		}
+        -: 1105:		/* And do the stat. */
+        9: 1106:		t = (!(sr = ztat(p, &buf, 0)) && S_ISDIR(buf.st_mode));
+        -: 1107:	    }
+        9: 1108:	    if (t) {
+        -: 1109:		/* It is a directory, so add the slash. */
+        7: 1110:		havesuff = 1;
+        7: 1111:		inststrlen("/", 1, 1);
+        7: 1112:		minfo.insc++;
+        7: 1113:		if (minfo.we)
+        7: 1114:		    minfo.end++;
+        7: 1115:		if (!menucmp || minfo.we) {
+        7: 1116:		    if (m->remf || m->rems)
+    #####: 1117:			makesuffixstr(m->remf, m->rems, 1);
+        7: 1118:		    else if (isset(AUTOREMOVESLASH)) {
+        7: 1119:			makesuffix(1);
+        7: 1120:			addsuffix(SUFTYP_POSSTR, 0, ZWS("/"), 1, 1);
+        -: 1121:		    }
+        -: 1122:		}
+        -: 1123:	    }
+        -: 1124:	}
+       16: 1125:	if (!minfo.insc)
+        9: 1126:	    zlemetacs = minfo.pos + minfo.len - m->qisl;
+        -: 1127:    }
+        -: 1128:    /* If completing in a brace expansion... */
+       23: 1129:    if (brbeg) {
+    #####: 1130:	if (havesuff) {
+        -: 1131:	    /*{{*/
+        -: 1132:	    /* If a suffix was added, and is removable, let *
+        -: 1133:	     * `,' and `}' remove it.                       */
+    #####: 1134:	    if (isset(AUTOPARAMKEYS))
+    #####: 1135:		addsuffix(SUFTYP_POSSTR, 0, ZWS(",}"), 2, suffixlen);
+    #####: 1136:	} else if (!menucmp) {
+        -: 1137:	    /*{{*/
+        -: 1138:	    /* Otherwise, add a `,' suffix, and let `}' remove it. */
+    #####: 1139:	    zlemetacs = scs;
+    #####: 1140:	    havesuff = 1;
+    #####: 1141:	    inststrlen(",", 1, 1);
+    #####: 1142:	    minfo.insc++;
+    #####: 1143:	    makesuffix(1);
+    #####: 1144:	    if ((!menucmp || minfo.we) && isset(AUTOPARAMKEYS))
+    #####: 1145:		addsuffix(SUFTYP_POSSTR, 0, ZWS(",}"), 2, 1);
+        -: 1146:	}
+       23: 1147:    } else if (!havesuff && (!(m->flags & CMF_FILE) || !sr)) {
+        -: 1148:	/* If we didn't add a suffix, add a space, unless we are *
+        -: 1149:	 * doing menu completion or we are completing files and  *
+        -: 1150:	 * the string doesn't name an existing file.             */
+        9: 1151:	if (m->autoq && (!m->isuf || !strpfx(m->autoq, m->isuf))) {
+    #####: 1152:	    int al = strlen(m->autoq);
+    #####: 1153:	    inststrlen(m->autoq, 1, al);
+    #####: 1154:	    minfo.insc += al;
+        -: 1155:	}
+       11: 1156:	if (!menucmp && !(m->flags & CMF_NOSPACE) &&
+        2: 1157:	    (usemenu != 3 || insspace)) {
+        2: 1158:	    inststrlen(" ", 1, 1);
+        2: 1159:	    minfo.insc++;
+        2: 1160:	    if (minfo.we)
+        2: 1161:		makesuffixstr(m->remf, m->rems, 1);
+        -: 1162:	}
+        -: 1163:    }
+       23: 1164:    if (minfo.we && partest && isset(AUTOPARAMKEYS) && minfo.insc - parq > 0) {
+        -: 1165:	/* the suffix code needs numbers of characters, not octets */
+        -: 1166:	int outlen;
+    #####: 1167:	char *tmpstr = dupstrpfx(zlemetaline + parq, minfo.insc - parq);
+    #####: 1168:	ZLE_STRING_T subline = stringaszleline(tmpstr, 0, &outlen, NULL, NULL);
+    #####: 1169:	makeparamsuffix(((m->flags & CMF_PARBR) ? 1 : 0), outlen);
+    #####: 1170:	free(subline);
+        -: 1171:    }
+        -: 1172:
+       23: 1173:    if ((menucmp && !minfo.we) || !movetoend) {
+        2: 1174:	zlemetacs = minfo.end;
+        2: 1175:	if (zlemetacs + m->qisl == lastend)
+    #####: 1176:	    zlemetacs += minfo.insc;
+        -: 1177:
+        -: 1178:	/* Advance CURSOR past compadd -s/-S suffixes. */
+        2: 1179:	zlemetacs += strlen(psuf);
+        2: 1180:	zlemetacs += m->suf ? strlen(m->suf) : 0;
+        -: 1181:    }
+        -: 1182:    {
+       23: 1183:	Cmatch *om = minfo.cur;
+        -: 1184:	struct chdata dat;
+        -: 1185:
+       23: 1186:	dat.matches = amatches;
+        -: 1187:#ifdef ZSH_HEAP_DEBUG
+        -: 1188:	if (memory_validate(dat.matches->heap_id)) {
+        -: 1189:	    HEAP_ERROR(dat.matches->heap_id);
+        -: 1190:	}
+        -: 1191:#endif
+       23: 1192:	dat.num = nmatches;
+       23: 1193:	dat.cur = m;
+        -: 1194:
+       23: 1195:	if (menucmp)
+       16: 1196:	    minfo.cur = &m;
+       23: 1197:	runhookdef(INSERTMATCHHOOK, (void *) &dat);
+       23: 1198:	redrawhook();
+       23: 1199:	minfo.cur = om;
+        -: 1200:    }
+        -: 1201:}
+        -: 1202:
+        -: 1203:/* Do completion, given that we are in the middle of a menu completion.  We *
+        -: 1204: * don't need to generate a list of matches, because that's already been    *
+        -: 1205: * done by previous commands.  We will either list the completions, or      *
+        -: 1206: * insert the next completion.                                              */
+        -: 1207:
+        -: 1208:/**/
+        -: 1209:mod_export void
+       12: 1210:do_menucmp(int lst)
+        -: 1211:{
+        -: 1212:    int was_meta;
+        -: 1213:
+        -: 1214:    /* Just list the matches if the list was requested. */
+       12: 1215:    if (lst == COMP_LIST_COMPLETE) {
+    #####: 1216:	showinglist = -2;
+    #####: 1217:	return;
+        -: 1218:    }
+        -: 1219:
+        -: 1220:    /* Already metafied when called from domenuselect already */
+       12: 1221:    if (zlemetaline == NULL) {
+       12: 1222:	was_meta = 0;
+       12: 1223:	metafy_line();
+        -: 1224:    } else
+    #####: 1225:	was_meta = 1;
+        -: 1226:
+        -: 1227:    /* Otherwise go to the next match in the array... */
+       36: 1228:    while (zmult) {
+        -: 1229:	do {
+       12: 1230:	    if (zmult > 0) {
+       12: 1231:		if (!*++(minfo.cur)) {
+        -: 1232:		    do {
+        6: 1233:			if (!(minfo.group = (minfo.group)->next)) {
+        2: 1234:			    minfo.group = amatches;
+        -: 1235:#ifdef ZSH_HEAP_DEBUG
+        -: 1236:			    if (memory_validate(minfo.group->heap_id)) {
+        -: 1237:				HEAP_ERROR(minfo.group->heap_id);
+        -: 1238:			    }
+        -: 1239:#endif
+        -: 1240:			}
+        6: 1241:		    } while (!(minfo.group)->mcount);
+        4: 1242:		    minfo.cur = minfo.group->matches;
+        -: 1243:		}
+        -: 1244:	    } else {
+    #####: 1245:		if (minfo.cur == (minfo.group)->matches) {
+        -: 1246:		    do {
+    #####: 1247:			if (!(minfo.group = (minfo.group)->prev))
+    #####: 1248:			    minfo.group = lmatches;
+    #####: 1249:		    } while (!(minfo.group)->mcount);
+    #####: 1250:		    minfo.cur = (minfo.group)->matches + (minfo.group)->mcount - 1;
+        -: 1251:		} else
+    #####: 1252:		    minfo.cur--;
+        -: 1253:	    }
+       12: 1254:	} while ((menuacc &&
+       12: 1255:		!hasbrpsfx(*(minfo.cur), minfo.prebr, minfo.postbr)) ||
+       24: 1256:		((*minfo.cur)->flags & CMF_DUMMY) ||
+       12: 1257:		(((*minfo.cur)->flags & (CMF_NOLIST | CMF_MULT)) &&
+       12: 1258:		(!(*minfo.cur)->str || !*(*minfo.cur)->str)));
+       12: 1259:	zmult -= (0 < zmult) - (zmult < 0);
+        -: 1260:    }
+        -: 1261:    /* ... and insert it into the command line. */
+       12: 1262:    do_single(*minfo.cur);
+        -: 1263:
+       12: 1264:    if (!was_meta)
+       12: 1265:	unmetafy_line();
+        -: 1266:}
+        -: 1267:
+        -: 1268:/* Accepts the current completion and starts a new arg, *
+        -: 1269: * with the next completions. This gives you a way to   *
+        -: 1270: * accept several selections from the list of matches.  */
+        -: 1271:
+        -: 1272:/**/
+        -: 1273:mod_export int
+    #####: 1274:accept_last(void)
+        -: 1275:{
+        -: 1276:    /* give up trying to work out what state it should be in */
+        -: 1277:    int wasmeta;
+    #####: 1278:    if (zlemetaline != NULL) {
+    #####: 1279:	wasmeta = 1;
+        -: 1280:    } else {
+    #####: 1281:	wasmeta = 0;
+    #####: 1282:	metafy_line();
+        -: 1283:    }
+        -: 1284:
+    #####: 1285:    if (!menuacc) {
+    #####: 1286:	zsfree(minfo.prebr);
+    #####: 1287:	minfo.prebr = ztrdup(lastprebr);
+    #####: 1288:	zsfree(minfo.postbr);
+    #####: 1289:	minfo.postbr = ztrdup(lastpostbr);
+        -: 1290:
+    #####: 1291:	if (listshown && (lastprebr || lastpostbr)) {
+        -: 1292:	    Cmgroup g;
+        -: 1293:	    Cmatch *m;
+        -: 1294:
+    #####: 1295:	    for (g = amatches, m = NULL; g && (!m || !*m); g = g->next) {
+        -: 1296:#ifdef ZSH_HEAP_DEBUG
+        -: 1297:		if (memory_validate(g->heap_id)) {
+        -: 1298:		    HEAP_ERROR(g->heap_id);
+        -: 1299:		}
+        -: 1300:#endif
+    #####: 1301:		for (m = g->matches; *m; m++)
+    #####: 1302:		    if (!hasbrpsfx(*m, minfo.prebr, minfo.postbr)) {
+    #####: 1303:			showinglist = -2;
+    #####: 1304:			break;
+        -: 1305:		    }
+        -: 1306:	    }
+        -: 1307:	}
+        -: 1308:    }
+    #####: 1309:    menuacc++;
+        -: 1310:
+    #####: 1311:    if (brbeg) {
+        -: 1312:	int l;
+        -: 1313:
+    #####: 1314:	iremovesuffix(',', 1);
+        -: 1315:
+    #####: 1316:	l = (brscs >= 0 ? brscs : zlemetacs) - brpcs;
+        -: 1317:
+    #####: 1318:	zsfree(lastbrbeg->str);
+    #####: 1319:	lastbrbeg->str = (char *) zalloc(l + 2);
+    #####: 1320:	memcpy(lastbrbeg->str, zlemetaline + brpcs, l);
+    #####: 1321:	lastbrbeg->str[l] = ',';
+    #####: 1322:	lastbrbeg->str[l + 1] = '\0';
+        -: 1323:    } else {
+        -: 1324:	int l;
+        -: 1325:
+    #####: 1326:	zlemetacs = minfo.pos + minfo.len + minfo.insc;
+    #####: 1327:	iremovesuffix(' ', 1);
+    #####: 1328:	l = zlemetacs;
+    #####: 1329:	zlemetacs = minfo.pos + minfo.len + minfo.insc - (*(minfo.cur))->qisl;
+    #####: 1330:	if (zlemetacs < l)
+    #####: 1331:	    foredel(l - zlemetacs, CUT_RAW);
+    #####: 1332:	else if (zlemetacs > zlemetall)
+    #####: 1333:	    zlemetacs = zlemetall;
+    #####: 1334:	inststrlen(" ", 1, 1);
+    #####: 1335:	minfo.insc = minfo.len = 0;
+    #####: 1336:	minfo.pos = zlemetacs;
+    #####: 1337:	minfo.we = 1;
+        -: 1338:    }
+        -: 1339:
+    #####: 1340:    if (!wasmeta)
+    #####: 1341:	unmetafy_line();
+    #####: 1342:    return 0;
+        -: 1343:}
+        -: 1344:
+        -: 1345:/* This maps the value in v into the range [0,m-1], decrementing v
+        -: 1346: * if it is non-negative and making negative values count backwards. */
+        -: 1347:
+        -: 1348:/**/
+        -: 1349:static int
+        4: 1350:comp_mod(int v, int m)
+        -: 1351:{
+        4: 1352:    if (v >= 0)
+        4: 1353:	v--;
+        4: 1354:    if (v >= 0)
+        4: 1355:	return v % m;
+        -: 1356:    else {
+    #####: 1357:	while (v < 0)
+    #####: 1358:	    v += m;
+    #####: 1359:	return v;
+        -: 1360:    }
+        -: 1361:}
+        -: 1362:
+        -: 1363:/* This handles the beginning of menu-completion. */
+        -: 1364:
+        -: 1365:/**/
+        -: 1366:void
+        4: 1367:do_ambig_menu(void)
+        -: 1368:{
+        -: 1369:    Cmatch *mc;
+        -: 1370:
+        4: 1371:    if (iforcemenu == -1)
+    #####: 1372:        do_ambiguous();
+        -: 1373:
+        4: 1374:    if (usemenu != 3) {
+        4: 1375:	menucmp = 1;
+        4: 1376:	menuacc = 0;
+        4: 1377:	minfo.cur = NULL;
+        -: 1378:    } else {
+    #####: 1379:	if (oldlist) {
+    #####: 1380:	    if (oldins && minfo.cur)
+    #####: 1381:		accept_last();
+        -: 1382:	} else
+    #####: 1383:	    minfo.cur = NULL;
+        -: 1384:    }
+        -: 1385:#if 0
+        -: 1386:    /* group-numbers in compstate[insert] */
+        -: 1387:    if (insgroup) {
+        -: 1388:	insgnum = comp_mod(insgnum, lastpermgnum);
+        -: 1389:	for (minfo.group = amatches;
+        -: 1390:	     minfo.group && (minfo.group)->num != insgnum + 1;
+        -: 1391:	     minfo.group = (minfo.group)->next) {
+        -: 1392:#ifdef ZSH_HEAP_DEBUG
+        -: 1393:	    if (memory_validate(minfo.group->heap_id)) {
+        -: 1394:		HEAP_ERROR(minfo.group->heap_id);
+        -: 1395:	    }
+        -: 1396:#endif
+        -: 1397:	}
+        -: 1398:	if (!minfo.group || !(minfo.group)->mcount) {
+        -: 1399:	    minfo.cur = NULL;
+        -: 1400:	    minfo.asked = 0;
+        -: 1401:	    return;
+        -: 1402:	}
+        -: 1403:	insmnum = comp_mod(insmnum, (minfo.group)->mcount);
+        -: 1404:    } else {
+        -: 1405:#endif
+        4: 1406:	insmnum = comp_mod(insmnum, lastpermmnum);
+       10: 1407:	for (minfo.group = amatches;
+       12: 1408:	     minfo.group && (minfo.group)->mcount <= insmnum;
+        2: 1409:	     minfo.group = (minfo.group)->next) {
+        2: 1410:	    insmnum -= (minfo.group)->mcount;
+        -: 1411:#ifdef ZSH_HEAP_DEBUG
+        -: 1412:	    if (memory_validate(minfo.group->heap_id)) {
+        -: 1413:		HEAP_ERROR(minfo.group->heap_id);
+        -: 1414:	    }
+        -: 1415:#endif
+        -: 1416:	}
+        4: 1417:	if (!minfo.group) {
+    #####: 1418:	    minfo.cur = NULL;
+    #####: 1419:	    minfo.asked = 0;
+    #####: 1420:	    return;
+        -: 1421:	}
+        -: 1422:#if 0
+        -: 1423:	/* group-numbers in compstate[insert] */
+        -: 1424:    }
+        -: 1425:#endif
+        4: 1426:    mc = (minfo.group)->matches + insmnum;
+        4: 1427:    if (iforcemenu != -1)
+        4: 1428:        do_single(*mc);
+        4: 1429:    minfo.cur = mc;
+        -: 1430:}
+        -: 1431:
+        -: 1432:/* Return the number of screen lines needed for the list. */
+        -: 1433:
+        -: 1434:/**/
+        -: 1435:zlong
+       71: 1436:list_lines(void)
+        -: 1437:{
+        -: 1438:    Cmgroup oam;
+        -: 1439:
+       71: 1440:    permmatches(0);
+        -: 1441:
+       71: 1442:    oam = amatches;
+       71: 1443:    amatches = pmatches;
+       71: 1444:    listdat.valid = 0;
+       71: 1445:    calclist(0);
+       71: 1446:    listdat.valid = 0;
+       71: 1447:    amatches = oam;
+        -: 1448:
+       71: 1449:    return listdat.nlines;
+        -: 1450:}
+        -: 1451:
+        -: 1452:/**/
+        -: 1453:void
+      220: 1454:comp_list(char *v)
+        -: 1455:{
+      220: 1456:    zsfree(complist);
+      220: 1457:    complist = v;
+        -: 1458:
+      440: 1459:    onlyexpl = (v ? ((strstr(v, "expl") ? 1 : 0) |
+      440: 1460:		     (strstr(v, "messages") ? 2 : 0)) : 0);
+      220: 1461:}
+        -: 1462:
+        -: 1463:/* This skips over matches that are not to be listed. */
+        -: 1464:
+        -: 1465:/**/
+        -: 1466:mod_export Cmatch *
+       60: 1467:skipnolist(Cmatch *p, int showall)
+        -: 1468:{
+       60: 1469:    int mask = (showall ? 0 : (CMF_NOLIST | CMF_MULT)) | CMF_HIDE;
+        -: 1470:
+      238: 1471:    while (*p && (((*p)->flags & mask) ||
+      121: 1472:		  ((*p)->disp &&
+       33: 1473:		   ((*p)->flags & (CMF_DISPLINE | CMF_HIDE)))))
+       30: 1474:	p++;
+        -: 1475:
+       60: 1476:    return p;
+        -: 1477:}
+        -: 1478:
+        -: 1479:/**/
+        -: 1480:mod_export int
+       93: 1481:calclist(int showall)
+        -: 1482:{
+        -: 1483:    static int lastinvcount = -1;
+        -: 1484:
+        -: 1485:    Cmgroup g;
+        -: 1486:    Cmatch *p, m;
+        -: 1487:    Cexpl *e;
+       93: 1488:    int hidden = 0, nlist = 0, nlines = 0;
+       93: 1489:    int max = 0, i;
+       93: 1490:    VARARR(int, mlens, nmatches + 1);
+        -: 1491:
+      157: 1492:    if (lastinvcount == invcount &&
+       66: 1493:	listdat.valid && onlyexpl == listdat.onlyexpl &&
+        2: 1494:	menuacc == listdat.menuacc && showall == listdat.showall &&
+    #####: 1495:	zterm_lines == listdat.zterm_lines &&
+    #####: 1496:	zterm_columns == listdat.zterm_columns)
+    #####: 1497:	return 0;
+       93: 1498:    lastinvcount = invcount;
+        -: 1499:
+      286: 1500:    for (g = amatches; g; g = g->next) {
+      193: 1501:	char **pp = g->ylist;
+      193: 1502:	int nl = 0, l, glong = 1, gshort = zterm_columns, ndisp = 0, totl = 0;
+      193: 1503:        int hasf = 0;
+        -: 1504:
+        -: 1505:#ifdef ZSH_HEAP_DEBUG
+        -: 1506:	if (memory_validate(g->heap_id)) {
+        -: 1507:	    HEAP_ERROR(g->heap_id);
+        -: 1508:	}
+        -: 1509:#endif
+      193: 1510:	g->flags |= CGF_PACKED | CGF_ROWS;
+        -: 1511:
+      193: 1512:	if (!onlyexpl && pp) {
+    #####: 1513:            if (*pp) {
+    #####: 1514:                if (!isset(LISTPACKED))
+    #####: 1515:                    g->flags &= ~CGF_PACKED;
+    #####: 1516:                if (!isset(LISTROWSFIRST))
+    #####: 1517:                    g->flags &= ~CGF_ROWS;
+        -: 1518:            }
+        -: 1519:
+        -: 1520:	    /* We have an ylist, lets see, if it contains newlines. */
+    #####: 1521:	    hidden = 1;
+    #####: 1522:	    while (!nl && *pp) {
+    #####: 1523:                if (MB_METASTRWIDTH(*pp) >= zterm_columns)
+    #####: 1524:                    nl = 1;
+        -: 1525:                else
+    #####: 1526:                    nl = !!strchr(*pp++, '\n');
+        -: 1527:            }
+    #####: 1528:	    pp = g->ylist;
+    #####: 1529:	    if (nl || !pp[1]) {
+        -: 1530:		/* Yup, there are newlines, count lines. */
+        -: 1531:		char *nlptr, *sptr;
+        -: 1532:
+    #####: 1533:		g->flags |= CGF_LINES;
+    #####: 1534:		hidden = 1;
+    #####: 1535:		while ((sptr = *pp)) {
+    #####: 1536:		    while (*sptr) {
+    #####: 1537:			if ((nlptr = strchr(sptr, '\n'))) {
+    #####: 1538:			    *nlptr = '\0';
+    #####: 1539:			    nlines += 1 + (MB_METASTRWIDTH(sptr)-1) /
+        -: 1540:				zterm_columns;
+    #####: 1541:			    *nlptr = '\n';
+    #####: 1542:			    sptr = nlptr + 1;
+        -: 1543:			} else {
+    #####: 1544:			    nlines += (MB_METASTRWIDTH(sptr)-1) / zterm_columns;
+    #####: 1545:			    break;
+        -: 1546:			}
+        -: 1547:		    }
+    #####: 1548:		    nlines++;
+    #####: 1549:		    pp++;
+        -: 1550:		}
+        -: 1551:		/*** nlines--; */
+        -: 1552:	    } else {
+    #####: 1553:		while (*pp) {
+    #####: 1554:		    l = MB_METASTRWIDTH(*pp);
+    #####: 1555:		    ndisp++;
+    #####: 1556:		    if (l > glong)
+    #####: 1557:			glong = l;
+    #####: 1558:		    if (l < gshort)
+    #####: 1559:			gshort = l;
+    #####: 1560:		    totl += l;
+    #####: 1561:		    nlist++;
+    #####: 1562:		    pp++;
+        -: 1563:		}
+        -: 1564:	    }
+      193: 1565:	} else if (!onlyexpl) {
+      601: 1566:	    for (p = g->matches; (m = *p); p++) {
+      408: 1567:                if (m->flags & CMF_FILE)
+      139: 1568:                    hasf = 1;
+      408: 1569:		if (menuacc && !hasbrpsfx(m, minfo.prebr, minfo.postbr)) {
+    #####: 1570:		    m->flags |= CMF_HIDE;
+    #####: 1571:		    continue;
+        -: 1572:		}
+      408: 1573:		m->flags &= ~CMF_HIDE;
+        -: 1574:
+      408: 1575:                if (showall || !(m->flags & (CMF_NOLIST | CMF_MULT))) {
+      408: 1576:		    if ((m->flags & (CMF_NOLIST | CMF_MULT)) &&
+    #####: 1577:			(!m->str || !*m->str)) {
+    #####: 1578:			m->flags |= CMF_HIDE;
+    #####: 1579:			continue;
+        -: 1580:		    }
+      816: 1581:                    if (m->disp) {
+      157: 1582:                        if (m->flags & CMF_DISPLINE) {
+      145: 1583:                            nlines += 1 + printfmt(m->disp, 0, 0, 0);
+      145: 1584:                            g->flags |= CGF_HASDL;
+        -: 1585:                        } else {
+       12: 1586:                            l = ZMB_nicewidth(m->disp) + !!m->modec;
+       12: 1587:                            ndisp++;
+       12: 1588:                            if (l > glong)
+    #####: 1589:                                glong = l;
+       12: 1590:                            if (l < gshort)
+        4: 1591:                                gshort = l;
+       12: 1592:                            totl += l;
+       12: 1593:                            mlens[m->gnum] = l;
+        -: 1594:                        }
+      157: 1595:                        nlist++;
+      157: 1596:                        if (!(m->flags & CMF_PACKED))
+      157: 1597:                            g->flags &= ~CGF_PACKED;
+      157: 1598:                        if (!(m->flags & CMF_ROWS))
+    #####: 1599:                            g->flags &= ~CGF_ROWS;
+        -: 1600:                    } else {
+      251: 1601:                        l = ZMB_nicewidth(m->str) + !!m->modec;
+      251: 1602:                        ndisp++;
+      251: 1603:                        if (l > glong)
+       80: 1604:                            glong = l;
+      251: 1605:                        if (l < gshort)
+       92: 1606:                            gshort = l;
+      251: 1607:                        totl += l;
+      251: 1608:                        mlens[m->gnum] = l;
+      251: 1609:                        nlist++;
+      251: 1610:                        if (!(m->flags & CMF_PACKED))
+      251: 1611:                            g->flags &= ~CGF_PACKED;
+      251: 1612:                        if (!(m->flags & CMF_ROWS))
+    #####: 1613:                            g->flags &= ~CGF_ROWS;
+        -: 1614:                    }
+        -: 1615:		} else
+    #####: 1616:		    hidden = 1;
+        -: 1617:	    }
+        -: 1618:	}
+      193: 1619:	if ((e = g->expls)) {
+      300: 1620:	    while (*e) {
+      176: 1621:		if (((*e)->count || (*e)->always) &&
+       76: 1622:		    (!onlyexpl ||
+    #####: 1623:		     (onlyexpl & ((*e)->always > 0 ? 2 : 1))))
+      144: 1624:		    nlines += 1 + printfmt((*e)->str,
+      144: 1625:                                           ((*e)->always ? -1 : (*e)->count),
+        -: 1626:                                           0, 1);
+      100: 1627:		e++;
+        -: 1628:	    }
+        -: 1629:	}
+      193: 1630:        if (isset(LISTTYPES) && hasf)
+       34: 1631:            g->flags |= CGF_FILES;
+      193: 1632:	g->totl = totl + (ndisp * CM_SPACE);
+      193: 1633:	g->dcount = ndisp;
+      193: 1634:	g->width = glong + CM_SPACE;
+      193: 1635:	g->shortest = gshort + CM_SPACE;
+      193: 1636:	if ((g->cols = zterm_columns / g->width) > g->dcount)
+      193: 1637:	    g->cols = g->dcount;
+      193: 1638:	if (g->cols) {
+       84: 1639:	    i = g->cols * g->width - CM_SPACE;
+       84: 1640:	    if (i > max)
+       76: 1641:		max = i;
+        -: 1642:	}
+        -: 1643:    }
+       93: 1644:    if (!onlyexpl) {
+        -: 1645:	char **pp;
+        -: 1646:	int *ws, tlines, tcols, width, glines;
+        -: 1647:
+      286: 1648:	for (g = amatches; g; g = g->next) {
+      193: 1649:	    glines = 0;
+        -: 1650:
+        -: 1651:#ifdef ZSH_HEAP_DEBUG
+        -: 1652:	    if (memory_validate(g->heap_id)) {
+        -: 1653:		HEAP_ERROR(g->heap_id);
+        -: 1654:	    }
+        -: 1655:#endif
+      193: 1656:	    zfree(g->widths, 0);
+      193: 1657:	    g->widths = NULL;
+        -: 1658:
+      193: 1659:	    if ((pp = g->ylist)) {
+    #####: 1660:		if (!(g->flags & CGF_LINES)) {
+    #####: 1661:		    if (g->cols) {
+    #####: 1662:			glines += (arrlen(pp) + g->cols - 1) / g->cols;
+    #####: 1663:			if (g->cols > 1)
+    #####: 1664:			    g->width += ((max - (g->width * g->cols -
+    #####: 1665:                                                 CM_SPACE)) /
+    #####: 1666:                                         g->cols);
+        -: 1667:		    } else {
+    #####: 1668:			g->cols = 1;
+    #####: 1669:			g->width = 1;
+        -: 1670:
+    #####: 1671:			while (*pp)
+    #####: 1672:			    glines += 1 + (MB_METASTRWIDTH(*pp++) /
+        -: 1673:					   zterm_columns);
+        -: 1674:		    }
+        -: 1675:		}
+        -: 1676:	    } else {
+      193: 1677:		if (g->cols) {
+       84: 1678:		    glines += (g->dcount + g->cols - 1) / g->cols;
+       84: 1679:		    if (g->cols > 1)
+      138: 1680:			g->width += ((max - (g->width * g->cols - CM_SPACE)) /
+       69: 1681:                                     g->cols);
+      109: 1682:		} else if (!(g->flags & CGF_LINES)) {
+      109: 1683:		    g->cols = 1;
+      109: 1684:		    g->width = 0;
+        -: 1685:
+      254: 1686:		    for (p = g->matches; (m = *p); p++)
+      145: 1687:			if (!(m->flags & CMF_HIDE)) {
+      145: 1688:			    if (m->disp) {
+      145: 1689:				if (!(m->flags & CMF_DISPLINE))
+    #####: 1690:				    glines += 1 + ((mlens[m->gnum] - 1) /
+        -: 1691:						   zterm_columns);
+    #####: 1692:			    } else if (showall ||
+    #####: 1693:				       !(m->flags & (CMF_NOLIST | CMF_MULT)))
+    #####: 1694:				glines += 1 + (((mlens[m->gnum]) - 1) /
+        -: 1695:					       zterm_columns);
+        -: 1696:			}
+        -: 1697:		}
+        -: 1698:	    }
+      193: 1699:	    g->lins = glines;
+      193: 1700:	    nlines += glines;
+        -: 1701:	}
+      286: 1702:	for (g = amatches; g; g = g->next) {
+      193: 1703:	    if (!(g->flags & CGF_PACKED))
+       93: 1704:		continue;
+        -: 1705:
+      100: 1706:	    ws = g->widths = (int *) zalloc(zterm_columns * sizeof(int));
+      100: 1707:	    memset(ws, 0, zterm_columns * sizeof(int));
+      100: 1708:	    tlines = g->lins;
+      100: 1709:	    tcols = g->cols;
+      100: 1710:	    width = 0;
+        -: 1711:
+      100: 1712:	    if ((pp = g->ylist)) {
+    #####: 1713:		if (!(g->flags & CGF_LINES)) {
+    #####: 1714:		    int yl = arrlen(pp), i;
+    #####: 1715:		    VARARR(int, ylens, yl);
+        -: 1716:
+    #####: 1717:		    for (i = 0; *pp; i++, pp++)
+    #####: 1718:			ylens[i] = MB_METASTRWIDTH(*pp) + CM_SPACE;
+        -: 1719:
+    #####: 1720:		    if (g->flags & CGF_ROWS) {
+        -: 1721:                        int nth, tcol, len;
+        -: 1722:
+    #####: 1723:                        for (tcols = zterm_columns / (g->shortest + CM_SPACE);
+    #####: 1724:                             tcols > g->cols;
+    #####: 1725:                             tcols--) {
+        -: 1726:
+    #####: 1727:                            memset(ws, 0, tcols * sizeof(int));
+        -: 1728:
+    #####: 1729:                            for (width = nth = tcol = 0, tlines = 1;
+    #####: 1730:                                 width < zterm_columns && nth < g->dcount;
+    #####: 1731:                                 nth++, tcol++) {
+        -: 1732:
+    #####: 1733:                                m = *p;
+        -: 1734:
+    #####: 1735:                                if (tcol == tcols) {
+    #####: 1736:                                    tcol = 0;
+    #####: 1737:                                    tlines++;
+        -: 1738:                                }
+    #####: 1739:                                len = ylens[nth];
+        -: 1740:
+    #####: 1741:                                if (len > ws[tcol]) {
+    #####: 1742:                                    width += len - ws[tcol];
+    #####: 1743:                                    ws[tcol] = len;
+        -: 1744:                                }
+        -: 1745:                            }
+    #####: 1746:                            if (width < zterm_columns)
+    #####: 1747:                                break;
+        -: 1748:                        }
+        -: 1749:		    } else {
+        -: 1750:                        int nth, tcol, tline, len;
+        -: 1751:
+    #####: 1752:                        for (tcols = zterm_columns / (g->shortest + CM_SPACE);
+    #####: 1753:                             tcols > g->cols;
+    #####: 1754:                             tcols--) {
+        -: 1755:
+    #####: 1756:                            if ((tlines = (g->dcount + tcols - 1) / tcols) <= 0)
+    #####: 1757:                                tlines = 1;
+        -: 1758:
+    #####: 1759:                            memset(ws, 0, tcols * sizeof(int));
+        -: 1760:
+    #####: 1761:                            for (width = nth = tcol = tline = 0;
+    #####: 1762:                                 width < zterm_columns && nth < g->dcount;
+    #####: 1763:                                 nth++, tline++) {
+        -: 1764:
+    #####: 1765:                                m = *p;
+        -: 1766:
+    #####: 1767:                                if (tline == tlines) {
+    #####: 1768:                                    tcol++;
+    #####: 1769:                                    tline = 0;
+        -: 1770:                                }
+    #####: 1771:                                if (tcol == tcols) {
+    #####: 1772:                                    tcol = 0;
+    #####: 1773:                                    tlines++;
+        -: 1774:                                }
+    #####: 1775:                                len = ylens[nth];
+        -: 1776:
+    #####: 1777:                                if (len > ws[tcol]) {
+    #####: 1778:                                    width += len - ws[tcol];
+    #####: 1779:                                    ws[tcol] = len;
+        -: 1780:                                }
+        -: 1781:                            }
+    #####: 1782:                            if (width < zterm_columns)
+    #####: 1783:                                break;
+        -: 1784:                        }
+        -: 1785:		    }
+        -: 1786:		}
+      100: 1787:	    } else if (g->width) {
+    #####: 1788:		if (g->flags & CGF_ROWS) {
+        -: 1789:                    int nth, tcol, len;
+        -: 1790:
+    #####: 1791:                    for (tcols = zterm_columns / (g->shortest + CM_SPACE);
+    #####: 1792:                         tcols > g->cols;
+    #####: 1793:                         tcols--) {
+        -: 1794:
+    #####: 1795:                        memset(ws, 0, tcols * sizeof(int));
+        -: 1796:
+    #####: 1797:                        for (width = nth = tcol = 0, tlines = 1,
+    #####: 1798:                             p = skipnolist(g->matches, showall);
+    #####: 1799:                             *p && width < zterm_columns && nth < g->dcount;
+    #####: 1800:                             nth++, p = skipnolist(p + 1, showall), tcol++) {
+        -: 1801:
+    #####: 1802:                            m = *p;
+        -: 1803:
+    #####: 1804:                            if (tcol == tcols) {
+    #####: 1805:                                tcol = 0;
+    #####: 1806:                                tlines++;
+        -: 1807:                            }
+    #####: 1808:                            len = (mlens[m->gnum] +
+    #####: 1809:                                   (tcol == tcols - 1 ? 0 : CM_SPACE));
+        -: 1810:
+    #####: 1811:                            if (len > ws[tcol]) {
+    #####: 1812:                                width += len - ws[tcol];
+    #####: 1813:                                ws[tcol] = len;
+        -: 1814:                            }
+        -: 1815:                        }
+    #####: 1816:                        if (width < zterm_columns)
+    #####: 1817:                            break;
+        -: 1818:                    }
+        -: 1819:		} else {
+        -: 1820:                    int nth, tcol, tline, len;
+        -: 1821:
+    #####: 1822:                    for (tcols = zterm_columns / (g->shortest + CM_SPACE);
+    #####: 1823:                         tcols > g->cols;
+    #####: 1824:                         tcols--) {
+        -: 1825:
+    #####: 1826:                        if ((tlines = (g->dcount + tcols - 1) / tcols) <= 0)
+    #####: 1827:                            tlines = 1;
+        -: 1828:
+    #####: 1829:                        memset(ws, 0, tcols * sizeof(int));
+        -: 1830:
+    #####: 1831:                        for (width = nth = tcol = tline = 0,
+    #####: 1832:                             p = skipnolist(g->matches, showall);
+    #####: 1833:                             *p && width < zterm_columns && nth < g->dcount;
+    #####: 1834:                             nth++, p = skipnolist(p + 1, showall), tline++) {
+        -: 1835:
+    #####: 1836:                            m = *p;
+        -: 1837:
+    #####: 1838:                            if (tline == tlines) {
+    #####: 1839:                                tcol++;
+    #####: 1840:                                tline = 0;
+        -: 1841:                            }
+    #####: 1842:                            if (tcol == tcols) {
+    #####: 1843:                                tcol = 0;
+    #####: 1844:                                tlines++;
+        -: 1845:                            }
+    #####: 1846:                            len = (mlens[m->gnum] +
+    #####: 1847:                                   (tcol == tcols - 1 ? 0 : CM_SPACE));
+        -: 1848:
+    #####: 1849:                            if (len > ws[tcol]) {
+    #####: 1850:                                width += len - ws[tcol];
+    #####: 1851:                                ws[tcol] = len;
+        -: 1852:                            }
+        -: 1853:                        }
+    #####: 1854:                        if (width < zterm_columns) {
+    #####: 1855:                            if (++tcol < tcols)
+    #####: 1856:                                tcols = tcol;
+    #####: 1857:                            break;
+        -: 1858:                        }
+        -: 1859:                    }
+        -: 1860:		}
+        -: 1861:	    }
+      100: 1862:            if (tcols <= g->cols)
+      100: 1863:                tlines = g->lins;
+      100: 1864:	    if (tlines == g->lins) {
+      100: 1865:		zfree(ws, zterm_columns * sizeof(int));
+      100: 1866:		g->widths = NULL;
+        -: 1867:	    } else {
+    #####: 1868:		nlines += tlines - g->lins;
+    #####: 1869:		g->lins = tlines;
+    #####: 1870:		g->cols = tcols;
+    #####: 1871:		g->totl = width;
+    #####: 1872:		width -= CM_SPACE;
+    #####: 1873:		if (width > max)
+    #####: 1874:		    max = width;
+        -: 1875:	    }
+        -: 1876:	}
+      286: 1877:	for (g = amatches; g; g = g->next) {
+      193: 1878:	    if (g->widths) {
+    #####: 1879:		int *p, a = (max - g->totl + CM_SPACE) / g->cols;
+        -: 1880:
+    #####: 1881:		for (i = g->cols, p = g->widths; i; i--, p++)
+    #####: 1882:		    *p += a;
+      193: 1883:	    } else if (g->width && g->cols > 1)
+       69: 1884:		g->width += (max - (g->width * g->cols - CM_SPACE)) / g->cols;
+        -: 1885:	}
+        -: 1886:    }
+        -: 1887:    else
+    #####: 1888:	for (g = amatches; g; g = g->next)
+        -: 1889:	{
+        -: 1890:#ifdef ZSH_HEAP_DEBUG
+        -: 1891:	    if (memory_validate(g->heap_id)) {
+        -: 1892:		HEAP_ERROR(g->heap_id);
+        -: 1893:	    }
+        -: 1894:#endif
+    #####: 1895:	    zfree(g->widths, 0);
+    #####: 1896:	    g->widths = NULL;
+        -: 1897:	}
+       93: 1898:    listdat.valid = 1;
+       93: 1899:    listdat.hidden = hidden;
+       93: 1900:    listdat.nlist = nlist;
+       93: 1901:    listdat.nlines = nlines;
+       93: 1902:    listdat.menuacc = menuacc;
+       93: 1903:    listdat.onlyexpl = onlyexpl;
+       93: 1904:    listdat.zterm_columns = zterm_columns;
+       93: 1905:    listdat.zterm_lines = zterm_lines;
+       93: 1906:    listdat.showall = showall;
+        -: 1907:
+       93: 1908:    return 1;
+        -: 1909:}
+        -: 1910:
+        -: 1911:/**/
+        -: 1912:mod_export int
+       21: 1913:asklist(void)
+        -: 1914:{
+        -: 1915:    /* Set the cursor below the prompt. */
+       21: 1916:    trashzle();
+       21: 1917:    showinglist = listshown = 0;
+        -: 1918:
+       21: 1919:    clearflag = (isset(USEZLE) && !termflags && dolastprompt);
+       21: 1920:    lastlistlen = 0;
+        -: 1921:
+        -: 1922:    /* Maybe we have to ask if the user wants to see the list. */
+       42: 1923:    if ((!minfo.cur || !minfo.asked) &&
+       63: 1924:	((complistmax > 0 && listdat.nlist >= complistmax) ||
+       42: 1925:	 (complistmax < 0 && listdat.nlines <= -complistmax) ||
+       21: 1926:	 (!complistmax && listdat.nlines >= zterm_lines))) {
+        -: 1927:	int qup, l;
+        -: 1928:
+    #####: 1929:	zsetterm();
+    #####: 1930:	l = (listdat.nlist > 0 ?
+    #####: 1931:	     fprintf(shout, "zsh: do you wish to see all %d possibilities (%d lines)? ",
+    #####: 1932:		     listdat.nlist, listdat.nlines) :
+    #####: 1933:	     fprintf(shout, "zsh: do you wish to see all %d lines? ",
+        -: 1934:		     listdat.nlines));
+    #####: 1935:	qup = ((l + zterm_columns - 1) / zterm_columns) - 1;
+    #####: 1936:	fflush(shout);
+    #####: 1937:	if (!getzlequery()) {
+    #####: 1938:	    if (clearflag) {
+    #####: 1939:		putc('\r', shout);
+    #####: 1940:		tcmultout(TCUP, TCMULTUP, qup);
+    #####: 1941:		if (tccan(TCCLEAREOD))
+    #####: 1942:		    tcout(TCCLEAREOD);
+    #####: 1943:		tcmultout(TCUP, TCMULTUP, nlnct);
+        -: 1944:	    } else
+    #####: 1945:		putc('\n', shout);
+    #####: 1946:	    minfo.asked = 2;
+    #####: 1947:	    return 1;
+        -: 1948:	}
+    #####: 1949:	if (clearflag) {
+    #####: 1950:	    putc('\r', shout);
+    #####: 1951:	    tcmultout(TCUP, TCMULTUP, qup);
+    #####: 1952:	    if (tccan(TCCLEAREOD))
+    #####: 1953:		tcout(TCCLEAREOD);
+        -: 1954:	} else
+    #####: 1955:	    putc('\n', shout);
+    #####: 1956:	settyinfo(&shttyinfo);
+    #####: 1957:	minfo.asked = 1;
+       21: 1958:    } else if (minfo.asked == 2)
+    #####: 1959:	tcmultout(TCUP, TCMULTUP, nlnct);
+        -: 1960:
+       21: 1961:    return (minfo.asked ? minfo.asked - 1 : 0);
+        -: 1962:}
+        -: 1963:
+        -: 1964:/**/
+        -: 1965:mod_export int
+    #####: 1966:printlist(int over, CLPrintFunc printm, int showall)
+        -: 1967:{
+        -: 1968:    Cmgroup g;
+        -: 1969:    Cmatch *p, m;
+        -: 1970:    Cexpl *e;
+    #####: 1971:    int pnl = 0, cl = (over ? listdat.nlines : -1);
+    #####: 1972:    int mc = 0, ml = 0, printed = 0;
+        -: 1973:
+    #####: 1974:    if (cl < 2) {
+    #####: 1975:	cl = -1;
+    #####: 1976:	if (tccan(TCCLEAREOD))
+    #####: 1977:	    tcout(TCCLEAREOD);
+        -: 1978:    }
+    #####: 1979:    for (g = amatches; g; g = g->next) {
+    #####: 1980:	char **pp = g->ylist;
+        -: 1981:
+        -: 1982:#ifdef ZSH_HEAP_DEBUG
+        -: 1983:	if (memory_validate(g->heap_id)) {
+        -: 1984:	    HEAP_ERROR(g->heap_id);
+        -: 1985:	}
+        -: 1986:#endif
+    #####: 1987:	if ((e = g->expls)) {
+        -: 1988:	    int l;
+        -: 1989:
+    #####: 1990:	    while (*e) {
+    #####: 1991:		if (((*e)->count || (*e)->always) &&
+    #####: 1992:		    (!listdat.onlyexpl ||
+    #####: 1993:		     (listdat.onlyexpl & ((*e)->always > 0 ? 2 : 1)))) {
+    #####: 1994:		    if (pnl) {
+    #####: 1995:			putc('\n', shout);
+    #####: 1996:			pnl = 0;
+    #####: 1997:			ml++;
+    #####: 1998:			if (cl >= 0 && --cl <= 1) {
+    #####: 1999:			    cl = -1;
+    #####: 2000:			    if (tccan(TCCLEAREOD))
+    #####: 2001:				tcout(TCCLEAREOD);
+        -: 2002:			}
+        -: 2003:		    }
+    #####: 2004:		    l = printfmt((*e)->str,
+    #####: 2005:                                 ((*e)->always ? -1 : (*e)->count), 1, 1);
+    #####: 2006:		    ml += l;
+    #####: 2007:		    if (cl >= 0 && (cl -= l) <= 1) {
+    #####: 2008:			cl = -1;
+    #####: 2009:			if (tccan(TCCLEAREOD))
+    #####: 2010:			    tcout(TCCLEAREOD);
+        -: 2011:		    }
+    #####: 2012:		    pnl = 1;
+        -: 2013:		}
+    #####: 2014:		e++;
+        -: 2015:	    }
+        -: 2016:	}
+    #####: 2017:	if (!listdat.onlyexpl && pp && *pp) {
+    #####: 2018:	    if (pnl) {
+    #####: 2019:		putc('\n', shout);
+    #####: 2020:		pnl = 0;
+    #####: 2021:		ml++;
+    #####: 2022:		if (cl >= 0 && --cl <= 1) {
+    #####: 2023:		    cl = -1;
+    #####: 2024:		    if (tccan(TCCLEAREOD))
+    #####: 2025:			tcout(TCCLEAREOD);
+        -: 2026:		}
+        -: 2027:	    }
+    #####: 2028:	    if (g->flags & CGF_LINES) {
+        -: 2029:                char *p;
+        -: 2030:
+    #####: 2031:		while ((p = *pp++)) {
+    #####: 2032:		    zputs(p, shout);
+    #####: 2033:		    if (*pp) {
+    #####: 2034:                        if (MB_METASTRWIDTH(p) % zterm_columns)
+    #####: 2035:                            putc('\n', shout);
+        -: 2036:                        else
+    #####: 2037:                            fputs(" \010", shout);
+        -: 2038:                    }
+        -: 2039:		}
+        -: 2040:	    } else {
+    #####: 2041:		int n = g->lcount, nl, nc, i, a;
+        -: 2042:		char **pq;
+        -: 2043:
+    #####: 2044:		nl = nc = g->lins;
+        -: 2045:
+    #####: 2046:		while (n && nl--) {
+    #####: 2047:		    i = g->cols;
+    #####: 2048:		    mc = 0;
+    #####: 2049:		    pq = pp;
+    #####: 2050:		    while (n && i--) {
+    #####: 2051:			if (pq - g->ylist >= g->lcount)
+    #####: 2052:			    break;
+    #####: 2053:			zputs(*pq, shout);
+    #####: 2054:			if (i) {
+    #####: 2055:			    a = (g->widths ? g->widths[mc] : g->width) -
+    #####: 2056:				MB_METASTRWIDTH(*pq);
+    #####: 2057:			    while (a--)
+    #####: 2058:				putc(' ', shout);
+        -: 2059:			}
+    #####: 2060:			pq += ((g->flags & CGF_ROWS) ? 1 : nc);
+    #####: 2061:			mc++;
+    #####: 2062:			n--;
+        -: 2063:		    }
+    #####: 2064:		    if (n) {
+    #####: 2065:			putc('\n', shout);
+    #####: 2066:			ml++;
+    #####: 2067:			if (cl >= 0 && --cl <= 1) {
+    #####: 2068:			    cl = -1;
+    #####: 2069:			    if (tccan(TCCLEAREOD))
+    #####: 2070:				tcout(TCCLEAREOD);
+        -: 2071:			}
+        -: 2072:		    }
+    #####: 2073:		    pp += ((g->flags & CGF_ROWS) ? g->cols : 1);
+        -: 2074:		}
+        -: 2075:	    }
+    #####: 2076:	} else if (!listdat.onlyexpl &&
+    #####: 2077:		   (g->lcount || (showall && g->mcount))) {
+    #####: 2078:	    int n = g->dcount, nl, nc, i, j, wid;
+        -: 2079:	    Cmatch *q;
+        -: 2080:
+    #####: 2081:	    nl = nc = g->lins;
+        -: 2082:
+    #####: 2083:	    if (g->flags & CGF_HASDL) {
+    #####: 2084:		for (p = g->matches; (m = *p); p++)
+    #####: 2085:		    if (m->disp && (m->flags & CMF_DISPLINE) &&
+    #####: 2086:                        (showall || !(m->flags & (CMF_HIDE|CMF_NOLIST)))) {
+    #####: 2087:			if (pnl) {
+    #####: 2088:			    putc('\n', shout);
+    #####: 2089:			    pnl = 0;
+    #####: 2090:			    ml++;
+    #####: 2091:			    if (cl >= 0 && --cl <= 1) {
+    #####: 2092:				cl = -1;
+    #####: 2093:				if (tccan(TCCLEAREOD))
+    #####: 2094:				    tcout(TCCLEAREOD);
+        -: 2095:			    }
+        -: 2096:			}
+    #####: 2097:			printed++;
+    #####: 2098:			printm(g, p, 0, ml, 1, 0);
+    #####: 2099:			pnl = 1;
+        -: 2100:		    }
+        -: 2101:	    }
+    #####: 2102:	    if (n && pnl) {
+    #####: 2103:		putc('\n', shout);
+    #####: 2104:		pnl = 0;
+    #####: 2105:		ml++;
+    #####: 2106:		if (cl >= 0 && --cl <= 1) {
+    #####: 2107:		    cl = -1;
+    #####: 2108:		    if (tccan(TCCLEAREOD))
+    #####: 2109:			tcout(TCCLEAREOD);
+        -: 2110:		}
+        -: 2111:	    }
+    #####: 2112:	    for (p = skipnolist(g->matches, showall); n && nl--;) {
+    #####: 2113:		i = g->cols;
+    #####: 2114:		mc = 0;
+    #####: 2115:		q = p;
+    #####: 2116:		while (n && i--) {
+    #####: 2117:		    wid = (g->widths ? g->widths[mc] : g->width);
+    #####: 2118:		    if (!(m = *q)) {
+    #####: 2119:			printm(g, NULL, mc, ml, (!i), wid);
+    #####: 2120:			break;
+        -: 2121:		    }
+    #####: 2122:                    printm(g, q, mc, ml, (!i), wid);
+        -: 2123:
+    #####: 2124:		    printed++;
+        -: 2125:
+    #####: 2126:		    if (--n)
+    #####: 2127:			for (j = ((g->flags & CGF_ROWS) ? 1 : nc);
+    #####: 2128:			     j && *q; j--)
+    #####: 2129:			    q = skipnolist(q + 1, showall);
+    #####: 2130:		    mc++;
+        -: 2131:		}
+    #####: 2132:		while (i-- > 0) {
+    #####: 2133:		    printm(g, NULL, mc, ml, (!i),
+    #####: 2134:			   (g->widths ? g->widths[mc] : g->width));
+    #####: 2135:		    mc++;
+        -: 2136:		}
+    #####: 2137:		if (n) {
+    #####: 2138:		    putc('\n', shout);
+    #####: 2139:		    ml++;
+    #####: 2140:		    if (cl >= 0 && --cl <= 1) {
+    #####: 2141:			cl = -1;
+    #####: 2142:			if (tccan(TCCLEAREOD))
+    #####: 2143:			    tcout(TCCLEAREOD);
+        -: 2144:		    }
+    #####: 2145:		    if (nl)
+    #####: 2146:			for (j = ((g->flags & CGF_ROWS) ? g->cols : 1);
+    #####: 2147:			     j && *p; j--)
+    #####: 2148:			    p = skipnolist(p + 1, showall);
+        -: 2149:		}
+        -: 2150:	    }
+        -: 2151:	} else
+    #####: 2152:	    continue;
+    #####: 2153:	if (g->lcount || (showall && g->mcount))
+    #####: 2154:	    pnl = 1;
+        -: 2155:    }
+    #####: 2156:    lastlistlen = 0;
+    #####: 2157:    if (clearflag) {
+        -: 2158:	/* Move the cursor up to the prompt, if always_last_prompt *
+        -: 2159:	 * is set and all that...                                  */
+    #####: 2160:	if ((ml = listdat.nlines + nlnct - 1) < zterm_lines) {
+    #####: 2161:	    tcmultout(TCUP, TCMULTUP, ml);
+    #####: 2162:	    showinglist = -1;
+        -: 2163:
+    #####: 2164:	    lastlistlen = listdat.nlines;
+        -: 2165:	} else
+    #####: 2166:	    clearflag = 0, putc('\n', shout);
+        -: 2167:    } else
+    #####: 2168:	putc('\n', shout);
+        -: 2169:
+    #####: 2170:    listshown = (clearflag ? 1 : -1);
+        -: 2171:
+    #####: 2172:    return printed;
+        -: 2173:}
+        -: 2174:
+        -: 2175:/**/
+        -: 2176:mod_export void
+    #####: 2177:bld_all_str(Cmatch all)
+        -: 2178:{
+        -: 2179:    Cmgroup g;
+        -: 2180:    Cmatch *mp, m;
+    #####: 2181:    int len = zterm_columns - 5, t, add = 0;
+    #####: 2182:    VARARR(char, buf, zterm_columns + 1);
+        -: 2183:
+    #####: 2184:    buf[0] = '\0';
+        -: 2185:
+    #####: 2186:    for (g = amatches; g && !g->mcount; g = g->next) {
+        -: 2187:#ifdef ZSH_HEAP_DEBUG
+        -: 2188:	if (memory_validate(g->heap_id)) {
+        -: 2189:	    HEAP_ERROR(g->heap_id);
+        -: 2190:	}
+        -: 2191:#endif
+        -: 2192:    }
+        -: 2193:
+    #####: 2194:    mp = g->matches;
+        -: 2195:    while (1) {
+    #####: 2196:	m = *mp;
+    #####: 2197:	if (!(m->flags & (CMF_ALL | CMF_HIDE)) && m->str) {
+    #####: 2198:	    t = strlen(m->str) + add;
+    #####: 2199:	    if (len >= t) {
+    #####: 2200:		if (add)
+    #####: 2201:		    strcat(buf, " ");
+    #####: 2202:		strcat(buf, m->str);
+    #####: 2203:		len -= t;
+    #####: 2204:		add = 1;
+        -: 2205:	    } else {
+    #####: 2206:		if (len > add + 2) {
+    #####: 2207:		    if (add)
+    #####: 2208:			strcat(buf, " ");
+    #####: 2209:		    strncat(buf, m->str, len);
+        -: 2210:		}
+    #####: 2211:		strcat(buf, "...");
+    #####: 2212:		break;
+        -: 2213:	    }
+        -: 2214:	}
+    #####: 2215:	if (!*++mp) {
+        -: 2216:	    do {
+    #####: 2217:		if (!(g = g->next))
+    #####: 2218:		    break;
+    #####: 2219:	    } while (!g->mcount);
+    #####: 2220:	    if (!g)
+    #####: 2221:		break;
+    #####: 2222:	    mp = g->matches;
+        -: 2223:	}
+        -: 2224:    }
+    #####: 2225:    zsfree(all->disp);
+    #####: 2226:    all->disp = ztrdup(buf);
+    #####: 2227:}
+        -: 2228:
+        -: 2229:/**/
+        -: 2230:static void
+    #####: 2231:iprintm(Cmgroup g, Cmatch *mp, UNUSED(int mc), UNUSED(int ml), int lastc, int width)
+        -: 2232:{
+        -: 2233:    Cmatch m;
+    #####: 2234:    int len = 0;
+        -: 2235:
+    #####: 2236:    if (!mp)
+    #####: 2237:	return;
+        -: 2238:
+    #####: 2239:    m = *mp;
+    #####: 2240:    if ((m->flags & CMF_ALL) && (!m->disp || !m->disp[0]))
+    #####: 2241:	bld_all_str(m);
+    #####: 2242:    if (m->disp) {
+    #####: 2243:	if (m->flags & CMF_DISPLINE) {
+    #####: 2244:	    printfmt(m->disp, 0, 1, 0);
+    #####: 2245:	    return;
+        -: 2246:	}
+        -: 2247:#ifdef MULTIBYTE_SUPPORT
+    #####: 2248:	len = mb_niceformat(m->disp, shout, NULL, 0);
+        -: 2249:#else
+        -: 2250:	nicezputs(m->disp, shout);
+        -: 2251:	len = niceztrlen(m->disp);
+        -: 2252:#endif
+        -: 2253:    } else {
+        -: 2254:#ifdef MULTIBYTE_SUPPORT
+    #####: 2255:	len = mb_niceformat(m->str, shout, NULL, 0);
+        -: 2256:#else
+        -: 2257:	nicezputs(m->str, shout);
+        -: 2258:	len = niceztrlen(m->str);
+        -: 2259:#endif
+        -: 2260:
+    #####: 2261:	if ((g->flags & CGF_FILES) && m->modec) {
+    #####: 2262:	    putc(m->modec, shout);
+    #####: 2263:	    len++;
+        -: 2264:	}
+        -: 2265:    }
+    #####: 2266:    if (!lastc) {
+    #####: 2267:	len = width - len;
+        -: 2268:
+    #####: 2269:	while (len-- > 0)
+    #####: 2270:	    putc(' ', shout);
+        -: 2271:    }
+        -: 2272:}
+        -: 2273:
+        -: 2274:/**/
+        -: 2275:int
+    #####: 2276:ilistmatches(UNUSED(Hookdef dummy), UNUSED(Chdata dat))
+        -: 2277:{
+    #####: 2278:    calclist(0);
+        -: 2279:
+    #####: 2280:    if (!listdat.nlines) {
+    #####: 2281:	showinglist = listshown = 0;
+    #####: 2282:	return 1;
+        -: 2283:    }
+    #####: 2284:    if (asklist())
+    #####: 2285:	return 0;
+        -: 2286:
+    #####: 2287:    printlist(0, iprintm, 0);
+        -: 2288:
+    #####: 2289:    return 0;
+        -: 2290:}
+        -: 2291:
+        -: 2292:/* List the matches.  Note that the list entries are metafied. */
+        -: 2293:
+        -: 2294:/**/
+        -: 2295:int
+       22: 2296:list_matches(UNUSED(Hookdef dummy), UNUSED(void *dummy2))
+        -: 2297:{
+        -: 2298:    struct chdata dat;
+        -: 2299:    int ret;
+        -: 2300:
+        -: 2301:#ifdef DEBUG
+        -: 2302:    /* Sanity check */
+        -: 2303:    if (!validlist) {
+        -: 2304:	showmsg("BUG: listmatches called with bogus list");
+        -: 2305:	return 1;
+        -: 2306:    }
+        -: 2307:#endif
+        -: 2308:
+       22: 2309:    dat.matches = amatches;
+        -: 2310:#ifdef ZSH_HEAP_DEBUG
+        -: 2311:    if (memory_validate(dat.matches->heap_id)) {
+        -: 2312:	HEAP_ERROR(dat.matches->heap_id);
+        -: 2313:    }
+        -: 2314:#endif
+       22: 2315:    dat.num = nmatches;
+       22: 2316:    dat.cur = NULL;
+       22: 2317:    ret = runhookdef(COMPLISTMATCHESHOOK, (void *) &dat);
+        -: 2318:
+       22: 2319:    return ret;
+        -: 2320:}
+        -: 2321:
+        -: 2322:/* Invalidate the completion list. */
+        -: 2323:
+        -: 2324:/**/
+        -: 2325:mod_export int
+     1103: 2326:invalidate_list(void)
+        -: 2327:{
+     1103: 2328:    invcount++;
+     1103: 2329:    if (validlist) {
+       29: 2330:	if (showinglist == -2) {
+    #####: 2331:	    zrefresh();
+        -: 2332:	}
+       29: 2333:	freematches(lastmatches, 1);
+       29: 2334:	lastmatches = NULL;
+       29: 2335:	hasoldlist = 0;
+        -: 2336:    }
+     1103: 2337:    lastambig = menucmp = menuacc = validlist = showinglist = fromcomp = 0;
+     1103: 2338:    listdat.valid = 0;
+     1103: 2339:    if (listshown < 0)
+       17: 2340:	listshown = 0;
+     1103: 2341:    minfo.cur = NULL;
+     1103: 2342:    minfo.asked = 0;
+     1103: 2343:    zsfree(minfo.prebr);
+     1103: 2344:    zsfree(minfo.postbr);
+     1103: 2345:    minfo.postbr = minfo.prebr = NULL;
+     1103: 2346:    compwidget = NULL;
+     1103: 2347:    nmatches = 0;
+     1103: 2348:    amatches = NULL;
+        -: 2349:
+     1103: 2350:    return 0;
+        -: 2351:}

@@ -1,0 +1,1821 @@
+        -:    0:Source:zle_utils.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_utils.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_utils.gcda
+        -:    0:Runs:6
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_utils.c - miscellaneous line editor utilities
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_utils.pro"
+        -:   32:
+        -:   33:/* Primary cut buffer */
+        -:   34:
+        -:   35:/**/
+        -:   36:struct cutbuffer cutbuf;
+        -:   37:
+        -:   38:/* Emacs-style kill buffer ring */
+        -:   39:
+        -:   40:/**/
+        -:   41:struct cutbuffer *kring;
+        -:   42:/**/
+        -:   43:int kringsize, kringnum;
+        -:   44:
+        -:   45:/* Vi named cut buffers.  0-25 are the named buffers "a to "z, and *
+        -:   46: * 26-35 are the numbered buffer stack "0 to "9.                   */
+        -:   47:
+        -:   48:/**/
+        -:   49:struct cutbuffer vibuf[36];
+        -:   50:
+        -:   51:/* the line before last mod (for undo purposes) */
+        -:   52:
+        -:   53:/**/
+        -:   54:ZLE_STRING_T lastline;
+        -:   55:/**/
+        -:   56:int lastlinesz, lastll, lastcs;
+        -:   57:
+        -:   58:/* size of line buffer */
+        -:   59:
+        -:   60:/**/
+        -:   61:int linesz;
+        -:   62:
+        -:   63:/* make sure that the line buffer has at least sz chars */
+        -:   64:
+        -:   65:/**/
+        -:   66:void
+    #####:   67:sizeline(int sz)
+        -:   68:{
+    #####:   69:    int cursz = (zlemetaline != NULL) ? metalinesz : linesz;
+        -:   70:
+    #####:   71:    while (sz > cursz) {
+    #####:   72:	if (cursz < 256)
+    #####:   73:	    cursz = 256;
+        -:   74:	else
+    #####:   75:	    cursz *= 4;
+        -:   76:
+    #####:   77:	if (zlemetaline != NULL) {
+        -:   78:	    /* One spare character for the NULL */
+    #####:   79:	    zlemetaline = realloc(zlemetaline, cursz + 1);
+        -:   80:	} else {
+        -:   81:	    /* One spare character for the NULL, one for the newline */
+    #####:   82:	    zleline =
+    #####:   83:		(ZLE_STRING_T)realloc(zleline,
+    #####:   84:				      (cursz + 2) * ZLE_CHAR_SIZE);
+        -:   85:	}
+        -:   86:    }
+        -:   87:
+    #####:   88:    if (zlemetaline != NULL)
+    #####:   89:	metalinesz = cursz;
+        -:   90:    else
+    #####:   91:	linesz = cursz;
+    #####:   92:}
+        -:   93:
+        -:   94:/*
+        -:   95: * Insert a character, called from main shell.
+        -:   96: * Note this always operates on the metafied multibyte version of the
+        -:   97: * line.
+        -:   98: */
+        -:   99:
+        -:  100:/**/
+        -:  101:mod_export void
+    #####:  102:zleaddtoline(int chr)
+        -:  103:{
+    #####:  104:    spaceinline(1);
+    #####:  105:    zlemetaline[zlemetacs++] = chr;
+    #####:  106:}
+        -:  107:
+        -:  108:/*
+        -:  109: * Convert a line editor character to a possibly multibyte character
+        -:  110: * in a metafied string.  To be safe buf should have space for at least
+        -:  111: * 2 * MB_CUR_MAX chars for multibyte mode and 2 otherwise.  Returns the
+        -:  112: * length of the string added.
+        -:  113: */
+        -:  114:
+        -:  115:/**/
+        -:  116:int
+    #####:  117:zlecharasstring(ZLE_CHAR_T inchar, char *buf)
+        -:  118:{
+        -:  119:#ifdef MULTIBYTE_SUPPORT
+        -:  120:    int ret;
+        -:  121:    char *ptr;
+        -:  122:
+        -:  123:#ifdef __STDC_ISO_10646__
+    #####:  124:    if (ZSH_INVALID_WCHAR_TEST(inchar)) {
+    #####:  125:	buf[0] = ZSH_INVALID_WCHAR_TO_CHAR(inchar);
+    #####:  126:	ret = 1;
+        -:  127:    } else
+        -:  128:#endif
+        -:  129:    {
+    #####:  130:	ret = wctomb(buf, inchar);
+    #####:  131:	if (ret <= 0) {
+        -:  132:	    /* Ick. */
+    #####:  133:	    buf[0] = '?';
+    #####:  134:	    return 1;
+        -:  135:	}
+        -:  136:    }
+    #####:  137:    ptr = buf + ret - 1;
+        -:  138:    for (;;) {
+    #####:  139:	if (imeta(*ptr)) {
+    #####:  140:	    char *ptr2 = buf + ret - 1;
+        -:  141:	    for (;;) {
+    #####:  142:		ptr2[1] = ptr2[0];
+    #####:  143:		if (ptr2 == ptr)
+    #####:  144:		    break;
+    #####:  145:		ptr2--;
+        -:  146:	    }
+    #####:  147:	    *ptr = Meta;
+    #####:  148:	    ptr[1] ^= 32;
+    #####:  149:	    ret++;
+        -:  150:	}
+        -:  151:
+    #####:  152:	if (ptr == buf)
+    #####:  153:	    return ret;
+    #####:  154:	ptr--;
+        -:  155:    }
+        -:  156:#else
+        -:  157:    if (imeta(inchar)) {
+        -:  158:	buf[0] = Meta;
+        -:  159:	buf[1] = inchar ^ 32;
+        -:  160:	return 2;
+        -:  161:    } else {
+        -:  162:	buf[0] = inchar;
+        -:  163:	return 1;
+        -:  164:    }
+        -:  165:#endif
+        -:  166:}
+        -:  167:
+        -:  168:/*
+        -:  169: * Input: a line in internal zle format, possibly using wide characters,
+        -:  170: * possibly not, together with its length and the cursor position.
+        -:  171: * The length must be accurate and includes all characters (no NULL
+        -:  172: * termination is expected).  The input cursor position is only
+        -:  173: * significant if outcs is non-NULL.
+        -:  174: *
+        -:  175: * Output: an ordinary NULL-terminated string, using multibyte characters
+        -:  176: * instead of wide characters where appropriate and with the contents
+        -:  177: * metafied.
+        -:  178: *
+        -:  179: * If outllp is non-NULL, assign the new length.  This is the conventional
+        -:  180: * string length, without the NULL byte.
+        -:  181: *
+        -:  182: * If outcsp is non-NULL, assign the new character position.
+        -:  183: * If outcsp is &zlemetacs, update the positions in the region_highlight
+        -:  184: * array, too.  This is a bit of a hack.
+        -:  185: *
+        -:  186: * If useheap is 1, memory is returned from the heap, else is allocated
+        -:  187: * for later freeing.
+        -:  188: */
+        -:  189:
+        -:  190:/**/
+        -:  191:mod_export char *
+    #####:  192:zlelineasstring(ZLE_STRING_T instr, int inll, int incs, int *outllp,
+        -:  193:		int *outcsp, int useheap)
+        -:  194:{
+        -:  195:    int outcs, outll, sub;
+        -:  196:    struct region_highlight *rhp;
+        -:  197:
+        -:  198:#ifdef MULTIBYTE_SUPPORT
+        -:  199:    char *s;
+        -:  200:    int i, j;
+    #####:  201:    size_t mb_len = 0;
+        -:  202:    mbstate_t mbs;
+        -:  203:
+    #####:  204:    s = zalloc(inll * MB_CUR_MAX + 1);
+        -:  205:
+    #####:  206:    outcs = 0;
+    #####:  207:    memset(&mbs, 0, sizeof(mbs));
+    #####:  208:    for (i=0; i < inll; i++) {
+    #####:  209:	if (incs == 0)
+    #####:  210:	    outcs = mb_len;
+    #####:  211:	incs--;
+    #####:  212:	if (region_highlights && outcsp == &zlemetacs) {
+    #####:  213:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  214:		 rhp < region_highlights + n_region_highlights;
+    #####:  215:		 rhp++) {
+    #####:  216:		if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  217:		    sub = predisplaylen;
+        -:  218:		else
+    #####:  219:		    sub = 0;
+    #####:  220:		if (rhp->start - sub == 0)
+    #####:  221:		    rhp->start_meta = sub + mb_len;
+    #####:  222:		rhp->start--;
+    #####:  223:		if (rhp->end - sub == 0)
+    #####:  224:		    rhp->end_meta = sub + mb_len;
+    #####:  225:		rhp->end--;
+        -:  226:	    }
+        -:  227:	}
+        -:  228:#ifdef __STDC_ISO_10646__
+    #####:  229:	if (ZSH_INVALID_WCHAR_TEST(instr[i])) {
+    #####:  230:	    s[mb_len++] = ZSH_INVALID_WCHAR_TO_CHAR(instr[i]);
+        -:  231:	} else
+        -:  232:#endif
+        -:  233:	{
+    #####:  234:	    j = wcrtomb(s + mb_len, instr[i], &mbs);
+    #####:  235:	    if (j == -1) {
+        -:  236:		/* invalid char */
+    #####:  237:		s[mb_len++] = ZWC('?');
+    #####:  238:		memset(&mbs, 0, sizeof(mbs));
+        -:  239:	    } else {
+    #####:  240:		mb_len += j;
+        -:  241:	    }
+        -:  242:	}
+        -:  243:    }
+    #####:  244:    if (incs == 0)
+    #####:  245:	outcs = mb_len;
+    #####:  246:    if (region_highlights && outcsp == &zlemetacs) {
+    #####:  247:	for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  248:	     rhp < region_highlights + n_region_highlights;
+    #####:  249:	     rhp++) {
+    #####:  250:	    if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  251:		sub = predisplaylen;
+        -:  252:	    else
+    #####:  253:		sub = 0;
+    #####:  254:	    if (rhp->start - sub == 0)
+    #####:  255:		rhp->start_meta = sub + mb_len;
+    #####:  256:	    if (rhp->end - sub == 0)
+    #####:  257:		rhp->end_meta = sub + mb_len;
+        -:  258:	}
+        -:  259:    }
+    #####:  260:    s[mb_len] = '\0';
+        -:  261:
+    #####:  262:    outll = mb_len;
+        -:  263:#else
+        -:  264:    outll = inll;
+        -:  265:    outcs = incs;
+        -:  266:    if (region_highlights && outcsp == &zlemetacs) {
+        -:  267:	for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+        -:  268:	     rhp < region_highlights + n_region_highlights;
+        -:  269:	     rhp++) {
+        -:  270:	    rhp->start_meta = rhp->start;
+        -:  271:	    rhp->end_meta = rhp->end;
+        -:  272:	}
+        -:  273:    }
+        -:  274:#endif
+        -:  275:
+        -:  276:    /*
+        -:  277:     * *outcsp and *outllp are to be indexes into the final string,
+        -:  278:     * not character offsets, so we need to take account of any
+        -:  279:     * metafiable characters.
+        -:  280:     */
+    #####:  281:    if (outcsp != NULL || outllp != NULL) {
+        -:  282:#ifdef MULTIBYTE_SUPPORT
+    #####:  283:	char *strp = s;
+        -:  284:#else
+        -:  285:	char *strp = instr;
+        -:  286:#endif
+    #####:  287:	char *stopcs = strp + outcs;
+    #####:  288:	char *stopll = strp + outll;
+    #####:  289:	char *startp = strp;
+        -:  290:
+    #####:  291:	if (region_highlights && outcsp == &zlemetacs) {
+    #####:  292:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  293:		 rhp < region_highlights + n_region_highlights;
+    #####:  294:		 rhp++) {
+        -:  295:		/* Used as temporary storage */
+    #####:  296:		rhp->start = rhp->start_meta;
+    #####:  297:		rhp->end = rhp->end_meta;
+        -:  298:	    }
+        -:  299:	}
+    #####:  300:	while (strp < stopll) {
+    #####:  301:	    if (imeta(*strp)) {
+    #####:  302:		if (strp < stopcs)
+    #####:  303:		    outcs++;
+    #####:  304:		if (region_highlights && outcsp == &zlemetacs) {
+    #####:  305:		    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  306:			 rhp < region_highlights + n_region_highlights;
+    #####:  307:			 rhp++) {
+    #####:  308:			if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  309:			    sub = predisplaylen;
+        -:  310:			else
+    #####:  311:			    sub = 0;
+    #####:  312:			if (strp < startp + rhp->start - sub) {
+    #####:  313:			    rhp->start_meta++;
+        -:  314:			}
+    #####:  315:			if (strp < startp + rhp->end - sub) {
+    #####:  316:			    rhp->end_meta++;
+        -:  317:			}
+        -:  318:		    }
+        -:  319:		}
+    #####:  320:		outll++;
+        -:  321:	    }
+    #####:  322:	    strp++;
+        -:  323:	}
+    #####:  324:	if (outcsp != NULL)
+    #####:  325:	    *outcsp = outcs;
+    #####:  326:	if (outllp != NULL)
+    #####:  327:	    *outllp = outll;
+        -:  328:    }
+        -:  329:
+        -:  330:#ifdef MULTIBYTE_SUPPORT
+    #####:  331:    if (useheap) {
+    #####:  332:	char *ret = metafy(s, mb_len, META_HEAPDUP);
+        -:  333:
+    #####:  334:	zfree(s, inll * MB_CUR_MAX + 1);
+        -:  335:
+    #####:  336:	return ret;
+        -:  337:    }
+    #####:  338:    return metafy(s, mb_len, META_REALLOC);
+        -:  339:#else
+        -:  340:    return metafy(instr, inll, useheap ? META_HEAPDUP : META_DUP);
+        -:  341:#endif
+        -:  342:}
+        -:  343:
+        -:  344:
+        -:  345:/*
+        -:  346: * Input a NULL-terminated metafied string instr.
+        -:  347: * Output a line in internal zle format, together with its length
+        -:  348: * in the appropriate character units.  Note that outll may not be NULL.
+        -:  349: *
+        -:  350: * If outsz is non-NULL, the number of allocated characters in the
+        -:  351: * string is written there.  For compatibility with use of the linesz
+        -:  352: * variable (allocate size of zleline), at least two characters are
+        -:  353: * allocated more than needed for immediate use.  (The extra characters
+        -:  354: * may take a newline and a null at a later stage.)  These are not
+        -:  355: * included in *outsz.
+        -:  356: *
+        -:  357: * If outcs is non-NULL, the character position in the original
+        -:  358: * string incs (a standard string offset, i.e. incremented 2 for
+        -:  359: * each metafied character) is converted into the corresponding
+        -:  360: * character position in *outcs.
+        -:  361: *
+        -:  362: * If, further, outcs is &zlecs, we update the positions in the
+        -:  363: * region_highlight array, too.  (This is a bit of a hack.)
+        -:  364: *
+        -:  365: * Note that instr is modified in place, hence should be copied
+        -:  366: * first if necessary;
+        -:  367: *
+        -:  368: * Memory for the returned string is permanently allocated.  *outsz may
+        -:  369: * be longer than the *outll returned.  Hence it should be freed with
+        -:  370: * zfree(outstr, *outsz) or free(outstr), not zfree(outstr, *outll).
+        -:  371: */
+        -:  372:
+        -:  373:/**/
+        -:  374:mod_export ZLE_STRING_T
+    #####:  375:stringaszleline(char *instr, int incs, int *outll, int *outsz, int *outcs)
+        -:  376:{
+        -:  377:    ZLE_STRING_T outstr;
+        -:  378:    int ll, sz, sub;
+        -:  379:    struct region_highlight *rhp;
+        -:  380:#ifdef MULTIBYTE_SUPPORT
+        -:  381:    mbstate_t mbs;
+        -:  382:#endif
+        -:  383:
+    #####:  384:    if (outcs) {
+        -:  385:	/*
+        -:  386:	 * Take account of Meta characters in the input string
+        -:  387:	 * before we unmetafy it.  This does not yet take account
+        -:  388:	 * of multibyte characters.  If there are none, this
+        -:  389:	 * is all the processing required to calculate outcs.
+        -:  390:	 */
+    #####:  391:	char *inptr = instr, *cspos = instr + incs;
+    #####:  392:	if (region_highlights && outcs == &zlecs) {
+    #####:  393:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  394:		 rhp < region_highlights + n_region_highlights;
+    #####:  395:		 rhp++) {
+    #####:  396:		rhp->start = rhp->start_meta;
+    #####:  397:		rhp->end = rhp->end_meta;
+        -:  398:	    }
+        -:  399:	}
+    #####:  400:	while (*inptr) {
+    #####:  401:	    if (*inptr == Meta) {
+    #####:  402:		if (inptr < cspos) {
+    #####:  403:		    incs--;
+        -:  404:		}
+    #####:  405:		if (region_highlights && outcs == &zlecs) {
+    #####:  406:		    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  407:			 rhp < region_highlights + n_region_highlights;
+    #####:  408:			 rhp++) {
+    #####:  409:			if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  410:			    sub = predisplaylen;
+        -:  411:			else
+    #####:  412:			    sub = 0;
+    #####:  413:			if (inptr - instr < rhp->start - sub) {
+    #####:  414:			    rhp->start_meta--;
+        -:  415:			}
+    #####:  416:			if (inptr - instr < rhp->end - sub) {
+    #####:  417:			    rhp->end_meta--;
+        -:  418:			}
+        -:  419:		    }
+        -:  420:		}
+    #####:  421:		inptr++;
+        -:  422:	    }
+    #####:  423:	    inptr++;
+        -:  424:	}
+        -:  425:    }
+    #####:  426:    unmetafy(instr, &ll);
+        -:  427:
+        -:  428:    /*
+        -:  429:     * ll is the maximum number of characters there can be in
+        -:  430:     * the output string; the closer to ASCII the string, the
+        -:  431:     * better the guess.  For the 2 see above.
+        -:  432:     */
+    #####:  433:    sz = (ll + 2) * ZLE_CHAR_SIZE;
+    #####:  434:    if (outsz)
+    #####:  435:	*outsz = ll;
+    #####:  436:    outstr = (ZLE_STRING_T)zalloc(sz);
+        -:  437:
+        -:  438:#ifdef MULTIBYTE_SUPPORT
+    #####:  439:    if (ll) {
+    #####:  440:	char *inptr = instr;
+    #####:  441:	wchar_t *outptr = outstr;
+        -:  442:
+        -:  443:	/* Reset shift state to input complete string */
+    #####:  444:	memset(&mbs, '\0', sizeof mbs);
+        -:  445:
+    #####:  446:	while (ll > 0) {
+    #####:  447:	    size_t cnt = mbrtowc(outptr, inptr, ll, &mbs);
+        -:  448:
+        -:  449:#ifdef __STDC_ISO_10646__
+    #####:  450:	    if (cnt == MB_INCOMPLETE || cnt == MB_INVALID) {
+        -:  451:		/* Use private encoding for invalid single byte */
+    #####:  452:		*outptr = ZSH_CHAR_TO_INVALID_WCHAR(*inptr);
+    #####:  453:		cnt = 1;
+        -:  454:	    }
+        -:  455:#else
+        -:  456:	    /*
+        -:  457:	     * At this point we don't handle either incomplete (-2) or
+        -:  458:	     * invalid (-1) multibyte sequences.  Use the current length
+        -:  459:	     * and return.
+        -:  460:	     */
+        -:  461:	    if (cnt == MB_INCOMPLETE || cnt == MB_INVALID)
+        -:  462:		break;
+        -:  463:#endif
+        -:  464:
+    #####:  465:	    if (cnt == 0) {
+        -:  466:		/* Converting '\0' returns 0, but a '\0' is a real
+        -:  467:		 * character for us, so we should consume 1 byte
+        -:  468:		 * (certainly true for Unicode and unlikely to be false
+        -:  469:		 * in any non-pathological multibyte representation). */
+    #####:  470:		cnt = 1;
+    #####:  471:	    } else if (cnt > (size_t)ll) {
+        -:  472:		/*
+        -:  473:		 * Some multibyte implementations return the
+        -:  474:		 * full length of a previous incomplete character
+        -:  475:		 * instead of the remaining length.
+        -:  476:		 * This is paranoia: it only applies if we start
+        -:  477:		 * midway through a multibyte character, which
+        -:  478:		 * presumably can't happen.
+        -:  479:		 */
+    #####:  480:		cnt = ll;
+        -:  481:	    }
+        -:  482:
+    #####:  483:	    if (outcs) {
+    #####:  484:		int offs = inptr - instr;
+    #####:  485:		if (offs <= incs && incs < offs + (int)cnt)
+    #####:  486:		    *outcs = outptr - outstr;
+    #####:  487:		if (region_highlights && outcs == &zlecs) {
+    #####:  488:		    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  489:			 rhp < region_highlights + n_region_highlights;
+    #####:  490:			 rhp++) {
+    #####:  491:			if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  492:			    sub = predisplaylen;
+        -:  493:			else
+    #####:  494:			    sub = 0;
+    #####:  495:			if (offs <= rhp->start_meta - sub &&
+    #####:  496:			    rhp->start_meta - sub < offs + (int)cnt) {
+    #####:  497:			    rhp->start = outptr - outstr + sub;
+        -:  498:			}
+    #####:  499:			if (offs <= rhp->end_meta - sub &&
+    #####:  500:			    rhp->end_meta - sub < offs + (int)cnt) {
+    #####:  501:			    rhp->end = outptr - outstr + sub;
+        -:  502:			}
+        -:  503:		    }
+        -:  504:		}
+        -:  505:	    }
+        -:  506:
+    #####:  507:	    inptr += cnt;
+    #####:  508:	    outptr++;
+    #####:  509:	    ll -= cnt;
+        -:  510:	}
+    #####:  511:	if (outcs && inptr <= instr + incs)
+    #####:  512:	    *outcs = outptr - outstr;
+    #####:  513:	*outll = outptr - outstr;
+        -:  514:    } else {
+    #####:  515:	*outll = 0;
+    #####:  516:	if (outcs)
+    #####:  517:	    *outcs = 0;
+        -:  518:    }
+        -:  519:#else
+        -:  520:    memcpy(outstr, instr, ll);
+        -:  521:    *outll = ll;
+        -:  522:    if (outcs)
+        -:  523:	*outcs = incs;
+        -:  524:    if (region_highlights && outcs == &zlecs) {
+        -:  525:	for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+        -:  526:	     rhp < region_highlights + n_region_highlights;
+        -:  527:	     rhp++) {
+        -:  528:	    rhp->start = rhp->start_meta;
+        -:  529:	    rhp->end = rhp->end_meta;
+        -:  530:	}
+        -:  531:    }
+        -:  532:#endif
+        -:  533:
+    #####:  534:    return outstr;
+        -:  535:}
+        -:  536:
+        -:  537:/*
+        -:  538: * This function is called when we are playing very nasty tricks
+        -:  539: * indeed: see bufferwords in hist.c.  Consequently we can make
+        -:  540: * absolutely no assumption about the state whatsoever, except
+        -:  541: * that it has one.
+        -:  542: */
+        -:  543:
+        -:  544:/**/
+        -:  545:mod_export char *
+    #####:  546:zlegetline(int *ll, int *cs)
+        -:  547:{
+    #####:  548:    if (zlemetaline != NULL) {
+    #####:  549:	*ll = zlemetall;
+    #####:  550:	*cs = zlemetacs;
+    #####:  551:	return ztrdup(zlemetaline);
+        -:  552:    }
+    #####:  553:    if (zleline)
+    #####:  554:	return zlelineasstring(zleline, zlell, zlecs, ll, cs, 0);
+    #####:  555:    *ll = *cs = 0;
+    #####:  556:    return ztrdup("");
+        -:  557:}
+        -:  558:
+        -:  559:
+        -:  560:/*
+        -:  561: * free() the 'memo' elements of region_highlights.
+        -:  562: */
+        -:  563:
+        -:  564:/**/
+        -:  565:void
+    #####:  566:free_region_highlights_memos(void)
+        -:  567:{
+        -:  568:    struct region_highlight *rhp;
+    #####:  569:    for (rhp = region_highlights;
+    #####:  570:	 rhp < region_highlights + n_region_highlights;
+    #####:  571:	 rhp++) {
+    #####:  572:	zfree((char*) rhp->memo, 0);
+        -:  573:    }
+    #####:  574:}
+        -:  575:
+        -:  576:/* Forward reference */
+        -:  577:struct zle_region;
+        -:  578:
+        -:  579:/* A non-special entry in region_highlight */
+        -:  580:struct zle_region  {
+        -:  581:    struct zle_region *next;
+        -:  582:    /* Entries of region_highlight, as needed */
+        -:  583:    int atr;
+        -:  584:    int start;
+        -:  585:    int end;
+        -:  586:    int flags;
+        -:  587:    const char *memo;
+        -:  588:};
+        -:  589:
+        -:  590:/* Forward reference */
+        -:  591:struct zle_position;
+        -:  592:
+        -:  593:/* A saved set of position information */
+        -:  594:struct zle_position {
+        -:  595:    /* Link pointer */
+        -:  596:    struct zle_position *next;
+        -:  597:    /* Cursor position */
+        -:  598:    int cs;
+        -:  599:    /* Mark */
+        -:  600:    int mk;
+        -:  601:    /* Line length */
+        -:  602:    int ll;
+        -:  603:    struct zle_region *regions;
+        -:  604:};
+        -:  605:
+        -:  606:/* LIFO stack of positions */
+        -:  607:static struct zle_position *zle_positions;
+        -:  608:
+        -:  609:/*
+        -:  610: * Save positions including cursor, end-of-line and
+        -:  611: * (non-special) region highlighting.
+        -:  612: *
+        -:  613: * Must be matched by a subsequent zle_restore_positions().
+        -:  614: */
+        -:  615:
+        -:  616:/**/
+        -:  617:mod_export void
+    #####:  618:zle_save_positions(void)
+        -:  619:{
+        -:  620:    struct region_highlight *rhp;
+        -:  621:    struct zle_position *newpos;
+        -:  622:    struct zle_region **newrhpp, *newrhp;
+        -:  623:
+    #####:  624:    newpos = (struct zle_position *)zalloc(sizeof(*newpos));
+        -:  625:
+    #####:  626:    newpos->mk = mark;
+    #####:  627:    if (zlemetaline) {
+        -:  628:	/* Use metafied information */
+    #####:  629:	newpos->cs = zlemetacs;
+    #####:  630:	newpos->ll = zlemetall;
+        -:  631:    } else {
+        -:  632:	/* Use unmetafied information */
+    #####:  633:	newpos->cs = zlecs;
+    #####:  634:	newpos->ll = zlell;
+        -:  635:
+        -:  636:    }
+        -:  637:
+    #####:  638:    newrhpp = &newpos->regions;
+    #####:  639:    *newrhpp = NULL;
+    #####:  640:    if (region_highlights) {
+    #####:  641:	for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  642:	     rhp < region_highlights + n_region_highlights;
+    #####:  643:	     rhp++) {
+        -:  644:	    /*
+        -:  645:	     * This is a FIFO stack, so we preserve the order
+        -:  646:	     * of entries when we restore region_highlights.
+        -:  647:	     */
+    #####:  648:	    newrhp = *newrhpp = (struct zle_region *)zalloc(sizeof(**newrhpp));
+    #####:  649:	    newrhp->next = NULL;
+    #####:  650:	    newrhp->atr = rhp->atr;
+    #####:  651:	    newrhp->flags = rhp->flags;
+    #####:  652:	    newrhp->memo = ztrdup(rhp->memo);
+    #####:  653:	    if (zlemetaline) {
+    #####:  654:		newrhp->start = rhp->start_meta;
+    #####:  655:		newrhp->end = rhp->end_meta;
+        -:  656:	    } else {
+    #####:  657:		newrhp->start = rhp->start;
+    #####:  658:		newrhp->end = rhp->end;
+        -:  659:	    }
+    #####:  660:	    newrhpp = &newrhp->next;
+        -:  661:	}
+        -:  662:    }
+        -:  663:
+    #####:  664:    newpos->next = zle_positions;
+    #####:  665:    zle_positions = newpos;
+    #####:  666:}
+        -:  667:
+        -:  668:/*
+        -:  669: * Restore positions previously saved.
+        -:  670: * Relies on zlemetaline being restored correctly beforehand,
+        -:  671: * so that it can tell whether to use metafied positions or not.
+        -:  672: */
+        -:  673:
+        -:  674:/**/
+        -:  675:mod_export void
+    #####:  676:zle_restore_positions(void)
+        -:  677:{
+    #####:  678:    struct zle_position *oldpos = zle_positions;
+        -:  679:    struct zle_region *oldrhp;
+        -:  680:    struct region_highlight *rhp;
+        -:  681:    int nreg;
+        -:  682:
+    #####:  683:    zle_positions = oldpos->next;
+        -:  684:
+    #####:  685:    mark = oldpos->mk;
+    #####:  686:    if (zlemetaline) {
+        -:  687:	/* Use metafied information */
+    #####:  688:	zlemetacs = oldpos->cs;
+    #####:  689:	zlemetall = oldpos->ll;
+        -:  690:    } else {
+        -:  691:	/* Use unmetafied information */
+    #####:  692:	zlecs = oldpos->cs;
+    #####:  693:	zlell = oldpos->ll;
+        -:  694:    }
+        -:  695:
+    #####:  696:    if (oldpos->regions) {
+        -:  697:	/* Count number of regions and see if the array needs resizing */
+    #####:  698:	for (nreg = 0, oldrhp = oldpos->regions;
+        -:  699:	     oldrhp;
+    #####:  700:	     nreg++, oldrhp = oldrhp->next)
+        -:  701:	    ;
+    #####:  702:	if (nreg + N_SPECIAL_HIGHLIGHTS != n_region_highlights) {
+    #####:  703:	    free_region_highlights_memos();
+    #####:  704:	    n_region_highlights = nreg + N_SPECIAL_HIGHLIGHTS;
+    #####:  705:	    region_highlights = (struct region_highlight *)
+    #####:  706:		zrealloc(region_highlights,
+        -:  707:			 sizeof(struct region_highlight) * n_region_highlights);
+        -:  708:	}
+    #####:  709:	oldrhp = oldpos->regions;
+    #####:  710:	rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  711:	while (oldrhp) {
+    #####:  712:	    struct zle_region *nextrhp = oldrhp->next;
+        -:  713:
+    #####:  714:	    rhp->atr = oldrhp->atr;
+    #####:  715:	    rhp->flags = oldrhp->flags;
+    #####:  716:	    rhp->memo = oldrhp->memo; /* transferring ownership of the permanently-allocated memory */
+    #####:  717:	    if (zlemetaline) {
+    #####:  718:		rhp->start_meta = oldrhp->start;
+    #####:  719:		rhp->end_meta = oldrhp->end;
+        -:  720:	    } else {
+    #####:  721:		rhp->start = oldrhp->start;
+    #####:  722:		rhp->end = oldrhp->end;
+        -:  723:	    }
+        -:  724:
+    #####:  725:	    zfree(oldrhp, sizeof(*oldrhp));
+    #####:  726:	    oldrhp = nextrhp;
+    #####:  727:	    rhp++;
+        -:  728:	}
+    #####:  729:    } else if (region_highlights) {
+    #####:  730:	free_region_highlights_memos();
+    #####:  731:	zfree(region_highlights, sizeof(struct region_highlight) *
+        -:  732:	      n_region_highlights);
+    #####:  733:	region_highlights  = NULL;
+    #####:  734:	n_region_highlights = 0;
+        -:  735:    }
+        -:  736:
+    #####:  737:    zfree(oldpos, sizeof(*oldpos));
+    #####:  738:}
+        -:  739:
+        -:  740:/*
+        -:  741: * Discard positions previously saved, the line has been updated.
+        -:  742: */
+        -:  743:
+        -:  744:/**/
+        -:  745:mod_export void
+    #####:  746:zle_free_positions(void)
+        -:  747:{
+    #####:  748:    struct zle_position *oldpos = zle_positions;
+        -:  749:    struct zle_region *oldrhp;
+        -:  750:
+    #####:  751:    zle_positions = oldpos->next;
+    #####:  752:    oldrhp = oldpos->regions;
+    #####:  753:    while (oldrhp) {
+    #####:  754:	struct zle_region *nextrhp = oldrhp->next;
+    #####:  755:	zfree(oldrhp, sizeof(*oldrhp));
+    #####:  756:	oldrhp = nextrhp;
+        -:  757:    }
+    #####:  758:    zfree(oldpos, sizeof(*oldpos));
+    #####:  759:}
+        -:  760:
+        -:  761:/*
+        -:  762: * Basic utility functions for adding to line or removing from line.
+        -:  763: * At this level the counts supplied are raw character counts, so
+        -:  764: * the calling code must be aware of combining characters where
+        -:  765: * necessary, e.g. if we want to delete a + combing grave forward
+        -:  766: * from the cursor, then shiftchars() gets the count 2 (not 1).
+        -:  767: *
+        -:  768: * This is necessary because these utility functions don't know about
+        -:  769: * zlecs, and we need to count combined characters from there.
+        -:  770: */
+        -:  771:
+        -:  772:/* insert space for ct chars at cursor position */
+        -:  773:
+        -:  774:/**/
+        -:  775:mod_export void
+    #####:  776:spaceinline(int ct)
+        -:  777:{
+        -:  778:    int i, sub;
+        -:  779:    struct region_highlight *rhp;
+        -:  780:
+    #####:  781:    if (zlemetaline) {
+    #####:  782:	sizeline(ct + zlemetall);
+    #####:  783:	for (i = zlemetall; --i >= zlemetacs;)
+    #####:  784:	    zlemetaline[i + ct] = zlemetaline[i];
+    #####:  785:	zlemetall += ct;
+    #####:  786:	zlemetaline[zlemetall] = '\0';
+        -:  787:
+    #####:  788:	if (mark > zlemetacs)
+    #####:  789:	    mark += ct;
+        -:  790:
+    #####:  791:	if (region_highlights) {
+    #####:  792:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  793:		 rhp < region_highlights + n_region_highlights;
+    #####:  794:		 rhp++) {
+    #####:  795:		if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  796:		    sub = predisplaylen;
+        -:  797:		else
+    #####:  798:		    sub = 0;
+    #####:  799:		if (rhp->start_meta - sub >= zlemetacs) {
+    #####:  800:		    rhp->start_meta += ct;
+        -:  801:		}
+    #####:  802:		if (rhp->end_meta - sub >= zlemetacs) {
+    #####:  803:		    rhp->end_meta += ct;
+        -:  804:		}
+        -:  805:	    }
+        -:  806:	}
+        -:  807:    } else {
+    #####:  808:	sizeline(ct + zlell);
+    #####:  809:	for (i = zlell; --i >= zlecs;)
+    #####:  810:	    zleline[i + ct] = zleline[i];
+    #####:  811:	zlell += ct;
+    #####:  812:	zleline[zlell] = ZWC('\0');
+        -:  813:
+    #####:  814:	if (mark > zlecs)
+    #####:  815:	    mark += ct;
+    #####:  816:	if (viinsbegin > zlecs)
+    #####:  817:	    viinsbegin = 0;
+        -:  818:
+    #####:  819:	if (region_highlights) {
+    #####:  820:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  821:		 rhp < region_highlights + n_region_highlights;
+    #####:  822:		 rhp++) {
+    #####:  823:		if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  824:		    sub = predisplaylen;
+        -:  825:		else
+    #####:  826:		    sub = 0;
+    #####:  827:		if (rhp->start - sub >= zlecs) {
+    #####:  828:		    rhp->start += ct;
+        -:  829:		}
+    #####:  830:		if (rhp->end - sub >= zlecs) {
+    #####:  831:		    rhp->end += ct;
+        -:  832:		}
+        -:  833:	    }
+        -:  834:	}
+        -:  835:    }
+    #####:  836:    region_active = 0;
+    #####:  837:}
+        -:  838:
+        -:  839:/*
+        -:  840: * Within the ZLE line, cut the "cnt" characters from position "to".
+        -:  841: */
+        -:  842:
+        -:  843:/**/
+        -:  844:void
+    #####:  845:shiftchars(int to, int cnt)
+        -:  846:{
+        -:  847:    struct region_highlight *rhp;
+        -:  848:    int sub;
+        -:  849:
+    #####:  850:    if (mark >= to + cnt)
+    #####:  851:	mark -= cnt;
+    #####:  852:    else if (mark > to)
+    #####:  853:	mark = to;
+        -:  854:
+    #####:  855:    if (zlemetaline) {
+        -:  856:	/* before to is updated... */
+    #####:  857:	if (region_highlights) {
+    #####:  858:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  859:		 rhp < region_highlights + n_region_highlights;
+    #####:  860:		 rhp++) {
+    #####:  861:		if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  862:		    sub = predisplaylen;
+        -:  863:		else
+    #####:  864:		    sub = 0;
+    #####:  865:		if (rhp->start_meta - sub > to) {
+    #####:  866:		    if (rhp->start_meta - sub > to + cnt)
+    #####:  867:			rhp->start_meta -= cnt;
+        -:  868:		    else
+    #####:  869:			rhp->start_meta = to;
+        -:  870:		}
+    #####:  871:		if (rhp->end_meta - sub > to) {
+    #####:  872:		    if (rhp->end_meta - sub > to + cnt)
+    #####:  873:			rhp->end_meta -= cnt;
+        -:  874:		    else
+    #####:  875:			rhp->end_meta = to;
+        -:  876:		}
+        -:  877:	    }
+        -:  878:	}
+        -:  879:
+    #####:  880:	while (to + cnt < zlemetall) {
+    #####:  881:	    zlemetaline[to] = zlemetaline[to + cnt];
+    #####:  882:	    to++;
+        -:  883:	}
+    #####:  884:	zlemetaline[zlemetall = to] = '\0';
+        -:  885:    } else {
+        -:  886:	/* before to is updated... */
+    #####:  887:	if (region_highlights) {
+    #####:  888:	    for (rhp = region_highlights + N_SPECIAL_HIGHLIGHTS;
+    #####:  889:		 rhp < region_highlights + n_region_highlights;
+    #####:  890:		 rhp++) {
+    #####:  891:		if (rhp->flags & ZRH_PREDISPLAY)
+    #####:  892:		    sub = predisplaylen;
+        -:  893:		else
+    #####:  894:		    sub = 0;
+    #####:  895:		if (rhp->start - sub > to) {
+    #####:  896:		    if (rhp->start - sub > to + cnt)
+    #####:  897:			rhp->start -= cnt;
+        -:  898:		    else
+    #####:  899:			rhp->start = to;
+        -:  900:		}
+    #####:  901:		if (rhp->end - sub > to) {
+    #####:  902:		    if (rhp->end - sub > to + cnt)
+    #####:  903:			rhp->end -= cnt;
+        -:  904:		    else
+    #####:  905:			rhp->end = to;
+        -:  906:		}
+        -:  907:	    }
+        -:  908:	}
+        -:  909:
+    #####:  910:	while (to + cnt < zlell) {
+    #####:  911:	    zleline[to] = zleline[to + cnt];
+    #####:  912:	    to++;
+        -:  913:	}
+    #####:  914:	zleline[zlell = to] = ZWC('\0');
+        -:  915:    }
+    #####:  916:    region_active = 0;
+    #####:  917:}
+        -:  918:
+        -:  919:/*
+        -:  920: * Put the ct characters starting at zleline + i into the
+        -:  921: * cutbuffer, circling the kill ring if necessary (it's
+        -:  922: * not if we're dealing with vi buffers, which is detected
+        -:  923: * internally).  The text is not removed from zleline.
+        -:  924: *
+        -:  925: * dir indicates how the text is to be added to the cutbuffer,
+        -:  926: * if the cutbuffer wasn't zeroed (this depends on the last
+        -:  927: * command being a kill).  If dir is 1, the new text goes
+        -:  928: * to the front of the cut buffer.  If dir is -1, the cutbuffer
+        -:  929: * is completely overwritten.
+        -:  930: */
+        -:  931:
+        -:  932:/**/
+        -:  933:void
+    #####:  934:cut(int i, int ct, int flags)
+        -:  935:{
+    #####:  936:  cuttext(zleline + i, ct, flags);
+    #####:  937:}
+        -:  938:
+        -:  939:/*
+        -:  940: * As cut, but explicitly supply the text together with its length.
+        -:  941: */
+        -:  942:
+        -:  943:/**/
+        -:  944:void
+    #####:  945:cuttext(ZLE_STRING_T line, int ct, int flags)
+        -:  946:{
+    #####:  947:    if (!(ct || vilinerange) ||  zmod.flags & MOD_NULL)
+    #####:  948:	return;
+        -:  949:
+        -:  950:    UNMETACHECK();
+    #####:  951:    if (zmod.flags & MOD_VIBUF) {
+    #####:  952:	struct cutbuffer *b = &vibuf[zmod.vibuf];
+        -:  953:
+    #####:  954:	if (!(zmod.flags & MOD_VIAPP) || !b->buf) {
+    #####:  955:	    free(b->buf);
+    #####:  956:	    b->buf = (ZLE_STRING_T)zalloc(ct * ZLE_CHAR_SIZE);
+    #####:  957:	    ZS_memcpy(b->buf, line, ct);
+    #####:  958:	    b->len = ct;
+    #####:  959:	    b->flags = vilinerange ? CUTBUFFER_LINE : 0;
+        -:  960:	} else {
+    #####:  961:	    int len = b->len;
+        -:  962:
+    #####:  963:	    if(vilinerange)
+    #####:  964:		b->flags |= CUTBUFFER_LINE;
+    #####:  965:	    b->buf = (ZLE_STRING_T)
+    #####:  966:		realloc((char *)b->buf,
+    #####:  967:			(ct + len + !!(b->flags & CUTBUFFER_LINE))
+        -:  968:			* ZLE_CHAR_SIZE);
+    #####:  969:	    if (b->flags & CUTBUFFER_LINE)
+    #####:  970:		b->buf[len++] = ZWC('\n');
+    #####:  971:	    ZS_memcpy(b->buf + len, line, ct);
+    #####:  972:	    b->len = len + ct;
+        -:  973:	}
+    #####:  974:    } else if (flags & CUT_YANK) {
+        -:  975:	/* Save in "0 */
+    #####:  976:	free(vibuf[26].buf);
+    #####:  977:	vibuf[26].buf = (ZLE_STRING_T)zalloc(ct * ZLE_CHAR_SIZE);
+    #####:  978:	ZS_memcpy(vibuf[26].buf, line, ct);
+    #####:  979:	vibuf[26].len = ct;
+    #####:  980:	vibuf[26].flags = vilinerange ? CUTBUFFER_LINE : 0;
+        -:  981:    } else {
+        -:  982:	/* Save in "1, shifting "1-"8 along to "2-"9 */
+        -:  983:	int n;
+    #####:  984:	free(vibuf[35].buf);
+    #####:  985:	for(n=35; n>27; n--)
+    #####:  986:	    vibuf[n] = vibuf[n-1];
+    #####:  987:	vibuf[27].buf = (ZLE_STRING_T)zalloc(ct * ZLE_CHAR_SIZE);
+    #####:  988:	ZS_memcpy(vibuf[27].buf, line, ct);
+    #####:  989:	vibuf[27].len = ct;
+    #####:  990:	vibuf[27].flags = vilinerange ? CUTBUFFER_LINE : 0;
+        -:  991:    }
+    #####:  992:    if (!cutbuf.buf) {
+    #####:  993:	cutbuf.buf = (ZLE_STRING_T)zalloc(ZLE_CHAR_SIZE);
+    #####:  994:	cutbuf.buf[0] = ZWC('\0');
+    #####:  995:	cutbuf.len = cutbuf.flags = 0;
+    #####:  996:    } else if (!(lastcmd & ZLE_KILL) || (flags & CUT_REPLACE)) {
+        -:  997:	Cutbuffer kptr;
+    #####:  998:	if (!kring) {
+    #####:  999:	    kringsize = KRINGCTDEF;
+    #####: 1000:	    kring = (Cutbuffer)zshcalloc(kringsize * sizeof(struct cutbuffer));
+        -: 1001:	} else
+    #####: 1002:	    kringnum = (kringnum + 1) % kringsize;
+    #####: 1003:	kptr = kring + kringnum;
+    #####: 1004:	if (kptr->buf)
+    #####: 1005:	    free(kptr->buf);
+    #####: 1006:	*kptr = cutbuf;
+    #####: 1007:	cutbuf.buf = (ZLE_STRING_T)zalloc(ZLE_CHAR_SIZE);
+    #####: 1008:	cutbuf.buf[0] = ZWC('\0');
+    #####: 1009:	cutbuf.len = cutbuf.flags = 0;
+        -: 1010:    }
+    #####: 1011:    if (flags & (CUT_FRONT|CUT_REPLACE)) {
+    #####: 1012:	ZLE_STRING_T s = (ZLE_STRING_T)zalloc((cutbuf.len + ct)*ZLE_CHAR_SIZE);
+        -: 1013:
+    #####: 1014:	ZS_memcpy(s, line, ct);
+    #####: 1015:	ZS_memcpy(s + ct, cutbuf.buf, cutbuf.len);
+    #####: 1016:	free(cutbuf.buf);
+    #####: 1017:	cutbuf.buf = s;
+    #####: 1018:	cutbuf.len += ct;
+        -: 1019:    } else {
+        -: 1020:	/* don't alloc 0 bytes; length 0 occurs for blank lines in vi mode */
+    #####: 1021:	cutbuf.buf = realloc((char *)cutbuf.buf,
+    #####: 1022:			     (cutbuf.len + (ct ? ct : 1)) * ZLE_CHAR_SIZE);
+    #####: 1023:	ZS_memcpy(cutbuf.buf + cutbuf.len, line, ct);
+    #####: 1024:	cutbuf.len += ct;
+        -: 1025:    }
+    #####: 1026:    if(vilinerange)
+    #####: 1027:	cutbuf.flags |= CUTBUFFER_LINE;
+        -: 1028:    else
+    #####: 1029:	cutbuf.flags &= ~CUTBUFFER_LINE;
+        -: 1030:}
+        -: 1031:
+        -: 1032:/*
+        -: 1033: * Now we're back in the world of zlecs where we need to keep
+        -: 1034: * track of whether we're on a combining character.
+        -: 1035: */
+        -: 1036:
+        -: 1037:/**/
+        -: 1038:mod_export void
+    #####: 1039:backkill(int ct, int flags)
+        -: 1040:{
+        -: 1041:    UNMETACHECK();
+    #####: 1042:    if (flags & CUT_RAW) {
+    #####: 1043:	zlecs -= ct;
+        -: 1044:    } else {
+    #####: 1045:	int origcs = zlecs;
+    #####: 1046:	while (ct--)
+    #####: 1047:	    DECCS();
+    #####: 1048:	ct = origcs - zlecs;
+        -: 1049:    }
+        -: 1050:
+    #####: 1051:    cut(zlecs, ct, flags);
+    #####: 1052:    shiftchars(zlecs, ct);
+    #####: 1053:    CCRIGHT();
+    #####: 1054:}
+        -: 1055:
+        -: 1056:/**/
+        -: 1057:mod_export void
+    #####: 1058:forekill(int ct, int flags)
+        -: 1059:{
+    #####: 1060:    int i = zlecs;
+        -: 1061:
+        -: 1062:    UNMETACHECK();
+    #####: 1063:    if (!(flags & CUT_RAW)) {
+    #####: 1064:	int n = ct;
+    #####: 1065:	while (n--)
+    #####: 1066:	    INCCS();
+    #####: 1067:	ct = zlecs - i;
+    #####: 1068:	zlecs = i;
+        -: 1069:    }
+        -: 1070:
+    #####: 1071:    cut(i, ct, flags);
+    #####: 1072:    shiftchars(i, ct);
+    #####: 1073:    CCRIGHT();
+    #####: 1074:}
+        -: 1075:
+        -: 1076:/**/
+        -: 1077:mod_export void
+    #####: 1078:backdel(int ct, int flags)
+        -: 1079:{
+    #####: 1080:    if (flags & CUT_RAW) {
+    #####: 1081:	if (zlemetaline != NULL) {
+    #####: 1082:	    shiftchars(zlemetacs -= ct, ct);
+        -: 1083:	} else {
+    #####: 1084:	    shiftchars(zlecs -= ct, ct);
+    #####: 1085:	    CCRIGHT();
+        -: 1086:	}
+        -: 1087:    } else {
+    #####: 1088:	int n = ct, origcs = zlecs;
+        -: 1089:	DPUTS(zlemetaline != NULL, "backdel needs CUT_RAW when metafied");
+    #####: 1090:	while (n--)
+    #####: 1091:	    DECCS();
+    #####: 1092:	shiftchars(zlecs, origcs - zlecs);
+    #####: 1093:	CCRIGHT();
+        -: 1094:    }
+    #####: 1095:}
+        -: 1096:
+        -: 1097:/**/
+        -: 1098:mod_export void
+    #####: 1099:foredel(int ct, int flags)
+        -: 1100:{
+    #####: 1101:    if (flags & CUT_RAW) {
+    #####: 1102:	if (zlemetaline != NULL) {
+    #####: 1103:	    shiftchars(zlemetacs, ct);
+    #####: 1104:	} else if (flags & CUT_RAW) {
+    #####: 1105:	    shiftchars(zlecs, ct);
+    #####: 1106:	    CCRIGHT();
+        -: 1107:	}
+        -: 1108:    } else {
+    #####: 1109:	int origcs = zlecs;
+    #####: 1110:	int n = ct;
+        -: 1111:	DPUTS(zlemetaline != NULL, "foredel needs CUT_RAW when metafied");
+    #####: 1112:	while (n--)
+    #####: 1113:	    INCCS();
+    #####: 1114:	ct = zlecs - origcs;
+    #####: 1115:	zlecs = origcs;
+    #####: 1116:	shiftchars(zlecs, ct);
+    #####: 1117:	CCRIGHT();
+        -: 1118:    }
+    #####: 1119:}
+        -: 1120:
+        -: 1121:/**/
+        -: 1122:void
+    #####: 1123:setline(char *s, int flags)
+        -: 1124:{
+        -: 1125:    char *scp;
+        -: 1126:
+        -: 1127:    UNMETACHECK();
+    #####: 1128:    if (flags & ZSL_COPY)
+    #####: 1129:	scp = ztrdup(s);
+        -: 1130:    else
+    #####: 1131:	scp = s;
+        -: 1132:    /*
+        -: 1133:     * TBD: we could make this more efficient by passing the existing
+        -: 1134:     * allocated line to stringaszleline.
+        -: 1135:     */
+    #####: 1136:    free(zleline);
+        -: 1137:
+    #####: 1138:    viinsbegin = 0;
+    #####: 1139:    zleline = stringaszleline(scp, 0, &zlell, &linesz, NULL);
+        -: 1140:
+    #####: 1141:    if ((flags & ZSL_TOEND) && (zlecs = zlell) && invicmdmode())
+    #####: 1142:	DECCS();
+    #####: 1143:    else if (zlecs > zlell)
+    #####: 1144:	zlecs = zlell;
+    #####: 1145:    CCRIGHT();
+    #####: 1146:    if (flags & ZSL_COPY)
+    #####: 1147:	free(scp);
+    #####: 1148:}
+        -: 1149:
+        -: 1150:/**/
+        -: 1151:int
+    #####: 1152:findbol(void)
+        -: 1153:{
+    #####: 1154:    int x = zlecs;
+        -: 1155:
+    #####: 1156:    while (x > 0 && zleline[x - 1] != ZWC('\n'))
+    #####: 1157:	x--;
+    #####: 1158:    return x;
+        -: 1159:}
+        -: 1160:
+        -: 1161:/**/
+        -: 1162:int
+    #####: 1163:findeol(void)
+        -: 1164:{
+    #####: 1165:    int x = zlecs;
+        -: 1166:
+    #####: 1167:    while (x != zlell && zleline[x] != ZWC('\n'))
+    #####: 1168:	x++;
+    #####: 1169:    return x;
+        -: 1170:}
+        -: 1171:
+        -: 1172:/**/
+        -: 1173:void
+    #####: 1174:findline(int *a, int *b)
+        -: 1175:{
+    #####: 1176:    *a = findbol();
+    #####: 1177:    *b = findeol();
+    #####: 1178:}
+        -: 1179:
+        -: 1180:/*
+        -: 1181: * Query the user, and return 1 for yes, 0 for no.  The question is assumed to
+        -: 1182: * have been printed already, and the cursor is left immediately after the
+        -: 1183: * response echoed.  (Might cause a problem if this takes it onto the next
+        -: 1184: * line.)  <Tab> is interpreted as 'y'; any other control character is
+        -: 1185: * interpreted as 'n'.  If there are any characters in the buffer, this is
+        -: 1186: * taken as a negative response, and no characters are read.  Case is folded.
+        -: 1187: */
+        -: 1188:
+        -: 1189:/**/
+        -: 1190:mod_export int
+    #####: 1191:getzlequery(void)
+        -: 1192:{
+        -: 1193:    ZLE_INT_T c;
+        -: 1194:#ifdef FIONREAD
+        -: 1195:    int val;
+        -: 1196:
+        -: 1197:    /* check for typeahead, which is treated as a negative response */
+    #####: 1198:    ioctl(SHTTY, FIONREAD, (char *)&val);
+    #####: 1199:    if (val) {
+    #####: 1200:	putc('n', shout);
+    #####: 1201:	return 0;
+        -: 1202:    }
+        -: 1203:#endif
+        -: 1204:
+        -: 1205:    /* get a character from the tty and interpret it */
+    #####: 1206:    c = getfullchar(0);
+        -: 1207:    /*
+        -: 1208:     * We'll interpret an interruption here as only interrupting the
+        -: 1209:     * query, not the line editor.
+        -: 1210:     */
+    #####: 1211:    errflag &= ~ERRFLAG_INT;
+    #####: 1212:    if (c == ZWC('\t'))
+    #####: 1213:	c = ZWC('y');
+    #####: 1214:    else if (ZC_icntrl(c) || c == ZLEEOF)
+    #####: 1215:	c = ZWC('n');
+        -: 1216:    else
+    #####: 1217:	c = ZC_tolower(c);
+        -: 1218:    /* echo response and return */
+    #####: 1219:    if (c != ZWC('\n')) {
+        -: 1220:	REFRESH_ELEMENT re;
+    #####: 1221:	re.chr = c;
+    #####: 1222:	re.atr = 0;
+    #####: 1223:	zwcputc(&re, NULL);
+        -: 1224:    }
+    #####: 1225:    return c == ZWC('y');
+        -: 1226:}
+        -: 1227:
+        -: 1228:/* Format a string, keybinding style. */
+        -: 1229:
+        -: 1230:/**/
+        -: 1231:char *
+    #####: 1232:bindztrdup(char *str)
+        -: 1233:{
+    #####: 1234:    int c, len = 1;
+        -: 1235:    char *buf, *ptr, *ret;
+        -: 1236:
+    #####: 1237:    for(ptr = str; *ptr; ptr++) {
+    #####: 1238:	c = *ptr == Meta ? STOUC(*++ptr) ^ 32 : STOUC(*ptr);
+    #####: 1239:	if(c & 0x80) {
+    #####: 1240:	    len += 3;
+    #####: 1241:	    c &= 0x7f;
+        -: 1242:	}
+    #####: 1243:	if(c < 32 || c == 0x7f) {
+    #####: 1244:	    len++;
+    #####: 1245:	    c ^= 64;
+        -: 1246:	}
+    #####: 1247:	len += c == '\\' || c == '^';
+    #####: 1248:	len++;
+        -: 1249:    }
+    #####: 1250:    ptr = buf = zalloc(len);
+    #####: 1251:    for(; *str; str++) {
+    #####: 1252:	c = *str == Meta ? STOUC(*++str) ^ 32 : STOUC(*str);
+    #####: 1253:	if(c & 0x80) {
+    #####: 1254:	    *ptr++ = '\\';
+    #####: 1255:	    *ptr++ = 'M';
+    #####: 1256:	    *ptr++ = '-';
+    #####: 1257:	    c &= 0x7f;
+        -: 1258:	}
+    #####: 1259:	if(c < 32 || c == 0x7f) {
+    #####: 1260:	    *ptr++ = '^';
+    #####: 1261:	    c ^= 64;
+        -: 1262:	}
+    #####: 1263:	if(c == '\\' || c == '^')
+    #####: 1264:	    *ptr++ = '\\';
+    #####: 1265:	*ptr++ = c;
+        -: 1266:    }
+    #####: 1267:    *ptr = 0;
+    #####: 1268:    ret = dquotedztrdup(buf);
+    #####: 1269:    zsfree(buf);
+    #####: 1270:    return ret;
+        -: 1271:}
+        -: 1272:
+        -: 1273:/* Display a metafied string, keybinding-style. */
+        -: 1274:
+        -: 1275:/**/
+        -: 1276:int
+    #####: 1277:printbind(char *str, FILE *stream)
+        -: 1278:{
+    #####: 1279:    char *b = bindztrdup(str);
+    #####: 1280:    int ret = zputs(b, stream);
+        -: 1281:
+    #####: 1282:    zsfree(b);
+    #####: 1283:    return ret;
+        -: 1284:}
+        -: 1285:
+        -: 1286:/*
+        -: 1287: * Display a message where the completion list normally goes.
+        -: 1288: * The message must be metafied.
+        -: 1289: *
+        -: 1290: * TODO: there's some advantage in using a ZLE_STRING_T array here,
+        -: 1291: * together with improvements in other places, but messages don't
+        -: 1292: * need to be particularly efficient.
+        -: 1293: */
+        -: 1294:
+        -: 1295:/**/
+        -: 1296:mod_export void
+    #####: 1297:showmsg(char const *msg)
+        -: 1298:{
+        -: 1299:    char const *p;
+    #####: 1300:    int up = 0, cc = 0;
+        -: 1301:    ZLE_CHAR_T c;
+        -: 1302:#ifdef MULTIBYTE_SUPPORT
+        -: 1303:    char *umsg;
+    #####: 1304:    int ulen, eol = 0;
+        -: 1305:    size_t width;
+        -: 1306:    mbstate_t mbs;
+        -: 1307:#endif
+        -: 1308:
+    #####: 1309:    trashzle();
+    #####: 1310:    clearflag = isset(USEZLE) && !termflags && isset(ALWAYSLASTPROMPT);
+        -: 1311:
+        -: 1312:#ifdef MULTIBYTE_SUPPORT
+    #####: 1313:    umsg = ztrdup(msg);
+    #####: 1314:    p = unmetafy(umsg, &ulen);
+    #####: 1315:    memset(&mbs, 0, sizeof mbs);
+        -: 1316:
+    #####: 1317:    mb_charinit();
+    #####: 1318:    while (ulen > 0) {
+        -: 1319:	char const *n;
+    #####: 1320:	if (*p == '\n') {
+    #####: 1321:	    ulen--;
+    #####: 1322:	    p++;
+        -: 1323:
+    #####: 1324:	    putc('\n', shout);
+    #####: 1325:	    up += 1 + cc / zterm_columns;
+    #####: 1326:	    cc = 0;
+        -: 1327:	} else {
+        -: 1328:	    /*
+        -: 1329:	     * Extract the next wide character from the multibyte string.
+        -: 1330:	     */
+    #####: 1331:	    size_t cnt = eol ? MB_INVALID : mbrtowc(&c, p, ulen, &mbs);
+        -: 1332:
+    #####: 1333:	    switch (cnt) {
+    #####: 1334:	    case MB_INCOMPLETE:
+    #####: 1335:		eol = 1;
+        -: 1336:		/* FALL THROUGH */
+    #####: 1337:	    case MB_INVALID:
+        -: 1338:		/*
+        -: 1339:		 * This really shouldn't be happening here, but...
+        -: 1340:		 * Treat it as a single byte character; it may get
+        -: 1341:		 * prettified.
+        -: 1342:		 */
+    #####: 1343:		memset(&mbs, 0, sizeof mbs);
+    #####: 1344:		n = nicechar(*p);
+    #####: 1345:		cnt = 1;
+    #####: 1346:		width = strlen(n);
+    #####: 1347:		break;
+    #####: 1348:	    case 0:
+    #####: 1349:		cnt = 1;
+        -: 1350:		/* FALL THROUGH */
+    #####: 1351:	    default:
+        -: 1352:		/*
+        -: 1353:		 * Paranoia: only needed if we start in the middle
+        -: 1354:		 * of a multibyte string and only in some implementations.
+        -: 1355:		 */
+    #####: 1356:		if (cnt > (size_t)ulen)
+    #####: 1357:		    cnt = ulen;
+    #####: 1358:		n = wcs_nicechar(c, &width, NULL);
+    #####: 1359:		break;
+        -: 1360:	    }
+    #####: 1361:	    ulen -= cnt;
+    #####: 1362:	    p += cnt;
+        -: 1363:
+    #####: 1364:	    zputs(n, shout);
+    #####: 1365:	    cc += width;
+        -: 1366:	}
+        -: 1367:    }
+        -: 1368:
+    #####: 1369:    free(umsg);
+        -: 1370:#else
+        -: 1371:    for(p = msg; (c = *p); p++) {
+        -: 1372:	if(c == Meta)
+        -: 1373:	    c = *++p ^ 32;
+        -: 1374:	if(c == '\n') {
+        -: 1375:	    putc('\n', shout);
+        -: 1376:	    up += 1 + cc / zterm_columns;
+        -: 1377:	    cc = 0;
+        -: 1378:	} else {
+        -: 1379:	    char const *n = nicechar(c);
+        -: 1380:	    zputs(n, shout);
+        -: 1381:	    cc += strlen(n);
+        -: 1382:	}
+        -: 1383:    }
+        -: 1384:#endif
+    #####: 1385:    up += cc / zterm_columns;
+        -: 1386:
+    #####: 1387:    if (clearflag) {
+    #####: 1388:	putc('\r', shout);
+    #####: 1389:	tcmultout(TCUP, TCMULTUP, up + nlnct);
+        -: 1390:    } else
+    #####: 1391:	putc('\n', shout);
+    #####: 1392:    showinglist = 0;
+    #####: 1393:}
+        -: 1394:
+        -: 1395:/* handle the error flag */
+        -: 1396:
+        -: 1397:/**/
+        -: 1398:int
+    #####: 1399:handlefeep(UNUSED(char **args))
+        -: 1400:{
+    #####: 1401:    zbeep();
+    #####: 1402:    return 0;
+        -: 1403:}
+        -: 1404:
+        -: 1405:/* user control of auto-suffixes -- see iwidgets.list */
+        -: 1406:
+        -: 1407:/**/
+        -: 1408:int
+    #####: 1409:handlesuffix(UNUSED(char **args))
+        -: 1410:{
+    #####: 1411:  return 0;
+        -: 1412:}
+        -: 1413:
+        -: 1414:/***************/
+        -: 1415:/* undo system */
+        -: 1416:/***************/
+        -: 1417:
+        -: 1418:/* head of the undo list, and the current position */
+        -: 1419:
+        -: 1420:/**/
+        -: 1421:struct change *curchange;
+        -: 1422:
+        -: 1423:static struct change *changes;
+        -: 1424:
+        -: 1425:/* list of pending changes, not yet in the undo system */
+        -: 1426:
+        -: 1427:static struct change *nextchanges, *endnextchanges;
+        -: 1428:
+        -: 1429:/* incremented to provide a unique change number */
+        -: 1430:
+        -: 1431:/**/
+        -: 1432:zlong undo_changeno;
+        -: 1433:
+        -: 1434:/* If positive, don't undo beyond this point */
+        -: 1435:
+        -: 1436:static zlong undo_limitno;
+        -: 1437:
+        -: 1438:/**/
+        -: 1439:void
+    #####: 1440:initundo(void)
+        -: 1441:{
+    #####: 1442:    nextchanges = NULL;
+    #####: 1443:    changes = curchange = zalloc(sizeof(*curchange));
+    #####: 1444:    curchange->prev = curchange->next = NULL;
+    #####: 1445:    curchange->del = curchange->ins = NULL;
+    #####: 1446:    curchange->dell = curchange->insl = 0;
+    #####: 1447:    curchange->changeno = undo_changeno = undo_limitno = 0;
+    #####: 1448:    lastline = zalloc((lastlinesz = linesz) * ZLE_CHAR_SIZE);
+    #####: 1449:    ZS_memcpy(lastline, zleline, (lastll = zlell));
+    #####: 1450:    lastcs = zlecs;
+    #####: 1451:}
+        -: 1452:
+        -: 1453:/**/
+        -: 1454:void
+    #####: 1455:freeundo(void)
+        -: 1456:{
+    #####: 1457:    freechanges(changes);
+    #####: 1458:    freechanges(nextchanges);
+    #####: 1459:    zfree(lastline, lastlinesz);
+    #####: 1460:    lastline = NULL;
+    #####: 1461:    lastlinesz = 0;
+    #####: 1462:}
+        -: 1463:
+        -: 1464:/**/
+        -: 1465:static void
+    #####: 1466:freechanges(struct change *p)
+        -: 1467:{
+        -: 1468:    struct change *n;
+        -: 1469:
+    #####: 1470:    for(; p; p = n) {
+    #####: 1471:	n = p->next;
+    #####: 1472:	free(p->del);
+    #####: 1473:	free(p->ins);
+    #####: 1474:	zfree(p, sizeof(*p));
+        -: 1475:    }
+    #####: 1476:}
+        -: 1477:
+        -: 1478:/* register pending changes in the undo system */
+        -: 1479:
+        -: 1480:/**/
+        -: 1481:mod_export void
+    #####: 1482:handleundo(void)
+        -: 1483:{
+        -: 1484:    int remetafy;
+        -: 1485:
+        -: 1486:    /*
+        -: 1487:     * Yuk: we call this from within the completion system,
+        -: 1488:     * so we need to convert back to the form which can be
+        -: 1489:     * copied into undo entries.
+        -: 1490:     */
+    #####: 1491:    if (zlemetaline != NULL) {
+    #####: 1492:	unmetafy_line();
+    #####: 1493:	remetafy = 1;
+        -: 1494:    } else
+    #####: 1495:	remetafy = 0;
+        -: 1496:
+    #####: 1497:    mkundoent();
+    #####: 1498:    if(nextchanges) {
+    #####: 1499:	setlastline();
+    #####: 1500:	if(curchange->next) {
+    #####: 1501:	    freechanges(curchange->next);
+    #####: 1502:	    curchange->next = NULL;
+    #####: 1503:	    free(curchange->del);
+    #####: 1504:	    free(curchange->ins);
+    #####: 1505:	    curchange->del = curchange->ins = NULL;
+    #####: 1506:	    curchange->dell = curchange->insl = 0;
+        -: 1507:	}
+    #####: 1508:	nextchanges->prev = curchange->prev;
+    #####: 1509:	if(curchange->prev)
+    #####: 1510:	    curchange->prev->next = nextchanges;
+        -: 1511:	else
+    #####: 1512:	    changes = nextchanges;
+    #####: 1513:	curchange->prev = endnextchanges;
+    #####: 1514:	endnextchanges->next = curchange;
+    #####: 1515:	nextchanges = endnextchanges = NULL;
+        -: 1516:    }
+        -: 1517:
+    #####: 1518:    if (remetafy)
+    #####: 1519:	metafy_line();
+    #####: 1520:}
+        -: 1521:
+        -: 1522:/* add an entry to the undo system, if anything has changed */
+        -: 1523:
+        -: 1524:/**/
+        -: 1525:void
+    #####: 1526:mkundoent(void)
+        -: 1527:{
+        -: 1528:    int pre, suf;
+    #####: 1529:    int sh = zlell < lastll ? zlell : lastll;
+        -: 1530:    struct change *ch;
+        -: 1531:
+        -: 1532:    UNMETACHECK();
+    #####: 1533:    if(lastll == zlell && !ZS_memcmp(lastline, zleline, zlell)) {
+    #####: 1534:	lastcs = zlecs;
+    #####: 1535:	return;
+        -: 1536:    }
+    #####: 1537:    for(pre = 0; pre < sh && zleline[pre] == lastline[pre]; )
+    #####: 1538:	pre++;
+    #####: 1539:    for(suf = 0; suf < sh - pre &&
+    #####: 1540:	zleline[zlell - 1 - suf] == lastline[lastll - 1 - suf]; )
+    #####: 1541:	suf++;
+    #####: 1542:    ch = zalloc(sizeof(*ch));
+    #####: 1543:    ch->next = NULL;
+    #####: 1544:    ch->hist = histline;
+    #####: 1545:    ch->off = pre;
+    #####: 1546:    ch->old_cs = lastcs;
+    #####: 1547:    ch->new_cs = zlecs;
+    #####: 1548:    if(suf + pre == lastll) {
+    #####: 1549:	ch->del = NULL;
+    #####: 1550:	ch->dell = 0;
+        -: 1551:    } else {
+    #####: 1552:	ch->dell = lastll - pre - suf;
+    #####: 1553:	ch->del = (ZLE_STRING_T)zalloc(ch->dell * ZLE_CHAR_SIZE);
+    #####: 1554:	ZS_memcpy(ch->del, lastline + pre, ch->dell);
+        -: 1555:    }
+    #####: 1556:    if(suf + pre == zlell) {
+    #####: 1557:	ch->ins = NULL;
+    #####: 1558:	ch->insl = 0;
+        -: 1559:    } else {
+    #####: 1560:	ch->insl = zlell - pre - suf;
+    #####: 1561:	ch->ins = (ZLE_STRING_T)zalloc(ch->insl * ZLE_CHAR_SIZE);
+    #####: 1562:	ZS_memcpy(ch->ins, zleline + pre, ch->insl);
+        -: 1563:    }
+    #####: 1564:    if(nextchanges) {
+    #####: 1565:	ch->flags = CH_PREV;
+    #####: 1566:	ch->prev = endnextchanges;
+    #####: 1567:	endnextchanges->flags |= CH_NEXT;
+    #####: 1568:	endnextchanges->next = ch;
+        -: 1569:    } else {
+    #####: 1570:	nextchanges = ch;
+    #####: 1571:	ch->flags = 0;
+    #####: 1572:	ch->prev = NULL;
+        -: 1573:    }
+    #####: 1574:    ch->changeno = ++undo_changeno;
+    #####: 1575:    endnextchanges = ch;
+        -: 1576:}
+        -: 1577:
+        -: 1578:/* set lastline to match line */
+        -: 1579:
+        -: 1580:/**/
+        -: 1581:void
+    #####: 1582:setlastline(void)
+        -: 1583:{
+        -: 1584:    UNMETACHECK();
+    #####: 1585:    if(lastlinesz != linesz)
+    #####: 1586:	lastline = realloc(lastline, (lastlinesz = linesz) * ZLE_CHAR_SIZE);
+    #####: 1587:    ZS_memcpy(lastline, zleline, (lastll = zlell));
+    #####: 1588:    lastcs = zlecs;
+    #####: 1589:}
+        -: 1590:
+        -: 1591:/* move backwards through the change list */
+        -: 1592:
+        -: 1593:/**/
+        -: 1594:int
+    #####: 1595:undo(char **args)
+        -: 1596:{
+        -: 1597:    zlong last_change;
+        -: 1598:
+    #####: 1599:    if (*args)
+    #####: 1600:	last_change = zstrtol(*args, NULL, 0);
+        -: 1601:    else
+    #####: 1602:	last_change = (zlong)-1;
+        -: 1603:
+    #####: 1604:    handleundo();
+        -: 1605:    do {
+    #####: 1606:	struct change *prev = curchange->prev;
+    #####: 1607:	if(!prev)
+    #####: 1608:	    return 1;
+    #####: 1609:	if (prev->changeno <= last_change)
+    #####: 1610:	    break;
+    #####: 1611:	if (prev->changeno <= undo_limitno && !*args)
+    #####: 1612:	    return 1;
+    #####: 1613:	if (!unapplychange(prev)) {
+    #####: 1614:	    if (last_change >= 0) {
+    #####: 1615:		unapplychange(prev);
+    #####: 1616:		curchange = prev;
+        -: 1617:	    }
+        -: 1618:	} else {
+    #####: 1619:	    curchange = prev;
+        -: 1620:	}
+    #####: 1621:    } while (last_change >= (zlong)0 || (curchange->flags & CH_PREV));
+    #####: 1622:    setlastline();
+    #####: 1623:    return 0;
+        -: 1624:}
+        -: 1625:
+        -: 1626:/**/
+        -: 1627:static int
+    #####: 1628:unapplychange(struct change *ch)
+        -: 1629:{
+    #####: 1630:    if(ch->hist != histline) {
+    #####: 1631:	Histent he = quietgethist(ch->hist);
+        -: 1632:	DPUTS(he == NULL, "quietgethist(ch->hist) returned NULL");
+    #####: 1633:	if(he == NULL)
+    #####: 1634:	    return 1;
+    #####: 1635:	zle_setline(he);
+    #####: 1636:	zlecs = ch->new_cs;
+    #####: 1637:	return 0;
+        -: 1638:    }
+    #####: 1639:    zlecs = ch->off;
+    #####: 1640:    if(ch->ins)
+    #####: 1641:	foredel(ch->insl, CUT_RAW);
+    #####: 1642:    if(ch->del) {
+    #####: 1643:	spaceinline(ch->dell);
+    #####: 1644:	ZS_memcpy(zleline + zlecs, ch->del, ch->dell);
+    #####: 1645:	zlecs += ch->dell;
+        -: 1646:    }
+    #####: 1647:    zlecs = ch->old_cs;
+    #####: 1648:    return 1;
+        -: 1649:}
+        -: 1650:
+        -: 1651:/* move forwards through the change list */
+        -: 1652:
+        -: 1653:/**/
+        -: 1654:int
+    #####: 1655:redo(UNUSED(char **args))
+        -: 1656:{
+    #####: 1657:    handleundo();
+        -: 1658:    do {
+    #####: 1659:	if(!curchange->next)
+    #####: 1660:	    return 1;
+    #####: 1661:	if (applychange(curchange))
+    #####: 1662:	    curchange = curchange->next;
+        -: 1663:	else
+    #####: 1664:	    break;
+    #####: 1665:    } while(curchange->prev->flags & CH_NEXT);
+    #####: 1666:    setlastline();
+    #####: 1667:    return 0;
+        -: 1668:}
+        -: 1669:
+        -: 1670:/**/
+        -: 1671:static int
+    #####: 1672:applychange(struct change *ch)
+        -: 1673:{
+    #####: 1674:    if(ch->hist != histline) {
+    #####: 1675:	Histent he = quietgethist(ch->hist);
+        -: 1676:	DPUTS(he == NULL, "quietgethist(ch->hist) returned NULL");
+    #####: 1677:	if(he == NULL)
+    #####: 1678:	    return 1;
+    #####: 1679:	zle_setline(he);
+    #####: 1680:	zlecs = ch->old_cs;
+    #####: 1681:	return 0;
+        -: 1682:    }
+    #####: 1683:    zlecs = ch->off;
+    #####: 1684:    if(ch->del)
+    #####: 1685:	foredel(ch->dell, CUT_RAW);
+    #####: 1686:    if(ch->ins) {
+    #####: 1687:	spaceinline(ch->insl);
+    #####: 1688:	ZS_memcpy(zleline + zlecs, ch->ins, ch->insl);
+    #####: 1689:	zlecs += ch->insl;
+        -: 1690:    }
+    #####: 1691:    zlecs = ch->new_cs;
+    #####: 1692:    return 1;
+        -: 1693:}
+        -: 1694:
+        -: 1695:/* vi undo: toggle between the end of the undo list and the preceding point */
+        -: 1696:
+        -: 1697:/**/
+        -: 1698:int
+    #####: 1699:viundochange(char **args)
+        -: 1700:{
+    #####: 1701:    handleundo();
+    #####: 1702:    if(curchange->next) {
+        -: 1703:	do {
+    #####: 1704:	    applychange(curchange);
+    #####: 1705:	    curchange = curchange->next;
+    #####: 1706:	} while(curchange->next);
+    #####: 1707:	setlastline();
+    #####: 1708:	return 0;
+        -: 1709:    } else
+    #####: 1710:	return undo(args);
+        -: 1711:}
+        -: 1712:
+        -: 1713:/**/
+        -: 1714:int
+    #####: 1715:splitundo(UNUSED(char **args))
+        -: 1716:{
+    #####: 1717:    if (vistartchange >= 0) {
+    #####: 1718:	mergeundo();
+    #####: 1719:	vistartchange = undo_changeno;
+        -: 1720:    }
+    #####: 1721:    handleundo();
+    #####: 1722:    return 0;
+        -: 1723:}
+        -: 1724:
+        -: 1725:/**/
+        -: 1726:void
+    #####: 1727:mergeundo(void)
+        -: 1728:{
+        -: 1729:    struct change *current;
+    #####: 1730:    for (current = curchange->prev;
+    #####: 1731:	    current && current->prev && current->changeno > vistartchange+1;
+    #####: 1732:	    current = current->prev) {
+    #####: 1733:	current->flags |= CH_PREV;
+    #####: 1734:	current->prev->flags |= CH_NEXT;
+        -: 1735:    }
+    #####: 1736:    vistartchange = -1;
+    #####: 1737:}
+        -: 1738:
+        -: 1739:/*
+        -: 1740: * Call a ZLE hook: a user-defined widget called at a specific point
+        -: 1741: * within the line editor.
+        -: 1742: *
+        -: 1743: * A single argument arg is passed to the function (in addition to the
+        -: 1744: * function name).  It may be NULL.
+        -: 1745: */
+        -: 1746:
+        -: 1747:/**/
+        -: 1748:void
+    #####: 1749:zlecallhook(char *name, char *arg)
+        -: 1750:{
+    #####: 1751:    Thingy thingy = rthingy_nocreate(name);
+        -: 1752:    int saverrflag, savretflag;
+        -: 1753:    char *args[2];
+        -: 1754:
+    #####: 1755:    if (!thingy)
+    #####: 1756:	return;
+        -: 1757:
+        -: 1758:    /* If anything here needs changing, see also redrawhook() */
+        -: 1759:
+    #####: 1760:    saverrflag = errflag;
+    #####: 1761:    savretflag = retflag;
+        -: 1762:
+    #####: 1763:    args[0] = arg;
+    #####: 1764:    args[1] = NULL;
+    #####: 1765:    execzlefunc(thingy, args, 1, 0);
+    #####: 1766:    unrefthingy(thingy);
+        -: 1767:
+        -: 1768:    /* Retain any user interrupt error status */
+    #####: 1769:    errflag = saverrflag | (errflag & ERRFLAG_INT);
+    #####: 1770:    retflag = savretflag;
+        -: 1771:}
+        -: 1772:
+        -: 1773:/*
+        -: 1774: * Return the number corresponding to the last change made.
+        -: 1775: */
+        -: 1776:
+        -: 1777:/**/
+        -: 1778:zlong
+    #####: 1779:get_undo_current_change(UNUSED(Param pm))
+        -: 1780:{
+        -: 1781:    int remetafy;
+        -: 1782:
+        -: 1783:    /*
+        -: 1784:     * Yuk: we call this from within the completion system,
+        -: 1785:     * so we need to convert back to the form which can be
+        -: 1786:     * copied into undo entries.
+        -: 1787:     */
+    #####: 1788:    if (zlemetaline != NULL) {
+    #####: 1789:	unmetafy_line();
+    #####: 1790:	remetafy = 1;
+        -: 1791:    } else
+    #####: 1792:	remetafy = 0;
+        -: 1793:
+        -: 1794:    /* add entry for any pending changes */
+    #####: 1795:    mkundoent();
+    #####: 1796:    setlastline();
+        -: 1797:
+    #####: 1798:    if (remetafy)
+    #####: 1799:	metafy_line();
+        -: 1800:
+    #####: 1801:    return undo_changeno;
+        -: 1802:}
+        -: 1803:
+        -: 1804:/**/
+        -: 1805:zlong
+    #####: 1806:get_undo_limit_change(UNUSED(Param pm))
+        -: 1807:{
+    #####: 1808:    return undo_limitno;
+        -: 1809:}
+        -: 1810:
+        -: 1811:/**/
+        -: 1812:void
+    #####: 1813:set_undo_limit_change(UNUSED(Param pm), zlong value)
+        -: 1814:{
+    #####: 1815:    undo_limitno = value;
+    #####: 1816:}

@@ -1,0 +1,469 @@
+        -:    0:Source:linklist.c
+        -:    0:Graph:/home/workspace/Src/linklist.gcno
+        -:    0:Data:/home/workspace/Src/linklist.gcda
+        -:    0:Runs:2
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * linklist.c - linked lists
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "linklist.pro"
+        -:   32:
+        -:   33:/*
+        -:   34: * Anatomy of a LinkList
+        -:   35: *
+        -:   36: * LinkList with 4 nodes:
+        -:   37: *
+        -:   38: * LinkList is a        first   last   flags   (LinkList)
+        -:   39: * union; see zsh.h     next    prev   dat     (LinkNode)
+        -:   40: *                    +-------+------+------+
+        -:   41: *                    |       |      |      | See comment in subst.c
+        -:   42: *     +------------> |   |   |   |  |      | about LF_ARRAY.
+        -:   43: *     |              +---|---+---|--+------+
+        -:   44: *     |                  |       |
+        -:   45: *     |     +------------+       +--------------+
+        -:   46: *     |     |                                   |
+        -:   47: *     |    \|/                                 \|/
+        -:   48: *     |   +----+      +----+      +----+      +----+
+        -:   49: *     |   |    |      |    |      |    |      | \/ |  X here is NULL.
+        -:   50: *     |   |  -------> |  -------> |  -------> | /\ |
+        -:   51: *     |   |next|      |next|      |next|      |next|
+        -:   52: *     |   +----+      +----+      +----+      +----+
+        -:   53: *     |   |    |      |    |      |    |      |    |
+        -:   54: *     +------  | <-------  | <-------  | <-------  |
+        -:   55: *         |prev|      |prev|      |prev|      |prev|
+        -:   56: *         +----+      +----+      +----+      +----+
+        -:   57: *         |    |      |    |      |    |      |    | Pointers to data,
+        -:   58: *         |dat |      |dat |      |dat |      |dat | usually char **.
+        -:   59: *         +----+      +----+      +----+      +----+
+        -:   60: *        LinkNode    LinkNode    LinkNode    LinkNode
+        -:   61: *
+        -:   62: *
+        -:   63: * Empty LinkList:
+        -:   64: *                    first   last   flags
+        -:   65: *                   +------+------+-------+
+        -:   66: *             +---> | NULL |      |   0   |
+        -:   67: *             |     |      |   |  |       |
+        -:   68: *             |     +------+---|--+-------+
+        -:   69: *             |                |
+        -:   70: *             +----------------+
+        -:   71: *
+        -:   72: * Traversing a LinkList:
+        -:   73: * Traversing forward through a list uses an iterator-style paradigm.
+        -:   74: * for (LinkNode node = firstnode(list); node; incnode(node)) {
+        -:   75: *     // Access/manipulate the node using macros (see zsh.h)
+        -:   76: * }
+        -:   77: *
+        -:   78: * Traversing backwards is the same, with a small caveat.
+        -:   79: * for (LinkNode node = lastnode(list); node != &list->node; decnode(node)) {
+        -:   80: *     // The loop condition should be obvious given the above diagrams.
+        -:   81: * }
+        -:   82: *
+        -:   83: * If you're going to be moving back and forth, best to AND both
+        -:   84: * conditions.
+        -:   85: *
+        -:   86: * while (node && node != &list->node) {
+        -:   87: *     // If both incnode(list) and decnode(list) are used, and it's
+        -:   88: *     // unknown at which end of the list traversal will stop.
+        -:   89: * }
+        -:   90: *
+        -:   91: * Macros and functions prefixed with 'z' (ie znewlinklist,
+        -:   92: * zinsertlinknode) use permanent allocation, which you have to free
+        -:   93: * manually (with freelinklist(), maybe?). Non-z-prefixed
+        -:   94: * macros/functions allocate from heap, which will be automatically
+        -:   95: * freed.
+        -:   96: *
+        -:   97: */
+        -:   98:
+        -:   99:/* Get an empty linked list header */
+        -:  100:
+        -:  101:/**/
+        -:  102:mod_export LinkList
+     3585:  103:newlinklist(void)
+        -:  104:{
+        -:  105:    LinkList list;
+        -:  106:
+     3585:  107:    list = (LinkList) zhalloc(sizeof *list);
+     3585:  108:    list->list.first = NULL;
+     3585:  109:    list->list.last = &list->node;
+     3585:  110:    list->list.flags = 0;
+     3585:  111:    return list;
+        -:  112:}
+        -:  113:
+        -:  114:/**/
+        -:  115:mod_export LinkList
+      104:  116:znewlinklist(void)
+        -:  117:{
+        -:  118:    LinkList list;
+        -:  119:
+      104:  120:    list = (LinkList) zalloc(sizeof *list);
+      104:  121:    if (!list)
+    #####:  122:	return NULL;
+      104:  123:    list->list.first = NULL;
+      104:  124:    list->list.last = &list->node;
+      104:  125:    list->list.flags = 0;
+      104:  126:    return list;
+        -:  127:}
+        -:  128:
+        -:  129:/* Insert a node in a linked list after a given node */
+        -:  130:
+        -:  131:/**/
+        -:  132:mod_export LinkNode
+    37228:  133:insertlinknode(LinkList list, LinkNode node, void *dat)
+        -:  134:{
+        -:  135:    LinkNode tmp, new;
+        -:  136:
+    37228:  137:    tmp = node->next;
+    37228:  138:    node->next = new = (LinkNode) zhalloc(sizeof *tmp);
+    37228:  139:    new->prev = node;
+    37228:  140:    new->dat = dat;
+    37228:  141:    new->next = tmp;
+    37228:  142:    if (tmp)
+      203:  143:	tmp->prev = new;
+        -:  144:    else
+    37025:  145:	list->list.last = new;
+    37228:  146:    return new;
+        -:  147:}
+        -:  148:
+        -:  149:/**/
+        -:  150:mod_export LinkNode
+     1861:  151:zinsertlinknode(LinkList list, LinkNode node, void *dat)
+        -:  152:{
+        -:  153:    LinkNode tmp, new;
+        -:  154:
+     1861:  155:    tmp = node->next;
+     1861:  156:    node->next = new = (LinkNode) zalloc(sizeof *tmp);
+     1861:  157:    if (!new)
+    #####:  158:	return NULL;
+     1861:  159:    new->prev = node;
+     1861:  160:    new->dat = dat;
+     1861:  161:    new->next = tmp;
+     1861:  162:    if (tmp)
+     1703:  163:	tmp->prev = new;
+        -:  164:    else
+      158:  165:	list->list.last = new;
+     1861:  166:    return new;
+        -:  167:}
+        -:  168:
+        -:  169:/* Insert an already-existing node into a linked list after a given node */
+        -:  170:
+        -:  171:/**/
+        -:  172:mod_export LinkNode
+      538:  173:uinsertlinknode(LinkList list, LinkNode node, LinkNode new)
+        -:  174:{
+      538:  175:    LinkNode tmp = node->next;
+      538:  176:    node->next = new;
+      538:  177:    new->prev = node;
+      538:  178:    new->next = tmp;
+      538:  179:    if (tmp)
+    #####:  180:	tmp->prev = new;
+        -:  181:    else
+      538:  182:	list->list.last = new;
+      538:  183:    return new;
+        -:  184:}
+        -:  185:
+        -:  186:/* Insert a list in another list */
+        -:  187:
+        -:  188:/**/
+        -:  189:mod_export void
+    #####:  190:insertlinklist(LinkList l, LinkNode where, LinkList x)
+        -:  191:{
+        -:  192:    LinkNode nx;
+        -:  193:
+    #####:  194:    nx = where->next;
+    #####:  195:    if (!firstnode(l))
+    #####:  196:	return;
+    #####:  197:    where->next = firstnode(l);
+    #####:  198:    l->list.last->next = nx;
+    #####:  199:    l->list.first->prev = where;
+    #####:  200:    if (nx)
+    #####:  201:	nx->prev = lastnode(l);
+        -:  202:    else
+    #####:  203:	x->list.last = lastnode(l);
+        -:  204:}
+        -:  205:
+        -:  206:/* Pop the top node off a linked list and free it. */
+        -:  207:
+        -:  208:/**/
+        -:  209:mod_export void *
+        4:  210:getlinknode(LinkList list)
+        -:  211:{
+        -:  212:    void *dat;
+        -:  213:    LinkNode node;
+        -:  214:
+        4:  215:    if (!(node = firstnode(list)))
+        2:  216:	return NULL;
+        2:  217:    dat = node->dat;
+        2:  218:    list->list.first = node->next;
+        2:  219:    if (node->next)
+    #####:  220:	node->next->prev = &list->node;
+        -:  221:    else
+        2:  222:	list->list.last = &list->node;
+        2:  223:    zfree(node, sizeof *node);
+        2:  224:    return dat;
+        -:  225:}
+        -:  226:
+        -:  227:/* Pop the top node off a linked list without freeing it. */
+        -:  228:
+        -:  229:/**/
+        -:  230:mod_export void *
+    42768:  231:ugetnode(LinkList list)
+        -:  232:{
+        -:  233:    void *dat;
+        -:  234:    LinkNode node;
+        -:  235:
+    42768:  236:    if (!(node = firstnode(list)))
+     2007:  237:	return NULL;
+    40761:  238:    dat = node->dat;
+    40761:  239:    list->list.first = node->next;
+    40761:  240:    if (node->next)
+    35402:  241:	node->next->prev = &list->node;
+        -:  242:    else
+     5359:  243:	list->list.last = &list->node;
+    40761:  244:    return dat;
+        -:  245:}
+        -:  246:
+        -:  247:/* Remove a node from a linked list */
+        -:  248:
+        -:  249:/**/
+        -:  250:mod_export void *
+        1:  251:remnode(LinkList list, LinkNode nd)
+        -:  252:{
+        -:  253:    void *dat;
+        -:  254:
+        1:  255:    nd->prev->next = nd->next;
+        1:  256:    if (nd->next)
+        1:  257:	nd->next->prev = nd->prev;
+        -:  258:    else
+    #####:  259:	list->list.last = nd->prev;
+        1:  260:    dat = nd->dat;
+        1:  261:    zfree(nd, sizeof *nd);
+        -:  262:
+        1:  263:    return dat;
+        -:  264:}
+        -:  265:
+        -:  266:/* Remove a node from a linked list without freeing */
+        -:  267:
+        -:  268:/**/
+        -:  269:mod_export void *
+     3351:  270:uremnode(LinkList list, LinkNode nd)
+        -:  271:{
+        -:  272:    void *dat;
+        -:  273:
+     3351:  274:    nd->prev->next = nd->next;
+     3351:  275:    if (nd->next)
+     1315:  276:	nd->next->prev = nd->prev;
+        -:  277:    else
+     2036:  278:	list->list.last = nd->prev;
+     3351:  279:    dat = nd->dat;
+     3351:  280:    return dat;
+        -:  281:}
+        -:  282:
+        -:  283:/* Free a linked list */
+        -:  284:
+        -:  285:/**/
+        -:  286:mod_export void
+    #####:  287:freelinklist(LinkList list, FreeFunc freefunc)
+        -:  288:{
+        -:  289:    LinkNode node, next;
+        -:  290:
+    #####:  291:    for (node = firstnode(list); node; node = next) {
+    #####:  292:	next = node->next;
+    #####:  293:	if (freefunc)
+    #####:  294:	    freefunc(node->dat);
+    #####:  295:	zfree(node, sizeof *node);
+        -:  296:    }
+    #####:  297:    zfree(list, sizeof *list);
+    #####:  298:}
+        -:  299:
+        -:  300:/* Count the number of nodes in a linked list */
+        -:  301:
+        -:  302:/**/
+        -:  303:mod_export int
+     2912:  304:countlinknodes(LinkList list)
+        -:  305:{
+        -:  306:    LinkNode nd;
+     2912:  307:    int ct = 0;
+        -:  308:
+     2912:  309:    for (nd = firstnode(list); nd; incnode(nd), ct++);
+     2912:  310:    return ct;
+        -:  311:}
+        -:  312:
+        -:  313:/* Make specified node first, moving preceding nodes to end */
+        -:  314:
+        -:  315:/**/
+        -:  316:mod_export void
+    #####:  317:rolllist(LinkList l, LinkNode nd)
+        -:  318:{
+    #####:  319:    l->list.last->next = firstnode(l);
+    #####:  320:    l->list.first->prev = lastnode(l);
+    #####:  321:    l->list.first = nd;
+    #####:  322:    l->list.last = nd->prev;
+    #####:  323:    nd->prev = &l->node;
+    #####:  324:    l->list.last->next = 0;
+    #####:  325:}
+        -:  326:
+        -:  327:/* Create linklist of specified size. node->dats are not initialized. */
+        -:  328:
+        -:  329:/**/
+        -:  330:mod_export LinkList
+     2866:  331:newsizedlist(int size)
+        -:  332:{
+        -:  333:    LinkList list;
+        -:  334:    LinkNode node;
+        -:  335:
+     2866:  336:    list = (LinkList) zhalloc(sizeof *list + (size * sizeof *node));
+        -:  337:
+     2866:  338:    list->list.first = &list[1].node;
+     8279:  339:    for (node = firstnode(list); size; size--, node++) {
+     5413:  340:	node->prev = node - 1;
+     5413:  341:	node->next = node + 1;
+        -:  342:    }
+     2866:  343:    list->list.last = node - 1;
+     2866:  344:    list->list.first->prev = &list->node;
+     2866:  345:    node[-1].next = NULL;
+        -:  346:
+     2866:  347:    return list;
+        -:  348:}
+        -:  349:
+        -:  350:/*
+        -:  351: * Join two linked lists.  Neither may be null, though either
+        -:  352: * may be empty.
+        -:  353: *
+        -:  354: * It is assumed the pieces come from the heap, but if not it is
+        -:  355: * safe to free LinkList second.
+        -:  356: */
+        -:  357:
+        -:  358:/**/
+        -:  359:mod_export LinkList
+     3641:  360:joinlists(LinkList first, LinkList second)
+        -:  361:{
+     3641:  362:    LinkNode moveme = firstnode(second);
+     3641:  363:    if (moveme) {
+     2142:  364:	if (firstnode(first)) {
+     1261:  365:	    LinkNode anchor = lastnode(first);
+     1261:  366:	    anchor->next = moveme;
+     1261:  367:	    moveme->prev = anchor;
+        -:  368:	} else {
+      881:  369:	    first->list.first = moveme;
+      881:  370:	    moveme->prev = &first->node;
+        -:  371:	}
+     2142:  372:	first->list.last = second->list.last;
+        -:  373:
+     2142:  374:	second->list.first = second->list.last = NULL;
+        -:  375:    }
+     3641:  376:    return first;
+        -:  377:}
+        -:  378:
+        -:  379:/*
+        -:  380: * Return the node whose data is the pointer "dat", else NULL.
+        -:  381: * Can be used as a boolean test.
+        -:  382: */
+        -:  383:
+        -:  384:/**/
+        -:  385:mod_export LinkNode
+    #####:  386:linknodebydatum(LinkList list, void *dat)
+        -:  387:{
+        -:  388:    LinkNode node;
+        -:  389:
+    #####:  390:    for (node = firstnode(list); node; incnode(node))
+    #####:  391:	if (getdata(node) == dat)
+    #####:  392:	    return node;
+        -:  393:
+    #####:  394:    return NULL;
+        -:  395:}
+        -:  396:
+        -:  397:/*
+        -:  398: * Return the node whose data matches the string "dat", else NULL.
+        -:  399: */
+        -:  400:
+        -:  401:/**/
+        -:  402:mod_export LinkNode
+    #####:  403:linknodebystring(LinkList list, char *dat)
+        -:  404:{
+        -:  405:    LinkNode node;
+        -:  406:
+    #####:  407:    for (node = firstnode(list); node; incnode(node))
+    #####:  408:	if (!strcmp((char *)getdata(node), dat))
+    #####:  409:	    return node;
+        -:  410:
+    #####:  411:    return NULL;
+        -:  412:}
+        -:  413:
+        -:  414:/*
+        -:  415: * Convert a linked list whose data elements are strings to
+        -:  416: * an array.  Memory is off the heap and the elements of the
+        -:  417: * array are the same elements as the linked list data if copy is
+        -:  418: * 0, else copied onto the heap.
+        -:  419: */
+        -:  420:
+        -:  421:/**/
+        -:  422:mod_export char **
+    #####:  423:hlinklist2array(LinkList list, int copy)
+        -:  424:{
+    #####:  425:    int l = countlinknodes(list);
+    #####:  426:    char **ret = (char **) zhalloc((l + 1) * sizeof(char *)), **p;
+        -:  427:    LinkNode n;
+        -:  428:
+    #####:  429:    for (n = firstnode(list), p = ret; n; incnode(n), p++) {
+    #####:  430:	*p = (char *) getdata(n);
+    #####:  431:	if (copy)
+    #####:  432:	    *p = dupstring(*p);
+        -:  433:    }
+    #####:  434:    *p = NULL;
+        -:  435:
+    #####:  436:    return ret;
+        -:  437:}
+        -:  438:
+        -:  439:/*
+        -:  440: * Convert a linked list whose data elements are strings to
+        -:  441: * a permanently-allocated array.  The elements of the array are the same
+        -:  442: * elements as the linked list data if copy is 0, else they are duplicated
+        -:  443: * into permanent memory so the result is a permanently allocated,
+        -:  444: * freearrayable array that's a deep copy of the linked list.
+        -:  445: */
+        -:  446:
+        -:  447:/**/
+        -:  448:mod_export char **
+    #####:  449:zlinklist2array(LinkList list, int copy)
+        -:  450:{
+    #####:  451:    int l = countlinknodes(list);
+    #####:  452:    char **ret = (char **) zalloc((l + 1) * sizeof(char *)), **p;
+        -:  453:    LinkNode n;
+        -:  454:
+    #####:  455:    for (n = firstnode(list), p = ret; n; incnode(n), p++) {
+    #####:  456:	*p = (char *) getdata(n);
+    #####:  457:	if (copy)
+    #####:  458:	    *p = ztrdup(*p);
+        -:  459:    }
+    #####:  460:    *p = NULL;
+        -:  461:
+    #####:  462:    return ret;
+        -:  463:}
+        -:  464:

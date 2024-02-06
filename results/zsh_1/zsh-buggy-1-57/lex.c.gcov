@@ -1,0 +1,2231 @@
+        -:    0:Source:lex.c
+        -:    0:Graph:/home/workspace/Src/lex.gcno
+        -:    0:Data:/home/workspace/Src/lex.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * lex.c - lexical analysis
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "lex.pro"
+        -:   32:
+        -:   33:#define LEX_HEAP_SIZE (32)
+        -:   34:
+        -:   35:/* tokens */
+        -:   36:
+        -:   37:/**/
+        -:   38:mod_export char ztokens[] = "#$^*(())$=|{}[]`<>>?~`,-!'\"\\\\";
+        -:   39:
+        -:   40:/* parts of the current token */
+        -:   41:
+        -:   42:/**/
+        -:   43:char *zshlextext;
+        -:   44:/**/
+        -:   45:mod_export char *tokstr;
+        -:   46:/**/
+        -:   47:mod_export enum lextok tok;
+        -:   48:/**/
+        -:   49:mod_export int tokfd;
+        -:   50:
+        -:   51:/*
+        -:   52: * Line number at which the first character of a token was found.
+        -:   53: * We always set this in gettok(), which is always called from
+        -:   54: * zshlex() unless we have reached an error.  So it is always
+        -:   55: * valid when parsing.  It is not useful during execution
+        -:   56: * of the parsed structure.
+        -:   57: */
+        -:   58:
+        -:   59:/**/
+        -:   60:zlong toklineno;
+        -:   61:
+        -:   62:/* lexical analyzer error flag */
+        -:   63: 
+        -:   64:/**/
+        -:   65:mod_export int lexstop;
+        -:   66:
+        -:   67:/* if != 0, this is the first line of the command */
+        -:   68: 
+        -:   69:/**/
+        -:   70:mod_export int isfirstln;
+        -:   71: 
+        -:   72:/* if != 0, this is the first char of the command (not including white space) */
+        -:   73: 
+        -:   74:/**/
+        -:   75:int isfirstch;
+        -:   76:
+        -:   77:/* flag that an alias should be expanded after expansion ending in space */
+        -:   78:
+        -:   79:/**/
+        -:   80:int inalmore;
+        -:   81:
+        -:   82:/*
+        -:   83: * Don't do spelling correction.
+        -:   84: * Bit 1 is only valid for the current word.  It's
+        -:   85: * set when we detect a lookahead that stops the word from
+        -:   86: * needing correction.
+        -:   87: */
+        -:   88: 
+        -:   89:/**/
+        -:   90:int nocorrect;
+        -:   91:
+        -:   92:/*
+        -:   93: * TBD: the following exported variables are part of the non-interface
+        -:   94: * with ZLE for completion.  They are poorly named and the whole
+        -:   95: * scheme is incredibly brittle.  One piece of robustness is applied:
+        -:   96: * the variables are only set if LEXFLAGS_ZLE is set.  Improvements
+        -:   97: * should therefore concentrate on areas with this flag set.
+        -:   98: *
+        -:   99: * Cursor position and line length in zle when the line is
+        -:  100: * metafied for access from the main shell.
+        -:  101: */
+        -:  102:
+        -:  103:/**/
+        -:  104:mod_export int zlemetacs, zlemetall;
+        -:  105:
+        -:  106:/* inwhat says what exactly we are in     *
+        -:  107: * (its value is one of the IN_* things). */
+        -:  108:
+        -:  109:/**/
+        -:  110:mod_export int inwhat;
+        -:  111:
+        -:  112:/* 1 if x added to complete in a blank between words */
+        -:  113:
+        -:  114:/**/
+        -:  115:mod_export int addedx;
+        -:  116:
+        -:  117:/* wb and we hold the beginning/end position of the word we are completing. */
+        -:  118:
+        -:  119:/**/
+        -:  120:mod_export int wb, we;
+        -:  121:
+        -:  122:/**/
+        -:  123:mod_export int wordbeg;
+        -:  124:
+        -:  125:/**/
+        -:  126:mod_export int parbegin;
+        -:  127:
+        -:  128:/**/
+        -:  129:mod_export int parend;
+        -:  130:
+        -:  131:
+        -:  132:/* 1 if aliases should not be expanded */
+        -:  133:
+        -:  134:/**/
+        -:  135:mod_export int noaliases;
+        -:  136:
+        -:  137:/*
+        -:  138: * If non-zero, we are parsing a line sent to use by the editor, or some
+        -:  139: * other string that's not part of standard command input (e.g. eval is
+        -:  140: * part of normal command input).
+        -:  141: *
+        -:  142: * Set of bits from LEXFLAGS_*.
+        -:  143: *
+        -:  144: * Note that although it is passed into the lexer as an input, the
+        -:  145: * lexer can set it to zero after finding the word it's searching for.
+        -:  146: * This only happens if the line being parsed actually does come from
+        -:  147: * ZLE, and hence the bit LEXFLAGS_ZLE is set.
+        -:  148: */
+        -:  149:
+        -:  150:/**/
+        -:  151:mod_export int lexflags;
+        -:  152:
+        -:  153:/* don't recognize comments */
+        -:  154:
+        -:  155:/**/
+        -:  156:mod_export int nocomments;
+        -:  157:
+        -:  158:/* add raw input characters while parsing command substitution */
+        -:  159:
+        -:  160:/**/
+        -:  161:int lex_add_raw;
+        -:  162:
+        -:  163:/* variables associated with the above */
+        -:  164:
+        -:  165:static char *tokstr_raw;
+        -:  166:static struct lexbufstate lexbuf_raw;
+        -:  167:
+        -:  168:/* text of punctuation tokens */
+        -:  169:
+        -:  170:/**/
+        -:  171:mod_export char *tokstrings[WHILE + 1] = {
+        -:  172:    NULL,	/* NULLTOK	  0  */
+        -:  173:    ";",	/* SEPER	     */
+        -:  174:    "\\n",	/* NEWLIN	     */
+        -:  175:    ";",	/* SEMI		     */
+        -:  176:    ";;",	/* DSEMI	     */
+        -:  177:    "&",	/* AMPER	  5  */
+        -:  178:    "(",	/* INPAR	     */
+        -:  179:    ")",	/* OUTPAR	     */
+        -:  180:    "||",	/* DBAR		     */
+        -:  181:    "&&",	/* DAMPER	     */
+        -:  182:    ">",	/* OUTANG	  10 */
+        -:  183:    ">|",	/* OUTANGBANG	     */
+        -:  184:    ">>",	/* DOUTANG	     */
+        -:  185:    ">>|",	/* DOUTANGBANG	     */
+        -:  186:    "<",	/* INANG	     */
+        -:  187:    "<>",	/* INOUTANG	  15 */
+        -:  188:    "<<",	/* DINANG	     */
+        -:  189:    "<<-",	/* DINANGDASH	     */
+        -:  190:    "<&",	/* INANGAMP	     */
+        -:  191:    ">&",	/* OUTANGAMP	     */
+        -:  192:    "&>",	/* AMPOUTANG	  20 */
+        -:  193:    "&>|",	/* OUTANGAMPBANG     */
+        -:  194:    ">>&",	/* DOUTANGAMP	     */
+        -:  195:    ">>&|",	/* DOUTANGAMPBANG    */
+        -:  196:    "<<<",	/* TRINANG	     */
+        -:  197:    "|",	/* BAR		  25 */
+        -:  198:    "|&",	/* BARAMP	     */
+        -:  199:    "()",	/* INOUTPAR	     */
+        -:  200:    "((",	/* DINPAR	     */
+        -:  201:    "))",	/* DOUTPAR	     */
+        -:  202:    "&|",	/* AMPERBANG	  30 */
+        -:  203:    ";&",	/* SEMIAMP	     */
+        -:  204:    ";|",	/* SEMIBAR	     */
+        -:  205:};
+        -:  206:
+        -:  207:/* lexical state */
+        -:  208:
+        -:  209:static int dbparens;
+        -:  210:static struct lexbufstate lexbuf = { NULL, 256, 0 };
+        -:  211:
+        -:  212:/* save lexical context */
+        -:  213:
+        -:  214:/**/
+        -:  215:void
+    34758:  216:lex_context_save(struct lex_stack *ls, int toplevel)
+        -:  217:{
+        -:  218:    (void)toplevel;
+        -:  219:
+    34758:  220:    ls->dbparens = dbparens;
+    34758:  221:    ls->isfirstln = isfirstln;
+    34758:  222:    ls->isfirstch = isfirstch;
+    34758:  223:    ls->lexflags = lexflags;
+        -:  224:
+    34758:  225:    ls->tok = tok;
+    34758:  226:    ls->tokstr = tokstr;
+    34758:  227:    ls->zshlextext = zshlextext;
+    34758:  228:    ls->lexbuf = lexbuf;
+    34758:  229:    ls->lex_add_raw = lex_add_raw;
+    34758:  230:    ls->tokstr_raw = tokstr_raw;
+    34758:  231:    ls->lexbuf_raw = lexbuf_raw;
+    34758:  232:    ls->lexstop = lexstop;
+    34758:  233:    ls->toklineno = toklineno;
+        -:  234:
+    34758:  235:    tokstr = zshlextext = lexbuf.ptr = NULL;
+    34758:  236:    lexbuf.siz = 256;
+    34758:  237:    tokstr_raw = lexbuf_raw.ptr = NULL;
+    34758:  238:    lexbuf_raw.siz = lexbuf_raw.len = lex_add_raw = 0;
+    34758:  239:}
+        -:  240:
+        -:  241:/* restore lexical context */
+        -:  242:
+        -:  243:/**/
+        -:  244:mod_export void
+    34758:  245:lex_context_restore(const struct lex_stack *ls, int toplevel)
+        -:  246:{
+        -:  247:    (void)toplevel;
+        -:  248:
+    34758:  249:    dbparens = ls->dbparens;
+    34758:  250:    isfirstln = ls->isfirstln;
+    34758:  251:    isfirstch = ls->isfirstch;
+    34758:  252:    lexflags = ls->lexflags;
+    34758:  253:    tok = ls->tok;
+    34758:  254:    tokstr = ls->tokstr;
+    34758:  255:    zshlextext = ls->zshlextext;
+    34758:  256:    lexbuf = ls->lexbuf;
+    34758:  257:    lex_add_raw = ls->lex_add_raw;
+    34758:  258:    tokstr_raw = ls->tokstr_raw;
+    34758:  259:    lexbuf_raw = ls->lexbuf_raw;
+    34758:  260:    lexstop = ls->lexstop;
+    34758:  261:    toklineno = ls->toklineno;
+    34758:  262:}
+        -:  263:
+        -:  264:/**/
+        -:  265:void
+    23443:  266:zshlex(void)
+        -:  267:{
+    23443:  268:    if (tok == LEXERR)
+    #####:  269:	return;
+        -:  270:    do {
+    23443:  271:	if (inrepeat_)
+    #####:  272:	    ++inrepeat_;
+    23443:  273:	if (inrepeat_ == 3 && (isset(SHORTLOOPS) || isset(SHORTREPEAT)))
+    #####:  274:	    incmdpos = 1;
+    23443:  275:	tok = gettok();
+    23442:  276:    } while (tok != ENDINPUT && exalias());
+    23442:  277:    nocorrect &= 1;
+    23442:  278:    if (tok == NEWLIN || tok == ENDINPUT) {
+    13256:  279:	while (hdocs) {
+    #####:  280:	    struct heredocs *next = hdocs->next;
+        -:  281:	    char *doc, *munged_term;
+        -:  282:
+    #####:  283:	    hwbegin(0);
+    #####:  284:	    cmdpush(hdocs->type == REDIR_HEREDOC ? CS_HEREDOC : CS_HEREDOCD);
+    #####:  285:	    munged_term = dupstring(hdocs->str);
+    #####:  286:	    STOPHIST
+    #####:  287:	    doc = gethere(&munged_term, hdocs->type);
+    #####:  288:	    ALLOWHIST
+    #####:  289:	    cmdpop();
+    #####:  290:	    hwend();
+    #####:  291:	    if (!doc) {
+    #####:  292:		zerr("here document too large");
+    #####:  293:		while (hdocs) {
+    #####:  294:		    next = hdocs->next;
+    #####:  295:		    zfree(hdocs, sizeof(struct heredocs));
+    #####:  296:		    hdocs = next;
+        -:  297:		}
+    #####:  298:		tok = LEXERR;
+    #####:  299:		break;
+        -:  300:	    }
+    #####:  301:	    setheredoc(hdocs->pc, REDIR_HERESTR, doc, hdocs->str,
+        -:  302:		       munged_term);
+    #####:  303:	    zfree(hdocs, sizeof(struct heredocs));
+    #####:  304:	    hdocs = next;
+        -:  305:	}
+        -:  306:    }
+    23442:  307:    if (tok != NEWLIN)
+    17316:  308:	isnewlin = 0;
+        -:  309:    else
+     6126:  310:	isnewlin = (inbufct) ? -1 : 1;
+    23442:  311:    if (tok == SEMI || (tok == NEWLIN && !(lexflags & LEXFLAGS_NEWLINE)))
+     7135:  312:	tok = SEPER;
+        -:  313:}
+        -:  314:
+        -:  315:/**/
+        -:  316:mod_export void
+      221:  317:ctxtlex(void)
+        -:  318:{
+        -:  319:    static int oldpos;
+        -:  320:
+      221:  321:    zshlex();
+      221:  322:    switch (tok) {
+        8:  323:    case SEPER:
+        -:  324:    case NEWLIN:
+        -:  325:    case SEMI:
+        -:  326:    case DSEMI:
+        -:  327:    case SEMIAMP:
+        -:  328:    case SEMIBAR:
+        -:  329:    case AMPER:
+        -:  330:    case AMPERBANG:
+        -:  331:    case INPAR:
+        -:  332:    case INBRACE:
+        -:  333:    case DBAR:
+        -:  334:    case DAMPER:
+        -:  335:    case BAR:
+        -:  336:    case BARAMP:
+        -:  337:    case INOUTPAR:
+        -:  338:    case DOLOOP:
+        -:  339:    case THEN:
+        -:  340:    case ELIF:
+        -:  341:    case ELSE:
+        -:  342:    case DOUTBRACK:
+        8:  343:	incmdpos = 1;
+        8:  344:	break;
+      136:  345:    case STRING:
+        -:  346:    case TYPESET:
+        -:  347: /* case ENVSTRING: */
+        -:  348:    case ENVARRAY:
+        -:  349:    case OUTPAR:
+        -:  350:    case CASE:
+        -:  351:    case DINBRACK:
+      136:  352:	incmdpos = 0;
+      136:  353:	break;
+        -:  354:
+       77:  355:    default:
+        -:  356:	/* nothing to do, keep compiler happy */
+       77:  357:	break;
+        -:  358:    }
+      221:  359:    if (tok != DINPAR)
+      221:  360:	infor = tok == FOR ? 2 : 0;
+      221:  361:    if (IS_REDIROP(tok) || tok == FOR || tok == FOREACH || tok == SELECT) {
+        4:  362:	inredir = 1;
+        4:  363:	oldpos = incmdpos;
+        4:  364:	incmdpos = 0;
+      217:  365:    } else if (inredir) {
+        4:  366:	incmdpos = oldpos;
+        4:  367:	inredir = 0;
+        -:  368:    }
+      221:  369:}
+        -:  370:
+        -:  371:#define LX1_BKSLASH 0
+        -:  372:#define LX1_COMMENT 1
+        -:  373:#define LX1_NEWLIN 2
+        -:  374:#define LX1_SEMI 3
+        -:  375:#define LX1_AMPER 5
+        -:  376:#define LX1_BAR 6
+        -:  377:#define LX1_INPAR 7
+        -:  378:#define LX1_OUTPAR 8
+        -:  379:#define LX1_INANG 13
+        -:  380:#define LX1_OUTANG 14
+        -:  381:#define LX1_OTHER 15
+        -:  382:
+        -:  383:#define LX2_BREAK 0
+        -:  384:#define LX2_OUTPAR 1
+        -:  385:#define LX2_BAR 2
+        -:  386:#define LX2_STRING 3
+        -:  387:#define LX2_INBRACK 4
+        -:  388:#define LX2_OUTBRACK 5
+        -:  389:#define LX2_TILDE 6
+        -:  390:#define LX2_INPAR 7
+        -:  391:#define LX2_INBRACE 8
+        -:  392:#define LX2_OUTBRACE 9
+        -:  393:#define LX2_OUTANG 10
+        -:  394:#define LX2_INANG 11
+        -:  395:#define LX2_EQUALS 12
+        -:  396:#define LX2_BKSLASH 13
+        -:  397:#define LX2_QUOTE 14
+        -:  398:#define LX2_DQUOTE 15
+        -:  399:#define LX2_BQUOTE 16
+        -:  400:#define LX2_COMMA 17
+        -:  401:#define LX2_DASH 18
+        -:  402:#define LX2_BANG 19
+        -:  403:#define LX2_OTHER 20
+        -:  404:#define LX2_META 21
+        -:  405:
+        -:  406:static unsigned char lexact1[256], lexact2[256], lextok2[256];
+        -:  407:
+        -:  408:/**/
+        -:  409:void
+        3:  410:initlextabs(void)
+        -:  411:{
+        -:  412:    int t0;
+        -:  413:    static char *lx1 = "\\q\n;!&|(){}[]<>";
+        -:  414:    static char *lx2 = ";)|$[]~({}><=\\\'\"`,-!";
+        -:  415:
+      771:  416:    for (t0 = 0; t0 != 256; t0++) {
+      768:  417:       lexact1[t0] = LX1_OTHER;
+      768:  418:	lexact2[t0] = LX2_OTHER;
+      768:  419:	lextok2[t0] = t0;
+        -:  420:    }
+       48:  421:    for (t0 = 0; lx1[t0]; t0++)
+       45:  422:	lexact1[(int)lx1[t0]] = t0;
+       63:  423:    for (t0 = 0; lx2[t0]; t0++)
+       60:  424:	lexact2[(int)lx2[t0]] = t0;
+        3:  425:    lexact2['&'] = LX2_BREAK;
+        3:  426:    lexact2[STOUC(Meta)] = LX2_META;
+        3:  427:    lextok2['*'] = Star;
+        3:  428:    lextok2['?'] = Quest;
+        3:  429:    lextok2['{'] = Inbrace;
+        3:  430:    lextok2['['] = Inbrack;
+        3:  431:    lextok2['$'] = String;
+        3:  432:    lextok2['~'] = Tilde;
+        3:  433:    lextok2['#'] = Pound;
+        3:  434:    lextok2['^'] = Hat;
+        3:  435:}
+        -:  436:
+        -:  437:/* initialize lexical state */
+        -:  438:
+        -:  439:/**/
+        -:  440:void
+    35012:  441:lexinit(void)
+        -:  442:{
+    35012:  443:    nocorrect = dbparens = lexstop = 0;
+    35012:  444:    tok = ENDINPUT;
+    35012:  445:}
+        -:  446:
+        -:  447:/* add a char to the string buffer */
+        -:  448:
+        -:  449:/**/
+        -:  450:void
+   313963:  451:add(int c)
+        -:  452:{
+   313963:  453:    *lexbuf.ptr++ = c;
+   313963:  454:    if (lexbuf.siz == ++lexbuf.len) {
+      563:  455:	int newbsiz = lexbuf.siz * 2;
+        -:  456:
+      563:  457:	if (newbsiz > inbufct && inbufct > lexbuf.siz)
+       23:  458:	    newbsiz = inbufct;
+        -:  459:
+      563:  460:	tokstr = (char *)hrealloc(tokstr, lexbuf.siz, newbsiz);
+      563:  461:	lexbuf.ptr = tokstr + lexbuf.len;
+        -:  462:	/* len == bsiz, so bptr is at the start of newly allocated memory */
+      563:  463:	memset(lexbuf.ptr, 0, newbsiz - lexbuf.siz);
+      563:  464:	lexbuf.siz = newbsiz;
+        -:  465:    }
+   313963:  466:}
+        -:  467:
+        -:  468:#define SETPARBEGIN {							\
+        -:  469:	if ((lexflags & LEXFLAGS_ZLE) && !(inbufflags & INP_ALIAS) &&	\
+        -:  470:	    zlemetacs >= zlemetall+1-inbufct)				\
+        -:  471:	    parbegin = inbufct;		      \
+        -:  472:    }
+        -:  473:#define SETPAREND {						      \
+        -:  474:	if ((lexflags & LEXFLAGS_ZLE) && !(inbufflags & INP_ALIAS) && \
+        -:  475:	    parbegin != -1 && parend == -1) {			      \
+        -:  476:	    if (zlemetacs >= zlemetall + 1 - inbufct)		      \
+        -:  477:		parbegin = -1;					      \
+        -:  478:	    else						      \
+        -:  479:		parend = inbufct;				      \
+        -:  480:	}							      \
+        -:  481:    }
+        -:  482:
+        -:  483:enum {
+        -:  484:    CMD_OR_MATH_CMD,
+        -:  485:    CMD_OR_MATH_MATH,
+        -:  486:    CMD_OR_MATH_ERR
+        -:  487:};
+        -:  488:
+        -:  489:/*
+        -:  490: * Return one of the above.  If it couldn't be
+        -:  491: * parsed as math, but there was no gross error, it's a command.
+        -:  492: */
+        -:  493:
+        -:  494:static int
+      193:  495:cmd_or_math(int cs_type)
+        -:  496:{
+      193:  497:    int oldlen = lexbuf.len;
+        -:  498:    int c;
+      193:  499:    int oinflags = inbufflags;
+        -:  500:
+      193:  501:    cmdpush(cs_type);
+      193:  502:    inbufflags |= INP_APPEND;
+      193:  503:    c = dquote_parse(')', 0);
+      193:  504:    if (!(oinflags & INP_APPEND))
+      193:  505:	inbufflags &= ~INP_APPEND;
+      193:  506:    cmdpop();
+      193:  507:    *lexbuf.ptr = '\0';
+      193:  508:    if (!c) {
+        -:  509:	/* Successfully parsed, see if it was math */
+      193:  510:	c = hgetc();
+      193:  511:	if (c == ')')
+      193:  512:	    return CMD_OR_MATH_MATH; /* yes */
+    #####:  513:	hungetc(c);
+    #####:  514:	lexstop = 0;
+    #####:  515:	c = ')';
+    #####:  516:    } else if (lexstop) {
+        -:  517:	/* we haven't got anything to unget */
+    #####:  518:	return CMD_OR_MATH_ERR;
+        -:  519:    }
+        -:  520:    /* else unsuccessful: unget the whole thing */
+    #####:  521:    hungetc(c);
+    #####:  522:    lexstop = 0;
+    #####:  523:    while (lexbuf.len > oldlen && !(errflag & ERRFLAG_ERROR)) {
+    #####:  524:	lexbuf.len--;
+    #####:  525:	hungetc(itok(*--lexbuf.ptr) ?
+    #####:  526:		ztokens[*lexbuf.ptr - Pound] : *lexbuf.ptr);
+        -:  527:    }
+    #####:  528:    if (errflag)
+    #####:  529:	return CMD_OR_MATH_ERR;
+    #####:  530:    hungetc('(');
+    #####:  531:    return errflag ? CMD_OR_MATH_ERR : CMD_OR_MATH_CMD;
+        -:  532:}
+        -:  533:
+        -:  534:
+        -:  535:/*
+        -:  536: * Parse either a $(( ... )) or a $(...)
+        -:  537: * Return the same as cmd_or_math().
+        -:  538: */
+        -:  539:static int
+       31:  540:cmd_or_math_sub(void)
+        -:  541:{
+       31:  542:    int c = hgetc(), ret;
+        -:  543:
+       31:  544:    if (c == '\\') {
+    #####:  545:	c = hgetc();
+    #####:  546:	if (c != '\n') {
+    #####:  547:	    hungetc(c);
+    #####:  548:	    hungetc('\\');
+    #####:  549:	    lexstop = 0;
+    #####:  550:	    return skipcomm() ? CMD_OR_MATH_ERR : CMD_OR_MATH_CMD;
+        -:  551:	}
+    #####:  552:	c = hgetc();
+        -:  553:    }
+        -:  554:
+       31:  555:    if (c == '(') {
+       13:  556:	int lexpos = (int)(lexbuf.ptr - tokstr);
+       13:  557:	add(Inpar);
+       13:  558:	add('(');
+       13:  559:	if ((ret = cmd_or_math(CS_MATHSUBST)) == CMD_OR_MATH_MATH) {
+       13:  560:	    tokstr[lexpos] = Inparmath;
+       13:  561:	    add(')');
+       13:  562:	    return CMD_OR_MATH_MATH;
+        -:  563:	}
+    #####:  564:	if (ret == CMD_OR_MATH_ERR)
+    #####:  565:	    return CMD_OR_MATH_ERR;
+    #####:  566:	lexbuf.ptr -= 2;
+    #####:  567:	lexbuf.len -= 2;
+        -:  568:    } else {
+       18:  569:	hungetc(c);
+       18:  570:	lexstop = 0;
+        -:  571:    }
+       18:  572:    return skipcomm() ? CMD_OR_MATH_ERR : CMD_OR_MATH_CMD;
+        -:  573:}
+        -:  574:
+        -:  575:/* Check whether we're looking at valid numeric globbing syntax      *
+        -:  576: * (/\<[0-9]*-[0-9]*\>/).  Call pointing just after the opening "<". *
+        -:  577: * Leaves the input in the same place, returning 0 or 1.             */
+        -:  578:
+        -:  579:/**/
+        -:  580:static int
+     3001:  581:isnumglob(void)
+        -:  582:{
+     3001:  583:    int c, ec = '-', ret = 0;
+     3001:  584:    int tbs = 256, n = 0;
+     3001:  585:    char *tbuf = (char *)zalloc(tbs);
+        -:  586:
+        -:  587:    while(1) {
+     3015:  588:	c = hgetc();
+     3008:  589:	if(lexstop) {
+        1:  590:	    lexstop = 0;
+        1:  591:	    break;
+        -:  592:	}
+     3007:  593:	tbuf[n++] = c;
+     3007:  594:	if(!idigit(c)) {
+     3007:  595:	    if(c != ec)
+     2993:  596:		break;
+       14:  597:	    if(ec == '>') {
+        7:  598:		ret = 1;
+        7:  599:		break;
+        -:  600:	    }
+        7:  601:	    ec = '>';
+        -:  602:	}
+        7:  603:	if(n == tbs)
+    #####:  604:	    tbuf = (char *)realloc(tbuf, tbs *= 2);
+        -:  605:    }
+     9009:  606:    while(n--)
+     3007:  607:	hungetc(tbuf[n]);
+     3001:  608:    zfree(tbuf, tbs);
+     3001:  609:    return ret;
+        -:  610:}
+        -:  611:
+        -:  612:/**/
+        -:  613:static enum lextok
+    23443:  614:gettok(void)
+        -:  615:{
+        -:  616:    int c, d;
+    23443:  617:    int peekfd = -1;
+        -:  618:    enum lextok peek;
+        -:  619:
+    23540:  620:  beginning:
+    23540:  621:    tokstr = NULL;
+    23540:  622:    while (iblank(c = hgetc()) && !lexstop);
+    23539:  623:    toklineno = lineno;
+    23539:  624:    if (lexstop)
+      504:  625:	return (errflag) ? LEXERR : ENDINPUT;
+    23035:  626:    isfirstln = 0;
+    23035:  627:    if ((lexflags & LEXFLAGS_ZLE) && !(inbufflags & INP_ALIAS))
+       70:  628:	wordbeg = inbufct - (qbang && c == bangchar);
+    23035:  629:    hwbegin(-1-(qbang && c == bangchar));
+        -:  630:    /* word includes the last character read and possibly \ before ! */
+    23035:  631:    if (dbparens) {
+       15:  632:	lexbuf.len = 0;
+       15:  633:	lexbuf.ptr = tokstr = (char *) hcalloc(lexbuf.siz = LEX_HEAP_SIZE);
+       15:  634:	hungetc(c);
+       15:  635:	cmdpush(CS_MATH);
+       15:  636:	c = dquote_parse(infor ? ';' : ')', 0);
+       15:  637:	cmdpop();
+       15:  638:	*lexbuf.ptr = '\0';
+       15:  639:	if (!c && infor) {
+       10:  640:	    infor--;
+       10:  641:	    return DINPAR;
+        -:  642:	}
+        5:  643:	if (c || (c = hgetc()) != ')') {
+    #####:  644:	    hungetc(c);
+    #####:  645:	    return LEXERR;
+        -:  646:	}
+        5:  647:	dbparens = 0;
+        5:  648:	return DOUTPAR;
+    23020:  649:    } else if (idigit(c)) {	/* handle 1< foo */
+      321:  650:	d = hgetc();
+      321:  651:	if(d == '&') {
+    #####:  652:	    d = hgetc();
+    #####:  653:	    if(d == '>') {
+    #####:  654:		peekfd = c - '0';
+    #####:  655:		hungetc('>');
+    #####:  656:		c = '&';
+        -:  657:	    } else {
+    #####:  658:		hungetc(d);
+    #####:  659:		lexstop = 0;
+    #####:  660:		hungetc('&');
+        -:  661:	    }
+      321:  662:	} else if (d == '>' || d == '<') {
+       53:  663:	    peekfd = c - '0';
+       53:  664:	    c = d;
+        -:  665:	} else {
+      268:  666:	    hungetc(d);
+      268:  667:	    lexstop = 0;
+        -:  668:	}
+        -:  669:    }
+        -:  670:
+        -:  671:    /* chars in initial position in word */
+        -:  672:
+        -:  673:    /*
+        -:  674:     * Handle comments.  There are some special cases when this
+        -:  675:     * is not normal command input: lexflags implies we are examining
+        -:  676:     * a line lexically without it being used for normal command input.
+        -:  677:     */
+    23952:  678:    if (c == hashchar && !nocomments &&
+     1864:  679:	(isset(INTERACTIVECOMMENTS) ||
+     1864:  680:	 ((!lexflags || (lexflags & LEXFLAGS_COMMENTS)) && !expanding &&
+     1764:  681:	  (!interact || unset(SHINSTDIN) || strin)))) {
+        -:  682:	/* History is handled here to prevent extra  *
+        -:  683:	 * newlines being inserted into the history. */
+        -:  684:
+      932:  685:	if (lexflags & LEXFLAGS_COMMENTS_KEEP) {
+    #####:  686:	    lexbuf.len = 0;
+    #####:  687:	    lexbuf.ptr = tokstr =
+    #####:  688:		(char *)hcalloc(lexbuf.siz = LEX_HEAP_SIZE);
+    #####:  689:	    add(c);
+        -:  690:	}
+      932:  691:	hwabort();
+    47461:  692:	while ((c = ingetc()) != '\n' && !lexstop) {
+    45597:  693:	    hwaddc(c);
+    45597:  694:	    addtoline(c);
+    45597:  695:	    if (lexflags & LEXFLAGS_COMMENTS_KEEP)
+    #####:  696:		add(c);
+        -:  697:	}
+        -:  698:
+      932:  699:	if (errflag)
+    #####:  700:	    peek = LEXERR;
+        -:  701:	else {
+      932:  702:	    if (lexflags & LEXFLAGS_COMMENTS_KEEP) {
+    #####:  703:		*lexbuf.ptr = '\0';
+    #####:  704:		if (!lexstop)
+    #####:  705:		    hungetc(c);
+    #####:  706:		peek = STRING;
+        -:  707:	    } else {
+      932:  708:		hwend();
+      932:  709:		hwbegin(0);
+      932:  710:		hwaddc('\n');
+      932:  711:		addtoline('\n');
+        -:  712:		/*
+        -:  713:		 * If splitting a line and removing comments,
+        -:  714:		 * we don't want a newline token since it's
+        -:  715:		 * treated specially.
+        -:  716:		 */
+      932:  717:		if ((lexflags & LEXFLAGS_COMMENTS_STRIP) && lexstop)
+    #####:  718:		    peek = ENDINPUT;
+        -:  719:		else
+      932:  720:		    peek = NEWLIN;
+        -:  721:	    }
+        -:  722:	}
+      932:  723:	return peek;
+        -:  724:    }
+    22088:  725:    switch (lexact1[STOUC(c)]) {
+      444:  726:    case LX1_BKSLASH:
+      444:  727:	d = hgetc();
+      444:  728:	if (d == '\n')
+       97:  729:	    goto beginning;
+      347:  730:	hungetc(d);
+      347:  731:	lexstop = 0;
+      347:  732:	break;
+     5194:  733:    case LX1_NEWLIN:
+     5194:  734:	return NEWLIN;
+     1102:  735:    case LX1_SEMI:
+     1102:  736:	d = hgetc();
+     1102:  737:	if(d == ';')
+       91:  738:	    return DSEMI;
+     1011:  739:	else if(d == '&')
+        2:  740:	    return SEMIAMP;
+     1009:  741:	else if (d == '|')
+    #####:  742:	    return SEMIBAR;
+     1009:  743:	hungetc(d);
+     1009:  744:	lexstop = 0;
+     1009:  745:	return SEMI;
+      418:  746:    case LX1_AMPER:
+      418:  747:	d = hgetc();
+      418:  748:	if (d == '&')
+      417:  749:	    return DAMPER;
+        1:  750:	else if (d == '!' || d == '|')
+    #####:  751:	    return AMPERBANG;
+        1:  752:	else if (d == '>') {
+    #####:  753:	    tokfd = peekfd;
+    #####:  754:	    d = hgetc();
+    #####:  755:	    if (d == '!' || d == '|')
+    #####:  756:		return OUTANGAMPBANG;
+    #####:  757:	    else if (d == '>') {
+    #####:  758:		d = hgetc();
+    #####:  759:		if (d == '!' || d == '|')
+    #####:  760:		    return DOUTANGAMPBANG;
+    #####:  761:		hungetc(d);
+    #####:  762:		lexstop = 0;
+    #####:  763:		return DOUTANGAMP;
+        -:  764:	    }
+    #####:  765:	    hungetc(d);
+    #####:  766:	    lexstop = 0;
+    #####:  767:	    return AMPOUTANG;
+        -:  768:	}
+        1:  769:	hungetc(d);
+        1:  770:	lexstop = 0;
+        1:  771:	return AMPER;
+      163:  772:    case LX1_BAR:
+      163:  773:	d = hgetc();
+      163:  774:	if (d == '|' && !incasepat)
+      146:  775:	    return DBAR;
+       17:  776:	else if (d == '&')
+    #####:  777:	    return BARAMP;
+       17:  778:	hungetc(d);
+       17:  779:	lexstop = 0;
+       17:  780:	return BAR;
+      356:  781:    case LX1_INPAR:
+      356:  782:	d = hgetc();
+      356:  783:	if (d == '(') {
+      186:  784:	    if (infor) {
+        5:  785:		dbparens = 1;
+        5:  786:		return DINPAR;
+        -:  787:	    }
+      181:  788:	    if (incmdpos || (isset(SHGLOB) && !isset(KSHGLOB))) {
+      180:  789:		lexbuf.len = 0;
+      180:  790:		lexbuf.ptr = tokstr = (char *)
+      180:  791:		    hcalloc(lexbuf.siz = LEX_HEAP_SIZE);
+      180:  792:		switch (cmd_or_math(CS_MATH)) {
+      180:  793:		case CMD_OR_MATH_MATH:
+      180:  794:		    return DINPAR;
+        -:  795:
+    #####:  796:		case CMD_OR_MATH_CMD:
+        -:  797:		    /*
+        -:  798:		     * Not math, so we don't return the contents
+        -:  799:		     * as a string in this case.
+        -:  800:		     */
+    #####:  801:		    tokstr = NULL;
+    #####:  802:		    return INPAR;
+        -:  803:		    
+    #####:  804:		case CMD_OR_MATH_ERR:
+        -:  805:		    /*
+        -:  806:		     * LEXFLAGS_ACTIVE means we came from bufferwords(),
+        -:  807:		     * so we treat as an incomplete math expression
+        -:  808:		     */
+    #####:  809:		    if (lexflags & LEXFLAGS_ACTIVE)
+    #####:  810:			tokstr = dyncat("((", tokstr ? tokstr : "");
+        -:  811:		    /* fall through */
+        -:  812:
+        -:  813:		default:
+    #####:  814:		    return LEXERR;
+        -:  815:		}
+        -:  816:	    }
+      170:  817:	} else if (d == ')')
+       50:  818:	    return INOUTPAR;
+      121:  819:	hungetc(d);
+      121:  820:	lexstop = 0;
+      121:  821:	if (!(isset(SHGLOB) || incond == 1 || incmdpos))
+       85:  822:	    break;
+       36:  823:	return INPAR;
+      660:  824:    case LX1_OUTPAR:
+      660:  825:	return OUTPAR;
+      103:  826:    case LX1_INANG:
+      103:  827:	d = hgetc();
+      103:  828:	if (d == '(') {
+    #####:  829:	    hungetc(d);
+    #####:  830:	    lexstop = 0;
+        2:  831:	    unpeekfd:
+        2:  832:	    if(peekfd != -1) {
+    #####:  833:		hungetc(c);
+    #####:  834:		c = '0' + peekfd;
+        -:  835:	    }
+        2:  836:	    break;
+        -:  837:	}
+      103:  838:	if (d == '>') {
+    #####:  839:	    peek = INOUTANG;
+      103:  840:	} else if (d == '<') {
+    #####:  841:	    int e = hgetc();
+        -:  842:
+    #####:  843:	    if (e == '(') {
+    #####:  844:		hungetc(e);
+    #####:  845:		hungetc(d);
+    #####:  846:		peek = INANG;
+    #####:  847:	    } else if (e == '<')
+    #####:  848:		peek = TRINANG;
+    #####:  849:	    else if (e == '-')
+    #####:  850:		peek = DINANGDASH;
+        -:  851:	    else {
+    #####:  852:		hungetc(e);
+    #####:  853:		lexstop = 0;
+    #####:  854:		peek = DINANG;
+        -:  855:	    }
+      103:  856:	} else if (d == '&') {
+    #####:  857:	    peek = INANGAMP;
+        -:  858:	} else {
+      103:  859:	    hungetc(d);
+      103:  860:	    if(isnumglob())
+        2:  861:		goto unpeekfd;
+      101:  862:	    peek = INANG;
+        -:  863:	}
+      101:  864:	tokfd = peekfd;
+      101:  865:	return peek;
+       96:  866:    case LX1_OUTANG:
+       96:  867:	d = hgetc();
+       96:  868:	if (d == '(') {
+    #####:  869:	    hungetc(d);
+    #####:  870:	    goto unpeekfd;
+       96:  871:	} else if (d == '&') {
+       42:  872:	    d = hgetc();
+       42:  873:	    if (d == '!' || d == '|')
+    #####:  874:		peek = OUTANGAMPBANG;
+        -:  875:	    else {
+       42:  876:		hungetc(d);
+       42:  877:		lexstop = 0;
+       42:  878:		peek = OUTANGAMP;
+        -:  879:	    }
+       54:  880:	} else if (d == '!' || d == '|')
+    #####:  881:	    peek = OUTANGBANG;
+       54:  882:	else if (d == '>') {
+       28:  883:	    d = hgetc();
+       28:  884:	    if (d == '&') {
+    #####:  885:		d = hgetc();
+    #####:  886:		if (d == '!' || d == '|')
+    #####:  887:		    peek = DOUTANGAMPBANG;
+        -:  888:		else {
+    #####:  889:		    hungetc(d);
+    #####:  890:		    lexstop = 0;
+    #####:  891:		    peek = DOUTANGAMP;
+        -:  892:		}
+       28:  893:	    } else if (d == '!' || d == '|')
+    #####:  894:		peek = DOUTANGBANG;
+       28:  895:	    else if (d == '(') {
+    #####:  896:		hungetc(d);
+    #####:  897:		hungetc('>');
+    #####:  898:		peek = OUTANG;
+        -:  899:	    } else {
+       28:  900:		hungetc(d);
+       28:  901:		lexstop = 0;
+       28:  902:		peek = DOUTANG;
+       28:  903:		if (isset(HISTALLOWCLOBBER))
+    #####:  904:		    hwaddc('|');
+        -:  905:	    }
+        -:  906:	} else {
+       26:  907:	    hungetc(d);
+       26:  908:	    lexstop = 0;
+       26:  909:	    peek = OUTANG;
+       26:  910:	    if (!incond && isset(HISTALLOWCLOBBER))
+    #####:  911:		hwaddc('|');
+        -:  912:	}
+       96:  913:	tokfd = peekfd;
+       96:  914:	return peek;
+        -:  915:    }
+        -:  916:
+        -:  917:    /* we've started a string, now get the *
+        -:  918:     * rest of it, performing tokenization */
+    13986:  919:    return gettokstr(c, 0);
+        -:  920:}
+        -:  921:
+        -:  922:/*
+        -:  923: * Get the remains of a token string.  This has two uses.
+        -:  924: * When called from gettok(), with sub = 0, we have already identified
+        -:  925: * any interesting initial character and want to get the rest of
+        -:  926: * what we now know is a string.  However, the string may still include
+        -:  927: * metacharacters and potentially substitutions.
+        -:  928: *
+        -:  929: * When called from parse_subst_string() with sub = 1, we are not
+        -:  930: * fully parsing a command line, merely tokenizing a string.
+        -:  931: * In this case we always add characters to the parsed string
+        -:  932: * unless there is a parse error.
+        -:  933: */
+        -:  934:
+        -:  935:/**/
+        -:  936:static enum lextok
+    15465:  937:gettokstr(int c, int sub)
+        -:  938:{
+    15465:  939:    int bct = 0, pct = 0, brct = 0, seen_brct = 0, fdpar = 0;
+    15465:  940:    int intpos = 1, in_brace_param = 0;
+    15465:  941:    int inquote, unmatched = 0;
+        -:  942:    enum lextok peek;
+        -:  943:#ifdef DEBUG
+        -:  944:    int ocmdsp = cmdsp;
+        -:  945:#endif
+        -:  946:
+    15465:  947:    peek = STRING;
+    15465:  948:    if (!sub) {
+    13986:  949:	lexbuf.len = 0;
+    13986:  950:	lexbuf.ptr = tokstr = (char *) hcalloc(lexbuf.siz = LEX_HEAP_SIZE);
+        -:  951:    }
+   112175:  952:    for (;;) {
+        -:  953:	int act;
+        -:  954:	int e;
+   127640:  955:	int inbl = inblank(c);
+        -:  956:	
+   127640:  957:	if (fdpar && !inbl && c != ')')
+    #####:  958:	    fdpar = 0;
+        -:  959:
+   127640:  960:	if (inbl && !in_brace_param && !pct)
+    12138:  961:	    act = LX2_BREAK;
+        -:  962:	else {
+   115502:  963:	    act = lexact2[STOUC(c)];
+   115502:  964:	    c = lextok2[STOUC(c)];
+        -:  965:	}
+   127640:  966:	switch (act) {
+    13003:  967:	case LX2_BREAK:
+    13003:  968:	    if (!in_brace_param && !sub)
+    12870:  969:		goto brk;
+      133:  970:	    break;
+    #####:  971:	case LX2_META:
+    #####:  972:	    c = hgetc();
+        -:  973:#ifdef DEBUG
+        -:  974:	    if (lexstop) {
+        -:  975:		fputs("BUG: input terminated by Meta\n", stderr);
+        -:  976:		fflush(stderr);
+        -:  977:		goto brk;
+        -:  978:	    }
+        -:  979:#endif
+    #####:  980:	    add(Meta);
+    #####:  981:	    break;
+     3011:  982:	case LX2_OUTPAR:
+     3011:  983:	    if (fdpar) {
+        -:  984:		/* this is a single word `(   )', treat as INOUTPAR */
+    #####:  985:		add(c);
+    #####:  986:		*lexbuf.ptr = '\0';
+    #####:  987:		return INOUTPAR;
+        -:  988:	    }
+     3011:  989:	    if ((sub || in_brace_param) && isset(SHGLOB))
+    #####:  990:		break;
+     3011:  991:	    if (!in_brace_param && !pct--) {
+      185:  992:		if (sub) {
+    #####:  993:		    pct = 0;
+    #####:  994:		    break;
+        -:  995:		} else
+      185:  996:		    goto brk;
+        -:  997:	    }
+     2826:  998:	    c = Outpar;
+     2826:  999:	    break;
+     1266: 1000:	case LX2_BAR:
+     1266: 1001:	    if (!pct && !in_brace_param) {
+        3: 1002:		if (sub)
+    #####: 1003:		    break;
+        -: 1004:		else
+        3: 1005:		    goto brk;
+        -: 1006:	    }
+     1263: 1007:	    if (unset(SHGLOB) || (!sub && !in_brace_param))
+     1263: 1008:		c = Bar;
+     1263: 1009:	    break;
+     1387: 1010:	case LX2_STRING:
+     1387: 1011:	    e = hgetc();
+     1387: 1012:	    if (e == '\\') {
+        1: 1013:		e = hgetc();
+        1: 1014:		if (e != '\n') {
+        1: 1015:		    hungetc(e);
+        1: 1016:		    hungetc('\\');
+        1: 1017:		    lexstop = 0;
+        1: 1018:		    break;
+        -: 1019:		}
+    #####: 1020:		e = hgetc();
+        -: 1021:	    }
+     1386: 1022:	    if (e == '[') {
+    #####: 1023:		cmdpush(CS_MATHSUBST);
+    #####: 1024:		add(String);
+    #####: 1025:		add(Inbrack);
+    #####: 1026:		c = dquote_parse(']', sub);
+    #####: 1027:		cmdpop();
+    #####: 1028:		if (c) {
+    #####: 1029:		    peek = LEXERR;
+    #####: 1030:		    goto brk;
+        -: 1031:		}
+    #####: 1032:		c = Outbrack;
+     1386: 1033:	    } else if (e == '(') {
+       17: 1034:		add(String);
+       17: 1035:		switch (cmd_or_math_sub()) {
+        5: 1036:		case CMD_OR_MATH_CMD:
+        5: 1037:		    c = Outpar;
+        5: 1038:		    break;
+        -: 1039:
+       12: 1040:		case CMD_OR_MATH_MATH:
+       12: 1041:		    c = Outparmath;
+       12: 1042:		    break;
+        -: 1043:
+    #####: 1044:		default:
+    #####: 1045:		    peek = LEXERR;
+    #####: 1046:		    goto brk;
+        -: 1047:		}
+        -: 1048:	    } else {
+     1369: 1049:		if (e == '{') {
+      552: 1050:		    add(c);
+      552: 1051:		    c = Inbrace;
+      552: 1052:		    ++bct;
+      552: 1053:		    cmdpush(CS_BRACEPAR);
+      552: 1054:		    if (!in_brace_param) {
+      494: 1055:			if ((in_brace_param = bct))
+      494: 1056:			    seen_brct = 0;
+        -: 1057:		    }
+        -: 1058:		} else {
+      817: 1059:		    hungetc(e);
+      817: 1060:		    lexstop = 0;
+        -: 1061:		}
+        -: 1062:	    }
+     1386: 1063:	    break;
+     2369: 1064:	case LX2_INBRACK:
+     2369: 1065:	    if (!in_brace_param) {
+     2035: 1066:		brct++;
+     2035: 1067:		seen_brct = 1;
+        -: 1068:	    }
+     2369: 1069:	    c = Inbrack;
+     2369: 1070:	    break;
+     2369: 1071:	case LX2_OUTBRACK:
+     2369: 1072:	    if (!in_brace_param)
+     2035: 1073:		brct--;
+     2369: 1074:	    if (brct < 0)
+     1092: 1075:		brct = 0;
+     2369: 1076:	    c = Outbrack;
+     2369: 1077:	    break;
+     2866: 1078:	case LX2_INPAR:
+     2866: 1079:	    if (isset(SHGLOB)) {
+    #####: 1080:		if (sub || in_brace_param)
+        -: 1081:		    break;
+    #####: 1082:		if (incasepat > 0 && !lexbuf.len)
+    #####: 1083:		    return INPAR;
+    #####: 1084:		if (!isset(KSHGLOB) && lexbuf.len)
+    #####: 1085:		    goto brk;
+        -: 1086:	    }
+     2866: 1087:	    if (!in_brace_param) {
+     2485: 1088:		if (!sub) {
+      239: 1089:		    e = hgetc();
+      239: 1090:		    hungetc(e);
+      239: 1091:		    lexstop = 0;
+        -: 1092:		    /* For command words, parentheses are only
+        -: 1093:		     * special at the start.  But now we're tokenising
+        -: 1094:		     * the remaining string.  So I don't see what
+        -: 1095:		     * the old incmdpos test here is for.
+        -: 1096:		     *   pws 1999/6/8
+        -: 1097:		     *
+        -: 1098:		     * Oh, no.
+        -: 1099:		     *  func1(   )
+        -: 1100:		     * is a valid function definition in [k]sh.  The best
+        -: 1101:		     * thing we can do, without really nasty lookahead tricks,
+        -: 1102:		     * is break if we find a blank after a parenthesis.  At
+        -: 1103:		     * least this can't happen inside braces or brackets.  We
+        -: 1104:		     * only allow this with SHGLOB (set for both sh and ksh).
+        -: 1105:		     *
+        -: 1106:		     * Things like `print @( |foo)' should still
+        -: 1107:		     * work, because [k]sh don't allow multiple words
+        -: 1108:		     * in a function definition, so we only do this
+        -: 1109:		     * in command position.
+        -: 1110:		     *   pws 1999/6/14
+        -: 1111:		     */
+      239: 1112:		    if (e == ')' || (isset(SHGLOB) && inblank(e) && !bct &&
+    #####: 1113:				     !brct && !intpos && incmdpos)) {
+        -: 1114:			/*
+        -: 1115:			 * Either a () token, or a command word with
+        -: 1116:			 * something suspiciously like a ksh function
+        -: 1117:			 * definition.
+        -: 1118:			 * The current word isn't spellcheckable.
+        -: 1119:			 */
+       39: 1120:			nocorrect |= 2;
+       39: 1121:			goto brk;
+        -: 1122:		    }
+        -: 1123:		}
+        -: 1124:		/*
+        -: 1125:		 * This also handles the [k]sh `foo( )' function definition.
+        -: 1126:		 * Maintain a variable fdpar, set as long as a single set of
+        -: 1127:		 * parentheses contains only space.  Then if we get to the
+        -: 1128:		 * closing parenthesis and it is still set, we can assume we
+        -: 1129:		 * have a function definition.  Only do this at the start of
+        -: 1130:		 * the word, since the (...) must be a separate token.
+        -: 1131:		 */
+     2446: 1132:		if (!pct++ && isset(SHGLOB) && intpos && !bct && !brct)
+    #####: 1133:		    fdpar = 1;
+        -: 1134:	    }
+     2827: 1135:	    c = Inpar;
+     2827: 1136:	    break;
+      125: 1137:	case LX2_INBRACE:
+      125: 1138:	    if (isset(IGNOREBRACES) || sub)
+       27: 1139:		c = '{';
+        -: 1140:	    else {
+       98: 1141:		if (!lexbuf.len && incmdpos) {
+       79: 1142:		    add('{');
+       79: 1143:		    *lexbuf.ptr = '\0';
+       79: 1144:		    return STRING;
+        -: 1145:		}
+       19: 1146:		if (in_brace_param) {
+        3: 1147:		    cmdpush(CS_BRACE);
+        -: 1148:		}
+       19: 1149:		bct++;
+        -: 1150:	    }
+       46: 1151:	    break;
+      677: 1152:	case LX2_OUTBRACE:
+      677: 1153:	    if ((isset(IGNOREBRACES) || sub) && !in_brace_param)
+       27: 1154:		break;
+      650: 1155:	    if (!bct)
+       80: 1156:		break;
+      570: 1157:	    if (in_brace_param) {
+      555: 1158:		cmdpop();
+        -: 1159:	    }
+      570: 1160:	    if (bct-- == in_brace_param)
+      494: 1161:		in_brace_param = 0;
+      570: 1162:	    c = Outbrace;
+      570: 1163:	    break;
+       67: 1164:	case LX2_COMMA:
+       67: 1165:	    if (unset(IGNOREBRACES) && !sub && bct > in_brace_param)
+       14: 1166:		c = Comma;
+       67: 1167:	    break;
+     2896: 1168:	case LX2_OUTANG:
+     2896: 1169:	    if (in_brace_param || sub)
+        -: 1170:		break;
+        4: 1171:	    e = hgetc();
+        4: 1172:	    if (e != '(') {
+        4: 1173:		hungetc(e);
+        4: 1174:		lexstop = 0;
+        4: 1175:		goto brk;
+        -: 1176:	    }
+    #####: 1177:	    add(OutangProc);
+    #####: 1178:	    if (skipcomm()) {
+    #####: 1179:		peek = LEXERR;
+    #####: 1180:		goto brk;
+        -: 1181:	    }
+    #####: 1182:	    c = Outpar;
+    #####: 1183:	    break;
+     2898: 1184:	case LX2_INANG:
+     2898: 1185:	    if (isset(SHGLOB) && sub)
+    #####: 1186:		break;
+     2898: 1187:	    e = hgetc();
+     2898: 1188:	    if (!(in_brace_param || sub) && e == '(') {
+    #####: 1189:		add(Inang);
+    #####: 1190:		if (skipcomm()) {
+    #####: 1191:		    peek = LEXERR;
+    #####: 1192:		    goto brk;
+        -: 1193:		}
+    #####: 1194:		c = Outpar;
+    #####: 1195:		break;
+        -: 1196:	    }
+     2898: 1197:	    hungetc(e);
+     2898: 1198:	    if(isnumglob()) {
+        5: 1199:		add(Inang);
+       15: 1200:		while ((c = hgetc()) != '>')
+        5: 1201:		    add(c);
+        5: 1202:		c = Outang;
+        5: 1203:		break;
+        -: 1204:	    }
+     2893: 1205:	    lexstop = 0;
+     2893: 1206:	    if (in_brace_param || sub)
+        -: 1207:		break;
+        1: 1208:	    goto brk;
+     1854: 1209:	case LX2_EQUALS:
+     1854: 1210:	    if (!sub) {
+     1853: 1211:		if (intpos) {
+      309: 1212:		    e = hgetc();
+      309: 1213:		    if (e != '(') {
+      309: 1214:			hungetc(e);
+      309: 1215:			lexstop = 0;
+      309: 1216:			c = Equals;
+        -: 1217:		    } else {
+    #####: 1218:			add(Equals);
+    #####: 1219:			if (skipcomm()) {
+    #####: 1220:			    peek = LEXERR;
+    #####: 1221:			    goto brk;
+        -: 1222:			}
+    #####: 1223:			c = Outpar;
+        -: 1224:		    }
+     3086: 1225:		} else if (peek != ENVSTRING &&
+     2678: 1226:			   (incmdpos || intypeset) && !bct && !brct) {
+     1415: 1227:		    char *t = tokstr;
+     1415: 1228:		    if (idigit(*t))
+        4: 1229:			while (++t < lexbuf.ptr && idigit(*t));
+        -: 1230:		    else {
+     1411: 1231:			int sav = *lexbuf.ptr;
+     1411: 1232:			*lexbuf.ptr = '\0';
+     1411: 1233:			t = itype_end(t, IIDENT, 0);
+     1411: 1234:			if (t < lexbuf.ptr) {
+      126: 1235:			    skipparens(Inbrack, Outbrack, &t);
+        -: 1236:			} else {
+     1285: 1237:			    *lexbuf.ptr = sav;
+        -: 1238:			}
+        -: 1239:		    }
+     1415: 1240:		    if (*t == '+')
+       51: 1241:			t++;
+     1415: 1242:		    if (t == lexbuf.ptr) {
+     1415: 1243:			e = hgetc();
+     1415: 1244:			if (e == '(') {
+      548: 1245:			    *lexbuf.ptr = '\0';
+      548: 1246:			    return ENVARRAY;
+        -: 1247:			}
+      867: 1248:			hungetc(e);
+      867: 1249:			lexstop = 0;
+      867: 1250:			peek = ENVSTRING;
+      867: 1251:			intpos = 2;
+        -: 1252:		    } else
+    #####: 1253:			c = Equals;
+        -: 1254:		} else
+      129: 1255:		    c = Equals;
+        -: 1256:	    }
+     1306: 1257:	    break;
+     1623: 1258:	case LX2_BKSLASH:
+     1623: 1259:	    c = hgetc();
+     1623: 1260:	    if (c == '\n') {
+        1: 1261:		c = hgetc();
+        1: 1262:		if (!lexstop)
+        1: 1263:		    continue;
+        -: 1264:	    } else {
+     1622: 1265:		add(Bnull);
+     1622: 1266:		if (c == STOUC(Meta)) {
+    #####: 1267:		    c = hgetc();
+        -: 1268:#ifdef DEBUG
+        -: 1269:		    if (lexstop) {
+        -: 1270:			fputs("BUG: input terminated by Meta\n", stderr);
+        -: 1271:			fflush(stderr);
+        -: 1272:			goto brk;
+        -: 1273:		    }
+        -: 1274:#endif
+    #####: 1275:		    add(Meta);
+        -: 1276:		}
+        -: 1277:	    }
+     1622: 1278:	    if (lexstop)
+    #####: 1279:		goto brk;
+     1622: 1280:	    break;
+      306: 1281:	case LX2_QUOTE: {
+      306: 1282:	    int strquote = (lexbuf.len && lexbuf.ptr[-1] == String);
+        -: 1283:
+      306: 1284:	    add(Snull);
+      306: 1285:	    cmdpush(CS_QUOTE);
+        -: 1286:	    for (;;) {
+      306: 1287:		STOPHIST
+     6251: 1288:		while ((c = hgetc()) != '\'' && !lexstop) {
+     5639: 1289:		    if (strquote && c == '\\') {
+      189: 1290:			c = hgetc();
+      189: 1291:			if (lexstop)
+    #####: 1292:			    break;
+        -: 1293:			/*
+        -: 1294:			 * Mostly we don't need to do anything special
+        -: 1295:			 * with escape backslashes or closing quotes
+        -: 1296:			 * inside $'...'; however in completion we
+        -: 1297:			 * need to be able to strip multiple backslashes
+        -: 1298:			 * neatly.
+        -: 1299:			 */
+      378: 1300:			if (c == '\\' || c == '\'')
+    #####: 1301:			    add(Bnull);
+        -: 1302:			else
+      189: 1303:			    add('\\');
+     5450: 1304:		    } else if (!sub && isset(CSHJUNKIEQUOTES) && c == '\n') {
+    #####: 1305:			if (lexbuf.ptr[-1] == '\\')
+    #####: 1306:			    lexbuf.ptr--, lexbuf.len--;
+        -: 1307:			else
+    #####: 1308:			    break;
+        -: 1309:		    }
+     5639: 1310:		    add(c);
+        -: 1311:		}
+      306: 1312:		ALLOWHIST
+      306: 1313:		if (c != '\'') {
+    #####: 1314:		    unmatched = '\'';
+        -: 1315:		    /* Not an error when called from bufferwords() */
+    #####: 1316:		    if (!(lexflags & LEXFLAGS_ACTIVE))
+    #####: 1317:			peek = LEXERR;
+    #####: 1318:		    cmdpop();
+    #####: 1319:		    goto brk;
+        -: 1320:		}
+      306: 1321:		e = hgetc();
+      306: 1322:		if (e != '\'' || unset(RCQUOTES) || strquote)
+        -: 1323:		    break;
+    #####: 1324:		add(c);
+        -: 1325:	    }
+      306: 1326:	    cmdpop();
+      306: 1327:	    hungetc(e);
+      306: 1328:	    lexstop = 0;
+      306: 1329:	    c = Snull;
+      306: 1330:	    break;
+        -: 1331:	}
+     1861: 1332:	case LX2_DQUOTE:
+     1861: 1333:	    add(Dnull);
+     1861: 1334:	    cmdpush(CS_DQUOTE);
+     1861: 1335:	    c = dquote_parse('"', sub);
+     1861: 1336:	    cmdpop();
+     1861: 1337:	    if (c) {
+        4: 1338:		unmatched = '"';
+        -: 1339:		/* Not an error when called from bufferwords() */
+        4: 1340:		if (!(lexflags & LEXFLAGS_ACTIVE))
+        4: 1341:		    peek = LEXERR;
+        4: 1342:		goto brk;
+        -: 1343:	    }
+     1857: 1344:	    c = Dnull;
+     1857: 1345:	    break;
+    #####: 1346:	case LX2_BQUOTE:
+    #####: 1347:	    add(Tick);
+    #####: 1348:	    cmdpush(CS_BQUOTE);
+    #####: 1349:	    SETPARBEGIN
+    #####: 1350:	    inquote = 0;
+    #####: 1351:	    while ((c = hgetc()) != '`' && !lexstop) {
+    #####: 1352:		if (c == '\\') {
+    #####: 1353:		    c = hgetc();
+    #####: 1354:		    if (c != '\n') {
+    #####: 1355:			add(c == '`' || c == '\\' || c == '$' ? Bnull : '\\');
+    #####: 1356:			add(c);
+        -: 1357:		    }
+    #####: 1358:		    else if (!sub && isset(CSHJUNKIEQUOTES))
+    #####: 1359:			add(c);
+        -: 1360:		} else {
+    #####: 1361:		    if (!sub && isset(CSHJUNKIEQUOTES) && c == '\n') {
+    #####: 1362:			break;
+        -: 1363:		    }
+    #####: 1364:		    add(c);
+    #####: 1365:		    if (c == '\'') {
+    #####: 1366:			if ((inquote = !inquote))
+    #####: 1367:			    STOPHIST
+        -: 1368:			else
+    #####: 1369:			    ALLOWHIST
+        -: 1370:		    }
+        -: 1371:		}
+        -: 1372:	    }
+    #####: 1373:	    if (inquote)
+    #####: 1374:		ALLOWHIST
+    #####: 1375:	    cmdpop();
+    #####: 1376:	    if (c != '`') {
+    #####: 1377:		unmatched = '`';
+        -: 1378:		/* Not an error when called from bufferwords() */
+    #####: 1379:		if (!(lexflags & LEXFLAGS_ACTIVE))
+    #####: 1380:		    peek = LEXERR;
+    #####: 1381:		goto brk;
+        -: 1382:	    }
+    #####: 1383:	    c = Tick;
+    #####: 1384:	    SETPAREND
+    #####: 1385:	    break;
+     1869: 1386:	case LX2_DASH:
+        -: 1387:	    /*
+        -: 1388:	     * - shouldn't be treated as a special character unless
+        -: 1389:	     * we're in a pattern.  Unfortunately, working out for
+        -: 1390:	     * sure in complicated expressions whether we're in a
+        -: 1391:	     * pattern is tricky.  So we'll make it special and
+        -: 1392:	     * turn it back any time we don't need it special.
+        -: 1393:	     * This is not ideal as it's a lot of work.
+        -: 1394:	     */
+     1869: 1395:	    c = Dash;
+     1869: 1396:           break;
+       89: 1397:       case LX2_BANG:
+        -: 1398:           /*
+        -: 1399:            * Same logic as Dash, for ! to perform negation in range.
+        -: 1400:            */
+       89: 1401:           if (seen_brct)
+    #####: 1402:               c = Bang;
+        -: 1403:           else
+       89: 1404:               c = '!';
+        -: 1405:       }
+   113906: 1406:       add(c);
+   113906: 1407:       c = hgetc();
+   113906: 1408:	if (intpos)
+    17071: 1409:	    intpos--;
+   113906: 1410:	if (lexstop)
+     1732: 1411:	    break;
+        -: 1412:    }
+    14838: 1413:  brk:
+    14838: 1414:    if (errflag) {
+    #####: 1415:	if (in_brace_param) {
+    #####: 1416:	    while(bct-- >= in_brace_param)
+    #####: 1417:		cmdpop();
+        -: 1418:	}
+    #####: 1419:	return LEXERR;
+        -: 1420:    }
+    14838: 1421:    hungetc(c);
+    14838: 1422:    if (unmatched && !(lexflags & LEXFLAGS_ACTIVE))
+        4: 1423:	zerr("unmatched %c", unmatched);
+    14838: 1424:    if (in_brace_param) {
+    #####: 1425:	while(bct-- >= in_brace_param)
+    #####: 1426:	    cmdpop();
+    #####: 1427:	zerr("closing brace expected");
+    14838: 1428:    } else if (unset(IGNOREBRACES) && !sub && lexbuf.len > 1 &&
+    11548: 1429:	       peek == STRING && lexbuf.ptr[-1] == '}' &&
+        3: 1430:	       lexbuf.ptr[-2] != Bnull) {
+        -: 1431:	/* hack to get {foo} command syntax work */
+    #####: 1432:	lexbuf.ptr--;
+    #####: 1433:	lexbuf.len--;
+    #####: 1434:	lexstop = 0;
+    #####: 1435:	hungetc('}');
+        -: 1436:    }
+    14838: 1437:    *lexbuf.ptr = '\0';
+        -: 1438:    DPUTS(cmdsp != ocmdsp, "BUG: gettok: cmdstack changed.");
+    14838: 1439:    return peek;
+        -: 1440:}
+        -: 1441:
+        -: 1442:
+        -: 1443:/*
+        -: 1444: * Parse input as if in double quotes.
+        -: 1445: * endchar is the end character to expect.
+        -: 1446: * sub has got something to do with whether we are doing quoted substitution.
+        -: 1447: * Return non-zero for error (character to unget), else zero
+        -: 1448: */
+        -: 1449:
+        -: 1450:/**/
+        -: 1451:static int
+    34793: 1452:dquote_parse(char endchar, int sub)
+        -: 1453:{
+    34793: 1454:    int pct = 0, brct = 0, bct = 0, intick = 0, err = 0;
+        -: 1455:    int c;
+    34793: 1456:    int math = endchar == ')' || endchar == ']' || infor;
+    34793: 1457:    int zlemath = math && zlemetacs > zlemetall + addedx - inbufct;
+        -: 1458:
+   258417: 1459:    while (((c = hgetc()) != endchar || bct ||
+    24377: 1460:	    (math && ((pct > 0) || (brct > 0))) ||
+   198561: 1461:	    intick) && !lexstop) {
+   377738: 1462:      cont:
+   188907: 1463:	switch (c) {
+      130: 1464:	case '\\':
+      130: 1465:	    c = hgetc();
+      130: 1466:	    if (c != '\n') {
+      207: 1467:		if (c == '$' || c == '\\' || (c == '}' && !intick && bct) ||
+      162: 1468:		    c == endchar || c == '`' ||
+    #####: 1469:		    (endchar == ']' && (c == '[' || c == ']' ||
+    #####: 1470:					c == '(' || c == ')' ||
+    #####: 1471:					c == '{' || c == '}' ||
+    #####: 1472:					(c == '"' && sub))))
+       50: 1473:		    add(Bnull);
+        -: 1474:		else {
+        -: 1475:		    /* lexstop is implicitly handled here */
+       76: 1476:		    add('\\');
+       76: 1477:		    goto cont;
+        -: 1478:		}
+        4: 1479:	    } else if (sub || unset(CSHJUNKIEQUOTES) || endchar != '"')
+        4: 1480:		continue;
+       50: 1481:	    break;
+       27: 1482:	case '\n':
+       27: 1483:	    err = !sub && isset(CSHJUNKIEQUOTES) && endchar == '"';
+       27: 1484:	    break;
+    24187: 1485:	case '$':
+    24187: 1486:	    if (intick)
+    #####: 1487:		break;
+    24187: 1488:	    c = hgetc();
+    24187: 1489:	    if (c == '(') {
+       14: 1490:		add(Qstring);
+       14: 1491:		switch (cmd_or_math_sub()) {
+       13: 1492:		case CMD_OR_MATH_CMD:
+       13: 1493:		    c = Outpar;
+       13: 1494:		    break;
+        -: 1495:
+        1: 1496:		case CMD_OR_MATH_MATH:
+        1: 1497:		    c = Outparmath;
+        1: 1498:		    break;
+        -: 1499:
+    #####: 1500:		default:
+    #####: 1501:		    err = 1;
+    #####: 1502:		    break;
+        -: 1503:		}
+    24173: 1504:	    } else if (c == '[') {
+    #####: 1505:		add(String);
+    #####: 1506:		add(Inbrack);
+    #####: 1507:		cmdpush(CS_MATHSUBST);
+    #####: 1508:		err = dquote_parse(']', sub);
+    #####: 1509:		cmdpop();
+    #####: 1510:		c = Outbrack;
+    24173: 1511:	    } else if (c == '{') {
+      757: 1512:		add(Qstring);
+      757: 1513:		c = Inbrace;
+      757: 1514:		cmdpush(CS_BRACEPAR);
+      757: 1515:		bct++;
+    23416: 1516:	    } else if (c == '$')
+    #####: 1517:		add(Qstring);
+        -: 1518:	    else {
+    23416: 1519:		hungetc(c);
+    23416: 1520:		lexstop = 0;
+    23416: 1521:		c = Qstring;
+        -: 1522:	    }
+    24187: 1523:	    break;
+      773: 1524:	case '}':
+      773: 1525:	    if (intick || !bct)
+        -: 1526:		break;
+      757: 1527:	    c = Outbrace;
+      757: 1528:	    bct--;
+      757: 1529:	    cmdpop();
+      757: 1530:	    break;
+    #####: 1531:	case '`':
+    #####: 1532:	    c = Qtick;
+    #####: 1533:	    if (intick == 2)
+    #####: 1534:		ALLOWHIST
+    #####: 1535:	    if ((intick = !intick)) {
+    #####: 1536:		SETPARBEGIN
+    #####: 1537:		cmdpush(CS_BQUOTE);
+        -: 1538:	    } else {
+    #####: 1539:		SETPAREND
+    #####: 1540:	        cmdpop();
+        -: 1541:	    }
+    #####: 1542:	    break;
+       38: 1543:	case '\'':
+       38: 1544:	    if (!intick)
+       38: 1545:		break;
+    #####: 1546:	    if (intick == 1)
+    #####: 1547:		intick = 2, STOPHIST
+        -: 1548:	    else
+    #####: 1549:		intick = 1, ALLOWHIST
+    #####: 1550:	    break;
+     1780: 1551:	case '(':
+     1780: 1552:	    if (!math || !bct)
+     1758: 1553:		pct++;
+     1780: 1554:	    break;
+     1782: 1555:	case ')':
+     1782: 1556:	    if (!math || !bct)
+     1760: 1557:		err = (!pct-- && math);
+     1782: 1558:	    break;
+     2945: 1559:	case '[':
+     2945: 1560:	    if (!math || !bct)
+     2930: 1561:		brct++;
+     2945: 1562:	    break;
+     2939: 1563:	case ']':
+     2939: 1564:	    if (!math || !bct)
+     2924: 1565:		err = (!brct-- && math);
+     2939: 1566:	    break;
+        1: 1567:	case '"':
+        1: 1568:	    if (intick || (endchar != '"' && !bct))
+        -: 1569:		break;
+        1: 1570:	    if (bct) {
+        1: 1571:		add(Dnull);
+        1: 1572:		cmdpush(CS_DQUOTE);
+        1: 1573:		err = dquote_parse('"', sub);
+        1: 1574:		cmdpop();
+        1: 1575:		c = Dnull;
+        -: 1576:	    } else
+    #####: 1577:		err = 1;
+        1: 1578:	    break;
+        -: 1579:	}
+   188827: 1580:	if (err || lexstop)
+        -: 1581:	    break;
+   188827: 1582:	add(c);
+        -: 1583:    }
+    34793: 1584:    if (intick == 2)
+    #####: 1585:	ALLOWHIST
+    34793: 1586:    if (intick) {
+    #####: 1587:	cmdpop();
+        -: 1588:    }
+    69586: 1589:    while (bct--)
+    #####: 1590:	cmdpop();
+    34793: 1591:    if (lexstop)
+     9730: 1592:	err = intick || endchar || err;
+    25063: 1593:    else if (err == 1) {
+        -: 1594:	/*
+        -: 1595:	 * TODO: as far as I can see, this hack is used in gettokstr()
+        -: 1596:	 * to hungetc() a character on an error.  However, I don't
+        -: 1597:	 * understand what that actually gets us, and we can't guarantee
+        -: 1598:	 * it's a character anyway, because of the previous test.
+        -: 1599:	 *
+        -: 1600:	 * We use the same feature in cmd_or_math where we actually do
+        -: 1601:	 * need to unget if we decide it's really a command substitution.
+        -: 1602:	 * We try to handle the other case by testing for lexstop.
+        -: 1603:	 */
+    #####: 1604:	err = c;
+        -: 1605:    }
+    34793: 1606:    if (zlemath && zlemetacs <= zlemetall + 1 - inbufct)
+    15996: 1607:	inwhat = IN_MATH;
+    34793: 1608:    return err;
+        -: 1609:}
+        -: 1610:
+        -: 1611:/*
+        -: 1612: * Tokenize a string given in s. Parsing is done as in double
+        -: 1613: * quotes.  This is usually called before singsub().
+        -: 1614: *
+        -: 1615: * parsestr() is noisier, reporting an error if the parse failed.
+        -: 1616: *
+        -: 1617: * On entry, *s must point to a string allocated from the stack of
+        -: 1618: * exactly the right length, i.e. strlen(*s) + 1, as the string
+        -: 1619: * is used as the lexical token string whose memory management
+        -: 1620: * demands this.  Usually the input string will therefore be
+        -: 1621: * the result of an immediately preceding dupstring().
+        -: 1622: */
+        -: 1623:
+        -: 1624:/**/
+        -: 1625:mod_export int
+     9699: 1626:parsestr(char **s)
+        -: 1627:{
+        -: 1628:    int err;
+        -: 1629:
+     9699: 1630:    if ((err = parsestrnoerr(s))) {
+    #####: 1631:	untokenize(*s);
+    #####: 1632:	if (!(errflag & ERRFLAG_INT)) {
+    #####: 1633:	    if (err > 32 && err < 127)
+    #####: 1634:		zerr("parse error near `%c'", err);
+        -: 1635:	    else
+    #####: 1636:		zerr("parse error");
+    #####: 1637:	    tok = LEXERR;
+        -: 1638:	}
+        -: 1639:    }
+     9699: 1640:    return err;
+        -: 1641:}
+        -: 1642:
+        -: 1643:/**/
+        -: 1644:mod_export int
+     9726: 1645:parsestrnoerr(char **s)
+        -: 1646:{
+     9726: 1647:    int l = strlen(*s), err;
+        -: 1648:
+     9726: 1649:    zcontext_save();
+     9726: 1650:    untokenize(*s);
+     9726: 1651:    inpush(dupstring_wlen(*s, l), 0, NULL);
+     9726: 1652:    strinbeg(0);
+     9726: 1653:    lexbuf.len = 0;
+     9726: 1654:    lexbuf.ptr = tokstr = *s;
+     9726: 1655:    lexbuf.siz = l + 1;
+     9726: 1656:    err = dquote_parse('\0', 1);
+     9726: 1657:    if (tokstr)
+     9726: 1658:	*s = tokstr;
+     9726: 1659:    *lexbuf.ptr = '\0';
+     9726: 1660:    strinend();
+     9726: 1661:    inpop();
+        -: 1662:    DPUTS(cmdsp, "BUG: parsestr: cmdstack not empty.");
+     9726: 1663:    zcontext_restore();
+     9726: 1664:    return err;
+        -: 1665:}
+        -: 1666:
+        -: 1667:/*
+        -: 1668: * Parse a subscript in string s.
+        -: 1669: * sub is passed down to dquote_parse().
+        -: 1670: * endchar is the final character.
+        -: 1671: * Return the next character, or NULL.
+        -: 1672: */
+        -: 1673:/**/
+        -: 1674:mod_export char *
+    22997: 1675:parse_subscript(char *s, int sub, int endchar)
+        -: 1676:{
+    22997: 1677:    int l = strlen(s), err, toklen;
+        -: 1678:    char *t;
+        -: 1679:
+    22997: 1680:    if (!*s || *s == endchar)
+    #####: 1681:	return 0;
+    22997: 1682:    zcontext_save();
+    22997: 1683:    untokenize(t = dupstring_wlen(s, l));
+    22997: 1684:    inpush(t, 0, NULL);
+    22997: 1685:    strinbeg(0);
+        -: 1686:    /*
+        -: 1687:     * Warning to Future Generations:
+        -: 1688:     *
+        -: 1689:     * This way of passing the subscript through the lexer is brittle.
+        -: 1690:     * Code above this for several layers assumes that when we tokenise
+        -: 1691:     * the input it goes into the same place as the original string.
+        -: 1692:     * However, the lexer may overwrite later bits of the string or
+        -: 1693:     * reallocate it, in particular when expanding aliaes.  To get
+        -: 1694:     * around this, we copy the string and then copy it back.  This is a
+        -: 1695:     * bit more robust but still relies on the underlying assumption of
+        -: 1696:     * length preservation.
+        -: 1697:     */
+    22997: 1698:    lexbuf.len = 0;
+    22997: 1699:    lexbuf.ptr = tokstr = dupstring_wlen(s, l);
+    22997: 1700:    lexbuf.siz = l + 1;
+    22997: 1701:    err = dquote_parse(endchar, sub);
+    22997: 1702:    toklen = (int)(lexbuf.ptr - tokstr);
+        -: 1703:    DPUTS(toklen > l, "Bad length for parsed subscript");
+    22997: 1704:    memcpy(s, tokstr, toklen);
+    22997: 1705:    if (err) {
+    #####: 1706:	char *strend = s + toklen;
+    #####: 1707:	err = *strend;
+    #####: 1708:	*strend = '\0';
+    #####: 1709:	untokenize(s);
+    #####: 1710:	*strend = err;
+    #####: 1711:	s = NULL;
+        -: 1712:    } else {
+    22997: 1713:	s += toklen;
+        -: 1714:    }
+    22997: 1715:    strinend();
+    22997: 1716:    inpop();
+        -: 1717:    DPUTS(cmdsp, "BUG: parse_subscript: cmdstack not empty.");
+    22997: 1718:    zcontext_restore();
+    22997: 1719:    return s;
+        -: 1720:}
+        -: 1721:
+        -: 1722:/* Tokenize a string given in s. Parsing is done as if s were a normal *
+        -: 1723: * command-line argument but it may contain separators.  This is used  *
+        -: 1724: * to parse the right-hand side of ${...%...} substitutions.           */
+        -: 1725:
+        -: 1726:/**/
+        -: 1727:mod_export int
+     1489: 1728:parse_subst_string(char *s)
+        -: 1729:{
+     1489: 1730:    int c, l = strlen(s), err;
+        -: 1731:    char *ptr;
+        -: 1732:    enum lextok ctok;
+        -: 1733:
+     1489: 1734:    if (!*s || !strcmp(s, nulstring))
+       10: 1735:	return 0;
+     1479: 1736:    zcontext_save();
+     1479: 1737:    untokenize(s);
+     1479: 1738:    inpush(dupstring_wlen(s, l), 0, NULL);
+     1479: 1739:    strinbeg(0);
+     1479: 1740:    lexbuf.len = 0;
+     1479: 1741:    lexbuf.ptr = tokstr = s;
+     1479: 1742:    lexbuf.siz = l + 1;
+     1479: 1743:    c = hgetc();
+     1479: 1744:    ctok = gettokstr(c, 1);
+     1479: 1745:    err = errflag;
+     1479: 1746:    strinend();
+     1479: 1747:    inpop();
+        -: 1748:    DPUTS(cmdsp, "BUG: parse_subst_string: cmdstack not empty.");
+     1479: 1749:    zcontext_restore();
+        -: 1750:    /* Keep any interrupt error status */
+     1479: 1751:    errflag = err | (errflag & ERRFLAG_INT);
+     1479: 1752:    if (ctok == LEXERR) {
+    #####: 1753:	untokenize(s);
+    #####: 1754:	return 1;
+        -: 1755:    }
+        -: 1756:#ifdef DEBUG
+        -: 1757:    /*
+        -: 1758:     * Historical note: we used to check here for olen (the value of lexbuf.len
+        -: 1759:     * before zcontext_restore()) == l, but that's not necessarily the case if
+        -: 1760:     * we stripped an RCQUOTE.
+        -: 1761:     */
+        -: 1762:    if (ctok != STRING || (errflag && !noerrs)) {
+        -: 1763:	fprintf(stderr, "Oops. Bug in parse_subst_string: %s\n",
+        -: 1764:		errflag ? "errflag" : "ctok != STRING");
+        -: 1765:	fflush(stderr);
+        -: 1766:	untokenize(s);
+        -: 1767:	return 1;
+        -: 1768:    }
+        -: 1769:#endif
+        -: 1770:    /* Check for $'...' quoting.  This needs special handling. */
+    47375: 1771:    for (ptr = s; *ptr; )
+        -: 1772:    {
+    44417: 1773:	if (*ptr == String && ptr[1] == Snull)
+    #####: 1774:	{
+        -: 1775:	    char *t;
+        -: 1776:	    int len, tlen, diff;
+    #####: 1777:	    t = getkeystring(ptr + 2, &len, GETKEYS_DOLLARS_QUOTE, NULL);
+    #####: 1778:	    len += 2;
+    #####: 1779:	    tlen = strlen(t);
+    #####: 1780:	    diff = len - tlen;
+        -: 1781:	    /*
+        -: 1782:	     * Yuk.
+        -: 1783:	     * parse_subst_string() currently handles strings in-place.
+        -: 1784:	     * That's not so easy to fix without knowing whether
+        -: 1785:	     * additional memory should come off the heap or
+        -: 1786:	     * otherwise.  So we cheat by copying the unquoted string
+        -: 1787:	     * into place, unless it's too long.  That's not the
+        -: 1788:	     * normal case, but I'm worried there are pathological
+        -: 1789:	     * cases with converting metafied multibyte strings.
+        -: 1790:	     * If someone can prove there aren't I will be very happy.
+        -: 1791:	     */
+    #####: 1792:	    if (diff < 0) {
+        -: 1793:		DPUTS(1, "$'...' subst too long: fix get_parse_string()");
+    #####: 1794:		return 1;
+        -: 1795:	    }
+    #####: 1796:	    memcpy(ptr, t, tlen);
+    #####: 1797:	    ptr += tlen;
+    #####: 1798:	    if (diff > 0) {
+    #####: 1799:		char *dptr = ptr;
+    #####: 1800:		char *sptr = ptr + diff;
+    #####: 1801:		while ((*dptr++ = *sptr++))
+        -: 1802:		    ;
+        -: 1803:	    }
+        -: 1804:	} else
+    44417: 1805:	    ptr++;
+        -: 1806:    }
+     1479: 1807:    return 0;
+        -: 1808:}
+        -: 1809:
+        -: 1810:/* Called below to report word positions. */
+        -: 1811:
+        -: 1812:/**/
+        -: 1813:static void
+       66: 1814:gotword(void)
+        -: 1815:{
+       66: 1816:    int nwe = zlemetall + 1 - inbufct + (addedx == 2 ? 1 : 0);
+       66: 1817:    if (zlemetacs <= nwe) {
+       31: 1818:	int nwb = zlemetall - wordbeg + addedx;
+       31: 1819:	if (zlemetacs >= nwb) {
+       31: 1820:	    wb = nwb;
+       31: 1821:	    we = nwe;
+        -: 1822:	} else {
+    #####: 1823:	    wb = zlemetacs + addedx;
+    #####: 1824:	    if (we < wb)
+    #####: 1825:		we = wb;
+        -: 1826:	}
+       31: 1827:	lexflags = 0;
+        -: 1828:    }
+       66: 1829:}
+        -: 1830:
+        -: 1831:/* Check if current lex text matches an alias: 1 if so, else 0 */
+        -: 1832:
+        -: 1833:static int
+    15171: 1834:checkalias(void)
+        -: 1835:{
+        -: 1836:    Alias an;
+        -: 1837:
+    15171: 1838:    if (!zshlextext)
+        2: 1839:	return 0;
+        -: 1840:
+    19351: 1841:    if (!noaliases && isset(ALIASESOPT) &&
+     4182: 1842:	(!isset(POSIXALIASES) ||
+    #####: 1843:	 (tok == STRING && !reswdtab->getnode(reswdtab, zshlextext)))) {
+        -: 1844:	char *suf;
+        -: 1845:
+     4182: 1846:	an = (Alias) aliastab->getnode(aliastab, zshlextext);
+     4182: 1847:	if (an && !an->inuse &&
+    #####: 1848:	    ((an->node.flags & ALIAS_GLOBAL) ||
+    #####: 1849:	     (incmdpos && tok == STRING) || inalmore)) {
+    #####: 1850:	    if (!lexstop) {
+        -: 1851:		/*
+        -: 1852:		 * Tokens that don't require a space after, get one,
+        -: 1853:		 * because they are treated as if preceded by one.
+        -: 1854:		 */
+    #####: 1855:		int c = hgetc();
+    #####: 1856:		hungetc(c);
+    #####: 1857:		if (!iblank(c))
+    #####: 1858:		    inpush(" ", INP_ALIAS, 0);
+        -: 1859:	    }
+    #####: 1860:	    inpush(an->text, INP_ALIAS, an);
+    #####: 1861:	    if (an->text[0] == ' ' && !(an->node.flags & ALIAS_GLOBAL))
+    #####: 1862:		aliasspaceflag = 1;
+    #####: 1863:	    lexstop = 0;
+    #####: 1864:	    return 1;
+        -: 1865:	}
+     4321: 1866:	if ((suf = strrchr(zshlextext, '.')) && suf[1] &&
+      417: 1867:	    suf > zshlextext && suf[-1] != Meta &&
+      139: 1868:	    (an = (Alias)sufaliastab->getnode(sufaliastab, suf+1)) &&
+    #####: 1869:	    !an->inuse && incmdpos) {
+    #####: 1870:	    inpush(dupstring(zshlextext), INP_ALIAS, an);
+    #####: 1871:	    inpush(" ", INP_ALIAS, NULL);
+    #####: 1872:	    inpush(an->text, INP_ALIAS, NULL);
+    #####: 1873:	    lexstop = 0;
+    #####: 1874:	    return 1;
+        -: 1875:	}
+        -: 1876:    }
+        -: 1877:
+    15169: 1878:    return 0;
+        -: 1879:}
+        -: 1880:
+        -: 1881:/* expand aliases and reserved words */
+        -: 1882:
+        -: 1883:/**/
+        -: 1884:int
+    22940: 1885:exalias(void)
+        -: 1886:{
+        -: 1887:    Reswd rw;
+        -: 1888:
+    22940: 1889:    hwend();
+    23060: 1890:    if (interact && isset(SHINSTDIN) && !strin && incasepat <= 0 &&
+      280: 1891:	tok == STRING && !nocorrect && !(inbufflags & INP_ALIAS) &&
+      160: 1892:	!hist_is_in_word()  &&
+      160: 1893:	(isset(CORRECTALL) || (isset(CORRECT) && incmdpos)))
+    #####: 1894:	spckword(&tokstr, 1, incmdpos, 1);
+        -: 1895:
+    22940: 1896:    if (!tokstr) {
+     8759: 1897:	zshlextext = tokstrings[tok];
+        -: 1898:
+     8759: 1899:	if (tok == NEWLIN)
+     6126: 1900:	    return 0;
+     2633: 1901:	return checkalias();
+        -: 1902:    } else {
+    14181: 1903:	VARARR(char, copy, (strlen(tokstr) + 1));
+        -: 1904:
+    14181: 1905:	if (has_token(tokstr)) {
+        -: 1906:	    char *p, *t;
+        -: 1907:
+     6820: 1908:	    zshlextext = p = copy;
+    83198: 1909:	    for (t = tokstr;
+    76378: 1910:		 (*p++ = itok(*t) ? ztokens[*t++ - Pound] : *t++););
+        -: 1911:	} else
+     7361: 1912:	    zshlextext = tokstr;
+        -: 1913:
+    14181: 1914:	if ((lexflags & LEXFLAGS_ZLE) && !(inbufflags & INP_ALIAS)) {
+       66: 1915:	    int zp = lexflags;
+        -: 1916:
+       66: 1917:	    gotword();
+       66: 1918:	    if ((zp & LEXFLAGS_ZLE) && !lexflags) {
+       31: 1919:		if (zshlextext == copy)
+        9: 1920:		    zshlextext = tokstr;
+       31: 1921:		return 0;
+        -: 1922:	    }
+        -: 1923:	}
+        -: 1924:
+    14150: 1925:	if (tok == STRING) {
+        -: 1926:	    /* Check for an alias */
+    12538: 1927:	    if ((zshlextext != copy || !isset(POSIXALIASES)) && checkalias()) {
+    #####: 1928:		if (zshlextext == copy)
+    #####: 1929:		    zshlextext = tokstr;
+    #####: 1930:		return 1;
+        -: 1931:	    }
+        -: 1932:
+        -: 1933:	    /* Then check for a reserved word */
+    20315: 1934:	    if ((incmdpos ||
+    23331: 1935:		 (unset(IGNOREBRACES) && unset(IGNORECLOSEBRACES) &&
+    12568: 1936:		  zshlextext[0] == '}' && !zshlextext[1])) &&
+     4776: 1937:		(rw = (Reswd) reswdtab->getnode(reswdtab, zshlextext))) {
+     3097: 1938:		tok = rw->token;
+     3097: 1939:		inrepeat_ = (tok == REPEAT);
+     6194: 1940:		if (tok == DINBRACK)
+      546: 1941:		    incond = 1;
+     9441: 1942:	    } else if (incond && !strcmp(zshlextext, "]]")) {
+      546: 1943:		tok = DOUTBRACK;
+      546: 1944:		incond = 0;
+     8895: 1945:	    } else if (incond == 1 && zshlextext[0] == '!' && !zshlextext[1])
+        8: 1946:		tok = BANG;
+        -: 1947:	}
+    14150: 1948:	inalmore = 0;
+    14150: 1949:	if (zshlextext == copy)
+     6811: 1950:	    zshlextext = tokstr;
+        -: 1951:    }
+    14150: 1952:    return 0;
+        -: 1953:}
+        -: 1954:
+        -: 1955:/**/
+        -: 1956:void
+   472445: 1957:zshlex_raw_add(int c)
+        -: 1958:{
+   472445: 1959:    if (!lex_add_raw)
+   471922: 1960:	return;
+        -: 1961:
+      523: 1962:    *lexbuf_raw.ptr++ = c;
+      523: 1963:    if (lexbuf_raw.siz == ++lexbuf_raw.len) {
+        7: 1964:	int newbsiz = lexbuf_raw.siz * 2;
+        -: 1965:
+        7: 1966:	tokstr_raw = (char *)hrealloc(tokstr_raw, lexbuf_raw.siz, newbsiz);
+        7: 1967:	lexbuf_raw.ptr = tokstr_raw + lexbuf_raw.len;
+        7: 1968:	memset(lexbuf_raw.ptr, 0, newbsiz - lexbuf_raw.siz);
+        7: 1969:	lexbuf_raw.siz = newbsiz;
+        -: 1970:    }
+        -: 1971:}
+        -: 1972:
+        -: 1973:/**/
+        -: 1974:void
+    46935: 1975:zshlex_raw_back(void)
+        -: 1976:{
+    46935: 1977:    if (!lex_add_raw)
+    46841: 1978:	return;
+       94: 1979:    lexbuf_raw.ptr--;
+       94: 1980:    lexbuf_raw.len--;
+        -: 1981:}
+        -: 1982:
+        -: 1983:/**/
+        -: 1984:int
+     1252: 1985:zshlex_raw_mark(int offset)
+        -: 1986:{
+     1252: 1987:    if (!lex_add_raw)
+     1252: 1988:	return 0;
+    #####: 1989:    return lexbuf_raw.len + offset;
+        -: 1990:}
+        -: 1991:
+        -: 1992:/**/
+        -: 1993:void
+    #####: 1994:zshlex_raw_back_to_mark(int mark)
+        -: 1995:{
+    #####: 1996:    if (!lex_add_raw)
+    #####: 1997:	return;
+    #####: 1998:    lexbuf_raw.ptr = tokstr_raw + mark;
+    #####: 1999:    lexbuf_raw.len = mark;
+        -: 2000:}
+        -: 2001:
+        -: 2002:/*
+        -: 2003: * Skip (...) for command-style substitutions: $(...), <(...), >(...)
+        -: 2004: *
+        -: 2005: * In order to ensure we don't stop at closing parentheses with
+        -: 2006: * some other syntactic significance, we'll parse the input until
+        -: 2007: * we find an unmatched closing parenthesis.  However, we'll throw
+        -: 2008: * away the result of the parsing and just keep the string we've built
+        -: 2009: * up on the way.
+        -: 2010: */
+        -: 2011:
+        -: 2012:/**/
+        -: 2013:static int
+       18: 2014:skipcomm(void)
+        -: 2015:{
+        -: 2016:#ifdef ZSH_OLD_SKIPCOMM
+        -: 2017:    int pct = 1, c, start = 1;
+        -: 2018:
+        -: 2019:    cmdpush(CS_CMDSUBST);
+        -: 2020:    SETPARBEGIN
+        -: 2021:    c = Inpar;
+        -: 2022:    do {
+        -: 2023:	int iswhite;
+        -: 2024:	add(c);
+        -: 2025:	c = hgetc();
+        -: 2026:	if (itok(c) || lexstop)
+        -: 2027:	    break;
+        -: 2028:	iswhite = inblank(c);
+        -: 2029:	switch (c) {
+        -: 2030:	case '(':
+        -: 2031:	    pct++;
+        -: 2032:	    break;
+        -: 2033:	case ')':
+        -: 2034:	    pct--;
+        -: 2035:	    break;
+        -: 2036:	case '\\':
+        -: 2037:	    add(c);
+        -: 2038:	    c = hgetc();
+        -: 2039:	    break;
+        -: 2040:	case '\'': {
+        -: 2041:	    int strquote = lexbuf.ptr[-1] == '$';
+        -: 2042:	    add(c);
+        -: 2043:	    STOPHIST
+        -: 2044:	    while ((c = hgetc()) != '\'' && !lexstop) {
+        -: 2045:		if (c == '\\' && strquote) {
+        -: 2046:		    add(c);
+        -: 2047:		    c = hgetc();
+        -: 2048:		}
+        -: 2049:		add(c);
+        -: 2050:	    }
+        -: 2051:	    ALLOWHIST
+        -: 2052:	    break;
+        -: 2053:	}
+        -: 2054:	case '\"':
+        -: 2055:	    add(c);
+        -: 2056:	    while ((c = hgetc()) != '\"' && !lexstop)
+        -: 2057:		if (c == '\\') {
+        -: 2058:		    add(c);
+        -: 2059:		    add(hgetc());
+        -: 2060:		} else
+        -: 2061:		    add(c);
+        -: 2062:	    break;
+        -: 2063:	case '`':
+        -: 2064:	    add(c);
+        -: 2065:	    while ((c = hgetc()) != '`' && !lexstop)
+        -: 2066:		if (c == '\\')
+        -: 2067:		    add(c), add(hgetc());
+        -: 2068:		else
+        -: 2069:		    add(c);
+        -: 2070:	    break;
+        -: 2071:	case '#':
+        -: 2072:	    if (start) {
+        -: 2073:		add(c);
+        -: 2074:		while ((c = hgetc()) != '\n' && !lexstop)
+        -: 2075:		    add(c);
+        -: 2076:		iswhite = 1;
+        -: 2077:	    }
+        -: 2078:	    break;
+        -: 2079:	}
+        -: 2080:	start = iswhite;
+        -: 2081:    }
+        -: 2082:    while (pct);
+        -: 2083:    if (!lexstop)
+        -: 2084:	SETPAREND
+        -: 2085:    cmdpop();
+        -: 2086:    return lexstop;
+        -: 2087:#else
+        -: 2088:    char *new_tokstr;
+        -: 2089:    int new_lexstop, new_lex_add_raw;
+       18: 2090:    int save_infor = infor;
+        -: 2091:    struct lexbufstate new_lexbuf;
+        -: 2092:
+       18: 2093:    infor = 0;
+       18: 2094:    cmdpush(CS_CMDSUBST);
+       18: 2095:    SETPARBEGIN
+       18: 2096:    add(Inpar);
+        -: 2097:
+       18: 2098:    new_lex_add_raw = lex_add_raw + 1;
+       18: 2099:    if (!lex_add_raw) {
+        -: 2100:	/*
+        -: 2101:	 * We'll combine the string so far with the input
+        -: 2102:	 * read in for the command substitution.  To do this
+        -: 2103:	 * we'll just propagate the current tokstr etc. as the
+        -: 2104:	 * variables used for adding raw input, and
+        -: 2105:	 * ensure we swap those for the real tokstr etc. at the end.
+        -: 2106:	 *
+        -: 2107:	 * However, we need to save and restore the rest of the
+        -: 2108:	 * lexical and parse state as we're effectively parsing
+        -: 2109:	 * an internal string.  Because we're still parsing it from
+        -: 2110:	 * the original input source (we have to --- we don't know
+        -: 2111:	 * when to stop inputting it otherwise and can't rely on
+        -: 2112:	 * the input being recoverable until we've read it) we need
+        -: 2113:	 * to keep the same history context.
+        -: 2114:	 */
+       18: 2115:	new_tokstr = tokstr;
+       18: 2116:	new_lexbuf = lexbuf;
+        -: 2117:
+        -: 2118:	/*
+        -: 2119:	 * If we're expanding an alias at this point, we need the whole
+        -: 2120:	 * remaining text as part of the string for the command in
+        -: 2121:	 * parentheses, so don't backtrack.  This is different from the
+        -: 2122:	 * usual case where the alias is fully within the command, where
+        -: 2123:	 * we want the unexpanded text so that it will be expanded
+        -: 2124:	 * again when the command in the parentheses is executed.
+        -: 2125:	 *
+        -: 2126:	 * I never wanted to be a software engineer, you know.
+        -: 2127:	 */
+       18: 2128:	if (inbufflags & INP_ALIAS)
+    #####: 2129:	    inbufflags |= INP_RAW_KEEP;
+       18: 2130:	zcontext_save_partial(ZCONTEXT_LEX|ZCONTEXT_PARSE);
+       18: 2131:	hist_in_word(1);
+        -: 2132:    } else {
+        -: 2133:	/*
+        -: 2134:	 * Set up for nested command substitution, however
+        -: 2135:	 * we don't actually need the string until we get
+        -: 2136:	 * back to the top level and recover the lot.
+        -: 2137:	 * The $() body just appears empty.
+        -: 2138:	 *
+        -: 2139:	 * We do need to propagate the raw variables which would
+        -: 2140:	 * otherwise by cleared, though.
+        -: 2141:	 */
+    #####: 2142:	new_tokstr = tokstr_raw;
+    #####: 2143:	new_lexbuf = lexbuf_raw;
+        -: 2144:
+    #####: 2145:	zcontext_save_partial(ZCONTEXT_LEX|ZCONTEXT_PARSE);
+        -: 2146:    }
+       18: 2147:    tokstr_raw = new_tokstr;
+       18: 2148:    lexbuf_raw = new_lexbuf;
+       18: 2149:    lex_add_raw = new_lex_add_raw;
+        -: 2150:    /*
+        -: 2151:     * Don't do any ZLE specials down here: they're only needed
+        -: 2152:     * when we return the string from the recursive parse.
+        -: 2153:     * (TBD: this probably means we should be initialising lexflags
+        -: 2154:     * more consistently.)
+        -: 2155:     *
+        -: 2156:     * Note that in that case we're still using the ZLE line reading
+        -: 2157:     * function at the history layer --- this is consistent with the
+        -: 2158:     * intention of maintaining the history and input layers across
+        -: 2159:     * the recursive parsing.
+        -: 2160:     *
+        -: 2161:     * Also turn off LEXFLAGS_NEWLINE because this is already skipping
+        -: 2162:     * across the entire construct, and parse_event() needs embedded
+        -: 2163:     * newlines to be "real" when looking for the OUTPAR token.
+        -: 2164:     */
+       18: 2165:    lexflags &= ~(LEXFLAGS_ZLE|LEXFLAGS_NEWLINE);
+       18: 2166:    dbparens = 0;	/* restored by zcontext_restore_partial() */
+        -: 2167:
+       18: 2168:    if (!parse_event(OUTPAR) || tok != OUTPAR) {
+    #####: 2169:	if (strin) {
+        -: 2170:	    /*
+        -: 2171:	     * Get the rest of the string raw since we don't
+        -: 2172:	     * know where this token ends.
+        -: 2173:	     */
+    #####: 2174:	    while (!lexstop)
+    #####: 2175:		(void)ingetc();
+        -: 2176:	} else
+    #####: 2177:	    lexstop = 1;
+        -: 2178:    }
+        -: 2179:     /* Outpar lexical token gets added in caller if present */
+        -: 2180:
+        -: 2181:    /*
+        -: 2182:     * We're going to keep the full raw input string
+        -: 2183:     * as the current token string after popping the stack.
+        -: 2184:     */
+       18: 2185:    new_tokstr = tokstr_raw;
+       18: 2186:    new_lexbuf = lexbuf_raw;
+        -: 2187:    /*
+        -: 2188:     * We're also going to propagate the lexical state:
+        -: 2189:     * if we couldn't parse the command substitution we
+        -: 2190:     * can't continue.
+        -: 2191:     */
+       18: 2192:    new_lexstop = lexstop;
+        -: 2193:
+       18: 2194:    zcontext_restore_partial(ZCONTEXT_LEX|ZCONTEXT_PARSE);
+        -: 2195:
+       18: 2196:    if (lex_add_raw) {
+        -: 2197:	/*
+        -: 2198:	 * Keep going, so retain the raw variables.
+        -: 2199:	 */
+    #####: 2200:	tokstr_raw = new_tokstr;
+    #####: 2201:	lexbuf_raw = new_lexbuf;
+        -: 2202:    } else {
+       18: 2203:	if (!new_lexstop) {
+        -: 2204:	    /* Ignore the ')' added on input */
+       18: 2205:	    new_lexbuf.len--;
+       18: 2206:	    *--new_lexbuf.ptr = '\0';
+        -: 2207:	}
+        -: 2208:
+        -: 2209:	/*
+        -: 2210:	 * Convince the rest of lex.c we were examining a string
+        -: 2211:	 * all along.
+        -: 2212:	 */
+       18: 2213:	tokstr = new_tokstr;
+       18: 2214:	lexbuf = new_lexbuf;
+       18: 2215:	lexstop = new_lexstop;
+       18: 2216:	hist_in_word(0);
+        -: 2217:    }
+        -: 2218:
+       18: 2219:    if (!lexstop)
+       18: 2220:	SETPAREND
+       18: 2221:    cmdpop();
+       18: 2222:    infor = save_infor;
+        -: 2223:
+       18: 2224:    return lexstop;
+        -: 2225:#endif
+        -: 2226:}

@@ -1,0 +1,938 @@
+        -:    0:Source:zle_move.c
+        -:    0:Graph:/home/workspace/Src/Zle/zle_move.gcno
+        -:    0:Data:/home/workspace/Src/Zle/zle_move.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * zle_move.c - editor movement
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zle.mdh"
+        -:   31:#include "zle_move.pro"
+        -:   32:
+        -:   33:static int vimarkcs[27], vimarkline[27];
+        -:   34:
+        -:   35:#ifdef MULTIBYTE_SUPPORT
+        -:   36:/*
+        -:   37: * Take account of combining characters when moving left.  If
+        -:   38: * we are on a zero-width printable wide character and are
+        -:   39: * treating these as part of the base character for display purposes,
+        -:   40: * move left until we reach a non-zero-width printable character
+        -:   41: * (the base character).  If we reach something else first, stay where we
+        -:   42: * were.
+        -:   43: *
+        -:   44: * If setpos is non-zero, update zlecs on success.
+        -:   45: * Return 1 if we were on a combining char and could move, else 0.
+        -:   46: */
+        -:   47:/**/
+        -:   48:int
+    #####:   49:alignmultiwordleft(int *pos, int setpos)
+        -:   50:{
+    #####:   51:    int loccs = *pos;
+        -:   52:
+        -:   53:    /* generic nothing to do test */
+    #####:   54:    if (!isset(COMBININGCHARS) || loccs == zlell || loccs == 0)
+    #####:   55:	return 0;
+        -:   56:
+        -:   57:    /* need to be on combining character */
+    #####:   58:    if (!IS_COMBINING(zleline[loccs]))
+    #####:   59:	 return 0;
+        -:   60:
+        -:   61:    /* yes, go left */
+    #####:   62:    loccs--;
+        -:   63:
+        -:   64:    for (;;) {
+    #####:   65:	if (IS_BASECHAR(zleline[loccs])) {
+        -:   66:	    /* found start position */
+    #####:   67:	    if (setpos)
+    #####:   68:		*pos = loccs;
+    #####:   69:	    return 1;
+    #####:   70:	} else if (!IS_COMBINING(zleline[loccs])) {
+        -:   71:	    /* no go */
+    #####:   72:	    return 0;
+        -:   73:	}
+        -:   74:	/* combining char, keep going */
+    #####:   75:	if (loccs-- == 0)
+    #####:   76:	    return 0;
+        -:   77:    }
+        -:   78:}
+        -:   79:
+        -:   80:
+        -:   81:/*
+        -:   82: * Same principle when moving right.  We need to check if
+        -:   83: * alignmultiwordleft() would be successful in order to decide
+        -:   84: * if we're on a combining character, and if so we move right to
+        -:   85: * anything that isn't one.
+        -:   86: */
+        -:   87:/**/
+        -:   88:int
+    #####:   89:alignmultiwordright(int *pos, int setpos)
+        -:   90:{
+        -:   91:    int loccs;
+        -:   92:
+        -:   93:    /*
+        -:   94:     * Are we on a suitable character?
+        -:   95:     */
+    #####:   96:    if (!alignmultiwordleft(pos, 0))
+    #####:   97:	return 0;
+        -:   98:
+        -:   99:    /* yes, go right */
+    #####:  100:    loccs = *pos + 1;
+        -:  101:
+    #####:  102:    while (loccs < zlell) {
+        -:  103:	/* Anything other than a combining char will do here */
+    #####:  104:	if (!IS_COMBINING(zleline[loccs])) {
+    #####:  105:	    if (setpos)
+    #####:  106:		*pos = loccs;
+    #####:  107:	    return 1;
+        -:  108:	}
+    #####:  109:	loccs++;
+        -:  110:    }
+        -:  111:
+    #####:  112:    if (setpos)
+    #####:  113:	*pos = loccs;
+    #####:  114:    return 1;
+        -:  115:}
+        -:  116:
+        -:  117:
+        -:  118:/* Move cursor right, checking for combining characters */
+        -:  119:
+        -:  120:/**/
+        -:  121:mod_export void
+    #####:  122:inccs(void)
+        -:  123:{
+    #####:  124:    zlecs++;
+    #####:  125:    alignmultiwordright(&zlecs, 1);
+    #####:  126:}
+        -:  127:
+        -:  128:
+        -:  129:/* Move cursor left, checking for combining characters */
+        -:  130:
+        -:  131:/**/
+        -:  132:mod_export void
+    #####:  133:deccs(void)
+        -:  134:{
+    #####:  135:    zlecs--;
+    #####:  136:    alignmultiwordleft(&zlecs, 1);
+    #####:  137:}
+        -:  138:
+        -:  139:/* Same utilities for general position */
+        -:  140:
+        -:  141:/**/
+        -:  142:mod_export void
+    #####:  143:incpos(int *pos)
+        -:  144:{
+    #####:  145:    (*pos)++;
+    #####:  146:    alignmultiwordright(pos, 1);
+    #####:  147:}
+        -:  148:
+        -:  149:
+        -:  150:/**/
+        -:  151:mod_export void
+    #####:  152:decpos(int *pos)
+        -:  153:{
+    #####:  154:    (*pos)--;
+    #####:  155:    alignmultiwordleft(pos, 1);
+    #####:  156:}
+        -:  157:#endif
+        -:  158:
+        -:  159:
+        -:  160:/* Size of buffer in the following function */
+        -:  161:#define BMC_BUFSIZE MB_CUR_MAX
+        -:  162:/*
+        -:  163: * For a metafied string that starts at "start" and where the
+        -:  164: * current position is "ptr", go back one full character,
+        -:  165: * taking account of combining characters if necessary.
+        -:  166: */
+        -:  167:
+        -:  168:/**/
+        -:  169:mod_export char *
+    #####:  170:backwardmetafiedchar(char *start, char *endptr, convchar_t *retchr)
+        -:  171:{
+        -:  172:#ifdef MULTIBYTE_SUPPORT
+    #####:  173:    int charlen = 0;
+    #####:  174:    char *last = NULL, *bufptr, *ptr = endptr;
+    #####:  175:    convchar_t lastc = (convchar_t)0; /* not used, silence compiler */
+        -:  176:    mbstate_t mbs;
+        -:  177:    size_t ret;
+        -:  178:    wchar_t wc;
+    #####:  179:    VARARR(char, buf, BMC_BUFSIZE);
+        -:  180:
+    #####:  181:    bufptr = buf + BMC_BUFSIZE;
+    #####:  182:    while (ptr > start) {
+    #####:  183:	ptr--;
+        -:  184:	/*
+        -:  185:	 * Scanning backwards we're not guaranteed ever to find a
+        -:  186:	 * valid character.  If we've looked as far as we should
+        -:  187:	 * need to, give up.
+        -:  188:	 */
+    #####:  189:	if (bufptr-- == buf)
+    #####:  190:	    break;
+    #####:  191:	charlen++;
+    #####:  192:	if (ptr > start && ptr[-1] == Meta)
+    #####:  193:	    *bufptr = *ptr-- ^ 32;
+        -:  194:	else
+    #####:  195:	    *bufptr = *ptr;
+        -:  196:
+        -:  197:	/* we always need to restart the character from scratch */
+    #####:  198:	memset(&mbs, 0, sizeof(mbs));
+    #####:  199:	ret = mbrtowc(&wc, bufptr, charlen, &mbs);
+    #####:  200:	if (ret == 0) {
+        -:  201:	    /* NULL: unlikely, but handle anyway. */
+    #####:  202:	    if (last) {
+    #####:  203:		if (retchr)
+    #####:  204:		    *retchr = lastc;
+    #####:  205:		return last;
+        -:  206:	    } else {
+    #####:  207:		if (retchr)
+    #####:  208:		    *retchr = wc;
+    #####:  209:		return ptr;
+        -:  210:	    }
+        -:  211:	}
+    #####:  212:	if (ret != (size_t)-1) {
+    #####:  213:	    if (ret < (size_t)charlen) {
+        -:  214:		/* The last character didn't convert, so use it raw. */
+    #####:  215:		break;
+        -:  216:	    }
+    #####:  217:	    if (!isset(COMBININGCHARS)) {
+    #####:  218:		if (retchr)
+    #####:  219:		    *retchr = wc;
+    #####:  220:		return ptr;
+        -:  221:	    }
+    #####:  222:	    if (!IS_COMBINING(wc)) {
+        -:  223:		/* not a combining character... */
+    #####:  224:		if (last) {
+        -:  225:		    /*
+        -:  226:		     * ... but we were looking for a suitable base character,
+        -:  227:		     * test it.
+        -:  228:		     */
+    #####:  229:		    if (IS_BASECHAR(wc)) {
+        -:  230:			/*
+        -:  231:			 * Yes, this will do.
+        -:  232:			 */
+    #####:  233:			if (retchr)
+    #####:  234:			    *retchr = wc;
+    #####:  235:			return ptr;
+        -:  236:		    } else {
+        -:  237:			/* No, just return the first character we found */
+    #####:  238:			if (retchr)
+    #####:  239:			    *retchr = lastc;
+    #####:  240:			return last;
+        -:  241:		    }
+        -:  242:		}
+        -:  243:		/* This is the first character, so just return it. */
+    #####:  244:		if (retchr)
+    #####:  245:		    *retchr = wc;
+    #####:  246:		return ptr;
+        -:  247:	    }
+    #####:  248:	    if (!last) {
+        -:  249:		/* still looking for the character immediately before ptr */
+    #####:  250:		last = ptr;
+    #####:  251:		lastc = wc;
+        -:  252:	    }
+        -:  253:	    /* searching for base character of combining character */
+    #####:  254:	    charlen = 0;
+    #####:  255:	    bufptr = buf + BMC_BUFSIZE;
+        -:  256:	}
+        -:  257:	/*
+        -:  258:	 * Else keep scanning this character even if MB_INVALID:  we can't
+        -:  259:	 * expect MB_INCOMPLETE to work when moving backwards.
+        -:  260:	 */
+        -:  261:    }
+        -:  262:    /*
+        -:  263:     * Found something we didn't like, was there a good character
+        -:  264:     * immediately before ptr?
+        -:  265:     */
+    #####:  266:    if (last) {
+    #####:  267:	if (retchr)
+    #####:  268:	    *retchr = lastc;
+    #####:  269:	return last;
+        -:  270:    }
+        -:  271:    /*
+        -:  272:     * No, we couldn't find any good character, so just treat
+        -:  273:     * the last unmetafied byte we found as a character.
+        -:  274:     */
+        -:  275:#endif
+    #####:  276:    if (endptr > start) {
+    #####:  277:	if (endptr > start - 1 && endptr[-2] == Meta)
+        -:  278:	{
+    #####:  279:	    if (retchr)
+    #####:  280:		*retchr = (convchar_t)(endptr[-1] ^ 32);
+    #####:  281:	    return endptr - 2;
+        -:  282:	}
+        -:  283:	else
+        -:  284:	{
+    #####:  285:	    if (retchr)
+    #####:  286:		*retchr = (convchar_t)endptr[-1];
+    #####:  287:	    return endptr - 1;
+        -:  288:	}
+        -:  289:    }
+    #####:  290:    if (retchr)
+    #####:  291:	*retchr = (convchar_t)0;
+    #####:  292:    return endptr;
+        -:  293:}
+        -:  294:
+        -:  295:
+        -:  296:/**/
+        -:  297:int
+    #####:  298:beginningofline(char **args)
+        -:  299:{
+    #####:  300:    int n = zmult;
+        -:  301:
+    #####:  302:    if (n < 0) {
+        -:  303:	int ret;
+    #####:  304:	zmult = -n;
+    #####:  305:	ret = endofline(args);
+    #####:  306:	zmult = n;
+    #####:  307:	return ret;
+        -:  308:    }
+    #####:  309:    while (n--) {
+        -:  310:	int pos;
+        -:  311:
+    #####:  312:	if (zlecs == 0)
+    #####:  313:	    return 0;
+    #####:  314:	pos = zlecs;
+    #####:  315:	DECPOS(pos);
+    #####:  316:	if (zleline[pos] == '\n') {
+    #####:  317:	    zlecs = pos;
+    #####:  318:	    if (!zlecs)
+    #####:  319:		return 0;
+        -:  320:	}
+        -:  321:
+        -:  322:	/* works OK with combining chars since '\n' must be on its own */
+    #####:  323:	while (zlecs && zleline[zlecs - 1] != '\n')
+    #####:  324:	    zlecs--;
+        -:  325:    }
+    #####:  326:    return 0;
+        -:  327:}
+        -:  328:
+        -:  329:/**/
+        -:  330:int
+    #####:  331:endofline(char **args)
+        -:  332:{
+    #####:  333:    int n = zmult;
+        -:  334:
+    #####:  335:    if (n < 0) {
+        -:  336:	int ret;
+    #####:  337:	zmult = -n;
+    #####:  338:	ret = beginningofline(args);
+    #####:  339:	zmult = n;
+    #####:  340:	return ret;
+        -:  341:    }
+    #####:  342:    while (n--) {
+    #####:  343:	if (zlecs >= zlell) {
+    #####:  344:	    zlecs = zlell;
+    #####:  345:	    return 0;
+        -:  346:	}
+    #####:  347:	if ((zlecs += invicmdmode()) == zlell)
+    #####:  348:	    break;
+    #####:  349:	if (zleline[zlecs] == '\n')
+    #####:  350:	    if (++zlecs == zlell)
+    #####:  351:		return 0;
+    #####:  352:	while (zlecs != zlell && zleline[zlecs] != '\n')
+    #####:  353:	    zlecs++;
+        -:  354:    }
+    #####:  355:    return 0;
+        -:  356:}
+        -:  357:
+        -:  358:/**/
+        -:  359:int
+    #####:  360:beginningoflinehist(char **args)
+        -:  361:{
+    #####:  362:    int n = zmult;
+        -:  363:
+    #####:  364:    if (n < 0) {
+        -:  365:	int ret;
+    #####:  366:	zmult = -n;
+    #####:  367:	ret = endoflinehist(args);
+    #####:  368:	zmult = n;
+    #####:  369:	return ret;
+        -:  370:    }
+    #####:  371:    while (n) {
+        -:  372:	int pos;
+        -:  373:
+    #####:  374:	if (zlecs == 0)
+    #####:  375:	    break;
+    #####:  376:	pos = zlecs;
+    #####:  377:	DECPOS(pos);
+    #####:  378:	if (zleline[pos] == '\n') {
+    #####:  379:	    zlecs = pos;
+    #####:  380:	    if (!pos)
+    #####:  381:		break;
+        -:  382:	}
+        -:  383:
+        -:  384:	/* works OK with combining chars since '\n' must be on its own */
+    #####:  385:	while (zlecs && zleline[zlecs - 1] != '\n')
+    #####:  386:	    zlecs--;
+    #####:  387:	n--;
+        -:  388:    }
+    #####:  389:    if (n) {
+    #####:  390:	int m = zmult, ret;
+        -:  391:
+    #####:  392:	zmult = n;
+    #####:  393:	ret = uphistory(args);
+    #####:  394:	zmult = m;
+    #####:  395:	zlecs = 0;
+    #####:  396:	return ret;
+        -:  397:    }
+    #####:  398:    return 0;
+        -:  399:}
+        -:  400:
+        -:  401:/**/
+        -:  402:int
+    #####:  403:endoflinehist(char **args)
+        -:  404:{
+    #####:  405:    int n = zmult;
+        -:  406:
+    #####:  407:    if (n < 0) {
+        -:  408:	int ret;
+    #####:  409:	zmult = -n;
+    #####:  410:	ret = beginningoflinehist(args);
+    #####:  411:	zmult = n;
+    #####:  412:	return ret;
+        -:  413:    }
+    #####:  414:    while (n) {
+    #####:  415:	if (zlecs >= zlell) {
+    #####:  416:	    zlecs = zlell;
+    #####:  417:	    break;
+        -:  418:	}
+    #####:  419:	if ((zlecs += invicmdmode()) == zlell)
+    #####:  420:	    break;
+    #####:  421:	if (zleline[zlecs] == '\n')
+    #####:  422:	    if (++zlecs == zlell)
+    #####:  423:		break;
+    #####:  424:	while (zlecs != zlell && zleline[zlecs] != '\n')
+    #####:  425:	    zlecs++;
+    #####:  426:	n--;
+        -:  427:    }
+    #####:  428:    if (n) {
+    #####:  429:	int m = zmult, ret;
+        -:  430:
+    #####:  431:	zmult = n;
+    #####:  432:	ret = downhistory(args);
+    #####:  433:	zmult = m;
+    #####:  434:	return ret;
+        -:  435:    }
+    #####:  436:    return 0;
+        -:  437:}
+        -:  438:
+        -:  439:/**/
+        -:  440:int
+    #####:  441:forwardchar(char **args)
+        -:  442:{
+    #####:  443:    int n = zmult;
+        -:  444:
+    #####:  445:    if (n < 0) {
+        -:  446:	int ret;
+    #####:  447:	zmult = -n;
+    #####:  448:	ret = backwardchar(args);
+    #####:  449:	zmult = n;
+    #####:  450:	return ret;
+        -:  451:    }
+        -:  452:
+        -:  453:    /*
+        -:  454:     * If handling combining characters with the base character,
+        -:  455:     * we skip over the whole set in one go, so need to check.
+        -:  456:     */
+    #####:  457:    while (zlecs < zlell && n--)
+    #####:  458:	INCCS();
+    #####:  459:    return 0;
+        -:  460:}
+        -:  461:
+        -:  462:/**/
+        -:  463:int
+    #####:  464:backwardchar(char **args)
+        -:  465:{
+    #####:  466:    int n = zmult;
+        -:  467:
+    #####:  468:    if (n < 0) {
+        -:  469:	int ret;
+    #####:  470:	zmult = -n;
+    #####:  471:	ret = forwardchar(args);
+    #####:  472:	zmult = n;
+    #####:  473:	return ret;
+        -:  474:    }
+        -:  475:
+    #####:  476:    while (zlecs > 0 && n--)
+    #####:  477:	DECCS();
+    #####:  478:    return 0;
+        -:  479:}
+        -:  480:
+        -:  481:/**/
+        -:  482:int
+    #####:  483:setmarkcommand(UNUSED(char **args))
+        -:  484:{
+    #####:  485:    if (zmult < 0) {
+    #####:  486:	region_active = 0;
+    #####:  487:	return 0;
+        -:  488:    }
+    #####:  489:    mark = zlecs;
+    #####:  490:    region_active = 1;
+    #####:  491:    return 0;
+        -:  492:}
+        -:  493:
+        -:  494:/**/
+        -:  495:int
+    #####:  496:exchangepointandmark(UNUSED(char **args))
+        -:  497:{
+        -:  498:    int x;
+        -:  499:
+    #####:  500:    if (zmult == 0) {
+    #####:  501:	region_active = 1;
+    #####:  502:	return 0;
+        -:  503:    }
+    #####:  504:    x = mark;
+    #####:  505:    mark = zlecs;
+    #####:  506:    zlecs = x;
+    #####:  507:    if (zlecs > zlell)
+    #####:  508:	zlecs = zlell;
+    #####:  509:    if (zmult > 0)
+    #####:  510:	region_active = 1;
+    #####:  511:    return 0;
+        -:  512:}
+        -:  513:
+        -:  514:/**/
+        -:  515:int
+    #####:  516:visualmode(UNUSED(char **args))
+        -:  517:{
+    #####:  518:    if (virangeflag) {
+    #####:  519:	prefixflag = 1;
+    #####:  520:	zmod.flags &= ~MOD_LINE;
+    #####:  521:	zmod.flags |= MOD_CHAR;
+    #####:  522:	return 0;
+        -:  523:    }
+    #####:  524:    switch (region_active) {
+    #####:  525:    case 1:
+    #####:  526:	region_active = 0;
+    #####:  527:	break;
+    #####:  528:    case 0:
+    #####:  529:	mark = zlecs;
+        -:  530:	/* fall through */
+    #####:  531:    case 2:
+    #####:  532:	region_active = 1;
+    #####:  533:	break;
+        -:  534:    }
+    #####:  535:    return 0;
+        -:  536:}
+        -:  537:
+        -:  538:/**/
+        -:  539:int
+    #####:  540:visuallinemode(UNUSED(char **args))
+        -:  541:{
+    #####:  542:    if (virangeflag) {
+    #####:  543:	prefixflag = 1;
+    #####:  544:	zmod.flags &= ~MOD_CHAR;
+    #####:  545:	zmod.flags |= MOD_LINE;
+    #####:  546:	return 0;
+        -:  547:    }
+    #####:  548:    switch (region_active) {
+    #####:  549:    case 2:
+    #####:  550:	region_active = 0;
+    #####:  551:	break;
+    #####:  552:    case 0:
+    #####:  553:	mark = zlecs;
+        -:  554:	/* fall through */
+    #####:  555:    case 1:
+    #####:  556:	region_active = 2;
+    #####:  557:	break;
+        -:  558:    }
+    #####:  559:    return 0;
+        -:  560:}
+        -:  561:
+        -:  562:/**/
+        -:  563:int
+    #####:  564:deactivateregion(UNUSED(char **args))
+        -:  565:{
+    #####:  566:    region_active = 0;
+    #####:  567:    return 0;
+        -:  568:}
+        -:  569:
+        -:  570:/**/
+        -:  571:int
+    #####:  572:vigotocolumn(UNUSED(char **args))
+        -:  573:{
+    #####:  574:    int x, y, n = zmult;
+        -:  575:
+    #####:  576:    findline(&x, &y);
+    #####:  577:    if (n >= 0) {
+    #####:  578:	if (n)
+    #####:  579:	    n--;
+    #####:  580:	zlecs = x;
+    #####:  581:	while (zlecs < y && n--)
+    #####:  582:	    INCCS();
+        -:  583:    } else {
+    #####:  584:	zlecs = y;
+    #####:  585:	n = -n;
+    #####:  586:	while (zlecs > x && n--)
+    #####:  587:	    DECCS();
+        -:  588:    }
+    #####:  589:    return 0;
+        -:  590:}
+        -:  591:
+        -:  592:/**/
+        -:  593:int
+    #####:  594:vimatchbracket(UNUSED(char **args))
+        -:  595:{
+    #####:  596:    int ocs = zlecs, dir, ct;
+        -:  597:    unsigned char oth, me;
+        -:  598:
+    #####:  599:    if ((zlecs == zlell || zleline[zlecs] == '\n') && zlecs > 0)
+    #####:  600:	DECCS();
+    #####:  601:    if (virangeflag)
+    #####:  602:	mark = zlecs;
+    #####:  603:  otog:
+    #####:  604:    if (zlecs == zlell || zleline[zlecs] == '\n') {
+    #####:  605:	zlecs = ocs;
+    #####:  606:	return 1;
+        -:  607:    }
+    #####:  608:    switch (me = zleline[zlecs]) {
+    #####:  609:    case '{':
+    #####:  610:	dir = 1;
+    #####:  611:	oth = '}';
+    #####:  612:	break;
+    #####:  613:    case /*{*/ '}':
+    #####:  614:	dir = -1;
+    #####:  615:	oth = '{'; /*}*/
+    #####:  616:	break;
+    #####:  617:    case '(':
+    #####:  618:	dir = 1;
+    #####:  619:	oth = ')';
+    #####:  620:	break;
+    #####:  621:    case ')':
+    #####:  622:	dir = -1;
+    #####:  623:	oth = '(';
+    #####:  624:	break;
+    #####:  625:    case '[':
+    #####:  626:	dir = 1;
+    #####:  627:	oth = ']';
+    #####:  628:	break;
+    #####:  629:    case ']':
+    #####:  630:	dir = -1;
+    #####:  631:	oth = '[';
+    #####:  632:	break;
+    #####:  633:    default:
+    #####:  634:	INCCS();
+    #####:  635:	goto otog;
+        -:  636:    }
+    #####:  637:    if (virangeflag && dir < 0)
+    #####:  638:	INCPOS(mark); /* include starting position when going backwards */
+    #####:  639:    ct = 1;
+    #####:  640:    while (zlecs >= 0 && zlecs < zlell && ct) {
+    #####:  641:	if (dir < 0)
+    #####:  642:	    DECCS();
+        -:  643:	else
+    #####:  644:	    INCCS();
+    #####:  645:	if (zleline[zlecs] == oth)
+    #####:  646:	    ct--;
+    #####:  647:	else if (zleline[zlecs] == me)
+    #####:  648:	    ct++;
+        -:  649:    }
+    #####:  650:    if (zlecs < 0 || zlecs >= zlell) {
+    #####:  651:	zlecs = ocs;
+    #####:  652:	return 1;
+    #####:  653:    } else if(dir > 0 && virangeflag)
+    #####:  654:	INCCS();
+    #####:  655:    return 0;
+        -:  656:}
+        -:  657:
+        -:  658:/**/
+        -:  659:int
+    #####:  660:viforwardchar(char **args)
+        -:  661:{
+    #####:  662:    int lim = findeol();
+    #####:  663:    int n = zmult;
+        -:  664:
+    #####:  665:    if (n < 0) {
+        -:  666:	int ret;
+    #####:  667:	zmult = -n;
+    #####:  668:	ret = vibackwardchar(args);
+    #####:  669:	zmult = n;
+    #####:  670:	return ret;
+        -:  671:    }
+    #####:  672:    if (invicmdmode() && !virangeflag)
+    #####:  673:	DECPOS(lim);
+    #####:  674:    if (zlecs >= lim)
+    #####:  675:	return 1;
+    #####:  676:    while (n-- && zlecs < lim)
+    #####:  677:	INCCS();
+    #####:  678:    return 0;
+        -:  679:}
+        -:  680:
+        -:  681:/**/
+        -:  682:int
+    #####:  683:vibackwardchar(char **args)
+        -:  684:{
+    #####:  685:    int n = zmult;
+        -:  686:
+    #####:  687:    if (n < 0) {
+        -:  688:	int ret;
+    #####:  689:	zmult = -n;
+    #####:  690:	ret = viforwardchar(args);
+    #####:  691:	zmult = n;
+    #####:  692:	return ret;
+        -:  693:    }
+    #####:  694:    if (zlecs == findbol())
+    #####:  695:	return 1;
+    #####:  696:    while (n-- && zlecs > 0) {
+    #####:  697:	DECCS();
+    #####:  698:	if (zleline[zlecs] == '\n') {
+    #####:  699:	    zlecs++;
+    #####:  700:	    break;
+        -:  701:	}
+        -:  702:    }
+    #####:  703:    return 0;
+        -:  704:}
+        -:  705:
+        -:  706:/**/
+        -:  707:int
+    #####:  708:viendofline(UNUSED(char **args))
+        -:  709:{
+    #####:  710:    int oldcs = zlecs, n = zmult;
+        -:  711:
+    #####:  712:    if (n < 1)
+    #####:  713:	return 1;
+    #####:  714:    while(n--) {
+    #####:  715:	if (zlecs > zlell) {
+    #####:  716:	    zlecs = oldcs;
+    #####:  717:	    return 1;
+        -:  718:	}
+    #####:  719:	zlecs = findeol() + 1;
+        -:  720:    }
+    #####:  721:    DECCS();
+    #####:  722:    lastcol = 1<<30;
+    #####:  723:    return 0;
+        -:  724:}
+        -:  725:
+        -:  726:/**/
+        -:  727:int
+    #####:  728:vibeginningofline(UNUSED(char **args))
+        -:  729:{
+    #####:  730:    zlecs = findbol();
+    #####:  731:    return 0;
+        -:  732:}
+        -:  733:
+        -:  734:static ZLE_INT_T vfindchar;
+        -:  735:static int vfinddir, tailadd;
+        -:  736:
+        -:  737:/**/
+        -:  738:int
+    #####:  739:vifindnextchar(char **args)
+        -:  740:{
+    #####:  741:    if ((vfindchar = vigetkey()) != ZLEEOF) {
+    #####:  742:	vfinddir = 1;
+    #####:  743:	tailadd = 0;
+    #####:  744:	return vifindchar(0, args);
+        -:  745:    }
+    #####:  746:    return 1;
+        -:  747:}
+        -:  748:
+        -:  749:/**/
+        -:  750:int
+    #####:  751:vifindprevchar(char **args)
+        -:  752:{
+    #####:  753:    if ((vfindchar = vigetkey()) != ZLEEOF) {
+    #####:  754:	vfinddir = -1;
+    #####:  755:	tailadd = 0;
+    #####:  756:	return vifindchar(0, args);
+        -:  757:    }
+    #####:  758:    return 1;
+        -:  759:}
+        -:  760:
+        -:  761:/**/
+        -:  762:int
+    #####:  763:vifindnextcharskip(char **args)
+        -:  764:{
+    #####:  765:    if ((vfindchar = vigetkey()) != ZLEEOF) {
+    #####:  766:	vfinddir = 1;
+    #####:  767:	tailadd = -1;
+    #####:  768:	return vifindchar(0, args);
+        -:  769:    }
+    #####:  770:    return 1;
+        -:  771:}
+        -:  772:
+        -:  773:/**/
+        -:  774:int
+    #####:  775:vifindprevcharskip(char **args)
+        -:  776:{
+    #####:  777:    if ((vfindchar = vigetkey()) != ZLEEOF) {
+    #####:  778:	vfinddir = -1;
+    #####:  779:	tailadd = 1;
+    #####:  780:	return vifindchar(0, args);
+        -:  781:    }
+    #####:  782:    return 1;
+        -:  783:}
+        -:  784:
+        -:  785:/**/
+        -:  786:int
+    #####:  787:vifindchar(int repeat, char **args)
+        -:  788:{
+    #####:  789:    int ocs = zlecs, n = zmult;
+        -:  790:
+    #####:  791:    if (!vfinddir)
+    #####:  792:	return 1;
+    #####:  793:    if (n < 0) {
+        -:  794:	int ret;
+    #####:  795:	zmult = -n;
+    #####:  796:	ret = virevrepeatfind(args);
+    #####:  797:	zmult = n;
+    #####:  798:	return ret;
+        -:  799:    }
+    #####:  800:    if (repeat && tailadd != 0) {
+    #####:  801:	if (vfinddir > 0) {
+    #####:  802:	    if(zlecs < zlell && (ZLE_INT_T)zleline[zlecs+1] == vfindchar)
+    #####:  803:		INCCS();
+        -:  804:	}
+        -:  805:	else {
+    #####:  806:	    if(zlecs > 0 && (ZLE_INT_T)zleline[zlecs-1] == vfindchar)
+    #####:  807:		DECCS();
+        -:  808:	}
+        -:  809:    }
+    #####:  810:    while (n--) {
+        -:  811:	do {
+    #####:  812:	    if (vfinddir > 0)
+    #####:  813:		INCCS();
+        -:  814:	    else
+    #####:  815:		DECCS();
+    #####:  816:	} while (zlecs >= 0 && zlecs < zlell
+    #####:  817:	    && (ZLE_INT_T)zleline[zlecs] != vfindchar
+    #####:  818:	    && zleline[zlecs] != ZWC('\n'));
+    #####:  819:	if (zlecs < 0 || zlecs >= zlell || zleline[zlecs] == ZWC('\n')) {
+    #####:  820:	    zlecs = ocs;
+    #####:  821:	    return 1;
+        -:  822:	}
+        -:  823:    }
+    #####:  824:    if (tailadd > 0)
+    #####:  825:	INCCS();
+    #####:  826:    else if (tailadd < 0)
+    #####:  827:	DECCS();
+    #####:  828:    if (vfinddir == 1 && virangeflag)
+    #####:  829:	INCCS();
+    #####:  830:    return 0;
+        -:  831:}
+        -:  832:
+        -:  833:/**/
+        -:  834:int
+    #####:  835:virepeatfind(char **args)
+        -:  836:{
+    #####:  837:    return vifindchar(1, args);
+        -:  838:}
+        -:  839:
+        -:  840:/**/
+        -:  841:int
+    #####:  842:virevrepeatfind(char **args)
+        -:  843:{
+        -:  844:    int ret;
+        -:  845:
+    #####:  846:    if (zmult < 0) {
+    #####:  847:	zmult = -zmult;
+    #####:  848:	ret = vifindchar(1, args);
+    #####:  849:	zmult = -zmult;
+    #####:  850:	return ret;
+        -:  851:    }
+    #####:  852:    tailadd = -tailadd;
+    #####:  853:    vfinddir = -vfinddir;
+    #####:  854:    ret = vifindchar(1, args);
+    #####:  855:    vfinddir = -vfinddir;
+    #####:  856:    tailadd = -tailadd;
+    #####:  857:    return ret;
+        -:  858:}
+        -:  859:
+        -:  860:/**/
+        -:  861:int
+    #####:  862:vifirstnonblank(UNUSED(char **args))
+        -:  863:{
+    #####:  864:    zlecs = findbol();
+    #####:  865:    while (zlecs != zlell && ZC_iblank(zleline[zlecs]))
+    #####:  866:	INCCS();
+    #####:  867:    return 0;
+        -:  868:}
+        -:  869:
+        -:  870:/**/
+        -:  871:int
+    #####:  872:visetmark(UNUSED(char **args))
+        -:  873:{
+        -:  874:    ZLE_INT_T ch;
+        -:  875:
+    #####:  876:    ch = getfullchar(0);
+    #####:  877:    if (ch < ZWC('a') || ch > ZWC('z'))
+    #####:  878:	return 1;
+    #####:  879:    ch -= ZWC('a');
+    #####:  880:    vimarkcs[ch] = zlecs;
+    #####:  881:    vimarkline[ch] = histline;
+    #####:  882:    return 0;
+        -:  883:}
+        -:  884:
+        -:  885:/**/
+        -:  886:int
+    #####:  887:vigotomark(UNUSED(char **args))
+        -:  888:{
+        -:  889:    ZLE_INT_T ch;
+    #####:  890:    int *markcs, *markhist = 0;
+    #####:  891:    int oldcs = zlecs;
+    #####:  892:    int oldline = histline;
+        -:  893:    int tmpcs, tmphist;
+        -:  894:
+    #####:  895:    ch = getfullchar(0);
+    #####:  896:    if (ch == ZWC('\'') || ch == ZWC('`')) {
+    #####:  897:	markhist = vimarkline + 26;
+    #####:  898:	markcs = vimarkcs + 26;
+    #####:  899:    } else if (ch == ZWC('.') && curchange->prev) {
+        -:  900:	/* position cursor where it was after the last change. not exactly
+        -:  901:	 * what vim does but close enough */
+    #####:  902:	tmpcs = curchange->prev->new_cs;
+    #####:  903:	tmphist = curchange->prev->hist;
+    #####:  904:	markcs = &tmpcs;
+    #####:  905:	markhist = &tmphist;
+    #####:  906:    } else if (ch >= ZWC('a') && ch <= ZWC('z')) {
+    #####:  907:	markhist = vimarkline + (ch - ZWC('a'));
+    #####:  908:	markcs = vimarkcs + (ch - ZWC('a'));
+        -:  909:    } else
+    #####:  910:	return 1;
+    #####:  911:    if (markhist) {
+    #####:  912:	if (!*markhist)
+    #####:  913:	    return 1;
+    #####:  914:	if (histline != *markhist && !zle_goto_hist(*markhist, 0, 0)) {
+    #####:  915:	    *markhist = 0;
+    #####:  916:	    return 1;
+        -:  917:	}
+        -:  918:    }
+    #####:  919:    zlecs = *markcs;
+    #####:  920:    vimarkcs[26] = oldcs;
+    #####:  921:    vimarkline[26] = oldline;
+    #####:  922:    if (zlecs > zlell)
+    #####:  923:	zlecs = zlell;
+    #####:  924:    return 0;
+        -:  925:}
+        -:  926:
+        -:  927:/**/
+        -:  928:int
+    #####:  929:vigotomarkline(char **args)
+        -:  930:{
+    #####:  931:    vigotomark(args);
+    #####:  932:    return vifirstnonblank(zlenoargs);
+        -:  933:}

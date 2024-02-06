@@ -1,0 +1,314 @@
+        -:    0:Source:datetime.c
+        -:    0:Graph:/home/workspace/Src/Modules/datetime.gcno
+        -:    0:Data:/home/workspace/Src/Modules/datetime.gcda
+        -:    0:Runs:3
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * datetime.c - parameter and command interface to date and time utilities
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 2002 Peter Stephenson, Clint Adams
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Peter Stephenson, Clint Adams or the Zsh Development Group
+        -:   16: * be liable to any party for direct, indirect, special, incidental, or
+        -:   17: * consequential damages arising out of the use of this software and its
+        -:   18: * documentation, even if Peter Stephenson, Clint Adams and the Zsh
+        -:   19: * Development Group have been advised of the possibility of such damage.
+        -:   20: *
+        -:   21: * Peter Stephenson, Clint Adams and the Zsh Development Group specifically
+        -:   22: * disclaim any warranties, including, but not limited to, the implied
+        -:   23: * warranties of merchantability and fitness for a particular purpose.
+        -:   24: * The software provided hereunder is on an "as is" basis, and Peter
+        -:   25: * Stephenson, Clint Adams and the Zsh Development Group have no obligation
+        -:   26: * to provide maintenance, support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "datetime.mdh"
+        -:   31:#include "datetime.pro"
+        -:   32:#include <time.h>
+        -:   33:
+        -:   34:#ifndef HAVE_MKTIME
+        -:   35:#ifdef HAVE_TIMELOCAL
+        -:   36:#define	mktime(x)	timelocal(x)
+        -:   37:#define HAVE_MKTIME	1
+        -:   38:#endif
+        -:   39:#endif
+        -:   40:
+        -:   41:static int
+    #####:   42:reverse_strftime(char *nam, char **argv, char *scalar, int quiet)
+        -:   43:{
+        -:   44:#if defined(HAVE_STRPTIME) && defined(HAVE_MKTIME)
+        -:   45:    struct tm tm;
+        -:   46:    zlong mytime;
+        -:   47:    char *endp;
+        -:   48:
+        -:   49:    /*
+        -:   50:     * Initialise all parameters to zero; there's no floating point
+        -:   51:     * so memset() will do the trick.  The exception is that tm_isdst
+        -:   52:     * is set to -1 which, if not overridden, will cause mktime()
+        -:   53:     * to use the current timezone.  This is probably the best guess;
+        -:   54:     * it's the one that will cause dates and times output by strftime
+        -:   55:     * without the -r option and without an explicit timezone to be
+        -:   56:     * converted back correctly. Additionally, tm_mday is set to 1
+        -:   57:     * as that and not 0 corresponds to the first of the month.
+        -:   58:     */
+    #####:   59:    (void)memset(&tm, 0, sizeof(tm));
+    #####:   60:    tm.tm_isdst = -1;
+    #####:   61:    tm.tm_mday = 1;
+    #####:   62:    endp = strptime(argv[1], argv[0], &tm);
+        -:   63:
+    #####:   64:    if (!endp) {
+        -:   65:	/* Conversion failed completely. */
+    #####:   66:	if (!quiet)
+    #####:   67:	    zwarnnam(nam, "format not matched");
+    #####:   68:	return 1;
+        -:   69:    }
+        -:   70:
+    #####:   71:    mytime = (zlong)mktime(&tm);
+        -:   72:
+    #####:   73:    if (scalar)
+    #####:   74:	setiparam(scalar, mytime);
+        -:   75:    else {
+        -:   76:	char buf[DIGBUFSIZE];
+    #####:   77:	convbase(buf, mytime, 10);
+    #####:   78:	printf("%s\n", buf);
+        -:   79:    }
+        -:   80:
+    #####:   81:    if (*endp && !quiet) {
+        -:   82:	/*
+        -:   83:	 * Not everything in the input string was converted.
+        -:   84:	 * This is probably benign, since the format has been satisfied,
+        -:   85:	 * but issue a warning unless the quiet flag is set.
+        -:   86:	 */
+    #####:   87:	zwarnnam(nam, "warning: input string not completely matched");
+        -:   88:    }
+        -:   89:
+    #####:   90:    return 0;
+        -:   91:#else
+        -:   92:    if (!quiet)
+        -:   93:	zwarnnam(nam, "not implemented on this system");
+        -:   94:    return 2;
+        -:   95:#endif
+        -:   96:}
+        -:   97:
+        -:   98:static int
+    #####:   99:output_strftime(char *nam, char **argv, Options ops, UNUSED(int func))
+        -:  100:{
+        -:  101:    int bufsize, x, len;
+    #####:  102:    char *endptr = NULL, *scalar = NULL, *buffer;
+        -:  103:    struct tm *tm;
+        -:  104:    struct timespec ts;
+        -:  105:
+    #####:  106:    if (OPT_ISSET(ops,'s')) {
+    #####:  107:	scalar = OPT_ARG(ops, 's');
+    #####:  108:	if (!isident(scalar)) {
+    #####:  109:	    zwarnnam(nam, "not an identifier: %s", scalar);
+    #####:  110:	    return 1;
+        -:  111:	}
+        -:  112:    }
+    #####:  113:    if (OPT_ISSET(ops, 'r')) {
+    #####:  114:	if (!argv[1]) {
+    #####:  115:	    zwarnnam(nam, "timestring expected");
+    #####:  116:	    return 1;
+        -:  117:	}
+    #####:  118:	return reverse_strftime(nam, argv, scalar, OPT_ISSET(ops, 'q'));
+        -:  119:    }
+        -:  120:
+    #####:  121:    if (!argv[1]) {
+    #####:  122:	zgettime(&ts);
+    #####:  123:	tm = localtime(&ts.tv_sec);
+        -:  124:    } else {
+    #####:  125:	errno = 0;
+        -:  126:
+    #####:  127:	ts.tv_sec = (time_t)strtoul(argv[1], &endptr, 10);
+    #####:  128:	if (errno != 0) {
+    #####:  129:	    zwarnnam(nam, "%s: %e", argv[1], errno);
+    #####:  130:	    return 1;
+    #####:  131:	} else if (*argv[1] == '\0' || *endptr != '\0') {
+    #####:  132:	    zwarnnam(nam, "%s: invalid decimal number", argv[1]);
+    #####:  133:	    return 1;
+        -:  134:	}
+        -:  135:
+    #####:  136:	tm = localtime(&ts.tv_sec);
+    #####:  137:	if (!tm) {
+    #####:  138:	    zwarnnam(nam, "%s: unable to convert to time", argv[1]);
+    #####:  139:	    return 1;
+        -:  140:	}
+        -:  141:
+    #####:  142:	ts.tv_nsec = 0L;
+    #####:  143:	if (argv[2]) {
+    #####:  144:	    ts.tv_nsec = (long)zstrtol(argv[2], &endptr, 10);
+    #####:  145:	    if (errno != 0) {
+    #####:  146:		zwarnnam(nam, "%s: %e", argv[2], errno);
+    #####:  147:		return 1;
+    #####:  148:	    } else if (*argv[2] == '\0' || *endptr != '\0') {
+    #####:  149:		zwarnnam(nam, "%s: invalid decimal number", argv[2]);
+    #####:  150:		return 1;
+    #####:  151:	    } else if (ts.tv_nsec < 0 || ts.tv_nsec > 999999999) {
+    #####:  152:		zwarnnam(nam, "%s: invalid nanosecond value", argv[2]);
+    #####:  153:		return 1;
+        -:  154:	    }
+        -:  155:	}
+        -:  156:    }
+        -:  157:
+    #####:  158:    bufsize = strlen(argv[0]) * 8;
+    #####:  159:    buffer = zalloc(bufsize);
+        -:  160:
+    #####:  161:    len = 0;
+    #####:  162:    for (x=0; x < 4; x++) {
+    #####:  163:        if ((len = ztrftime(buffer, bufsize, argv[0], tm, ts.tv_nsec)) >= 0 ||
+        -:  164:	    x==3)
+        -:  165:	    break;
+    #####:  166:	buffer = zrealloc(buffer, bufsize *= 2);
+        -:  167:    }
+    #####:  168:    if (len < 0) {
+    #####:  169:	zwarnnam(nam, "bad/unsupported format: '%s'", argv[0]);
+    #####:  170:	zfree(buffer, bufsize);
+    #####:  171:	return 1;
+        -:  172:    }
+        -:  173:
+    #####:  174:    if (scalar) {
+    #####:  175:	setsparam(scalar, metafy(buffer, len, META_DUP));
+        -:  176:    } else {
+    #####:  177:	fwrite(buffer, 1, len, stdout);
+    #####:  178:	if (!OPT_ISSET(ops,'n'))
+    #####:  179:	    putchar('\n');
+        -:  180:    }
+    #####:  181:    zfree(buffer, bufsize);
+        -:  182:
+    #####:  183:    return 0;
+        -:  184:}
+        -:  185:
+        -:  186:static int
+    #####:  187:bin_strftime(char *nam, char **argv, Options ops, int func)
+        -:  188:{
+    #####:  189:    int result = 1;
+    #####:  190:    char *tz = getsparam("TZ");
+        -:  191:
+    #####:  192:    startparamscope();
+    #####:  193:    if (tz && *tz) {
+    #####:  194:	Param pm = createparam("TZ", PM_LOCAL|PM_SCALAR|PM_EXPORTED);
+    #####:  195:	if (pm)
+    #####:  196:	    pm->level = locallevel; /* because createparam() doesn't */
+    #####:  197:	setsparam("TZ", ztrdup(tz));
+        -:  198:    }
+    #####:  199:    result = output_strftime(nam, argv, ops, func);
+    #####:  200:    endparamscope();
+        -:  201:
+    #####:  202:    return result;
+        -:  203:}
+        -:  204:
+        -:  205:static zlong
+    #####:  206:getcurrentsecs(UNUSED(Param pm))
+        -:  207:{
+    #####:  208:    return (zlong) time(NULL);
+        -:  209:}
+        -:  210:
+        -:  211:static double
+    #####:  212:getcurrentrealtime(UNUSED(Param pm))
+        -:  213:{
+        -:  214:    struct timespec now;
+    #####:  215:    zgettime(&now);
+    #####:  216:    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
+        -:  217:}
+        -:  218:
+        -:  219:static char **
+    #####:  220:getcurrenttime(UNUSED(Param pm))
+        -:  221:{
+        -:  222:    char **arr;
+        -:  223:    char buf[DIGBUFSIZE];
+        -:  224:    struct timespec now;
+        -:  225:
+    #####:  226:    zgettime(&now);
+        -:  227:
+    #####:  228:    arr = (char **)zhalloc(3 * sizeof(*arr));
+    #####:  229:    sprintf(buf, "%ld", (long)now.tv_sec);
+    #####:  230:    arr[0] = dupstring(buf);
+    #####:  231:    sprintf(buf, "%ld", (long)now.tv_nsec);
+    #####:  232:    arr[1] = dupstring(buf);
+    #####:  233:    arr[2] = NULL;
+        -:  234:
+    #####:  235:    return arr;
+        -:  236:}
+        -:  237:
+        -:  238:static struct builtin bintab[] = {
+        -:  239:    BUILTIN("strftime",    0, bin_strftime,    1,   3, 0, "nqrs:", NULL),
+        -:  240:};
+        -:  241:
+        -:  242:static const struct gsu_integer epochseconds_gsu =
+        -:  243:{ getcurrentsecs, NULL, stdunsetfn };
+        -:  244:
+        -:  245:static const struct gsu_float epochrealtime_gsu =
+        -:  246:{ getcurrentrealtime, NULL, stdunsetfn };
+        -:  247:
+        -:  248:static const struct gsu_array epochtime_gsu =
+        -:  249:{ getcurrenttime, NULL, stdunsetfn };
+        -:  250:
+        -:  251:static struct paramdef patab[] = {
+        -:  252:    SPECIALPMDEF("EPOCHSECONDS", PM_INTEGER|PM_READONLY,
+        -:  253:		 &epochseconds_gsu, NULL, NULL),
+        -:  254:    SPECIALPMDEF("EPOCHREALTIME", PM_FFLOAT|PM_READONLY,
+        -:  255:		 &epochrealtime_gsu, NULL, NULL),
+        -:  256:    SPECIALPMDEF("epochtime", PM_ARRAY|PM_READONLY,
+        -:  257:		 &epochtime_gsu, NULL, NULL)
+        -:  258:};
+        -:  259:
+        -:  260:static struct features module_features = {
+        -:  261:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -:  262:    NULL, 0,
+        -:  263:    NULL, 0,
+        -:  264:    patab, sizeof(patab)/sizeof(*patab),
+        -:  265:    0
+        -:  266:};
+        -:  267:
+        -:  268:/**/
+        -:  269:int
+    #####:  270:setup_(UNUSED(Module m))
+        -:  271:{
+    #####:  272:    return 0;
+        -:  273:}
+        -:  274:
+        -:  275:/**/
+        -:  276:int
+    #####:  277:features_(Module m, char ***features)
+        -:  278:{
+    #####:  279:    *features = featuresarray(m, &module_features);
+    #####:  280:    return 0;
+        -:  281:}
+        -:  282:
+        -:  283:/**/
+        -:  284:int
+    #####:  285:enables_(Module m, int **enables)
+        -:  286:{
+    #####:  287:    return handlefeatures(m, &module_features, enables);
+        -:  288:}
+        -:  289:
+        -:  290:/**/
+        -:  291:int
+    #####:  292:boot_(UNUSED(Module m))
+        -:  293:{
+    #####:  294:    return 0;
+        -:  295:}
+        -:  296:
+        -:  297:/**/
+        -:  298:int
+    #####:  299:cleanup_(Module m)
+        -:  300:{
+    #####:  301:    return setfeatureenables(m, &module_features, NULL);
+        -:  302:}
+        -:  303:
+        -:  304:/**/
+        -:  305:int
+    #####:  306:finish_(UNUSED(Module m))
+        -:  307:{
+    #####:  308:    return 0;
+        -:  309:}

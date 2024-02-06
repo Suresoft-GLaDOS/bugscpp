@@ -1,0 +1,423 @@
+        -:    0:Source:sort.c
+        -:    0:Graph:/home/workspace/Src/sort.gcno
+        -:    0:Data:/home/workspace/Src/sort.gcda
+        -:    0:Runs:9
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * sort.c - comparison and sorting of strings
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-2007 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "zsh.mdh"
+        -:   31:#include "sort.pro"
+        -:   32:
+        -:   33:/* Flag for direction of sort: 1 forwards, -1 reverse */
+        -:   34:static int sortdir;
+        -:   35:
+        -:   36:/* Flag that sort ignores backslashes */
+        -:   37:static int sortnobslash;
+        -:   38:
+        -:   39:/* Flag that sort is numeric */
+        -:   40:static int sortnumeric;
+        -:   41:
+        -:   42:/**/
+        -:   43:static int
+      142:   44:eltpcmp(const void *a, const void *b)
+        -:   45:{
+      142:   46:    const SortElt ae = *(const SortElt *)a;
+      142:   47:    const SortElt be = *(const SortElt *)b;
+      142:   48:    const char *as = ae->cmp, *bs = be->cmp;
+      142:   49:    const char *ao = as;
+        -:   50:    int cmp;
+        -:   51:
+      142:   52:    if (ae->len != -1 || be->len != -1) {
+        -:   53:	/*
+        -:   54:	 * Length recorded.  We only do that if there are embedded
+        -:   55:	 * nulls we need to treat as regular characters.
+        -:   56:	 *
+        -:   57:	 * Since we don't know where multibyte characters start,
+        -:   58:	 * but do know that a null character can't occur inside
+        -:   59:	 * one (we are relying on multibyte characters being extensions
+        -:   60:	 * of ASCII), we can compare starting from after the last
+        -:   61:	 * null character that occurred in both strings.
+        -:   62:	 */
+        -:   63:	const char *cmpa, *cmpb;
+    #####:   64:	const char *laststarta = as;
+        -:   65:	int len;
+    #####:   66:	if (ae->len != -1) {
+    #####:   67:	    len = ae->len;
+    #####:   68:	    if (be->len != -1 && len > be->len)
+    #####:   69:		len = be->len;
+        -:   70:	}
+        -:   71:	else
+    #####:   72:	    len = be->len;
+        -:   73:
+    #####:   74:	for (cmpa = as, cmpb = bs; *cmpa == *cmpb && len--; cmpa++, cmpb++) {
+    #####:   75:	    if (!*cmpa) {
+        -:   76:		/*
+        -:   77:		 * If either string doesn't have a length, we've reached
+        -:   78:		 * the end.  This is covered in the test below.
+        -:   79:		 */
+    #####:   80:		if (ae->len == -1 || be->len == -1)
+        -:   81:		    break;
+    #####:   82:		laststarta = cmpa + 1;
+        -:   83:	    }
+        -:   84:	}
+    #####:   85:	if (*cmpa == *cmpb && ae->len != be->len) {
+        -:   86:	    /*
+        -:   87:	     * Special case: one of the strings has finished, but
+        -:   88:	     * another one continues after the NULL.  The string
+        -:   89:	     * that's finished sorts below the other.  We need
+        -:   90:	     * to handle this here since strcoll() or strcmp()
+        -:   91:	     * will just compare the strings as equal.
+        -:   92:	     */
+    #####:   93:	    if (ae->len != -1) {
+    #####:   94:		if (be->len != -1) {
+        -:   95:		    /*
+        -:   96:		     * if a is shorter it's earlier, so return -1 and
+        -:   97:		     * vice versa 
+        -:   98:		     */
+    #####:   99:		    return (ae->len - be->len) * sortdir;
+        -:  100:		} else {
+        -:  101:		    /*
+        -:  102:		     * a has a length and so continues, hence
+        -:  103:		     * b sorts lower.
+        -:  104:		     */
+    #####:  105:		    return sortdir;
+        -:  106:		}
+        -:  107:	    } else {
+        -:  108:		/*
+        -:  109:		 * b must continue because it has a recorded length,
+        -:  110:		 * so a sorts lower.
+        -:  111:		 */
+    #####:  112:		return - sortdir;
+        -:  113:	    }
+        -:  114:	}
+        -:  115:
+    #####:  116:	bs += (laststarta - as);
+    #####:  117:	as += (laststarta - as);
+        -:  118:    }
+        -:  119:
+      142:  120:   if (sortnobslash) {
+    #####:  121:	while (*as && *bs) {
+    #####:  122:	    if (*as == '\\')
+    #####:  123:		as++;
+    #####:  124:	    if (*bs == '\\')
+    #####:  125:		bs++;
+    #####:  126:	    if (*as != *bs || !*as)
+        -:  127:		break;
+    #####:  128:	    as++;
+    #####:  129:	    bs++;
+        -:  130:	}
+        -:  131:    }
+        -:  132:
+        -:  133:#ifdef HAVE_STRCOLL
+      142:  134:    cmp = strcoll(as, bs);
+        -:  135:#endif
+        -:  136:
+      142:  137:    if (sortnumeric) {
+    #####:  138:	int mul = 0;
+    #####:  139:	for (; *as == *bs && *as; as++, bs++);
+        -:  140:#ifndef HAVE_STRCOLL
+        -:  141:	cmp = (int)STOUC(*as) - (int)STOUC(*bs);
+        -:  142:#endif
+    #####:  143:	if (sortnumeric < 0) {
+    #####:  144:	    if (*as == '-' && idigit(as[1]) && idigit(*bs)) {
+    #####:  145:		cmp = -1;
+    #####:  146:		mul = 1;
+    #####:  147:	    } else if (*bs == '-' && idigit(bs[1]) && idigit(*as)) {
+    #####:  148:		cmp = 1;
+    #####:  149:		mul = 1;
+        -:  150:	    }
+        -:  151:	}
+    #####:  152:	if (!mul && (idigit(*as) || idigit(*bs))) {
+    #####:  153:	    for (; as > ao && idigit(as[-1]); as--, bs--);
+    #####:  154:	    mul = (sortnumeric < 0 && as > ao && as[-1] == '-') ? -1 : 1;
+    #####:  155:	    if (idigit(*as) && idigit(*bs)) {
+    #####:  156:		while (*as == '0')
+    #####:  157:		    as++;
+    #####:  158:		while (*bs == '0')
+    #####:  159:		    bs++;
+    #####:  160:		for (; idigit(*as) && *as == *bs; as++, bs++);
+    #####:  161:		if (idigit(*as) || idigit(*bs)) {
+    #####:  162:		    cmp = mul * ((int)STOUC(*as) - (int)STOUC(*bs));
+    #####:  163:		    while (idigit(*as) && idigit(*bs))
+    #####:  164:			as++, bs++;
+    #####:  165:		    if (idigit(*as) && !idigit(*bs))
+    #####:  166:			return mul * sortdir;
+    #####:  167:		    if (idigit(*bs) && !idigit(*as))
+    #####:  168:			return -mul * sortdir;
+        -:  169:		}
+        -:  170:	    }
+        -:  171:	}
+        -:  172:    }
+        -:  173:#ifndef HAVE_STRCOLL
+        -:  174:    else
+        -:  175:	cmp = strcmp(as, bs);
+        -:  176:#endif
+        -:  177:
+      142:  178:    return sortdir * cmp;
+        -:  179:}
+        -:  180:
+        -:  181:
+        -:  182:/*
+        -:  183: * Front-end to eltpcmp() to compare strings.
+        -:  184: * TODO: it would be better to eliminate this altogether by
+        -:  185: * making the calling function call into the sort code
+        -:  186: * at a higher level.
+        -:  187: */
+        -:  188:
+        -:  189:/**/
+        -:  190:mod_export int
+      142:  191:zstrcmp(const char *as, const char *bs, int sortflags)
+        -:  192:{
+        -:  193:    struct sortelt ae, be, *aeptr, *beptr;
+      142:  194:    int oldsortdir = sortdir;
+      142:  195:    int oldsortnobslash = sortnobslash;
+      142:  196:    int oldsortnumeric = sortnumeric;
+        -:  197:    int ret;
+        -:  198:
+      142:  199:    ae.cmp = as;
+      142:  200:    be.cmp = bs;
+      142:  201:    ae.len = -1;
+      142:  202:    be.len = -1;
+        -:  203:
+      142:  204:    aeptr = &ae;
+      142:  205:    beptr = &be;
+        -:  206:
+      142:  207:    sortdir = 1;
+      142:  208:    sortnobslash = (sortflags & SORTIT_IGNORING_BACKSLASHES) ? 1 : 0;
+      284:  209:    sortnumeric = (sortflags & SORTIT_NUMERICALLY_SIGNED) ? -1 :
+      142:  210:	(sortflags & SORTIT_NUMERICALLY) ? 1 : 0;
+        -:  211:
+      142:  212:    ret = eltpcmp(&aeptr, &beptr);
+        -:  213:
+        -:  214:    /* Paranoia: I don't think we ever need to restore these. */
+      142:  215:    sortnobslash = oldsortnobslash;
+      142:  216:    sortnumeric = oldsortnumeric;
+      142:  217:    sortdir = oldsortdir;
+        -:  218:
+      142:  219:    return ret;
+        -:  220:}
+        -:  221:
+        -:  222:
+        -:  223:/*
+        -:  224: * Sort an array of metafied strings.  Use an "or" of bit flags
+        -:  225: * to decide how to sort.  See the SORTIT_* flags in zsh.h.
+        -:  226: *
+        -:  227: * If unmetalenp is not NULL, the strings in array are already
+        -:  228: * unmetafied and unmetalenp is an array containing the corresponding
+        -:  229: * lengths.
+        -:  230: */
+        -:  231:
+        -:  232:/**/
+        -:  233:mod_export void
+    #####:  234:strmetasort(char **array, int sortwhat, int *unmetalenp)
+        -:  235:{
+        -:  236:    char **arrptr;
+        -:  237:    /*
+        -:  238:     * Array of elements containing stuff to sort.  Note sortptrarr
+        -:  239:     * is an array of pointers, since that's more efficient
+        -:  240:     * for qsort() to manipulate.  sortarr is the array of
+        -:  241:     * structures.
+        -:  242:     */
+        -:  243:    SortElt *sortptrarr, *sortptrarrptr;
+        -:  244:    SortElt sortarr, sortarrptr;
+        -:  245:    int oldsortdir, oldsortnumeric, nsort;
+        -:  246:
+    #####:  247:    nsort = arrlen(array);
+    #####:  248:    if (nsort < 2)
+    #####:  249:	return;
+        -:  250:
+    #####:  251:    pushheap();
+        -:  252:
+    #####:  253:    sortptrarr = (SortElt *) zhalloc(nsort * sizeof(SortElt));
+    #####:  254:    sortarr = (SortElt) zhalloc(nsort * sizeof(struct sortelt));
+    #####:  255:    for (arrptr = array, sortptrarrptr = sortptrarr, sortarrptr = sortarr;
+    #####:  256:	 *arrptr; arrptr++, sortptrarrptr++, sortarrptr++) {
+        -:  257:	char *metaptr;
+        -:  258:	int needlen, needalloc;
+    #####:  259:	*sortptrarrptr = sortarrptr;
+    #####:  260:	sortarrptr->orig = *arrptr;
+        -:  261:
+    #####:  262:	if (unmetalenp) {
+        -:  263:	    /*
+        -:  264:	     * Already unmetafied.  We just need to check for
+        -:  265:	     * embedded nulls.
+        -:  266:	     */
+    #####:  267:	    int count = unmetalenp[arrptr-array];
+        -:  268:	    /* Remember this length for sorted array */
+    #####:  269:	    sortarrptr->origlen = count;
+    #####:  270:	    for (metaptr = *arrptr; *metaptr != '\0' && count--; metaptr++)
+        -:  271:		;
+        -:  272:	    /* *metaptr must now be \0, even if we reached the end */
+    #####:  273:	    needlen = (count != 0);
+        -:  274:	} else {
+        -:  275:	    /*
+        -:  276:	     * Not yet unmetafied.  See if it needs unmetafying.
+        -:  277:	     * If it doesn't, there can't be any embedded nulls,
+        -:  278:	     * since these are metafied.
+        -:  279:	     */
+    #####:  280:	    needlen = 0;
+    #####:  281:	    for (metaptr = *arrptr; *metaptr && *metaptr != Meta;
+    #####:  282:		 metaptr++);
+        -:  283:	}
+        -:  284:	/*
+        -:  285:	 * See if we need to do some special checking.
+        -:  286:	 * Either we're going to need to copy it to transform it,
+        -:  287:	 * or we need to unmetafy it.
+        -:  288:	 */
+    #####:  289:	if ((needalloc = (sortwhat &
+        -:  290:			  (SORTIT_IGNORING_CASE|SORTIT_IGNORING_BACKSLASHES)))
+    #####:  291:	    || *metaptr == Meta) {
+    #####:  292:	    char *s, *t, *src = *arrptr, *dst;
+        -:  293:	    int len;
+    #####:  294:	    sortarrptr->cmp = dst =
+    #####:  295:		(char *)zhalloc(((sortwhat & SORTIT_IGNORING_CASE)?2:1)*strlen(src)+1);
+        -:  296:
+    #####:  297:	    if (unmetalenp) {
+        -:  298:		/* Already unmetafied and we have the length. */
+    #####:  299:		len = unmetalenp[arrptr-array];
+    #####:  300:	    } else if (*metaptr != '\0') {
+        -:  301:		/*
+        -:  302:		 * Needs unmetafying.  We need to check for
+        -:  303:		 * embedded nulls while we do this.
+        -:  304:		 */
+    #####:  305:		char *t = dst + (metaptr - src);
+        -:  306:
+    #####:  307:		if (metaptr != src)
+    #####:  308:		    memcpy(dst, src, metaptr - src);
+    #####:  309:		while ((*t = *metaptr++)) {
+    #####:  310:		    if (*t++ == Meta) {
+    #####:  311:			if ((t[-1] = *metaptr++ ^ 32) == '\0')
+    #####:  312:			    needlen = 1;
+        -:  313:		    }
+        -:  314:		}
+    #####:  315:		len = t - dst;
+    #####:  316:		src = dst;
+        -:  317:	    } else {
+        -:  318:		/*
+        -:  319:		 * Doesn't need unmetafying.
+        -:  320:		 * This means metaptr is the NULL at the
+        -:  321:		 * end of the string, so we have the length, and
+        -:  322:		 * there are no embedded nulls, so we don't
+        -:  323:		 * need the length later.
+        -:  324:		 * We're only copying the string to transform it
+        -:  325:		 * below.
+        -:  326:		 */
+    #####:  327:		len = metaptr - src;
+        -:  328:	    }
+    #####:  329:	    if (sortwhat & SORTIT_IGNORING_CASE) {
+    #####:  330:		char *send = src + len;
+        -:  331:#ifdef MULTIBYTE_SUPPORT
+    #####:  332:		if (isset(MULTIBYTE)) {
+        -:  333:		    /*
+        -:  334:		     * Lower the case the hard way.  Convert to a wide
+        -:  335:		     * character, process that, and convert back.  We
+        -:  336:		     * don't assume the characters have the same
+        -:  337:		     * multibyte length.  We can't use casemodify()
+        -:  338:		     * because we have unmetafied data, which may have
+        -:  339:		     * been passed down to use.
+        -:  340:		     */
+        -:  341:		    mbstate_t mbsin, mbsout;
+        -:  342:		    int clen;
+        -:  343:		    wchar_t wc;
+    #####:  344:		    memset(&mbsin, 0, sizeof(mbstate_t));
+    #####:  345:		    memset(&mbsout, 0, sizeof(mbstate_t));
+        -:  346:
+    #####:  347:		    for (s = src, t = dst; s < send; ) {
+    #####:  348:			clen = mbrtowc(&wc, s, send-s, &mbsin);
+    #####:  349:			if (clen < 0) {
+        -:  350:			    /* invalid or unfinished: treat as single bytes */
+    #####:  351:			    while (s < send)
+    #####:  352:				*t++ = tulower(*s++);
+    #####:  353:			    break;
+        -:  354:			}
+    #####:  355:			if (clen == 0) {
+        -:  356:			    /* embedded null */
+    #####:  357:			    *t++ = '\0';
+    #####:  358:			    s++;
+    #####:  359:			    continue;
+        -:  360:			}
+    #####:  361:			s += clen;
+    #####:  362:			wc = towlower(wc);
+    #####:  363:			clen = wcrtomb(t, wc, &mbsout);
+    #####:  364:			t += clen;
+        -:  365:			DPUTS(clen < 0, "Bad conversion when lowering case");
+        -:  366:		    }
+    #####:  367:		    *t = '\0';
+    #####:  368:		    len = t - dst;
+        -:  369:		} else
+        -:  370:#endif
+    #####:  371:		    for (s = src, t = dst; s < send; )
+    #####:  372:			*t++ = tulower(*s++);
+    #####:  373:		src = dst;
+        -:  374:	    }
+    #####:  375:	    if (sortwhat & SORTIT_IGNORING_BACKSLASHES) {
+    #####:  376:                char *end = src + len + 1;
+        -:  377:		/* copy null byte, so increment length */
+    #####:  378:		for (s = src, t = dst; s < end; ) {
+    #####:  379:		    if (*s == '\\') {
+    #####:  380:			s++;
+    #####:  381:			len--;
+        -:  382:		    }
+    #####:  383:		    *t++ = *s++;
+        -:  384:		}
+        -:  385:	    }
+        -:  386:	    /* Do we need to store the length (embedded null)? */
+    #####:  387:	    sortarrptr->len = needlen ? len : -1;
+        -:  388:	} else {
+        -:  389:	    /*
+        -:  390:	     * We can use the string as is, although it's possible
+        -:  391:	     * we still need to take account of an embedded null.
+        -:  392:	     */
+    #####:  393:	    sortarrptr->cmp = *arrptr;
+    #####:  394:	    sortarrptr->len = needlen ? unmetalenp[arrptr-array] : -1;
+        -:  395:	}
+        -:  396:    }
+        -:  397:    /*
+        -:  398:     * We probably don't need to restore the following, but it's pretty cheap.
+        -:  399:     */
+    #####:  400:    oldsortdir = sortdir;
+    #####:  401:    oldsortnumeric = sortnumeric;
+        -:  402:
+    #####:  403:    sortdir = (sortwhat & SORTIT_BACKWARDS) ? -1 : 1;
+    #####:  404:    sortnumeric = (sortwhat & SORTIT_NUMERICALLY_SIGNED) ? -1 :
+    #####:  405:	(sortwhat & SORTIT_NUMERICALLY) ? 1 : 0;
+        -:  406:
+    #####:  407:    qsort(sortptrarr, nsort, sizeof(SortElt), eltpcmp);
+        -:  408:
+    #####:  409:    sortnumeric = oldsortnumeric;
+    #####:  410:    sortdir = oldsortdir;
+    #####:  411:    for (arrptr = array, sortptrarrptr = sortptrarr; nsort--; ) {
+    #####:  412:	if (unmetalenp)
+    #####:  413:	    unmetalenp[arrptr-array] = (*sortptrarrptr)->origlen;
+    #####:  414:	*arrptr++ = (*sortptrarrptr++)->orig;
+        -:  415:    }
+        -:  416:
+    #####:  417:    popheap();
+        -:  418:}

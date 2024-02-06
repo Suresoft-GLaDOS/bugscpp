@@ -1,0 +1,641 @@
+        -:    0:Source:/usr/include/c++/7/bits/regex_compiler.tcc
+        -:    0:Programs:4
+        -:    1:// class template regex -*- C++ -*-
+        -:    2:
+        -:    3:// Copyright (C) 2013-2017 Free Software Foundation, Inc.
+        -:    4://
+        -:    5:// This file is part of the GNU ISO C++ Library.  This library is free
+        -:    6:// software; you can redistribute it and/or modify it under the
+        -:    7:// terms of the GNU General Public License as published by the
+        -:    8:// Free Software Foundation; either version 3, or (at your option)
+        -:    9:// any later version.
+        -:   10:
+        -:   11:// This library is distributed in the hope that it will be useful,
+        -:   12:// but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   13:// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   14:// GNU General Public License for more details.
+        -:   15:
+        -:   16:// Under Section 7 of GPL version 3, you are granted additional
+        -:   17:// permissions described in the GCC Runtime Library Exception, version
+        -:   18:// 3.1, as published by the Free Software Foundation.
+        -:   19:
+        -:   20:// You should have received a copy of the GNU General Public License and
+        -:   21:// a copy of the GCC Runtime Library Exception along with this program;
+        -:   22:// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+        -:   23:// <http://www.gnu.org/licenses/>.
+        -:   24:
+        -:   25:/**
+        -:   26: *  @file bits/regex_compiler.tcc
+        -:   27: *  This is an internal header file, included by other library headers.
+        -:   28: *  Do not attempt to use it directly. @headername{regex}
+        -:   29: */
+        -:   30:
+        -:   31:// FIXME make comments doxygen format.
+        -:   32:
+        -:   33:// This compiler refers to "Regular Expression Matching Can Be Simple And Fast"
+        -:   34:// (http://swtch.com/~rsc/regexp/regexp1.html"),
+        -:   35:// but doesn't strictly follow it.
+        -:   36://
+        -:   37:// When compiling, states are *chained* instead of tree- or graph-constructed.
+        -:   38:// It's more like structured programs: there's if statement and loop statement.
+        -:   39://
+        -:   40:// For alternative structure (say "a|b"), aka "if statement", two branches
+        -:   41:// should be constructed. However, these two shall merge to an "end_tag" at
+        -:   42:// the end of this operator:
+        -:   43://
+        -:   44://                branch1
+        -:   45://              /        \
+        -:   46:// => begin_tag            end_tag =>
+        -:   47://              \        /
+        -:   48://                branch2
+        -:   49://
+        -:   50:// This is the difference between this implementation and that in Russ's
+        -:   51:// article.
+        -:   52://
+        -:   53:// That's why we introduced dummy node here ------ "end_tag" is a dummy node.
+        -:   54:// All dummy node will be eliminated at the end of compiling process.
+        -:   55:
+        -:   56:namespace std _GLIBCXX_VISIBILITY(default)
+        -:   57:{
+        -:   58:namespace __detail
+        -:   59:{
+        -:   60:_GLIBCXX_BEGIN_NAMESPACE_VERSION
+        -:   61:
+        -:   62:  template<typename _TraitsT>
+    #####:   63:    _Compiler<_TraitsT>::
+        -:   64:    _Compiler(_IterT __b, _IterT __e,
+        -:   65:	      const typename _TraitsT::locale_type& __loc, _FlagT __flags)
+        -:   66:    : _M_flags((__flags
+    #####:   67:		& (regex_constants::ECMAScript
+        -:   68:		   | regex_constants::basic
+        -:   69:		   | regex_constants::extended
+        -:   70:		   | regex_constants::grep
+        -:   71:		   | regex_constants::egrep
+        -:   72:		   | regex_constants::awk))
+        -:   73:	       ? __flags
+        -:   74:	       : __flags | regex_constants::ECMAScript),
+        -:   75:      _M_scanner(__b, __e, _M_flags, __loc),
+        -:   76:      _M_nfa(make_shared<_RegexT>(__loc, _M_flags)),
+    #####:   77:      _M_traits(_M_nfa->_M_traits),
+    #####:   78:      _M_ctype(std::use_facet<_CtypeT>(__loc))
+        -:   79:    {
+    #####:   80:      _StateSeqT __r(*_M_nfa, _M_nfa->_M_start());
+    #####:   81:      __r._M_append(_M_nfa->_M_insert_subexpr_begin());
+    #####:   82:      this->_M_disjunction();
+    #####:   83:      if (!_M_match_token(_ScannerT::_S_token_eof))
+    #####:   84:	__throw_regex_error(regex_constants::error_paren);
+    #####:   85:      __r._M_append(_M_pop());
+        -:   86:      __glibcxx_assert(_M_stack.empty());
+    #####:   87:      __r._M_append(_M_nfa->_M_insert_subexpr_end());
+    #####:   88:      __r._M_append(_M_nfa->_M_insert_accept());
+    #####:   89:      _M_nfa->_M_eliminate_dummy();
+    #####:   90:    }
+        -:   91:
+        -:   92:  template<typename _TraitsT>
+        -:   93:    void
+    #####:   94:    _Compiler<_TraitsT>::
+        -:   95:    _M_disjunction()
+        -:   96:    {
+    #####:   97:      this->_M_alternative();
+    #####:   98:      while (_M_match_token(_ScannerT::_S_token_or))
+        -:   99:	{
+    #####:  100:	  _StateSeqT __alt1 = _M_pop();
+    #####:  101:	  this->_M_alternative();
+    #####:  102:	  _StateSeqT __alt2 = _M_pop();
+    #####:  103:	  auto __end = _M_nfa->_M_insert_dummy();
+    #####:  104:	  __alt1._M_append(__end);
+    #####:  105:	  __alt2._M_append(__end);
+        -:  106:	  // __alt2 is state._M_next, __alt1 is state._M_alt. The executor
+        -:  107:	  // executes _M_alt before _M_next, as well as executing left
+        -:  108:	  // alternative before right one.
+    #####:  109:	  _M_stack.push(_StateSeqT(*_M_nfa,
+        -:  110:				   _M_nfa->_M_insert_alt(
+        -:  111:				     __alt2._M_start, __alt1._M_start, false),
+        -:  112:				   __end));
+        -:  113:	}
+    #####:  114:    }
+        -:  115:
+        -:  116:  template<typename _TraitsT>
+        -:  117:    void
+    #####:  118:    _Compiler<_TraitsT>::
+        -:  119:    _M_alternative()
+        -:  120:    {
+    #####:  121:      if (this->_M_term())
+        -:  122:	{
+    #####:  123:	  _StateSeqT __re = _M_pop();
+    #####:  124:	  this->_M_alternative();
+    #####:  125:	  __re._M_append(_M_pop());
+    #####:  126:	  _M_stack.push(__re);
+        -:  127:	}
+        -:  128:      else
+    #####:  129:	_M_stack.push(_StateSeqT(*_M_nfa, _M_nfa->_M_insert_dummy()));
+    #####:  130:    }
+        -:  131:
+        -:  132:  template<typename _TraitsT>
+        -:  133:    bool
+    #####:  134:    _Compiler<_TraitsT>::
+        -:  135:    _M_term()
+        -:  136:    {
+    #####:  137:      if (this->_M_assertion())
+    #####:  138:	return true;
+    #####:  139:      if (this->_M_atom())
+        -:  140:	{
+    #####:  141:	  while (this->_M_quantifier());
+    #####:  142:	  return true;
+        -:  143:	}
+    #####:  144:      return false;
+        -:  145:    }
+        -:  146:
+        -:  147:  template<typename _TraitsT>
+        -:  148:    bool
+    #####:  149:    _Compiler<_TraitsT>::
+        -:  150:    _M_assertion()
+        -:  151:    {
+    #####:  152:      if (_M_match_token(_ScannerT::_S_token_line_begin))
+    #####:  153:	_M_stack.push(_StateSeqT(*_M_nfa, _M_nfa->_M_insert_line_begin()));
+    #####:  154:      else if (_M_match_token(_ScannerT::_S_token_line_end))
+    #####:  155:	_M_stack.push(_StateSeqT(*_M_nfa, _M_nfa->_M_insert_line_end()));
+    #####:  156:      else if (_M_match_token(_ScannerT::_S_token_word_bound))
+        -:  157:	// _M_value[0] == 'n' means it's negative, say "not word boundary".
+    #####:  158:	_M_stack.push(_StateSeqT(*_M_nfa, _M_nfa->
+    #####:  159:	      _M_insert_word_bound(_M_value[0] == 'n')));
+    #####:  160:      else if (_M_match_token(_ScannerT::_S_token_subexpr_lookahead_begin))
+        -:  161:	{
+    #####:  162:	  auto __neg = _M_value[0] == 'n';
+    #####:  163:	  this->_M_disjunction();
+    #####:  164:	  if (!_M_match_token(_ScannerT::_S_token_subexpr_end))
+    #####:  165:	    __throw_regex_error(regex_constants::error_paren,
+        -:  166:				"Parenthesis is not closed.");
+    #####:  167:	  auto __tmp = _M_pop();
+    #####:  168:	  __tmp._M_append(_M_nfa->_M_insert_accept());
+    #####:  169:	  _M_stack.push(
+        -:  170:	      _StateSeqT(
+    #####:  171:		*_M_nfa,
+        -:  172:		_M_nfa->_M_insert_lookahead(__tmp._M_start, __neg)));
+        -:  173:	}
+        -:  174:      else
+    #####:  175:	return false;
+    #####:  176:      return true;
+        -:  177:    }
+        -:  178:
+        -:  179:  template<typename _TraitsT>
+        -:  180:    bool
+    #####:  181:    _Compiler<_TraitsT>::
+        -:  182:    _M_quantifier()
+        -:  183:    {
+    #####:  184:      bool __neg = (_M_flags & regex_constants::ECMAScript);
+    #####:  185:      auto __init = [this, &__neg]()
+    #####:  186:	{
+    #####:  187:	  if (_M_stack.empty())
+    #####:  188:	    __throw_regex_error(regex_constants::error_badrepeat,
+        -:  189:				"Nothing to repeat before a quantifier.");
+    #####:  190:	  __neg = __neg && _M_match_token(_ScannerT::_S_token_opt);
+    #####:  191:	};
+    #####:  192:      if (_M_match_token(_ScannerT::_S_token_closure0))
+        -:  193:	{
+    #####:  194:	  __init();
+    #####:  195:	  auto __e = _M_pop();
+    #####:  196:	  _StateSeqT __r(*_M_nfa,
+        -:  197:			 _M_nfa->_M_insert_repeat(_S_invalid_state_id,
+        -:  198:						  __e._M_start, __neg));
+    #####:  199:	  __e._M_append(__r);
+    #####:  200:	  _M_stack.push(__r);
+        -:  201:	}
+    #####:  202:      else if (_M_match_token(_ScannerT::_S_token_closure1))
+        -:  203:	{
+    #####:  204:	  __init();
+    #####:  205:	  auto __e = _M_pop();
+    #####:  206:	  __e._M_append(_M_nfa->_M_insert_repeat(_S_invalid_state_id,
+        -:  207:						 __e._M_start, __neg));
+    #####:  208:	  _M_stack.push(__e);
+        -:  209:	}
+    #####:  210:      else if (_M_match_token(_ScannerT::_S_token_opt))
+        -:  211:	{
+    #####:  212:	  __init();
+    #####:  213:	  auto __e = _M_pop();
+    #####:  214:	  auto __end = _M_nfa->_M_insert_dummy();
+    #####:  215:	  _StateSeqT __r(*_M_nfa,
+        -:  216:			 _M_nfa->_M_insert_repeat(_S_invalid_state_id,
+        -:  217:						  __e._M_start, __neg));
+    #####:  218:	  __e._M_append(__end);
+    #####:  219:	  __r._M_append(__end);
+    #####:  220:	  _M_stack.push(__r);
+        -:  221:	}
+    #####:  222:      else if (_M_match_token(_ScannerT::_S_token_interval_begin))
+        -:  223:	{
+    #####:  224:	  if (_M_stack.empty())
+    #####:  225:	    __throw_regex_error(regex_constants::error_badrepeat,
+        -:  226:				"Nothing to repeat before a quantifier.");
+    #####:  227:	  if (!_M_match_token(_ScannerT::_S_token_dup_count))
+    #####:  228:	    __throw_regex_error(regex_constants::error_badbrace,
+        -:  229:				"Unexpected token in brace expression.");
+    #####:  230:	  _StateSeqT __r(_M_pop());
+    #####:  231:	  _StateSeqT __e(*_M_nfa, _M_nfa->_M_insert_dummy());
+    #####:  232:	  long __min_rep = _M_cur_int_value(10);
+    #####:  233:	  bool __infi = false;
+        -:  234:	  long __n;
+        -:  235:
+        -:  236:	  // {3
+    #####:  237:	  if (_M_match_token(_ScannerT::_S_token_comma))
+    #####:  238:	    if (_M_match_token(_ScannerT::_S_token_dup_count)) // {3,7}
+    #####:  239:	      __n = _M_cur_int_value(10) - __min_rep;
+        -:  240:	    else
+    #####:  241:	      __infi = true;
+        -:  242:	  else
+    #####:  243:	    __n = 0;
+    #####:  244:	  if (!_M_match_token(_ScannerT::_S_token_interval_end))
+    #####:  245:	    __throw_regex_error(regex_constants::error_brace,
+        -:  246:				"Unexpected end of brace expression.");
+        -:  247:
+    #####:  248:	  __neg = __neg && _M_match_token(_ScannerT::_S_token_opt);
+        -:  249:
+    #####:  250:	  for (long __i = 0; __i < __min_rep; ++__i)
+    #####:  251:	    __e._M_append(__r._M_clone());
+        -:  252:
+    #####:  253:	  if (__infi)
+        -:  254:	    {
+    #####:  255:	      auto __tmp = __r._M_clone();
+    #####:  256:	      _StateSeqT __s(*_M_nfa,
+        -:  257:			     _M_nfa->_M_insert_repeat(_S_invalid_state_id,
+        -:  258:						      __tmp._M_start, __neg));
+    #####:  259:	      __tmp._M_append(__s);
+    #####:  260:	      __e._M_append(__s);
+        -:  261:	    }
+        -:  262:	  else
+        -:  263:	    {
+    #####:  264:	      if (__n < 0)
+    #####:  265:		__throw_regex_error(regex_constants::error_badbrace,
+        -:  266:				    "Invalid range in brace expression.");
+    #####:  267:	      auto __end = _M_nfa->_M_insert_dummy();
+        -:  268:	      // _M_alt is the "match more" branch, and _M_next is the
+        -:  269:	      // "match less" one. Switch _M_alt and _M_next of all created
+        -:  270:	      // nodes. This is a hack but IMO works well.
+    #####:  271:	      std::stack<_StateIdT> __stack;
+    #####:  272:	      for (long __i = 0; __i < __n; ++__i)
+        -:  273:		{
+    #####:  274:		  auto __tmp = __r._M_clone();
+    #####:  275:		  auto __alt = _M_nfa->_M_insert_repeat(__tmp._M_start,
+        -:  276:							__end, __neg);
+    #####:  277:		  __stack.push(__alt);
+    #####:  278:		  __e._M_append(_StateSeqT(*_M_nfa, __alt, __tmp._M_end));
+        -:  279:		}
+    #####:  280:	      __e._M_append(__end);
+    #####:  281:	      while (!__stack.empty())
+        -:  282:		{
+    #####:  283:		  auto& __tmp = (*_M_nfa)[__stack.top()];
+    #####:  284:		  __stack.pop();
+    #####:  285:		  std::swap(__tmp._M_next, __tmp._M_alt);
+        -:  286:		}
+        -:  287:	    }
+    #####:  288:	  _M_stack.push(__e);
+        -:  289:	}
+        -:  290:      else
+    #####:  291:	return false;
+    #####:  292:      return true;
+        -:  293:    }
+        -:  294:
+        -:  295:#define __INSERT_REGEX_MATCHER(__func, args...)\
+        -:  296:	do\
+        -:  297:	  if (!(_M_flags & regex_constants::icase))\
+        -:  298:	    if (!(_M_flags & regex_constants::collate))\
+        -:  299:	      __func<false, false>(args);\
+        -:  300:	    else\
+        -:  301:	      __func<false, true>(args);\
+        -:  302:	  else\
+        -:  303:	    if (!(_M_flags & regex_constants::collate))\
+        -:  304:	      __func<true, false>(args);\
+        -:  305:	    else\
+        -:  306:	      __func<true, true>(args);\
+        -:  307:	while (false)
+        -:  308:
+        -:  309:  template<typename _TraitsT>
+        -:  310:    bool
+    #####:  311:    _Compiler<_TraitsT>::
+        -:  312:    _M_atom()
+        -:  313:    {
+    #####:  314:      if (_M_match_token(_ScannerT::_S_token_anychar))
+        -:  315:	{
+    #####:  316:	  if (!(_M_flags & regex_constants::ECMAScript))
+    #####:  317:	    __INSERT_REGEX_MATCHER(_M_insert_any_matcher_posix);
+        -:  318:	  else
+    #####:  319:	    __INSERT_REGEX_MATCHER(_M_insert_any_matcher_ecma);
+        -:  320:	}
+    #####:  321:      else if (_M_try_char())
+    #####:  322:	__INSERT_REGEX_MATCHER(_M_insert_char_matcher);
+    #####:  323:      else if (_M_match_token(_ScannerT::_S_token_backref))
+    #####:  324:	_M_stack.push(_StateSeqT(*_M_nfa, _M_nfa->
+    #####:  325:				 _M_insert_backref(_M_cur_int_value(10))));
+    #####:  326:      else if (_M_match_token(_ScannerT::_S_token_quoted_class))
+    #####:  327:	__INSERT_REGEX_MATCHER(_M_insert_character_class_matcher);
+    #####:  328:      else if (_M_match_token(_ScannerT::_S_token_subexpr_no_group_begin))
+        -:  329:	{
+    #####:  330:	  _StateSeqT __r(*_M_nfa, _M_nfa->_M_insert_dummy());
+    #####:  331:	  this->_M_disjunction();
+    #####:  332:	  if (!_M_match_token(_ScannerT::_S_token_subexpr_end))
+    #####:  333:	    __throw_regex_error(regex_constants::error_paren,
+        -:  334:				"Parenthesis is not closed.");
+    #####:  335:	  __r._M_append(_M_pop());
+    #####:  336:	  _M_stack.push(__r);
+        -:  337:	}
+    #####:  338:      else if (_M_match_token(_ScannerT::_S_token_subexpr_begin))
+        -:  339:	{
+    #####:  340:	  _StateSeqT __r(*_M_nfa, _M_nfa->_M_insert_subexpr_begin());
+    #####:  341:	  this->_M_disjunction();
+    #####:  342:	  if (!_M_match_token(_ScannerT::_S_token_subexpr_end))
+    #####:  343:	    __throw_regex_error(regex_constants::error_paren,
+        -:  344:				"Parenthesis is not closed.");
+    #####:  345:	  __r._M_append(_M_pop());
+    #####:  346:	  __r._M_append(_M_nfa->_M_insert_subexpr_end());
+    #####:  347:	  _M_stack.push(__r);
+        -:  348:	}
+    #####:  349:      else if (!_M_bracket_expression())
+    #####:  350:	return false;
+    #####:  351:      return true;
+        -:  352:    }
+        -:  353:
+        -:  354:  template<typename _TraitsT>
+        -:  355:    bool
+    #####:  356:    _Compiler<_TraitsT>::
+        -:  357:    _M_bracket_expression()
+        -:  358:    {
+    #####:  359:      bool __neg =
+        -:  360:	_M_match_token(_ScannerT::_S_token_bracket_neg_begin);
+    #####:  361:      if (!(__neg || _M_match_token(_ScannerT::_S_token_bracket_begin)))
+    #####:  362:	return false;
+    #####:  363:      __INSERT_REGEX_MATCHER(_M_insert_bracket_matcher, __neg);
+    #####:  364:      return true;
+        -:  365:    }
+        -:  366:#undef __INSERT_REGEX_MATCHER
+        -:  367:
+        -:  368:  template<typename _TraitsT>
+        -:  369:  template<bool __icase, bool __collate>
+        -:  370:    void
+    #####:  371:    _Compiler<_TraitsT>::
+        -:  372:    _M_insert_any_matcher_ecma()
+        -:  373:    {
+    #####:  374:      _M_stack.push(_StateSeqT(*_M_nfa,
+        -:  375:	_M_nfa->_M_insert_matcher
+        -:  376:	  (_AnyMatcher<_TraitsT, true, __icase, __collate>
+        -:  377:	    (_M_traits))));
+    #####:  378:    }
+        -:  379:
+        -:  380:  template<typename _TraitsT>
+        -:  381:  template<bool __icase, bool __collate>
+        -:  382:    void
+    #####:  383:    _Compiler<_TraitsT>::
+        -:  384:    _M_insert_any_matcher_posix()
+        -:  385:    {
+    #####:  386:      _M_stack.push(_StateSeqT(*_M_nfa,
+        -:  387:	_M_nfa->_M_insert_matcher
+        -:  388:	  (_AnyMatcher<_TraitsT, false, __icase, __collate>
+        -:  389:	    (_M_traits))));
+    #####:  390:    }
+        -:  391:
+        -:  392:  template<typename _TraitsT>
+        -:  393:  template<bool __icase, bool __collate>
+        -:  394:    void
+    #####:  395:    _Compiler<_TraitsT>::
+        -:  396:    _M_insert_char_matcher()
+        -:  397:    {
+    #####:  398:      _M_stack.push(_StateSeqT(*_M_nfa,
+        -:  399:	_M_nfa->_M_insert_matcher
+        -:  400:	  (_CharMatcher<_TraitsT, __icase, __collate>
+    #####:  401:	    (_M_value[0], _M_traits))));
+    #####:  402:    }
+        -:  403:
+        -:  404:  template<typename _TraitsT>
+        -:  405:  template<bool __icase, bool __collate>
+        -:  406:    void
+    #####:  407:    _Compiler<_TraitsT>::
+        -:  408:    _M_insert_character_class_matcher()
+        -:  409:    {
+        -:  410:      __glibcxx_assert(_M_value.size() == 1);
+    #####:  411:      _BracketMatcher<_TraitsT, __icase, __collate> __matcher
+    #####:  412:	(_M_ctype.is(_CtypeT::upper, _M_value[0]), _M_traits);
+    #####:  413:      __matcher._M_add_character_class(_M_value, false);
+    #####:  414:      __matcher._M_ready();
+    #####:  415:      _M_stack.push(_StateSeqT(*_M_nfa,
+    #####:  416:	_M_nfa->_M_insert_matcher(std::move(__matcher))));
+    #####:  417:    }
+        -:  418:
+        -:  419:  template<typename _TraitsT>
+        -:  420:  template<bool __icase, bool __collate>
+        -:  421:    void
+    #####:  422:    _Compiler<_TraitsT>::
+        -:  423:    _M_insert_bracket_matcher(bool __neg)
+        -:  424:    {
+    #####:  425:      _BracketMatcher<_TraitsT, __icase, __collate> __matcher(__neg, _M_traits);
+    #####:  426:      pair<bool, _CharT> __last_char; // Optional<_CharT>
+    #####:  427:      __last_char.first = false;
+    #####:  428:      if (!(_M_flags & regex_constants::ECMAScript))
+        -:  429:	{
+    #####:  430:	  if (_M_try_char())
+        -:  431:	    {
+    #####:  432:	      __last_char.first = true;
+    #####:  433:	      __last_char.second = _M_value[0];
+        -:  434:	    }
+    #####:  435:	  else if (_M_match_token(_ScannerT::_S_token_bracket_dash))
+        -:  436:	    {
+    #####:  437:	      __last_char.first = true;
+    #####:  438:	      __last_char.second = '-';
+        -:  439:	    }
+        -:  440:	}
+    #####:  441:      while (_M_expression_term(__last_char, __matcher));
+    #####:  442:      if (__last_char.first)
+    #####:  443:	__matcher._M_add_char(__last_char.second);
+    #####:  444:      __matcher._M_ready();
+    #####:  445:      _M_stack.push(_StateSeqT(
+    #####:  446:		      *_M_nfa,
+    #####:  447:		      _M_nfa->_M_insert_matcher(std::move(__matcher))));
+    #####:  448:    }
+        -:  449:
+        -:  450:  template<typename _TraitsT>
+        -:  451:  template<bool __icase, bool __collate>
+        -:  452:    bool
+    #####:  453:    _Compiler<_TraitsT>::
+        -:  454:    _M_expression_term(pair<bool, _CharT>& __last_char,
+        -:  455:		       _BracketMatcher<_TraitsT, __icase, __collate>& __matcher)
+        -:  456:    {
+    #####:  457:      if (_M_match_token(_ScannerT::_S_token_bracket_end))
+    #####:  458:	return false;
+        -:  459:
+    #####:  460:      const auto __push_char = [&](_CharT __ch)
+        -:  461:      {
+    #####:  462:	if (__last_char.first)
+    #####:  463:	  __matcher._M_add_char(__last_char.second);
+        -:  464:	else
+    #####:  465:	  __last_char.first = true;
+    #####:  466:	__last_char.second = __ch;
+    #####:  467:      };
+    #####:  468:      const auto __flush = [&]
+        -:  469:      {
+    #####:  470:	if (__last_char.first)
+        -:  471:	  {
+    #####:  472:	    __matcher._M_add_char(__last_char.second);
+    #####:  473:	    __last_char.first = false;
+        -:  474:	  }
+    #####:  475:      };
+        -:  476:
+    #####:  477:      if (_M_match_token(_ScannerT::_S_token_collsymbol))
+        -:  478:	{
+    #####:  479:	  auto __symbol = __matcher._M_add_collate_element(_M_value);
+    #####:  480:	  if (__symbol.size() == 1)
+    #####:  481:	    __push_char(__symbol[0]);
+        -:  482:	  else
+    #####:  483:	    __flush();
+        -:  484:	}
+    #####:  485:      else if (_M_match_token(_ScannerT::_S_token_equiv_class_name))
+        -:  486:	{
+    #####:  487:	  __flush();
+    #####:  488:	  __matcher._M_add_equivalence_class(_M_value);
+        -:  489:	}
+    #####:  490:      else if (_M_match_token(_ScannerT::_S_token_char_class_name))
+        -:  491:	{
+    #####:  492:	  __flush();
+    #####:  493:	  __matcher._M_add_character_class(_M_value, false);
+        -:  494:	}
+    #####:  495:      else if (_M_try_char())
+    #####:  496:	__push_char(_M_value[0]);
+        -:  497:      // POSIX doesn't allow '-' as a start-range char (say [a-z--0]),
+        -:  498:      // except when the '-' is the first or last character in the bracket
+        -:  499:      // expression ([--0]). ECMAScript treats all '-' after a range as a
+        -:  500:      // normal character. Also see above, where _M_expression_term gets called.
+        -:  501:      //
+        -:  502:      // As a result, POSIX rejects [-----], but ECMAScript doesn't.
+        -:  503:      // Boost (1.57.0) always uses POSIX style even in its ECMAScript syntax.
+        -:  504:      // Clang (3.5) always uses ECMAScript style even in its POSIX syntax.
+        -:  505:      //
+        -:  506:      // It turns out that no one reads BNFs ;)
+    #####:  507:      else if (_M_match_token(_ScannerT::_S_token_bracket_dash))
+        -:  508:	{
+    #####:  509:	  if (!__last_char.first)
+        -:  510:	    {
+    #####:  511:	      if (!(_M_flags & regex_constants::ECMAScript))
+        -:  512:		{
+    #####:  513:		  if (_M_match_token(_ScannerT::_S_token_bracket_end))
+        -:  514:		    {
+    #####:  515:		      __push_char('-');
+    #####:  516:		      return false;
+        -:  517:		    }
+    #####:  518:		  __throw_regex_error(
+        -:  519:		    regex_constants::error_range,
+        -:  520:		    "Unexpected dash in bracket expression. For POSIX syntax, "
+        -:  521:		    "a dash is not treated literally only when it is at "
+        -:  522:		    "beginning or end.");
+        -:  523:		}
+    #####:  524:	      __push_char('-');
+        -:  525:	    }
+        -:  526:	  else
+        -:  527:	    {
+    #####:  528:	      if (_M_try_char())
+        -:  529:		{
+    #####:  530:		  __matcher._M_make_range(__last_char.second, _M_value[0]);
+    #####:  531:		  __last_char.first = false;
+        -:  532:		}
+    #####:  533:	      else if (_M_match_token(_ScannerT::_S_token_bracket_dash))
+        -:  534:		{
+    #####:  535:		  __matcher._M_make_range(__last_char.second, '-');
+    #####:  536:		  __last_char.first = false;
+        -:  537:		}
+        -:  538:	      else
+        -:  539:		{
+    #####:  540:		  if (_M_scanner._M_get_token()
+    #####:  541:		      != _ScannerT::_S_token_bracket_end)
+    #####:  542:		    __throw_regex_error(
+        -:  543:		      regex_constants::error_range,
+        -:  544:		      "Character is expected after a dash.");
+    #####:  545:		  __push_char('-');
+        -:  546:		}
+        -:  547:	    }
+        -:  548:	}
+    #####:  549:      else if (_M_match_token(_ScannerT::_S_token_quoted_class))
+        -:  550:	{
+    #####:  551:	  __flush();
+    #####:  552:	  __matcher._M_add_character_class(_M_value,
+    #####:  553:					   _M_ctype.is(_CtypeT::upper,
+    #####:  554:						       _M_value[0]));
+        -:  555:	}
+        -:  556:      else
+    #####:  557:	__throw_regex_error(regex_constants::error_brack,
+        -:  558:			    "Unexpected character in bracket expression.");
+        -:  559:
+    #####:  560:      return true;
+        -:  561:    }
+        -:  562:
+        -:  563:  template<typename _TraitsT>
+        -:  564:    bool
+    #####:  565:    _Compiler<_TraitsT>::
+        -:  566:    _M_try_char()
+        -:  567:    {
+    #####:  568:      bool __is_char = false;
+    #####:  569:      if (_M_match_token(_ScannerT::_S_token_oct_num))
+        -:  570:	{
+    #####:  571:	  __is_char = true;
+    #####:  572:	  _M_value.assign(1, _M_cur_int_value(8));
+        -:  573:	}
+    #####:  574:      else if (_M_match_token(_ScannerT::_S_token_hex_num))
+        -:  575:	{
+    #####:  576:	  __is_char = true;
+    #####:  577:	  _M_value.assign(1, _M_cur_int_value(16));
+        -:  578:	}
+    #####:  579:      else if (_M_match_token(_ScannerT::_S_token_ord_char))
+    #####:  580:	__is_char = true;
+    #####:  581:      return __is_char;
+        -:  582:    }
+        -:  583:
+        -:  584:  template<typename _TraitsT>
+        -:  585:    bool
+    #####:  586:    _Compiler<_TraitsT>::
+        -:  587:    _M_match_token(_TokenT token)
+        -:  588:    {
+    #####:  589:      if (token == _M_scanner._M_get_token())
+        -:  590:	{
+    #####:  591:	  _M_value = _M_scanner._M_get_value();
+    #####:  592:	  _M_scanner._M_advance();
+    #####:  593:	  return true;
+        -:  594:	}
+    #####:  595:      return false;
+        -:  596:    }
+        -:  597:
+        -:  598:  template<typename _TraitsT>
+        -:  599:    int
+    #####:  600:    _Compiler<_TraitsT>::
+        -:  601:    _M_cur_int_value(int __radix)
+        -:  602:    {
+    #####:  603:      long __v = 0;
+    #####:  604:      for (typename _StringT::size_type __i = 0;
+    #####:  605:	   __i < _M_value.length(); ++__i)
+    #####:  606:	__v =__v * __radix + _M_traits.value(_M_value[__i], __radix);
+    #####:  607:      return __v;
+        -:  608:    }
+        -:  609:
+        -:  610:  template<typename _TraitsT, bool __icase, bool __collate>
+        -:  611:    bool
+    #####:  612:    _BracketMatcher<_TraitsT, __icase, __collate>::
+        -:  613:    _M_apply(_CharT __ch, false_type) const
+        -:  614:    {
+    #####:  615:      return [this, __ch]
+    #####:  616:      {
+    #####:  617:	if (std::binary_search(_M_char_set.begin(), _M_char_set.end(),
+        -:  618:			       _M_translator._M_translate(__ch)))
+    #####:  619:	  return true;
+    #####:  620:	auto __s = _M_translator._M_transform(__ch);
+    #####:  621:	for (auto& __it : _M_range_set)
+    #####:  622:	  if (_M_translator._M_match_range(__it.first, __it.second, __s))
+    #####:  623:	    return true;
+    #####:  624:	if (_M_traits.isctype(__ch, _M_class_set))
+    #####:  625:	  return true;
+    #####:  626:	if (std::find(_M_equiv_set.begin(), _M_equiv_set.end(),
+    #####:  627:		      _M_traits.transform_primary(&__ch, &__ch+1))
+    #####:  628:	    != _M_equiv_set.end())
+    #####:  629:	  return true;
+    #####:  630:	for (auto& __it : _M_neg_class_set)
+    #####:  631:	  if (!_M_traits.isctype(__ch, __it))
+    #####:  632:	    return true;
+    #####:  633:	return false;
+    #####:  634:      }() ^ _M_is_non_matching;
+        -:  635:    }
+        -:  636:
+        -:  637:_GLIBCXX_END_NAMESPACE_VERSION
+        -:  638:} // namespace __detail
+        -:  639:} // namespace

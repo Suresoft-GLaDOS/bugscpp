@@ -1,0 +1,4078 @@
+        -:    0:Source:compctl.c
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * compctl.c - the compctl builtin
+        -:    3: *
+        -:    4: * This file is part of zsh, the Z shell.
+        -:    5: *
+        -:    6: * Copyright (c) 1992-1997 Paul Falstad
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Permission is hereby granted, without written agreement and without
+        -:   10: * license or royalty fees, to use, copy, modify, and distribute this
+        -:   11: * software and to distribute modified versions of this software for any
+        -:   12: * purpose, provided that the above copyright notice and the following
+        -:   13: * two paragraphs appear in all copies of this software.
+        -:   14: *
+        -:   15: * In no event shall Paul Falstad or the Zsh Development Group be liable
+        -:   16: * to any party for direct, indirect, special, incidental, or consequential
+        -:   17: * damages arising out of the use of this software and its documentation,
+        -:   18: * even if Paul Falstad and the Zsh Development Group have been advised of
+        -:   19: * the possibility of such damage.
+        -:   20: *
+        -:   21: * Paul Falstad and the Zsh Development Group specifically disclaim any
+        -:   22: * warranties, including, but not limited to, the implied warranties of
+        -:   23: * merchantability and fitness for a particular purpose.  The software
+        -:   24: * provided hereunder is on an "as is" basis, and Paul Falstad and the
+        -:   25: * Zsh Development Group have no obligation to provide maintenance,
+        -:   26: * support, updates, enhancements, or modifications.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:#include "compctl.mdh"
+        -:   31:#include "compctl.pro"
+        -:   32:
+        -:   33:/* Global matcher. */
+        -:   34:
+        -:   35:/**/
+        -:   36:static Cmlist cmatcher;
+        -:   37:
+        -:   38:/* Default completion infos */
+        -:   39: 
+        -:   40:/**/
+        -:   41:struct compctl cc_compos, cc_default, cc_first, cc_dummy;
+        -:   42: 
+        -:   43:/* Hash table for completion info for commands */
+        -:   44: 
+        -:   45:/**/
+        -:   46:HashTable compctltab;
+        -:   47:
+        -:   48:/* List of pattern compctls */
+        -:   49:
+        -:   50:/**/
+        -:   51:Patcomp patcomps;
+        -:   52:
+        -:   53:#define COMP_LIST	(1<<0)	/* -L */
+        -:   54:#define COMP_COMMAND	(1<<1)	/* -C */
+        -:   55:#define COMP_DEFAULT	(1<<2)	/* -D */
+        -:   56:#define COMP_FIRST	(1<<3)	/* -T */
+        -:   57:#define COMP_REMOVE	(1<<4)
+        -:   58:#define COMP_LISTMATCH	(1<<5)	/* -L and -M */
+        -:   59:
+        -:   60:#define COMP_SPECIAL (COMP_COMMAND|COMP_DEFAULT|COMP_FIRST)
+        -:   61:
+        -:   62:/* Flag for listing, command, default, or first completion */
+        -:   63:static int cclist;
+        -:   64:
+        -:   65:/* Mask for determining what to print */
+        -:   66:static unsigned long showmask = 0;
+        -:   67:
+        -:   68:/**/
+        -:   69:static void
+    #####:   70:createcompctltable(void)
+        -:   71:{
+    #####:   72:    compctltab = newhashtable(23, "compctltab", NULL);
+        -:   73:
+    #####:   74:    compctltab->hash        = hasher;
+    #####:   75:    compctltab->emptytable  = emptyhashtable;
+    #####:   76:    compctltab->filltable   = NULL;
+    #####:   77:    compctltab->cmpnodes    = strcmp;
+    #####:   78:    compctltab->addnode     = addhashnode;
+    #####:   79:    compctltab->getnode     = gethashnode2;
+    #####:   80:    compctltab->getnode2    = gethashnode2;
+    #####:   81:    compctltab->removenode  = removehashnode;
+    #####:   82:    compctltab->disablenode = NULL;
+    #####:   83:    compctltab->enablenode  = NULL;
+    #####:   84:    compctltab->freenode    = freecompctlp;
+    #####:   85:    compctltab->printnode   = printcompctlp;
+        -:   86:
+    #####:   87:    patcomps = NULL;
+    #####:   88:}
+        -:   89:
+        -:   90:/**/
+        -:   91:static void
+    #####:   92:freecompctlp(HashNode hn)
+        -:   93:{
+    #####:   94:    Compctlp ccp = (Compctlp) hn;
+        -:   95:
+    #####:   96:    zsfree(ccp->node.nam);
+    #####:   97:    freecompctl(ccp->cc);
+    #####:   98:    zfree(ccp, sizeof(struct compctlp));
+    #####:   99:}
+        -:  100:
+        -:  101:/**/
+        -:  102:static void
+    #####:  103:freecompctl(Compctl cc)
+        -:  104:{
+    #####:  105:    if (cc == &cc_default ||
+    #####:  106: 	cc == &cc_first ||
+    #####:  107:	cc == &cc_compos ||
+    #####:  108:	--cc->refc > 0)
+    #####:  109:	return;
+        -:  110:
+    #####:  111:    zsfree(cc->keyvar);
+    #####:  112:    zsfree(cc->glob);
+    #####:  113:    zsfree(cc->str);
+    #####:  114:    zsfree(cc->func);
+    #####:  115:    zsfree(cc->explain);
+    #####:  116:    zsfree(cc->ylist);
+    #####:  117:    zsfree(cc->prefix);
+    #####:  118:    zsfree(cc->suffix);
+    #####:  119:    zsfree(cc->hpat);
+    #####:  120:    zsfree(cc->gname);
+    #####:  121:    zsfree(cc->subcmd);
+    #####:  122:    zsfree(cc->substr);
+    #####:  123:    if (cc->cond)
+    #####:  124:	freecompcond(cc->cond);
+    #####:  125:    if (cc->ext) {
+        -:  126:	Compctl n, m;
+        -:  127:
+    #####:  128:	n = cc->ext;
+        -:  129:	do {
+    #####:  130:	    m = (Compctl) (n->next);
+    #####:  131:	    freecompctl(n);
+    #####:  132:	    n = m;
+        -:  133:	}
+    #####:  134:	while (n);
+        -:  135:    }
+    #####:  136:    if (cc->xor && cc->xor != &cc_default)
+    #####:  137:	freecompctl(cc->xor);
+    #####:  138:    if (cc->matcher)
+    #####:  139:	freecmatcher(cc->matcher);
+    #####:  140:    zsfree(cc->mstr);
+    #####:  141:    zfree(cc, sizeof(struct compctl));
+        -:  142:}
+        -:  143:
+        -:  144:/**/
+        -:  145:static void
+    #####:  146:freecompcond(void *a)
+        -:  147:{
+    #####:  148:    Compcond cc = (Compcond) a;
+        -:  149:    Compcond and, or, c;
+        -:  150:    int n;
+        -:  151:
+    #####:  152:    for (c = cc; c; c = or) {
+    #####:  153:	or = c->or;
+    #####:  154:	for (; c; c = and) {
+    #####:  155:	    and = c->and;
+    #####:  156:	    if (c->type == CCT_POS ||
+    #####:  157:		c->type == CCT_NUMWORDS) {
+    #####:  158:		free(c->u.r.a);
+    #####:  159:		free(c->u.r.b);
+    #####:  160:	    } else if (c->type == CCT_CURSUF ||
+    #####:  161:		       c->type == CCT_CURPRE) {
+    #####:  162:		for (n = 0; n < c->n; n++)
+    #####:  163:		    if (c->u.s.s[n])
+    #####:  164:			zsfree(c->u.s.s[n]);
+    #####:  165:		free(c->u.s.s);
+    #####:  166:	    } else if (c->type == CCT_RANGESTR ||
+    #####:  167:		       c->type == CCT_RANGEPAT) {
+    #####:  168:		for (n = 0; n < c->n; n++)
+    #####:  169:		    if (c->u.l.a[n])
+    #####:  170:			zsfree(c->u.l.a[n]);
+    #####:  171:		free(c->u.l.a);
+    #####:  172:		for (n = 0; n < c->n; n++)
+    #####:  173:		    if (c->u.l.b[n])
+    #####:  174:			zsfree(c->u.l.b[n]);
+    #####:  175:		free(c->u.l.b);
+        -:  176:	    } else {
+    #####:  177:		for (n = 0; n < c->n; n++)
+    #####:  178:		    if (c->u.s.s[n])
+    #####:  179:			zsfree(c->u.s.s[n]);
+    #####:  180:		free(c->u.s.p);
+    #####:  181:		free(c->u.s.s);
+        -:  182:	    }
+    #####:  183:	    zfree(c, sizeof(struct compcond));
+        -:  184:	}
+        -:  185:    }
+    #####:  186:}
+        -:  187:
+        -:  188:/**/
+        -:  189:static int
+    #####:  190:compctlread(char *name, char **args, Options ops, char *reply)
+        -:  191:{
+        -:  192:    char *buf, *bptr;
+        -:  193:
+        -:  194:    /* only allowed to be called for completion */
+    #####:  195:    if (!incompctlfunc) {
+    #####:  196:	zwarnnam(name, "option valid only in functions called via compctl");
+    #####:  197:	return 1;
+        -:  198:    }
+        -:  199:
+        -:  200:    METACHECK();
+        -:  201:
+    #####:  202:    if (OPT_ISSET(ops,'l')) {
+        -:  203:	/*
+        -:  204:	 * -ln gives the index of the word the cursor is currently on, which
+        -:  205:	 * is available in zlemetacs (but remember that Zsh counts from one,
+        -:  206:	 * not zero!)
+        -:  207:	 */
+    #####:  208:	if (OPT_ISSET(ops,'n')) {
+        -:  209:	    char nbuf[14];
+        -:  210:
+    #####:  211:	    if (OPT_ISSET(ops,'e') || OPT_ISSET(ops,'E'))
+    #####:  212:		printf("%d\n", zlemetacs + 1);
+    #####:  213:	    if (!OPT_ISSET(ops,'e')) {
+    #####:  214:		sprintf(nbuf, "%d", zlemetacs + 1);
+    #####:  215:		setsparam(reply, ztrdup(nbuf));
+        -:  216:	    }
+    #####:  217:	    return 0;
+        -:  218:	}
+        -:  219:	/* without -n, the current line is assigned to the given parameter as a
+        -:  220:	scalar */
+    #####:  221:	if (OPT_ISSET(ops,'e') || OPT_ISSET(ops,'E')) {
+    #####:  222:	    zputs(zlemetaline, stdout);
+    #####:  223:	    putchar('\n');
+        -:  224:	}
+    #####:  225:	if (!OPT_ISSET(ops,'e'))
+    #####:  226:	    setsparam(reply, ztrdup(zlemetaline));
+        -:  227:    } else {
+        -:  228:	int i;
+        -:  229:
+        -:  230:	/* -cn gives the current cursor position within the current word, which
+        -:  231:	is available in clwpos (but remember that Zsh counts from one, not
+        -:  232:	zero!) */
+    #####:  233:	if (OPT_ISSET(ops,'n')) {
+        -:  234:	    char nbuf[14];
+        -:  235:
+    #####:  236:	    if (OPT_ISSET(ops,'e') || OPT_ISSET(ops,'E'))
+    #####:  237:		printf("%d\n", clwpos + 1);
+    #####:  238:	    if (!OPT_ISSET(ops,'e')) {
+    #####:  239:		sprintf(nbuf, "%d", clwpos + 1);
+    #####:  240:		setsparam(reply, ztrdup(nbuf));
+        -:  241:	    }
+    #####:  242:	    return 0;
+        -:  243:	}
+        -:  244:	/* without -n, the words of the current line are assigned to the given
+        -:  245:	parameters separately */
+    #####:  246:	if (OPT_ISSET(ops,'A') && !OPT_ISSET(ops,'e')) {
+        -:  247:	    /* the -A option means that one array is specified, instead of
+        -:  248:	    many parameters */
+    #####:  249:	    char **p, **b = (char **)zshcalloc((clwnum + 1) * sizeof(char *));
+        -:  250:
+    #####:  251:	    for (i = 0, p = b; i < clwnum; p++, i++)
+    #####:  252:		*p = ztrdup(clwords[i]);
+        -:  253:
+    #####:  254:	    setaparam(reply, b);
+    #####:  255:	    return 0;
+        -:  256:	}
+    #####:  257:	if (OPT_ISSET(ops,'e') || OPT_ISSET(ops,'E')) {
+    #####:  258:	    for (i = 0; i < clwnum; i++) {
+    #####:  259:		zputs(clwords[i], stdout);
+    #####:  260:		putchar('\n');
+        -:  261:	    }
+        -:  262:
+    #####:  263:	    if (OPT_ISSET(ops,'e'))
+    #####:  264:		return 0;
+        -:  265:	}
+        -:  266:
+    #####:  267:	for (i = 0; i < clwnum && *args; reply = *args++, i++)
+    #####:  268:	    setsparam(reply, ztrdup(clwords[i]));
+        -:  269:
+    #####:  270:	if (i < clwnum) {
+        -:  271:	    int j, len;
+        -:  272:
+    #####:  273:	    for (j = i, len = 0; j < clwnum; len += strlen(clwords[j++]));
+    #####:  274:	    bptr = buf = zalloc(len + j - i);
+    #####:  275:	    while (i < clwnum) {
+    #####:  276:		strucpy(&bptr, clwords[i++]);
+    #####:  277:		*bptr++ = ' ';
+        -:  278:	    }
+    #####:  279:	    bptr[-1] = '\0';
+        -:  280:	} else
+    #####:  281:	    buf = ztrdup("");
+    #####:  282:	setsparam(reply, buf);
+        -:  283:    }
+    #####:  284:    return 0;
+        -:  285:}
+        -:  286:
+        -:  287:/* Copy a list of completion matchers. */
+        -:  288:
+        -:  289:/**/
+        -:  290:static Cmlist
+    #####:  291:cpcmlist(Cmlist l)
+        -:  292:{
+    #####:  293:    Cmlist r = NULL, *p = &r, n;
+        -:  294:
+    #####:  295:    while (l) {
+    #####:  296:	*p = n = (Cmlist) zalloc(sizeof(struct cmlist));
+    #####:  297:	n->next = NULL;
+    #####:  298:	n->matcher = cpcmatcher(l->matcher);
+    #####:  299:	n->str = ztrdup(l->str);
+        -:  300:
+    #####:  301:	p = &(n->next);
+    #####:  302:	l = l->next;
+        -:  303:    }
+    #####:  304:    return r;
+        -:  305:}
+        -:  306:
+        -:  307:/* Set the global match specs. */
+        -:  308:
+        -:  309:/**/
+        -:  310:static int
+    #####:  311:set_gmatcher(char *name, char **argv)
+        -:  312:{
+    #####:  313:    Cmlist l = NULL, *q = &l, n;
+        -:  314:    Cmatcher m;
+        -:  315:
+    #####:  316:    while (*argv) {
+    #####:  317:	if ((m = parse_cmatcher(name, *argv)) == pcm_err)
+    #####:  318:	    return 1;
+    #####:  319:	*q = n = (Cmlist) zhalloc(sizeof(struct cmlist));
+    #####:  320:	n->next = NULL;
+    #####:  321:	n->matcher = m;
+    #####:  322:	n->str = *argv++;
+        -:  323:
+    #####:  324:	q = &(n->next);
+        -:  325:    }
+    #####:  326:    freecmlist(cmatcher);
+    #####:  327:    cmatcher = cpcmlist(l);
+        -:  328:
+    #####:  329:    return 1;
+        -:  330:}
+        -:  331:
+        -:  332:/* Try to get the global matcher from the given compctl. */
+        -:  333:
+        -:  334:/**/
+        -:  335:static int
+    #####:  336:get_gmatcher(char *name, char **argv)
+        -:  337:{
+    #####:  338:    if (!strcmp(*argv, "-M")) {
+    #####:  339:	char **p = ++argv;
+        -:  340:
+    #####:  341:	while (*p) {
+    #####:  342:	    if (**p++ == '-')
+    #####:  343:		return 0;
+        -:  344:	}
+    #####:  345:	if (set_gmatcher(name, argv))
+    #####:  346:	    return 2;
+        -:  347:
+    #####:  348:	return 1;
+        -:  349:    }
+    #####:  350:    return 0;
+        -:  351:}
+        -:  352:
+        -:  353:/* This prints the global matcher definitions. */
+        -:  354:
+        -:  355:/**/
+        -:  356:static void
+    #####:  357:print_gmatcher(int ac)
+        -:  358:{
+        -:  359:    Cmlist p;
+        -:  360:
+    #####:  361:    if ((p = cmatcher)) {
+    #####:  362:	printf((ac ? "compctl -M" : "MATCH"));
+        -:  363:
+    #####:  364:	while (p) {
+    #####:  365:	    printf(" \'%s\'", p->str);
+        -:  366:
+    #####:  367:	    p = p->next;
+        -:  368:	}
+    #####:  369:	putchar('\n');
+        -:  370:    }
+    #####:  371:}
+        -:  372:
+        -:  373:/* Parse the basic flags for `compctl' */
+        -:  374:
+        -:  375:/**/
+        -:  376:static int
+    #####:  377:get_compctl(char *name, char ***av, Compctl cc, int first, int isdef, int cl)
+        -:  378:{
+        -:  379:    /* Parse the basic flags for completion:
+        -:  380:     * first is a flag that we are not in extended completion,
+        -:  381:     * while hx indicates or (+) completion (need to know for
+        -:  382:     * default and command completion as the initial compctl is special). 
+        -:  383:     * cct is a temporary just to hold flags; it never needs freeing.
+        -:  384:     */
+        -:  385:    struct compctl cct;
+    #####:  386:    char **argv = *av, argv_end[2] = "x";
+    #####:  387:    int ready = 0, hx = 0;
+        -:  388:
+        -:  389:    /* Handle `compctl + foo ...' specially:  turn it into
+        -:  390:     * a default compctl by removing it from the hash table.
+        -:  391:     */
+    #####:  392:    if (first && argv[0][0] == '+' && !argv[0][1] &&
+    #####:  393:	!(argv[1] && argv[1][0] == '-' && argv[1][1])) {
+    #####:  394:	argv++;
+    #####:  395:	if(argv[0] && argv[0][0] == '-')
+    #####:  396:	    argv++;
+    #####:  397:	*av = argv;
+    #####:  398:	if (cl)
+    #####:  399:	    return 1;
+        -:  400:	else {
+    #####:  401:	    cclist = COMP_REMOVE;
+    #####:  402:	    return 0;
+        -:  403:	}
+        -:  404:    }
+        -:  405:
+    #####:  406:    memset((void *)&cct, 0, sizeof(cct));
+    #####:  407:    cct.mask2 = CC_CCCONT;
+        -:  408:
+        -:  409:    /* Loop through the flags until we have no more:        *
+        -:  410:     * those with arguments are not properly allocated yet, *
+        -:  411:     * we just hang on to the argument that was passed.     */
+    #####:  412:    for (; !ready && argv[0] && argv[0][0] == '-' && (argv[0][1] || !first);) {
+    #####:  413:	if (!argv[0][1])
+    #####:  414:	    *argv = "-+";
+    #####:  415:	while (!ready && *++(*argv)) {
+    #####:  416:	    if(**argv == Meta)
+    #####:  417:		*++*argv ^= 32;
+    #####:  418:	    switch (**argv) {
+    #####:  419:	    case 'f':
+    #####:  420:		cct.mask |= CC_FILES;
+    #####:  421:		break;
+    #####:  422:	    case 'c':
+    #####:  423:		cct.mask |= CC_COMMPATH;
+    #####:  424:		break;
+    #####:  425:	    case 'm':
+    #####:  426:		cct.mask |= CC_EXTCMDS;
+    #####:  427:		break;
+    #####:  428:	    case 'w':
+    #####:  429:		cct.mask |= CC_RESWDS;
+    #####:  430:		break;
+    #####:  431:	    case 'o':
+    #####:  432:		cct.mask |= CC_OPTIONS;
+    #####:  433:		break;
+    #####:  434:	    case 'v':
+    #####:  435:		cct.mask |= CC_VARS;
+    #####:  436:		break;
+    #####:  437:	    case 'b':
+    #####:  438:		cct.mask |= CC_BINDINGS;
+    #####:  439:		break;
+    #####:  440:	    case 'A':
+    #####:  441:		cct.mask |= CC_ARRAYS;
+    #####:  442:		break;
+    #####:  443:	    case 'I':
+    #####:  444:		cct.mask |= CC_INTVARS;
+    #####:  445:		break;
+    #####:  446:	    case 'F':
+    #####:  447:		cct.mask |= CC_SHFUNCS;
+    #####:  448:		break;
+    #####:  449:	    case 'p':
+    #####:  450:		cct.mask |= CC_PARAMS;
+    #####:  451:		break;
+    #####:  452:	    case 'E':
+    #####:  453:		cct.mask |= CC_ENVVARS;
+    #####:  454:		break;
+    #####:  455:	    case 'j':
+    #####:  456:		cct.mask |= CC_JOBS;
+    #####:  457:		break;
+    #####:  458:	    case 'r':
+    #####:  459:		cct.mask |= CC_RUNNING;
+    #####:  460:		break;
+    #####:  461:	    case 'z':
+    #####:  462:		cct.mask |= CC_STOPPED;
+    #####:  463:		break;
+    #####:  464:	    case 'B':
+    #####:  465:		cct.mask |= CC_BUILTINS;
+    #####:  466:		break;
+    #####:  467:	    case 'a':
+    #####:  468:		cct.mask |= CC_ALREG | CC_ALGLOB;
+    #####:  469:		break;
+    #####:  470:	    case 'R':
+    #####:  471:		cct.mask |= CC_ALREG;
+    #####:  472:		break;
+    #####:  473:	    case 'G':
+    #####:  474:		cct.mask |= CC_ALGLOB;
+    #####:  475:		break;
+    #####:  476:	    case 'u':
+    #####:  477:		cct.mask |= CC_USERS;
+    #####:  478:		break;
+    #####:  479:	    case 'd':
+    #####:  480:		cct.mask |= CC_DISCMDS;
+    #####:  481:		break;
+    #####:  482:	    case 'e':
+    #####:  483:		cct.mask |= CC_EXCMDS;
+    #####:  484:		break;
+    #####:  485:	    case 'N':
+    #####:  486:		cct.mask |= CC_SCALARS;
+    #####:  487:		break;
+    #####:  488:	    case 'O':
+    #####:  489:		cct.mask |= CC_READONLYS;
+    #####:  490:		break;
+    #####:  491:	    case 'Z':
+    #####:  492:		cct.mask |= CC_SPECIALS;
+    #####:  493:		break;
+    #####:  494:	    case 'q':
+    #####:  495:		cct.mask |= CC_REMOVE;
+    #####:  496:		break;
+    #####:  497:	    case 'U':
+    #####:  498:		cct.mask |= CC_DELETE;
+    #####:  499:		break;
+    #####:  500:	    case 'n':
+    #####:  501:		cct.mask |= CC_NAMED;
+    #####:  502:		break;
+    #####:  503:	    case 'Q':
+    #####:  504:		cct.mask |= CC_QUOTEFLAG;
+    #####:  505:		break;
+    #####:  506:	    case '/':
+    #####:  507:		cct.mask |= CC_DIRS;
+    #####:  508:		break;
+    #####:  509:	    case 't':
+        -:  510:		{
+        -:  511:		    char *p;
+        -:  512:
+    #####:  513:		    if (cl) {
+    #####:  514:			zwarnnam(name, "illegal option -%c", **argv);
+    #####:  515:			return 1;
+        -:  516:		    }
+    #####:  517:		    if ((*argv)[1]) {
+    #####:  518:			p = (*argv) + 1;
+    #####:  519:			*argv = argv_end;
+    #####:  520:		    } else if (!argv[1]) {
+    #####:  521:			zwarnnam(name, "retry specification expected after -%c",
+    #####:  522:				 **argv);
+    #####:  523:			return 1;
+        -:  524:		    } else {
+    #####:  525:			p = *++argv;
+    #####:  526:			*argv = argv_end;
+        -:  527:		    }
+    #####:  528:		    switch (*p) {
+    #####:  529:		    case '+':
+    #####:  530:			cct.mask2 = CC_XORCONT;
+    #####:  531:			break;
+    #####:  532:		    case 'n':
+    #####:  533:			cct.mask2 = 0;
+    #####:  534:			break;
+    #####:  535:		    case '-':
+    #####:  536:			cct.mask2 = CC_PATCONT;
+    #####:  537:			break;
+    #####:  538:		    case 'x':
+    #####:  539:			cct.mask2 = CC_DEFCONT;
+    #####:  540:			break;
+    #####:  541:		    default:
+    #####:  542:			zwarnnam(name, "invalid retry specification character `%c'",
+    #####:  543:				 *p);
+    #####:  544:			return 1;
+        -:  545:		    }
+    #####:  546:		    if (p[1]) {
+    #####:  547:			zwarnnam(name, "too many retry specification characters: `%s'",
+        -:  548:				 p + 1);
+    #####:  549:			return 1;
+        -:  550:		    }
+        -:  551:		}
+    #####:  552:		break;
+    #####:  553:	    case 'k':
+    #####:  554:		if ((*argv)[1]) {
+    #####:  555:		    cct.keyvar = (*argv) + 1;
+    #####:  556:		    *argv = argv_end;
+    #####:  557:		} else if (!argv[1]) {
+    #####:  558:		    zwarnnam(name, "variable name expected after -%c", **argv);
+    #####:  559:		    return 1;
+        -:  560:		} else {
+    #####:  561:		    cct.keyvar = *++argv;
+    #####:  562:		    *argv = argv_end;
+        -:  563:		}
+    #####:  564:		break;
+    #####:  565:	    case 'K':
+    #####:  566:		if ((*argv)[1]) {
+    #####:  567:		    cct.func = (*argv) + 1;
+    #####:  568:		    *argv = argv_end;
+    #####:  569:		} else if (!argv[1]) {
+    #####:  570:		    zwarnnam(name, "function name expected after -%c", **argv);
+    #####:  571:		    return 1;
+        -:  572:		} else {
+    #####:  573:		    cct.func = *++argv;
+    #####:  574:		    *argv = argv_end;
+        -:  575:		}
+    #####:  576:		break;
+    #####:  577:	    case 'Y':
+    #####:  578:		cct.mask |= CC_EXPANDEXPL;
+    #####:  579:		goto expl;
+    #####:  580:	    case 'X':
+    #####:  581:		cct.mask &= ~CC_EXPANDEXPL;
+    #####:  582:	    expl:
+    #####:  583:		if ((*argv)[1]) {
+    #####:  584:		    cct.explain = (*argv) + 1;
+    #####:  585:		    *argv = argv_end;
+    #####:  586:		} else if (!argv[1]) {
+    #####:  587:		    zwarnnam(name, "string expected after -%c", **argv);
+    #####:  588:		    return 1;
+        -:  589:		} else {
+    #####:  590:		    cct.explain = *++argv;
+    #####:  591:		    *argv = argv_end;
+        -:  592:		}
+    #####:  593:		break;
+    #####:  594:	    case 'y':
+    #####:  595:		if ((*argv)[1]) {
+    #####:  596:		    cct.ylist = (*argv) + 1;
+    #####:  597:		    *argv = argv_end;
+    #####:  598:		} else if (!argv[1]) {
+    #####:  599:		    zwarnnam(name, "function/variable expected after -%c",
+    #####:  600:			     **argv);
+        -:  601:		} else {
+    #####:  602:		    cct.ylist = *++argv;
+    #####:  603:		    *argv = argv_end;
+        -:  604:		}
+    #####:  605:		break;
+    #####:  606:	    case 'P':
+    #####:  607:		if ((*argv)[1]) {
+    #####:  608:		    cct.prefix = (*argv) + 1;
+    #####:  609:		    *argv = argv_end;
+    #####:  610:		} else if (!argv[1]) {
+    #####:  611:		    zwarnnam(name, "string expected after -%c", **argv);
+    #####:  612:		    return 1;
+        -:  613:		} else {
+    #####:  614:		    cct.prefix = *++argv;
+    #####:  615:		    *argv = argv_end;
+        -:  616:		}
+    #####:  617:		break;
+    #####:  618:	    case 'S':
+    #####:  619:		if ((*argv)[1]) {
+    #####:  620:		    cct.suffix = (*argv) + 1;
+    #####:  621:		    *argv = argv_end;
+    #####:  622:		} else if (!argv[1]) {
+    #####:  623:		    zwarnnam(name, "string expected after -%c", **argv);
+    #####:  624:		    return 1;
+        -:  625:		} else {
+    #####:  626:		    cct.suffix = *++argv;
+    #####:  627:		    *argv = argv_end;
+        -:  628:		}
+    #####:  629:		break;
+    #####:  630:	    case 'g':
+    #####:  631:		if ((*argv)[1]) {
+    #####:  632:		    cct.glob = (*argv) + 1;
+    #####:  633:		    *argv = argv_end;
+    #####:  634:		} else if (!argv[1]) {
+    #####:  635:		    zwarnnam(name, "glob pattern expected after -%c", **argv);
+    #####:  636:		    return 1;
+        -:  637:		} else {
+    #####:  638:		    cct.glob = *++argv;
+    #####:  639:		    *argv = argv_end;
+        -:  640:		}
+    #####:  641:		break;
+    #####:  642:	    case 's':
+    #####:  643:		if ((*argv)[1]) {
+    #####:  644:		    cct.str = (*argv) + 1;
+    #####:  645:		    *argv = argv_end;
+    #####:  646:		} else if (!argv[1]) {
+    #####:  647:		    zwarnnam(name, "command string expected after -%c",
+    #####:  648:			     **argv);
+    #####:  649:		    return 1;
+        -:  650:		} else {
+    #####:  651:		    cct.str = *++argv;
+    #####:  652:		    *argv = argv_end;
+        -:  653:		}
+    #####:  654:		break;
+    #####:  655:	    case 'l':
+    #####:  656:		if (cl) {
+    #####:  657:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  658:		    return 1;
+    #####:  659:		} else if ((*argv)[1]) {
+    #####:  660:		    cct.subcmd = (*argv) + 1;
+    #####:  661:		    *argv = argv_end;
+    #####:  662:		} else if (!argv[1]) {
+    #####:  663:		    zwarnnam(name, "command name expected after -%c", **argv);
+    #####:  664:		    return 1;
+        -:  665:		} else {
+    #####:  666:		    cct.subcmd = *++argv;
+    #####:  667:		    *argv = argv_end;
+        -:  668:		}
+    #####:  669:		break;
+    #####:  670:	    case 'h':
+    #####:  671:		if (cl) {
+    #####:  672:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  673:		    return 1;
+    #####:  674:		} else if ((*argv)[1]) {
+    #####:  675:		    cct.substr = (*argv) + 1;
+    #####:  676:		    *argv = argv_end;
+    #####:  677:		} else if (!argv[1]) {
+    #####:  678:		    zwarnnam(name, "command name expected after -%c", **argv);
+    #####:  679:		    return 1;
+        -:  680:		} else {
+    #####:  681:		    cct.substr = *++argv;
+    #####:  682:		    *argv = argv_end;
+        -:  683:		}
+    #####:  684:		break;
+    #####:  685:	    case 'W':
+    #####:  686:		if ((*argv)[1]) {
+    #####:  687:		    cct.withd = (*argv) + 1;
+    #####:  688:		    *argv = argv_end;
+    #####:  689:		} else if (!argv[1]) {
+    #####:  690:		    zwarnnam(name, "path expected after -%c", **argv);
+    #####:  691:		    return 1;
+        -:  692:		} else {
+    #####:  693:		    cct.withd = *++argv;
+    #####:  694:		    *argv = argv_end;
+        -:  695:		}
+    #####:  696:		break;
+    #####:  697:	    case 'J':
+    #####:  698:		if ((*argv)[1]) {
+    #####:  699:		    cct.gname = (*argv) + 1;
+    #####:  700:		    *argv = argv_end;
+    #####:  701:		} else if (!argv[1]) {
+    #####:  702:		    zwarnnam(name, "group name expected after -%c", **argv);
+    #####:  703:		    return 1;
+        -:  704:		} else {
+    #####:  705:		    cct.gname = *++argv;
+    #####:  706:		    *argv = argv_end;
+        -:  707:		}
+    #####:  708:		break;
+    #####:  709:	    case 'V':
+    #####:  710:		if ((*argv)[1]) {
+    #####:  711:		    cct.gname = (*argv) + 1;
+    #####:  712:		    *argv = argv_end;
+    #####:  713:		} else if (!argv[1]) {
+    #####:  714:		    zwarnnam(name, "group name expected after -%c", **argv);
+    #####:  715:		    return 1;
+        -:  716:		} else {
+    #####:  717:		    cct.gname = *++argv;
+    #####:  718:		    *argv = argv_end;
+        -:  719:		}
+    #####:  720:		cct.mask2 |= CC_NOSORT;
+    #####:  721:		break;
+    #####:  722:	    case '1':
+    #####:  723:		cct.mask2 |= CC_UNIQALL;
+    #####:  724:		cct.mask2 &= ~CC_UNIQCON;
+    #####:  725:		break;
+    #####:  726:	    case '2':
+    #####:  727:		cct.mask2 |= CC_UNIQCON;
+    #####:  728:		cct.mask2 &= ~CC_UNIQALL;
+    #####:  729:		break;
+    #####:  730:	    case 'M':
+    #####:  731:		if (cclist & COMP_LIST) {
+    #####:  732:		    cclist |= COMP_LISTMATCH;
+    #####:  733:		} else if ((*argv)[1]) {
+    #####:  734:		    if ((cct.matcher =
+    #####:  735:			 parse_cmatcher(name, (cct.mstr = (*argv) + 1))) ==
+        -:  736:			pcm_err) {
+    #####:  737:			cct.matcher = NULL;
+    #####:  738:			cct.mstr = NULL;
+    #####:  739:			return 1;
+        -:  740:		    }
+    #####:  741:		    *argv = argv_end;
+    #####:  742:		} else if (!argv[1]) {
+    #####:  743:		    zwarnnam(name, "matching specification expected after -%c",
+    #####:  744:			     **argv);
+    #####:  745:		    return 1;
+        -:  746:		} else {
+    #####:  747:		    if ((cct.matcher =
+    #####:  748:			 parse_cmatcher(name, (cct.mstr = *++argv))) ==
+        -:  749:			pcm_err) {
+    #####:  750:			cct.matcher = NULL;
+    #####:  751:			cct.mstr = NULL;
+    #####:  752:			return 1;
+        -:  753:		    }
+    #####:  754:		    *argv = argv_end;
+        -:  755:		}
+    #####:  756:		break;
+    #####:  757:	    case 'H':
+    #####:  758:		if ((*argv)[1])
+    #####:  759:		    cct.hnum = atoi((*argv) + 1);
+    #####:  760:		else if (argv[1])
+    #####:  761:		    cct.hnum = atoi(*++argv);
+        -:  762:		else {
+    #####:  763:		    zwarnnam(name, "number expected after -%c", **argv);
+    #####:  764:		    return 1;
+        -:  765:		}
+    #####:  766:		if (!argv[1]) {
+    #####:  767:		    zwarnnam(name, "missing pattern after -%c", **argv);
+    #####:  768:		    return 1;
+        -:  769:		}
+    #####:  770:		cct.hpat = *++argv;
+    #####:  771:		if (cct.hnum < 1)
+    #####:  772:		    cct.hnum = 0;
+    #####:  773:		if (*cct.hpat == '*' && !cct.hpat[1])
+    #####:  774:		    cct.hpat = "";
+    #####:  775:		*argv = argv_end;
+    #####:  776:		break;
+    #####:  777:	    case 'C':
+    #####:  778:		if (cl) {
+    #####:  779:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  780:		    return 1;
+        -:  781:		}
+    #####:  782:		if (first && !hx) {
+    #####:  783:		    cclist |= COMP_COMMAND;
+        -:  784:		} else {
+    #####:  785:		    zwarnnam(name, "misplaced command completion (-C) flag");
+    #####:  786:		    return 1;
+        -:  787:		}
+    #####:  788:		break;
+    #####:  789:	    case 'D':
+    #####:  790:		if (cl) {
+    #####:  791:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  792:		    return 1;
+        -:  793:		}
+    #####:  794:		if (first && !hx) {
+    #####:  795:		    isdef = 1;
+    #####:  796:		    cclist |= COMP_DEFAULT;
+        -:  797:		} else {
+    #####:  798:		    zwarnnam(name, "misplaced default completion (-D) flag");
+    #####:  799:		    return 1;
+        -:  800:		}
+    #####:  801:		break;
+    #####:  802: 	    case 'T':
+    #####:  803:		if (cl) {
+    #####:  804:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  805:		    return 1;
+        -:  806:		}
+    #####:  807:		if (first && !hx) {
+    #####:  808: 		    cclist |= COMP_FIRST;
+        -:  809: 		} else {
+    #####:  810: 		    zwarnnam(name, "misplaced first completion (-T) flag");
+    #####:  811: 		    return 1;
+        -:  812: 		}
+    #####:  813: 		break;
+    #####:  814:	    case 'L':
+    #####:  815:		if (cl) {
+    #####:  816:		    zwarnnam(name, "illegal option -%c", **argv);
+    #####:  817:		    return 1;
+        -:  818:		}
+    #####:  819:		if (!first || hx) {
+    #####:  820:		    zwarnnam(name, "illegal use of -L flag");
+    #####:  821:		    return 1;
+        -:  822:		}
+    #####:  823:		cclist |= COMP_LIST;
+    #####:  824:		break;
+    #####:  825:	    case 'x':
+    #####:  826:		if (cl) {
+    #####:  827:		    zwarnnam(name, "extended completion not allowed");
+    #####:  828:		    return 1;
+        -:  829:		}
+    #####:  830:		if (!argv[1]) {
+    #####:  831:		    zwarnnam(name, "condition expected after -%c", **argv);
+    #####:  832:		    return 1;
+        -:  833:		}
+    #####:  834:		if (first) {
+    #####:  835:		    argv++;
+    #####:  836:		    if (get_xcompctl(name, &argv, &cct, isdef)) {
+    #####:  837:			if (cct.ext)
+    #####:  838:			    freecompctl(cct.ext);
+    #####:  839:			return 1;
+        -:  840:		    }
+    #####:  841:		    ready = 2;
+        -:  842:		} else {
+    #####:  843:		    zwarnnam(name, "recursive extended completion not allowed");
+    #####:  844:		    return 1;
+        -:  845:		}
+    #####:  846:		break;
+    #####:  847:	    default:
+    #####:  848:		if (!first && (**argv == '-' || **argv == '+') && !argv[0][1])
+    #####:  849:		    (*argv)--, argv--, ready = 1;
+        -:  850:		else {
+    #####:  851:		    zwarnnam(name, "bad option: -%c", **argv);
+    #####:  852:		    return 1;
+        -:  853:		}
+        -:  854:	    }
+        -:  855:	}
+        -:  856:
+    #####:  857:	if (*++argv && (!ready || ready == 2) &&
+    #####:  858:	    **argv == '+' && !argv[0][1]) {
+    #####:  859:	    if (cl) {
+    #####:  860:		zwarnnam(name, "xor'ed completion illegal");
+    #####:  861:		return 1;
+        -:  862:	    }
+        -:  863:	    /* There's an alternative (+) completion:  assign
+        -:  864:	     * what we have so far before moving on to that.
+        -:  865:	     */
+    #####:  866:	    if (cc_assign(name, &cc, &cct, first && !hx))
+    #####:  867:		return 1;
+        -:  868:
+    #####:  869:	    hx = 1;
+    #####:  870:	    ready = 0;
+        -:  871:
+    #####:  872:	    if (!*++argv || **argv != '-' ||
+    #####:  873:		(**argv == '-' && (!argv[0][1] ||
+    #####:  874:				   (argv[0][1] == '-' && !argv[0][2])))) {
+        -:  875:		/* No argument to +, which means do default completion */
+    #####:  876:		if (isdef)
+    #####:  877:		    zwarnnam(name,
+        -:  878:			    "recursive xor'd default completions not allowed");
+        -:  879:		else
+    #####:  880:		    cc->xor = &cc_default;
+        -:  881:	    } else {
+        -:  882:		/* more flags follow:  prepare to loop again */
+    #####:  883:		cc->xor = (Compctl) zshcalloc(sizeof(*cc));
+    #####:  884:		cc = cc->xor;
+    #####:  885:		memset((void *)&cct, 0, sizeof(cct));
+    #####:  886:		cct.mask2 = CC_CCCONT;
+        -:  887:	    }
+        -:  888:	}
+        -:  889:    }
+    #####:  890:    if (!ready && *argv && **argv == '-')
+    #####:  891:	argv++;
+        -:  892:
+    #####:  893:    if (! (cct.mask & (CC_EXCMDS | CC_DISCMDS)))
+    #####:  894:	cct.mask |= CC_EXCMDS;
+        -:  895:
+        -:  896:    /* assign the last set of flags we parsed */
+    #####:  897:    if (cc_assign(name, &cc, &cct, first && !hx))
+    #####:  898:	return 1;
+        -:  899:
+    #####:  900:    *av = argv;
+        -:  901:
+    #####:  902:    return 0;
+        -:  903:}
+        -:  904:
+        -:  905:/* Handle the -x ... -- part of compctl. */
+        -:  906:
+        -:  907:/**/
+        -:  908:static int
+    #####:  909:get_xcompctl(char *name, char ***av, Compctl cc, int isdef)
+        -:  910:{
+    #####:  911:    char **argv = *av, *t, *tt, sav;
+    #####:  912:    int n, l = 0, ready = 0;
+        -:  913:    Compcond m, c, o;
+    #####:  914:    Compctl *next = &(cc->ext);
+        -:  915:
+    #####:  916:    while (!ready) {
+        -:  917:	/* o keeps track of or's, m remembers the starting condition,
+        -:  918:	 * c is the current condition being parsed
+        -:  919:	 */
+    #####:  920:	o = m = c = (Compcond) zshcalloc(sizeof(*c));
+        -:  921:	/* Loop over each condition:  something like 's[...][...], p[...]' */
+    #####:  922:	for (t = *argv; *t;) {
+    #####:  923:	    while (*t == ' ')
+    #####:  924:		t++;
+        -:  925:	    /* First get the condition code */
+    #####:  926:	    switch (*t) {
+    #####:  927:	    case 'q':
+    #####:  928:		c->type = CCT_QUOTE;
+    #####:  929:		break;
+    #####:  930:	    case 's':
+    #####:  931:		c->type = CCT_CURSUF;
+    #####:  932:		break;
+    #####:  933:	    case 'S':
+    #####:  934:		c->type = CCT_CURPRE;
+    #####:  935:		break;
+    #####:  936:	    case 'p':
+    #####:  937:		c->type = CCT_POS;
+    #####:  938:		break;
+    #####:  939:	    case 'c':
+    #####:  940:		c->type = CCT_CURSTR;
+    #####:  941:		break;
+    #####:  942:	    case 'C':
+    #####:  943:		c->type = CCT_CURPAT;
+    #####:  944:		break;
+    #####:  945:	    case 'w':
+    #####:  946:		c->type = CCT_WORDSTR;
+    #####:  947:		break;
+    #####:  948:	    case 'W':
+    #####:  949:		c->type = CCT_WORDPAT;
+    #####:  950:		break;
+    #####:  951:	    case 'n':
+    #####:  952:		c->type = CCT_CURSUB;
+    #####:  953:		break;
+    #####:  954:	    case 'N':
+    #####:  955:		c->type = CCT_CURSUBC;
+    #####:  956:		break;
+    #####:  957:	    case 'm':
+    #####:  958:		c->type = CCT_NUMWORDS;
+    #####:  959:		break;
+    #####:  960:	    case 'r':
+    #####:  961:		c->type = CCT_RANGESTR;
+    #####:  962:		break;
+    #####:  963:	    case 'R':
+    #####:  964:		c->type = CCT_RANGEPAT;
+    #####:  965:		break;
+    #####:  966:	    default:
+    #####:  967:		t[1] = '\0';
+    #####:  968:		zwarnnam(name, "unknown condition code: %s", t);
+    #####:  969:		zfree(m, sizeof(struct compcond));
+        -:  970:
+    #####:  971:		return 1;
+        -:  972:	    }
+        -:  973:	    /* Now get the arguments in square brackets */
+    #####:  974:	    if (t[1] != '[') {
+    #####:  975:		t[1] = '\0';
+    #####:  976:		zwarnnam(name, "expected condition after condition code: %s", t);
+    #####:  977:		zfree(m, sizeof(struct compcond));
+        -:  978:
+    #####:  979:		return 1;
+        -:  980:	    }
+    #####:  981:	    t++;
+        -:  982:	    /* First count how many or'd arguments there are,
+        -:  983:	     * marking the active ]'s and ,'s with unprintable characters.
+        -:  984:	     */
+    #####:  985:	    for (n = 0, tt = t; *tt == '['; n++) {
+    #####:  986:		for (l = 1, tt++; *tt && l; tt++)
+    #####:  987:		    if (*tt == '\\' && tt[1])
+    #####:  988:			tt++;
+    #####:  989:		    else if (*tt == '[')
+    #####:  990:			l++;
+    #####:  991:		    else if (*tt == ']')
+    #####:  992:			l--;
+    #####:  993:		    else if (l == 1 && *tt == ',')
+    #####:  994:			*tt = '\201';
+    #####:  995:		if (tt[-1] == ']')
+    #####:  996:		    tt[-1] = '\200';
+        -:  997:	    }
+        -:  998:
+    #####:  999:	    if (l) {
+    #####: 1000:		t[1] = '\0';
+    #####: 1001:		zwarnnam(name, "error after condition code: %s", t);
+    #####: 1002:		zfree(m, sizeof(struct compcond));
+        -: 1003:
+    #####: 1004:		return 1;
+        -: 1005:	    }
+    #####: 1006:	    c->n = n;
+        -: 1007:
+        -: 1008:	    /* Allocate space for all the arguments of the conditions */
+    #####: 1009:	    if (c->type == CCT_POS ||
+    #####: 1010:		c->type == CCT_NUMWORDS) {
+    #####: 1011:		c->u.r.a = (int *)zshcalloc(n * sizeof(int));
+    #####: 1012:		c->u.r.b = (int *)zshcalloc(n * sizeof(int));
+    #####: 1013:	    } else if (c->type == CCT_CURSUF ||
+    #####: 1014:		       c->type == CCT_CURPRE ||
+    #####: 1015:		       c->type == CCT_QUOTE)
+    #####: 1016:		c->u.s.s = (char **)zshcalloc(n * sizeof(char *));
+        -: 1017:
+    #####: 1018:	    else if (c->type == CCT_RANGESTR ||
+    #####: 1019:		     c->type == CCT_RANGEPAT) {
+    #####: 1020:		c->u.l.a = (char **)zshcalloc(n * sizeof(char *));
+    #####: 1021:		c->u.l.b = (char **)zshcalloc(n * sizeof(char *));
+        -: 1022:	    } else {
+    #####: 1023:		c->u.s.p = (int *)zshcalloc(n * sizeof(int));
+    #####: 1024:		c->u.s.s = (char **)zshcalloc(n * sizeof(char *));
+        -: 1025:	    }
+        -: 1026:	    /* Now loop over the actual arguments */
+    #####: 1027:	    for (l = 0; *t == '['; l++, t++) {
+    #####: 1028:		for (t++; *t && *t == ' '; t++);
+    #####: 1029:		tt = t;
+    #####: 1030:		if (c->type == CCT_POS ||
+    #####: 1031:		    c->type == CCT_NUMWORDS) {
+        -: 1032:		    /* p[...] or m[...]:  one or two numbers expected */
+    #####: 1033:		    for (; *t && *t != '\201' && *t != '\200'; t++);
+    #####: 1034:		    if (!(sav = *t)) {
+    #####: 1035:			zwarnnam(name, "error in condition");
+    #####: 1036:			freecompcond(m);
+    #####: 1037:			return 1;
+        -: 1038:		    }
+    #####: 1039:		    *t = '\0';
+    #####: 1040:		    c->u.r.a[l] = atoi(tt);
+        -: 1041:		    /* Second argument is optional:  see if it's there */
+    #####: 1042:		    if (sav == '\200')
+        -: 1043:			/* no:  copy first argument */
+    #####: 1044:			c->u.r.b[l] = c->u.r.a[l];
+        -: 1045:		    else {
+    #####: 1046:			tt = ++t;
+    #####: 1047:			for (; *t && *t != '\200'; t++);
+    #####: 1048:			if (!*t) {
+    #####: 1049:			    zwarnnam(name, "error in condition");
+    #####: 1050:			    freecompcond(m);
+    #####: 1051:			    return 1;
+        -: 1052:			}
+    #####: 1053:			*t = '\0';
+    #####: 1054:			c->u.r.b[l] = atoi(tt);
+        -: 1055:		    }
+    #####: 1056:		} else if (c->type == CCT_CURSUF ||
+    #####: 1057:			   c->type == CCT_CURPRE ||
+    #####: 1058:			   c->type == CCT_QUOTE) {
+        -: 1059:		    /* -s[..] or -S[..]:  single string expected */
+    #####: 1060:		    for (; *t && *t != '\200'; t++)
+    #####: 1061:			if (*t == '\201')
+    #####: 1062:			    *t = ',';
+    #####: 1063:		    if (!*t) {
+    #####: 1064:			zwarnnam(name, "error in condition");
+    #####: 1065:			freecompcond(m);
+    #####: 1066:			return 1;
+        -: 1067:		    }
+    #####: 1068:		    *t = '\0';
+    #####: 1069:		    c->u.s.s[l] = ztrdup(tt);
+    #####: 1070:		} else if (c->type == CCT_RANGESTR ||
+    #####: 1071:			   c->type == CCT_RANGEPAT) {
+        -: 1072:		    int hc;
+        -: 1073:
+        -: 1074:		    /* -r[..,..] or -R[..,..]:  two strings expected */
+    #####: 1075:		    for (; *t && *t != '\201' && *t != '\200'; t++);
+    #####: 1076:		    if (!*t) {
+    #####: 1077:			zwarnnam(name, "error in condition");
+    #####: 1078:			freecompcond(m);
+    #####: 1079:			return 1;
+        -: 1080:		    }
+    #####: 1081:		    hc = (*t == '\201');
+    #####: 1082:		    *t = '\0';
+    #####: 1083:		    c->u.l.a[l] = ztrdup(tt);
+    #####: 1084:		    if (hc) {
+    #####: 1085:			tt = ++t;
+        -: 1086:			/* any more commas are text, not active */
+    #####: 1087:			for (; *t && *t != '\200'; t++)
+    #####: 1088:			    if (*t == '\201')
+    #####: 1089:				*t = ',';
+    #####: 1090:			if (!*t) {
+    #####: 1091:			    zwarnnam(name, "error in condition");
+    #####: 1092:			    freecompcond(m);
+    #####: 1093:			    return 1;
+        -: 1094:			}
+    #####: 1095:			*t = '\0';
+    #####: 1096:			c->u.l.b[l] = ztrdup(tt);
+        -: 1097:		    }
+        -: 1098:		    else
+    #####: 1099:			c->u.l.b[l] = NULL;
+        -: 1100:		} else {
+        -: 1101:		    /* remaining patterns are number followed by string */
+    #####: 1102:		    for (; *t && *t != '\200' && *t != '\201'; t++);
+    #####: 1103:		    if (!*t || *t == '\200') {
+    #####: 1104:			zwarnnam(name, "error in condition");
+    #####: 1105:			freecompcond(m);
+    #####: 1106:			return 1;
+        -: 1107:		    }
+    #####: 1108:		    *t = '\0';
+    #####: 1109:		    c->u.s.p[l] = atoi(tt);
+    #####: 1110:		    tt = ++t;
+    #####: 1111:		    for (; *t && *t != '\200'; t++)
+    #####: 1112:			if (*t == '\201')
+    #####: 1113:			    *t = ',';
+    #####: 1114:		    if (!*t) {
+    #####: 1115:			zwarnnam(name, "error in condition");
+    #####: 1116:			freecompcond(m);
+    #####: 1117:			return 1;
+        -: 1118:		    }
+    #####: 1119:		    *t = '\0';
+    #####: 1120:		    c->u.s.s[l] = ztrdup(tt);
+        -: 1121:		}
+        -: 1122:	    }
+    #####: 1123:	    while (*t == ' ')
+    #####: 1124:		t++;
+    #####: 1125:	    if (*t == ',') {
+        -: 1126:		/* Another condition to `or' */
+    #####: 1127:		o->or = c = (Compcond) zshcalloc(sizeof(*c));
+    #####: 1128:		o = c;
+    #####: 1129:		t++;
+    #####: 1130:	    } else if (*t) {
+        -: 1131:		/* Another condition to `and' */
+    #####: 1132:		c->and = (Compcond) zshcalloc(sizeof(*c));
+    #####: 1133:		c = c->and;
+        -: 1134:	    }
+        -: 1135:	}
+        -: 1136:	/* Assign condition to current compctl */
+    #####: 1137:	*next = (Compctl) zshcalloc(sizeof(*cc));
+    #####: 1138:	(*next)->cond = m;
+    #####: 1139:	argv++;
+        -: 1140:	/* End of the condition; get the flags that go with it. */
+    #####: 1141:	if (get_compctl(name, &argv, *next, 0, isdef, 0))
+    #####: 1142:	    return 1;
+    #####: 1143: 	if ((!argv || !*argv) && (cclist & COMP_SPECIAL))
+        -: 1144: 	    /* default, first, or command completion finished */
+    #####: 1145:	    ready = 1;
+        -: 1146:	else {
+        -: 1147:	    /* see if we are looking for more conditions or are
+        -: 1148:	     * ready to return (ready = 1)
+        -: 1149:	     */
+    #####: 1150:	    if (!argv || !*argv || **argv != '-' ||
+    #####: 1151:		((!argv[0][1] || argv[0][1] == '+') && !argv[1])) {
+    #####: 1152:		zwarnnam(name, "missing command names");
+    #####: 1153:		return 1;
+        -: 1154:	    }
+    #####: 1155:	    if (!strcmp(*argv, "--"))
+    #####: 1156:		ready = 1;
+    #####: 1157:	    else if (!strcmp(*argv, "-+") && argv[1] &&
+    #####: 1158:		     !strcmp(argv[1], "--")) {
+    #####: 1159:		ready = 1;
+    #####: 1160:		argv++;
+        -: 1161:	    }
+    #####: 1162:	    argv++;
+        -: 1163:	    /* prepare to put the next lot of conditions on the end */
+    #####: 1164:	    next = &((*next)->next);
+        -: 1165:	}
+        -: 1166:    }
+        -: 1167:    /* save position at end of parsing */
+    #####: 1168:    *av = argv - 1;
+    #####: 1169:    return 0;
+        -: 1170:}
+        -: 1171:
+        -: 1172:/**/
+        -: 1173:static int
+    #####: 1174:cc_assign(char *name, Compctl *ccptr, Compctl cct, int reass)
+        -: 1175:{
+        -: 1176:    /* Copy over the details from the values in cct to those in *ccptr */
+        -: 1177:    Compctl cc;
+        -: 1178:
+        -: 1179:    /* Handle assignment of new default or command completion */
+    #####: 1180:    if (reass && !(cclist & COMP_LIST)) {
+        -: 1181:	/* if not listing */
+    #####: 1182:	if (cclist == (COMP_COMMAND|COMP_DEFAULT)
+    #####: 1183:	    || cclist == (COMP_COMMAND|COMP_FIRST)
+    #####: 1184:	    || cclist == (COMP_DEFAULT|COMP_FIRST)
+    #####: 1185:	    || cclist == COMP_SPECIAL) {
+    #####: 1186: 	    zwarnnam(name, "can't set -D, -T, and -C simultaneously");
+        -: 1187:	    /* ... because the following code wouldn't work. */
+    #####: 1188:	    return 1;
+        -: 1189:	}
+    #####: 1190:	if (cclist & COMP_COMMAND) {
+        -: 1191:	    /* command */
+    #####: 1192:	    *ccptr = &cc_compos;
+    #####: 1193:	    cc_reassign(*ccptr);
+    #####: 1194:	} else if (cclist & COMP_DEFAULT) {
+        -: 1195:	    /* default */
+    #####: 1196:	    *ccptr = &cc_default;
+    #####: 1197:	    cc_reassign(*ccptr);
+    #####: 1198: 	} else if (cclist & COMP_FIRST) {
+        -: 1199: 	    /* first */
+    #####: 1200: 	    *ccptr = &cc_first;
+    #####: 1201: 	    cc_reassign(*ccptr);
+        -: 1202:	}
+        -: 1203:    }
+        -: 1204:
+        -: 1205:    /* Free the old compctl */
+    #####: 1206:    cc = *ccptr;
+    #####: 1207:    zsfree(cc->keyvar);
+    #####: 1208:    zsfree(cc->glob);
+    #####: 1209:    zsfree(cc->str);
+    #####: 1210:    zsfree(cc->func);
+    #####: 1211:    zsfree(cc->explain);
+    #####: 1212:    zsfree(cc->ylist);
+    #####: 1213:    zsfree(cc->prefix);
+    #####: 1214:    zsfree(cc->suffix);
+    #####: 1215:    zsfree(cc->subcmd);
+    #####: 1216:    zsfree(cc->substr);
+    #####: 1217:    zsfree(cc->withd);
+    #####: 1218:    zsfree(cc->hpat);
+    #####: 1219:    zsfree(cc->gname);
+    #####: 1220:    zsfree(cc->mstr);
+    #####: 1221:    freecmatcher(cc->matcher);
+        -: 1222:
+        -: 1223:    /* and copy over the new stuff, (permanently) allocating
+        -: 1224:     * space for strings.
+        -: 1225:     */
+    #####: 1226:    cc->mask = cct->mask;
+    #####: 1227:    cc->mask2 = cct->mask2;
+    #####: 1228:    cc->keyvar = ztrdup(cct->keyvar);
+    #####: 1229:    cc->glob = ztrdup(cct->glob);
+    #####: 1230:    cc->str = ztrdup(cct->str);
+    #####: 1231:    cc->func = ztrdup(cct->func);
+    #####: 1232:    cc->explain = ztrdup(cct->explain);
+    #####: 1233:    cc->ylist = ztrdup(cct->ylist);
+    #####: 1234:    cc->prefix = ztrdup(cct->prefix);
+    #####: 1235:    cc->suffix = ztrdup(cct->suffix);
+    #####: 1236:    cc->subcmd = ztrdup(cct->subcmd);
+    #####: 1237:    cc->substr = ztrdup(cct->substr);
+    #####: 1238:    cc->withd = ztrdup(cct->withd);
+    #####: 1239:    cc->gname = ztrdup(cct->gname);
+    #####: 1240:    cc->hpat = ztrdup(cct->hpat);
+    #####: 1241:    cc->hnum = cct->hnum;
+    #####: 1242:    cc->matcher = cpcmatcher(cct->matcher);
+    #####: 1243:    cc->mstr = ztrdup(cct->mstr);
+        -: 1244:
+        -: 1245:    /* careful with extended completion:  it's already allocated */
+    #####: 1246:    cc->ext = cct->ext;
+        -: 1247:
+    #####: 1248:    return 0;
+        -: 1249:}
+        -: 1250:
+        -: 1251:/**/
+        -: 1252:static void
+    #####: 1253:cc_reassign(Compctl cc)
+        -: 1254:{
+        -: 1255:    /* Free up a new default or command completion:
+        -: 1256:     * this is a hack to free up the parts which should be deleted,
+        -: 1257:     * without removing the basic variable which is statically allocated
+        -: 1258:     */
+        -: 1259:    Compctl c2;
+        -: 1260:
+    #####: 1261:    c2 = (Compctl) zshcalloc(sizeof *cc);
+    #####: 1262:    c2->xor = cc->xor;
+    #####: 1263:    c2->ext = cc->ext;
+    #####: 1264:    c2->refc = 1;
+        -: 1265:
+    #####: 1266:    freecompctl(c2);
+        -: 1267:
+    #####: 1268:    cc->ext = cc->xor = NULL;
+    #####: 1269:}
+        -: 1270:
+        -: 1271:/* Check if the given string is a pattern. If so, return one and tokenize *
+        -: 1272: * it. If not, we just remove the backslashes. */
+        -: 1273:
+        -: 1274:static int
+    #####: 1275:compctl_name_pat(char **p)
+        -: 1276:{
+    #####: 1277:    char *s = *p;
+        -: 1278:
+    #####: 1279:    tokenize(s = dupstring(s));
+    #####: 1280:    remnulargs(s);
+        -: 1281:
+    #####: 1282:    if (haswilds(s)) {
+    #####: 1283:	*p = s;
+    #####: 1284:	return 1;
+        -: 1285:    } else
+    #####: 1286:	*p = rembslash(*p);
+        -: 1287:
+    #####: 1288:    return 0;
+        -: 1289:}
+        -: 1290:
+        -: 1291:/* Delete the pattern compctl with the given name. */
+        -: 1292:
+        -: 1293:static void
+    #####: 1294:delpatcomp(char *n)
+        -: 1295:{
+        -: 1296:    Patcomp p, q;
+        -: 1297:
+    #####: 1298:    for (q = 0, p = patcomps; p; q = p, p = p->next) {
+    #####: 1299:	if (!strcmp(n, p->pat)) {
+    #####: 1300:	    if (q)
+    #####: 1301:		q->next = p->next;
+        -: 1302:	    else
+    #####: 1303:		patcomps = p->next;
+    #####: 1304:	    zsfree(p->pat);
+    #####: 1305:	    freecompctl(p->cc);
+    #####: 1306:	    free(p);
+        -: 1307:
+    #####: 1308:	    break;
+        -: 1309:	}
+        -: 1310:    }
+    #####: 1311:}
+        -: 1312:
+        -: 1313:/**/
+        -: 1314:static void
+    #####: 1315:compctl_process_cc(char **s, Compctl cc)
+        -: 1316:{
+        -: 1317:    Compctlp ccp;
+        -: 1318:    char *n;
+        -: 1319:
+    #####: 1320:    if (cclist & COMP_REMOVE) {
+        -: 1321:	/* Delete entries for the commands listed */
+    #####: 1322:	for (; *s; s++) {
+    #####: 1323:	    n = *s;
+    #####: 1324:	    if (compctl_name_pat(&n))
+    #####: 1325:		delpatcomp(n);
+    #####: 1326:	    else if ((ccp = (Compctlp) compctltab->removenode(compctltab, n)))
+    #####: 1327:		compctltab->freenode(&ccp->node);
+        -: 1328:	}
+        -: 1329:    } else {
+        -: 1330:	/* Add the compctl just read to the hash table */
+        -: 1331:
+    #####: 1332:	cc->refc = 0;
+    #####: 1333:	for (; *s; s++) {
+    #####: 1334:	    n = *s;
+        -: 1335:
+    #####: 1336:	    cc->refc++;
+    #####: 1337:	    if (compctl_name_pat(&n)) {
+        -: 1338:		Patcomp pc;
+        -: 1339:
+    #####: 1340:		delpatcomp(n);
+    #####: 1341:		pc = zalloc(sizeof *pc);
+    #####: 1342:		pc->pat = ztrdup(n);
+    #####: 1343:		pc->cc = cc;
+    #####: 1344:		pc->next = patcomps;
+    #####: 1345:		patcomps = pc;
+        -: 1346:	    } else {
+    #####: 1347:		ccp = (Compctlp) zalloc(sizeof *ccp);
+    #####: 1348:		ccp->cc = cc;
+    #####: 1349:		compctltab->addnode(compctltab, ztrdup(n), ccp);
+        -: 1350:	    }
+        -: 1351:	}
+        -: 1352:    }
+    #####: 1353:}
+        -: 1354:
+        -: 1355:/* Print a `compctl' */
+        -: 1356:
+        -: 1357:/**/
+        -: 1358:static void
+    #####: 1359:printcompctl(char *s, Compctl cc, int printflags, int ispat)
+        -: 1360:{
+        -: 1361:    Compctl cc2;
+    #####: 1362:    char *css = "fcqovbAIFpEjrzBRGudeNOZUnQmw/";
+    #####: 1363:    char *mss = " pcCwWsSnNmrRq";
+    #####: 1364:    unsigned long t = 0x7fffffff;
+    #####: 1365:    unsigned long flags = cc->mask, flags2 = cc->mask2;
+        -: 1366:    unsigned long oldshowmask;
+        -: 1367:
+        -: 1368:    /* Printflags is used outside the standard compctl commands*/
+    #####: 1369:    if (printflags & PRINT_LIST)
+    #####: 1370:	cclist |= COMP_LIST;
+    #####: 1371:    else if (printflags & PRINT_TYPE)
+    #####: 1372:	cclist &= ~COMP_LIST;
+        -: 1373:
+    #####: 1374:    if ((flags & CC_EXCMDS) && !(flags & CC_DISCMDS))
+    #####: 1375:	flags &= ~CC_EXCMDS;
+        -: 1376:
+        -: 1377:    /* If showmask is non-zero, then print only those *
+        -: 1378:     * commands with that flag set.                   */
+    #####: 1379:    if (showmask && !(flags & showmask))
+    #####: 1380:	return;
+        -: 1381:
+        -: 1382:    /* Temporarily clear showmask in case we make *
+        -: 1383:     * recursive calls to printcompctl.           */
+    #####: 1384:    oldshowmask = showmask;
+    #####: 1385:    showmask = 0;
+        -: 1386:
+        -: 1387:    /* print either command name or start of compctl command itself */
+    #####: 1388:    if (s) {
+    #####: 1389:	if (cclist & COMP_LIST) {
+    #####: 1390:	    printf("compctl");
+    #####: 1391:	    if (cc == &cc_compos)
+    #####: 1392:		printf(" -C");
+    #####: 1393:	    if (cc == &cc_default)
+    #####: 1394:		printf(" -D");
+    #####: 1395:	    if (cc == &cc_first)
+    #####: 1396:		printf(" -T");
+    #####: 1397:	} else if (ispat) {
+    #####: 1398:	    char *p = dupstring(s);
+        -: 1399:
+    #####: 1400:	    untokenize(p);
+    #####: 1401:	    quotedzputs(p, stdout);
+        -: 1402:	} else
+    #####: 1403:	    quotedzputs(quotestring(s, QT_BACKSLASH), stdout);
+        -: 1404:    }
+        -: 1405:
+        -: 1406:    /* loop through flags w/o args that are set, printing them if so */
+    #####: 1407:    if ((flags & t) || (flags2 & (CC_UNIQALL | CC_UNIQCON))) {
+    #####: 1408:	printf(" -");
+    #####: 1409:	if ((flags & (CC_ALREG | CC_ALGLOB)) == (CC_ALREG | CC_ALGLOB))
+    #####: 1410:	    putchar('a'), flags &= ~(CC_ALREG | CC_ALGLOB);
+    #####: 1411:	while (*css) {
+    #####: 1412:	    if (flags & t & 1)
+    #####: 1413:		putchar(*css);
+    #####: 1414:	    css++;
+    #####: 1415:	    flags >>= 1;
+    #####: 1416:	    t >>= 1;
+        -: 1417:	}
+    #####: 1418:	if (flags2 & CC_UNIQALL)
+    #####: 1419:	    putchar('1');
+    #####: 1420:	else if (flags2 & CC_UNIQCON)
+    #####: 1421:	    putchar('2');
+        -: 1422:    }
+    #####: 1423:    if (flags2 & (CC_XORCONT | CC_PATCONT | CC_DEFCONT)) {
+    #####: 1424:	printf(" -t");
+    #####: 1425:	if (flags2 & CC_XORCONT)
+    #####: 1426:	    putchar('+');
+    #####: 1427:	if (flags2 & CC_PATCONT)
+    #####: 1428:	    putchar('-');
+    #####: 1429:	if (flags2 & CC_DEFCONT)
+    #####: 1430:	    putchar('x');
+    #####: 1431:    } else if (!(flags2 & CC_CCCONT))
+    #####: 1432:	printf(" -tn");
+        -: 1433:    /* now flags with arguments */
+    #####: 1434:    printif(cc->mstr, 'M');
+    #####: 1435:    if (flags2 & CC_NOSORT)
+    #####: 1436:	printif(cc->gname, 'V');
+        -: 1437:    else
+    #####: 1438:	printif(cc->gname, 'J');
+    #####: 1439:    printif(cc->keyvar, 'k');
+    #####: 1440:    printif(cc->func, 'K');
+    #####: 1441:    printif(cc->explain, (cc->mask & CC_EXPANDEXPL) ? 'Y' : 'X');
+    #####: 1442:    printif(cc->ylist, 'y');
+    #####: 1443:    printif(cc->prefix, 'P');
+    #####: 1444:    printif(cc->suffix, 'S');
+    #####: 1445:    printif(cc->glob, 'g');
+    #####: 1446:    printif(cc->str, 's');
+    #####: 1447:    printif(cc->subcmd, 'l');
+    #####: 1448:    printif(cc->substr, 'h');
+    #####: 1449:    printif(cc->withd, 'W');
+    #####: 1450:    if (cc->hpat) {
+    #####: 1451:	printf(" -H %d ", cc->hnum);
+    #####: 1452:	quotedzputs(cc->hpat, stdout);
+        -: 1453:    }
+        -: 1454:
+        -: 1455:    /* now the -x ... -- extended completion part */
+    #####: 1456:    if (cc->ext) {
+        -: 1457:	Compcond c, o;
+        -: 1458:	int i;
+        -: 1459:
+    #####: 1460:	cc2 = cc->ext;
+    #####: 1461:	printf(" -x");
+        -: 1462:
+    #####: 1463:	while (cc2) {
+        -: 1464:	    /* loop over conditions */
+    #####: 1465:	    c = cc2->cond;
+        -: 1466:
+    #####: 1467:	    printf(" '");
+    #####: 1468:	    for (c = cc2->cond; c;) {
+        -: 1469:		/* loop over or's */
+    #####: 1470:		o = c->or;
+    #####: 1471:		while (c) {
+        -: 1472:		    /* loop over and's */
+    #####: 1473:		    putchar(mss[c->type]);
+        -: 1474:
+    #####: 1475:		    for (i = 0; i < c->n; i++) {
+        -: 1476:			/* for all [...]'s of a given condition */
+    #####: 1477:			putchar('[');
+    #####: 1478:			switch (c->type) {
+    #####: 1479:			case CCT_POS:
+        -: 1480:			case CCT_NUMWORDS:
+    #####: 1481:			    printf("%d,%d", c->u.r.a[i], c->u.r.b[i]);
+    #####: 1482:			    break;
+    #####: 1483:			case CCT_CURSUF:
+        -: 1484:			case CCT_CURPRE:
+        -: 1485:			case CCT_QUOTE:
+    #####: 1486:			    printqt(c->u.s.s[i]);
+    #####: 1487:			    break;
+    #####: 1488:			case CCT_RANGESTR:
+        -: 1489:			case CCT_RANGEPAT:
+    #####: 1490:			    printqt(c->u.l.a[i]);
+    #####: 1491:			    putchar(',');
+    #####: 1492:			    printqt(c->u.l.b[i]);
+    #####: 1493:			    break;
+    #####: 1494:			default:
+    #####: 1495:			    printf("%d,", c->u.s.p[i]);
+    #####: 1496:			    printqt(c->u.s.s[i]);
+        -: 1497:			}
+    #####: 1498:			putchar(']');
+        -: 1499:		    }
+    #####: 1500:		    if ((c = c->and))
+    #####: 1501:			putchar(' ');
+        -: 1502:		}
+    #####: 1503:		if ((c = o))
+    #####: 1504:		    printf(" , ");
+        -: 1505:	    }
+    #####: 1506:	    putchar('\'');
+    #####: 1507:	    c = cc2->cond;
+    #####: 1508:	    cc2->cond = NULL;
+        -: 1509:	    /* now print the flags for the current condition */
+    #####: 1510:	    printcompctl(NULL, cc2, 0, 0);
+    #####: 1511:	    cc2->cond = c;
+    #####: 1512:	    if ((cc2 = (Compctl) (cc2->next)))
+    #####: 1513:		printf(" -");
+        -: 1514:	}
+    #####: 1515:	if (cclist & COMP_LIST)
+    #####: 1516:	    printf(" --");
+        -: 1517:    }
+    #####: 1518:    if (cc->xor) {
+        -: 1519:	/* print xor'd (+) completions */
+    #####: 1520:	printf(" +");
+    #####: 1521:	if (cc->xor != &cc_default)
+    #####: 1522:	    printcompctl(NULL, cc->xor, 0, 0);
+        -: 1523:    }
+    #####: 1524:    if (s) {
+    #####: 1525:	if ((cclist & COMP_LIST) && (cc != &cc_compos)
+    #####: 1526:	    && (cc != &cc_default) && (cc != &cc_first)) {
+    #####: 1527:	    if(s[0] == '-' || s[0] == '+')
+    #####: 1528:		printf(" -");
+    #####: 1529:	    putchar(' ');
+    #####: 1530:	    if (ispat) {
+    #####: 1531:		char *p = dupstring(s);
+        -: 1532:
+    #####: 1533:		untokenize(p);
+    #####: 1534:		quotedzputs(p, stdout);
+        -: 1535:	    } else {
+    #####: 1536:		char *p = dupstring(s);
+        -: 1537:
+    #####: 1538:		untokenize(p);
+    #####: 1539:		quotedzputs(quotestring(p, QT_BACKSLASH), stdout);
+        -: 1540:	    }
+        -: 1541:	}
+    #####: 1542:	putchar('\n');
+        -: 1543:    }
+        -: 1544:
+    #####: 1545:    showmask = oldshowmask;
+        -: 1546:}
+        -: 1547:
+        -: 1548:/**/
+        -: 1549:static void
+    #####: 1550:printcompctlp(HashNode hn, int printflags)
+        -: 1551:{
+    #####: 1552:    Compctlp ccp = (Compctlp) hn;
+        -: 1553:
+        -: 1554:    /* Function needed for use by scanhashtable() */
+    #####: 1555:    printcompctl(ccp->node.nam, ccp->cc, printflags, 0);
+    #####: 1556:}
+        -: 1557:
+        -: 1558:/* Main entry point for the `compctl' builtin */
+        -: 1559:
+        -: 1560:/**/
+        -: 1561:static int
+    #####: 1562:bin_compctl(char *name, char **argv, UNUSED(Options ops), UNUSED(int func))
+        -: 1563:{
+    #####: 1564:    Compctl cc = NULL;
+    #####: 1565:    int ret = 0;
+        -: 1566:
+    #####: 1567:    queue_signals();
+        -: 1568:
+        -: 1569:    /* clear static flags */
+    #####: 1570:    cclist = 0;
+    #####: 1571:    showmask = 0;
+        -: 1572:
+        -: 1573:    /* Parse all the arguments */
+    #####: 1574:    if (*argv) {
+        -: 1575:	/* Let's see if this is a global matcher definition. */
+    #####: 1576:	if ((ret = get_gmatcher(name, argv))) {
+    #####: 1577:	    unqueue_signals();
+    #####: 1578:	    return ret - 1;
+        -: 1579:	}
+        -: 1580:
+    #####: 1581:	cc = (Compctl) zshcalloc(sizeof(*cc));
+    #####: 1582:	if (get_compctl(name, &argv, cc, 1, 0, 0)) {
+    #####: 1583:	    freecompctl(cc);
+    #####: 1584:	    unqueue_signals();
+    #####: 1585:	    return 1;
+        -: 1586:	}
+        -: 1587:
+        -: 1588:	/* remember flags for printing */
+    #####: 1589:	showmask = cc->mask;
+    #####: 1590:	if ((showmask & CC_EXCMDS) && !(showmask & CC_DISCMDS))
+    #####: 1591:	    showmask &= ~CC_EXCMDS;
+        -: 1592:
+        -: 1593:	/* if no command arguments or just listing, we don't want cc */
+    #####: 1594:	if (!*argv || (cclist & COMP_LIST))
+    #####: 1595:	    freecompctl(cc);
+        -: 1596:    }
+        -: 1597:
+        -: 1598:    /* If no commands and no -C, -T, or -D, print all the compctl's *
+        -: 1599:     * If some flags (other than -C, -T, or -D) were given, then    *
+        -: 1600:     * only print compctl containing those flags.                   */
+    #####: 1601:    if (!*argv && !(cclist & (COMP_SPECIAL|COMP_LISTMATCH))) {
+        -: 1602:	Patcomp pc;
+        -: 1603:
+    #####: 1604:	for (pc = patcomps; pc; pc = pc->next)
+    #####: 1605:	    printcompctl(pc->pat, pc->cc, 0, 1);
+        -: 1606:
+    #####: 1607:	scanhashtable(compctltab, 1, 0, 0, compctltab->printnode, 0);
+    #####: 1608:	printcompctl((cclist & COMP_LIST) ? "" : "COMMAND", &cc_compos, 0, 0);
+    #####: 1609:	printcompctl((cclist & COMP_LIST) ? "" : "DEFAULT", &cc_default, 0, 0);
+    #####: 1610: 	printcompctl((cclist & COMP_LIST) ? "" : "FIRST", &cc_first, 0, 0);
+    #####: 1611:	print_gmatcher((cclist & COMP_LIST));
+    #####: 1612:	unqueue_signals();
+    #####: 1613:	return ret;
+        -: 1614:    }
+        -: 1615:
+        -: 1616:    /* If we're listing and we've made it to here, then there are arguments *
+        -: 1617:     * or a COMP_SPECIAL flag (-D, -C, -T), so print only those.            */
+    #####: 1618:    if (cclist & COMP_LIST) {
+        -: 1619:	HashNode hn;
+        -: 1620:	char **ptr, *n;
+        -: 1621:
+    #####: 1622:	showmask = 0;
+    #####: 1623:	for (ptr = argv; *ptr; ptr++) {
+    #####: 1624:	    n = *ptr;
+    #####: 1625:	    if (compctl_name_pat(&n)) {
+        -: 1626:		Patcomp pc;
+        -: 1627:
+    #####: 1628:		for (pc = patcomps; pc; pc = pc->next)
+    #####: 1629:		    if (!strcmp(n, pc->pat)) {
+    #####: 1630:			printcompctl(pc->pat, pc->cc, 0, 1);
+    #####: 1631:			n = NULL;
+    #####: 1632:			break;
+        -: 1633:		    }
+    #####: 1634:	    } else if ((hn = compctltab->getnode(compctltab, n))) {
+    #####: 1635:		compctltab->printnode(hn, 0);
+    #####: 1636:		n = NULL;
+        -: 1637:	    }
+    #####: 1638:	    if (n) {
+    #####: 1639:		zwarnnam(name, "no compctl defined for %s", n);
+    #####: 1640:		ret = 1;
+        -: 1641:	    }
+        -: 1642:	}
+    #####: 1643:	if (cclist & COMP_COMMAND)
+    #####: 1644:	    printcompctl("", &cc_compos, 0, 0);
+    #####: 1645:	if (cclist & COMP_DEFAULT)
+    #####: 1646:	    printcompctl("", &cc_default, 0, 0);
+    #####: 1647:	if (cclist & COMP_FIRST)
+    #####: 1648:	    printcompctl("", &cc_first, 0, 0);
+    #####: 1649:	if (cclist & COMP_LISTMATCH)
+    #####: 1650:	    print_gmatcher(COMP_LIST);
+    #####: 1651:	unqueue_signals();
+    #####: 1652:	return ret;
+        -: 1653:    }
+        -: 1654:
+        -: 1655:    /* Assign the compctl to the commands given */
+    #####: 1656:    if (*argv) {
+    #####: 1657:	if(cclist & COMP_SPECIAL)
+        -: 1658:	    /* Ideally we'd handle this properly, setting both the *
+        -: 1659:	     * special and normal completions.  For the moment,    *
+        -: 1660:	     * this is better than silently failing.               */
+    #####: 1661:	    zwarnnam(name, "extraneous commands ignored");
+        -: 1662:	else
+    #####: 1663:	    compctl_process_cc(argv, cc);
+        -: 1664:    }
+        -: 1665:
+    #####: 1666:    unqueue_signals();
+    #####: 1667:    return ret;
+        -: 1668:}
+        -: 1669:
+        -: 1670:/* Flags for makecomplist*(). Things not to do. */
+        -: 1671:
+        -: 1672:#define CFN_FIRST   1
+        -: 1673:#define CFN_DEFAULT 2
+        -: 1674:
+        -: 1675:static int
+    #####: 1676:bin_compcall(char *name, UNUSED(char **argv), Options ops, UNUSED(int func))
+        -: 1677:{
+        -: 1678:    int ret;
+        -: 1679:
+    #####: 1680:    if (incompfunc != 1) {
+    #####: 1681:	zwarnnam(name, "can only be called from completion function");
+    #####: 1682:	return 1;
+        -: 1683:    }
+        -: 1684:
+    #####: 1685:    queue_signals();
+    #####: 1686:    ret = makecomplistctl((OPT_ISSET(ops,'T') ? 0 : CFN_FIRST) |
+    #####: 1687:			  (OPT_ISSET(ops,'D') ? 0 : CFN_DEFAULT));
+    #####: 1688:    unqueue_signals();
+    #####: 1689:    return ret;
+        -: 1690:}
+        -: 1691:
+        -: 1692:/*
+        -: 1693: * Functions to generate matches.
+        -: 1694: */
+        -: 1695:
+        -: 1696:/* A pointer to the compctl we are using. */
+        -: 1697:
+        -: 1698:static Compctl curcc;
+        -: 1699:
+        -: 1700:/* A list of all compctls we have already used. */
+        -: 1701:
+        -: 1702:static LinkList ccused, lastccused;
+        -: 1703:
+        -: 1704:/* A stack of currently used compctls. */
+        -: 1705:
+        -: 1706:static LinkList ccstack;
+        -: 1707:
+        -: 1708:/* The beginning and end of a word range to be used by -l. */
+        -: 1709:
+        -: 1710:static int brange, erange;
+        -: 1711:
+        -: 1712:/* This is used to detect when and what to continue. */
+        -: 1713:
+        -: 1714:static unsigned long ccont;
+        -: 1715:
+        -: 1716:/* Two patterns used when doing glob-completion.  The first one is built *
+        -: 1717: * from the whole word we are completing and the second one from that    *
+        -: 1718: * part of the word that was identified as a possible filename.          */
+        -: 1719:
+        -: 1720:static Patprog patcomp, filecomp;
+        -: 1721:
+        -: 1722:/* We store the following prefixes/suffixes:                               *
+        -: 1723: * lpre/lsuf -- what's on the line                                         *
+        -: 1724: * rpre/rsuf -- same as lpre/lsuf, but expanded                            *
+        -: 1725: * ppre/psuf   -- the path prefix/suffix                                   *
+        -: 1726: * lppre/lpsuf -- the path prefix/suffix, unexpanded                       *
+        -: 1727: * fpre/fsuf   -- prefix/suffix of the pathname component the cursor is in *
+        -: 1728: * prpre       -- ppre in expanded form usable for opendir                 *
+        -: 1729: * qipre, qisuf-- ignored quoted string                                   *
+        -: 1730: *                                                                         *
+        -: 1731: * The integer variables hold the lengths of lpre, lsuf, rpre, rsuf,       *
+        -: 1732: * fpre, fsuf, lppre, and lpsuf.  noreal is non-zero if we have rpre/rsuf. */
+        -: 1733:
+        -: 1734:static char *lpre, *lsuf;
+        -: 1735:static char *rpre, *rsuf;
+        -: 1736:static char *ppre, *psuf, *lppre, *lpsuf, *prpre;
+        -: 1737:static char *fpre, *fsuf;
+        -: 1738:static char *qfpre, *qfsuf, *qrpre, *qrsuf, *qlpre, *qlsuf;
+        -: 1739:static int lpl, lsl, rpl, rsl, fpl, fsl, lppl, lpsl;
+        -: 1740:static int noreal;
+        -: 1741:
+        -: 1742:/* This is either zero or equal to the special character the word we are *
+        -: 1743: * trying to complete starts with (e.g. Tilde or Equals).                */
+        -: 1744:
+        -: 1745:static char ic;
+        -: 1746:
+        -: 1747:/* This variable says what we are currently adding to the list of matches. */
+        -: 1748:
+        -: 1749:static int addwhat;
+        -: 1750:
+        -: 1751:/*
+        -: 1752: * Convenience macro for calling quotestring (formerly bslashquote()
+        -: 1753: * (formerly quotename())).
+        -: 1754: * This uses the instring variable exported from zle_tricky.c.
+        -: 1755: */
+        -: 1756:
+        -: 1757:#define quotename(s) \
+        -: 1758:quotestring(s, instring == QT_NONE ? QT_BACKSLASH : instring)
+        -: 1759:
+        -: 1760:/* Hook functions */
+        -: 1761:
+        -: 1762:static int
+    #####: 1763:ccmakehookfn(UNUSED(Hookdef dummy), struct ccmakedat *dat)
+        -: 1764:{
+    #####: 1765:    char *s = dat->str;
+    #####: 1766:    int incmd = dat->incmd, lst = dat->lst;
+        -: 1767:    struct cmlist ms;
+        -: 1768:    Cmlist m;
+    #####: 1769:    char *os = s;
+    #####: 1770:    int onm = nmatches, odm = diffmatches, osi = movefd(0);
+        -: 1771:    LinkNode n;
+        -: 1772:
+    #####: 1773:    queue_signals();
+        -: 1774:
+        -: 1775:    /* We build a copy of the list of matchers to use to make sure that this
+        -: 1776:     * works even if a shell function called from the completion code changes
+        -: 1777:     * the global matchers. */
+        -: 1778:
+    #####: 1779:    if ((m = cmatcher)) {
+    #####: 1780:	Cmlist mm, *mp = &mm;
+        -: 1781:	int n;
+        -: 1782:
+    #####: 1783:	for (n = 0; m; m = m->next, n++) {
+    #####: 1784:	    *mp = (Cmlist) zhalloc(sizeof(struct cmlist));
+    #####: 1785:	    (*mp)->matcher = m->matcher;
+    #####: 1786:	    (*mp)->next = NULL;
+    #####: 1787:	    (*mp)->str = dupstring(m->str);
+    #####: 1788:	    mp = &((*mp)->next);
+    #####: 1789:	    addlinknode(matchers, m->matcher);
+    #####: 1790:	    if (m->matcher)
+    #####: 1791:		m->matcher->refc++;
+        -: 1792:	}
+    #####: 1793:	m = mm;
+        -: 1794:    }
+        -: 1795:
+        -: 1796:    /* Walk through the global matchers. */
+        -: 1797:    for (;;) {
+    #####: 1798:	bmatchers = NULL;
+    #####: 1799:	if (m) {
+    #####: 1800:	    ms.next = NULL;
+    #####: 1801:	    ms.matcher = m->matcher;
+    #####: 1802:	    mstack = &ms;
+        -: 1803:
+        -: 1804:	    /* Store the matchers used in the bmatchers list which is used
+        -: 1805:	     * when building new parts for the string to insert into the 
+        -: 1806:	     * line. */
+    #####: 1807:	    add_bmatchers(m->matcher);
+        -: 1808:	} else
+    #####: 1809:	    mstack = NULL;
+        -: 1810:
+    #####: 1811:	ainfo = (Aminfo) hcalloc(sizeof(struct aminfo));
+    #####: 1812:	fainfo = (Aminfo) hcalloc(sizeof(struct aminfo));
+        -: 1813:
+    #####: 1814:	freecl = NULL;
+        -: 1815:
+    #####: 1816:	if (!validlist)
+    #####: 1817:	    lastambig = 0;
+    #####: 1818:	amatches = NULL;
+    #####: 1819:	mnum = 0;
+    #####: 1820:	unambig_mnum = -1;
+    #####: 1821:	isuf = NULL;
+    #####: 1822:	insmnum = zmult;
+        -: 1823:#if 0
+        -: 1824:	/* group-numbers in compstate[insert] */
+        -: 1825:	insgnum = 1;
+        -: 1826:	insgroup = 0;
+        -: 1827:#endif
+    #####: 1828:	oldlist = oldins = 0;
+    #####: 1829:	begcmgroup("default", 0);
+    #####: 1830:	menucmp = menuacc = newmatches = onlyexpl = 0;
+        -: 1831:
+    #####: 1832:	ccused = newlinklist();
+    #####: 1833:	ccstack = newlinklist();
+        -: 1834:
+    #####: 1835:	s = dupstring(os);
+    #####: 1836:	makecomplistglobal(s, incmd, lst, 0);
+    #####: 1837:	endcmgroup(NULL);
+        -: 1838:
+    #####: 1839:	if (amatches && !oldlist) {
+    #####: 1840:	    if (lastccused)
+    #####: 1841:		freelinklist(lastccused, (FreeFunc) freecompctl);
+        -: 1842:
+    #####: 1843:	    lastccused = znewlinklist();
+    #####: 1844:	    for (n = firstnode(ccused); n; incnode(n))
+    #####: 1845:		zaddlinknode(lastccused, getdata(n));
+    #####: 1846:	} else if (ccused)
+    #####: 1847:	    for (n = firstnode(ccused); n; incnode(n))
+    #####: 1848:		if (((Compctl) getdata(n)) != &cc_dummy)
+    #####: 1849:		    freecompctl((Compctl) getdata(n));
+        -: 1850:
+    #####: 1851:	if (oldlist) {
+    #####: 1852:	    nmatches = onm;
+    #####: 1853:	    diffmatches = odm;
+    #####: 1854:	    validlist = 1;
+    #####: 1855:	    amatches = lastmatches;
+        -: 1856:#ifdef ZSH_HEAP_DEBUG
+        -: 1857:	    if (memory_validate(amatches->heap_id)) {
+        -: 1858:		HEAP_ERROR(amatches->heap_id);
+        -: 1859:	    }
+        -: 1860:#endif
+    #####: 1861:	    lmatches = lastlmatches;
+    #####: 1862:	    if (pmatches) {
+    #####: 1863:		freematches(pmatches, 1);
+    #####: 1864:		pmatches = NULL;
+    #####: 1865:		hasperm = 0;
+        -: 1866:	    }
+    #####: 1867:	    redup(osi, 0);
+        -: 1868:
+    #####: 1869:	    dat->lst = 0;
+    #####: 1870:	    unqueue_signals();
+    #####: 1871:	    return 0;
+        -: 1872:	}
+    #####: 1873:	if (lastmatches) {
+    #####: 1874:	    freematches(lastmatches, 1);
+    #####: 1875:	    lastmatches = NULL;
+        -: 1876:	}
+    #####: 1877:	permmatches(1);
+    #####: 1878:	amatches = pmatches;
+    #####: 1879:	lastpermmnum = permmnum;
+    #####: 1880:	lastpermgnum = permgnum;
+        -: 1881:
+    #####: 1882:	lastmatches = pmatches;
+    #####: 1883:	lastlmatches = lmatches;
+    #####: 1884:	pmatches = NULL;
+    #####: 1885:	hasperm = 0;
+    #####: 1886:	hasoldlist = 1;
+        -: 1887:
+    #####: 1888:	if (nmatches && !errflag) {
+    #####: 1889:	    validlist = 1;
+        -: 1890:
+    #####: 1891:	    redup(osi, 0);
+        -: 1892:
+    #####: 1893:	    dat->lst = 0;
+    #####: 1894:	    unqueue_signals();
+    #####: 1895:	    return 0;
+        -: 1896:	}
+    #####: 1897:	if (!m || !(m = m->next))
+        -: 1898:	    break;
+        -: 1899:
+    #####: 1900:	errflag &= ~ERRFLAG_ERROR;
+        -: 1901:    }
+    #####: 1902:    redup(osi, 0);
+    #####: 1903:    dat->lst = 1;
+        -: 1904:
+    #####: 1905:    unqueue_signals();
+    #####: 1906:    return 0;
+        -: 1907:}
+        -: 1908:
+        -: 1909:static int
+    #####: 1910:cccleanuphookfn(UNUSED(Hookdef dummy), UNUSED(void *dat))
+        -: 1911:{
+    #####: 1912:    ccused = ccstack = NULL;
+    #####: 1913:    return 0;
+        -: 1914:}
+        -: 1915:
+        -: 1916:/* This adds a match to the list of matches.  The string to add is given   *
+        -: 1917: * in s, the type of match is given in the global variable addwhat and     *
+        -: 1918: * the parameter t (if not NULL) is a pointer to a hash node which         *
+        -: 1919: * may be used to give other information to this function.                 *
+        -: 1920: *                                                                         *
+        -: 1921: * addwhat contains either one of the special values (negative, see below) *
+        -: 1922: * or the inclusive OR of some of the CC_* flags used for compctls.        */
+        -: 1923:
+        -: 1924:/**/
+        -: 1925:static void
+    #####: 1926:addmatch(char *s, char *t)
+        -: 1927:{
+    #####: 1928:    int isfile = 0, isalt = 0, isexact;
+    #####: 1929:    char *ms = NULL, *tt;
+        -: 1930:    HashNode hn;
+        -: 1931:    Param pm;
+    #####: 1932:    Cline lc = NULL;
+    #####: 1933:    Brinfo bp, bpl = brbeg, bsl = brend, bpt, bst;
+        -: 1934:
+    #####: 1935:    for (bp = brbeg; bp; bp = bp->next)
+    #####: 1936:	bp->curpos = ((addwhat == CC_QUOTEFLAG) ? bp->qpos : bp->pos);
+    #####: 1937:    for (bp = brend; bp; bp = bp->next)
+    #####: 1938:	bp->curpos = ((addwhat == CC_QUOTEFLAG) ? bp->qpos : bp->pos);
+        -: 1939:
+        -: 1940:    /*
+        -: 1941:     * addwhat: -5 is for files,
+        -: 1942:     *          -6 is for glob expansions,
+        -: 1943:     *          -8 is for executable files (e.g. command paths),
+        -: 1944:     *          -9 is for parameters
+        -: 1945:     *          -7 is for command names (from cmdnamtab)
+        -: 1946:     *          -4 is for a cdable parameter
+        -: 1947:     *          -3 is for executable command names.
+        -: 1948:     *          -2 is for anything unquoted
+        -: 1949:     *          -1 is for other file specifications
+        -: 1950:     *          (things with `~' or `=' at the beginning, ...).
+        -: 1951:     */
+        -: 1952:
+        -: 1953:    /* Just to make the code cleaner */
+    #####: 1954:    hn = (HashNode) t;
+    #####: 1955:    pm = (Param) t;
+        -: 1956:
+    #####: 1957:    if (addwhat == -1 || addwhat == -5 || addwhat == -6 ||
+    #####: 1958:	addwhat == CC_FILES || addwhat == -7 || addwhat == -8) {
+    #####: 1959:	int ppl = (ppre ? strlen(ppre) : 0), psl = (psuf ? strlen(psuf) : 0);
+        -: 1960:
+    #####: 1961:	while (bpl && bpl->curpos < ppl)
+    #####: 1962:	    bpl = bpl->next;
+    #####: 1963:	while (bsl && bsl->curpos < psl)
+    #####: 1964:	    bsl = bsl->next;
+        -: 1965:
+    #####: 1966:	if ((addwhat == CC_FILES ||
+    #####: 1967:	     addwhat == -5) && !*psuf) {
+        -: 1968:	    /* If this is a filename, do the fignore check. */
+    #####: 1969:	    char **pt = fignore;
+    #####: 1970:	    int filell, sl = strlen(s);
+        -: 1971:
+    #####: 1972:	    for (isalt = 0; !isalt && *pt; pt++)
+    #####: 1973:		if ((filell = strlen(*pt)) < sl &&
+    #####: 1974:		    !strcmp(*pt, s + sl - filell))
+    #####: 1975:		    isalt = 1;
+        -: 1976:	}
+    #####: 1977:	ms = ((addwhat == CC_FILES || addwhat == -6 ||
+    #####: 1978:	       addwhat == -5 || addwhat == -8) ?
+    #####: 1979:	      comp_match(tildequote(qfpre, 1), multiquote(qfsuf, 1),
+    #####: 1980:			 s, filecomp, &lc, (ppre && *ppre ? 1 : 2),
+    #####: 1981:			 &bpl, ppl ,&bsl, psl, &isexact) :
+    #####: 1982:	      comp_match(multiquote(fpre, 1), multiquote(fsuf, 1),
+        -: 1983:			 s, filecomp, &lc, 0,
+        -: 1984:			 &bpl, ppl, &bsl, psl, &isexact));
+    #####: 1985:	if (!ms)
+    #####: 1986:	    return;
+        -: 1987:
+    #####: 1988:	if (addwhat == -7 && !findcmd(s, 0, 0))
+    #####: 1989:	    return;
+    #####: 1990:	isfile = CMF_FILE;
+    #####: 1991:    } else if (addwhat == CC_QUOTEFLAG || addwhat == -2  ||
+    #####: 1992:	      (addwhat == -3 && !(hn->flags & DISABLED)) ||
+    #####: 1993:	      (addwhat == -4 && (PM_TYPE(pm->node.flags) == PM_SCALAR) &&
+    #####: 1994:	       !pm->level && (tt = pm->gsu.s->getfn(pm)) && *tt == '/') ||
+    #####: 1995:	      (addwhat == -9 && !(hn->flags & PM_UNSET) && !pm->level) ||
+    #####: 1996:	      (addwhat > 0 &&
+    #####: 1997:	       ((!(hn->flags & PM_UNSET) &&
+    #####: 1998:		 (((addwhat & CC_ARRAYS)    &&  (hn->flags & PM_ARRAY))    ||
+    #####: 1999:		  ((addwhat & CC_INTVARS)   &&  (hn->flags & PM_INTEGER))  ||
+    #####: 2000:		  ((addwhat & CC_ENVVARS)   &&  (hn->flags & PM_EXPORTED)) ||
+    #####: 2001:		  ((addwhat & CC_SCALARS)   &&  (hn->flags & PM_SCALAR))   ||
+    #####: 2002:		  ((addwhat & CC_READONLYS) &&  (hn->flags & PM_READONLY)) ||
+    #####: 2003:		  ((addwhat & CC_SPECIALS)  &&  (hn->flags & PM_SPECIAL))  ||
+    #####: 2004:		  ((addwhat & CC_PARAMS)    && !(hn->flags & PM_EXPORTED))) &&
+    #####: 2005:		 !pm->level) ||
+    #####: 2006:		((( addwhat & CC_SHFUNCS)				  ||
+    #####: 2007:		  ( addwhat & CC_BUILTINS)				  ||
+    #####: 2008:		  ( addwhat & CC_EXTCMDS)				  ||
+    #####: 2009:		  ( addwhat & CC_RESWDS)				  ||
+    #####: 2010:		  ((addwhat & CC_ALREG)   && !(hn->flags & ALIAS_GLOBAL)) ||
+    #####: 2011:		  ((addwhat & CC_ALGLOB)  &&  (hn->flags & ALIAS_GLOBAL))) &&
+    #####: 2012:		 (((addwhat & CC_DISCMDS) && (hn->flags & DISABLED)) ||
+    #####: 2013:		  ((addwhat & CC_EXCMDS)  && !(hn->flags & DISABLED)))) ||
+    #####: 2014:		((addwhat & CC_BINDINGS) && !(hn->flags & DISABLED))))) {
+        -: 2015:	char *p1, *s1, *p2, *s2;
+        -: 2016:
+    #####: 2017:	if (addwhat == CC_QUOTEFLAG) {
+    #####: 2018:	    p1 = qrpre; s1 = qrsuf;
+    #####: 2019:	    p2 = rpre;  s2 = rsuf;
+        -: 2020:	} else {
+    #####: 2021:	    p1 = qlpre; s1 = qlsuf;
+    #####: 2022:	    p2 = lpre;  s2 = lsuf;
+        -: 2023:	}
+    #####: 2024:	p1 = multiquote(p1, 1); s1 = multiquote(s1, 1);
+    #####: 2025:	p2 = multiquote(p2, 1); s2 = multiquote(s2, 1);
+    #####: 2026:	bpt = bpl;
+    #####: 2027:	bst = bsl;
+        -: 2028:
+    #####: 2029:	if (!(ms = comp_match(p1, s1, s, patcomp, &lc,
+        -: 2030:			      (addwhat == CC_QUOTEFLAG),
+    #####: 2031:			      &bpl, strlen(p1), &bsl, strlen(s1),
+        -: 2032:			      &isexact))) {
+    #####: 2033:	    bpl = bpt;
+    #####: 2034:	    bsl = bst;
+    #####: 2035:	    if (!(ms = comp_match(p2, s2, s, NULL, &lc,
+        -: 2036:				  (addwhat == CC_QUOTEFLAG),
+    #####: 2037:				  &bpl, strlen(p2), &bsl, strlen(s2),
+        -: 2038:				  &isexact)))
+    #####: 2039:		return;
+        -: 2040:	}
+        -: 2041:    }
+    #####: 2042:    if (!ms)
+    #####: 2043:	return;
+    #####: 2044:    add_match_data(isalt, ms, s, lc, ipre, ripre, isuf, 
+    #####: 2045:		   (incompfunc ? dupstring(curcc->prefix) : curcc->prefix),
+        -: 2046:		   prpre, 
+        -: 2047:		   (isfile ? lppre : NULL), NULL,
+        -: 2048:		   (isfile ? lpsuf : NULL), NULL,
+    #####: 2049:		   (incompfunc ? dupstring(curcc->suffix) : curcc->suffix),
+        -: 2050:		   (mflags | isfile), isexact);
+        -: 2051:}
+        -: 2052:
+        -: 2053:/**/
+        -: 2054:static void
+    #####: 2055:maketildelist(void)
+        -: 2056:{
+        -: 2057:    /* add all the usernames to the named directory table */
+    #####: 2058:    nameddirtab->filltable(nameddirtab);
+        -: 2059:
+    #####: 2060:    scanhashtable(nameddirtab, 0, (addwhat==-1) ? 0 : ND_USERNAME, 0,
+        -: 2061:		  addhnmatch, 0);
+    #####: 2062:}
+        -: 2063:
+        -: 2064:/* This does the check for compctl -x `n' and `N' patterns. */
+        -: 2065:
+        -: 2066:/**/
+        -: 2067:static int
+    #####: 2068:getcpat(char *str, int cpatindex, char *cpat, int class)
+        -: 2069:{
+        -: 2070:    char *s, *t, *p;
+    #####: 2071:    int d = 0;
+        -: 2072:
+    #####: 2073:    if (!str || !*str)
+    #####: 2074:	return -1;
+        -: 2075:
+    #####: 2076:    cpat = rembslash(cpat);
+        -: 2077:
+    #####: 2078:    if (!cpatindex)
+    #####: 2079:	cpatindex++, d = 0;
+    #####: 2080:    else if ((d = (cpatindex < 0)))
+    #####: 2081:	cpatindex = -cpatindex;
+        -: 2082:
+    #####: 2083:    for (s = d ? str + strlen(str) - 1 : str;
+    #####: 2084:	 d ? (s >= str) : *s;
+    #####: 2085:	 d ? s-- : s++) {
+    #####: 2086:	for (t = s, p = cpat; *t && *p; p++) {
+    #####: 2087:	    if (class) {
+    #####: 2088:		if (*p == *s && !--cpatindex)
+    #####: 2089:		    return (int)(s - str + 1);
+    #####: 2090:	    } else if (*t++ != *p)
+    #####: 2091:		break;
+        -: 2092:	}
+    #####: 2093:	if (!class && !*p && !--cpatindex)
+    #####: 2094:	    return t - str;
+        -: 2095:    }
+    #####: 2096:    return -1;
+        -: 2097:}
+        -: 2098:
+        -: 2099:/* Dump a hash table (without sorting).  For each element the addmatch  *
+        -: 2100: * function is called and at the beginning the addwhat variable is set. *
+        -: 2101: * This could be done using scanhashtable(), but this is easy and much  *
+        -: 2102: * more efficient.                                                      */
+        -: 2103:
+        -: 2104:/**/
+        -: 2105:static void
+    #####: 2106:dumphashtable(HashTable ht, int what)
+        -: 2107:{
+        -: 2108:    HashNode hn;
+        -: 2109:    int i;
+        -: 2110:
+    #####: 2111:    addwhat = what;
+        -: 2112:
+    #####: 2113:    for (i = 0; i < ht->hsize; i++)
+    #####: 2114:	for (hn = ht->nodes[i]; hn; hn = hn->next)
+    #####: 2115:	    addmatch(dupstring(hn->nam), (char *) hn);
+    #####: 2116:}
+        -: 2117:
+        -: 2118:/* ScanFunc used by maketildelist() et al. */
+        -: 2119:
+        -: 2120:/**/
+        -: 2121:static void
+    #####: 2122:addhnmatch(HashNode hn, UNUSED(int flags))
+        -: 2123:{
+    #####: 2124:    addmatch(hn->nam, NULL);
+    #####: 2125:}
+        -: 2126:
+        -: 2127:/* Perform expansion on the given string and return the result. *
+        -: 2128: * During this errors are not reported.                         */
+        -: 2129:
+        -: 2130:/**/
+        -: 2131:static char *
+    #####: 2132:getreal(char *str)
+        -: 2133:{
+    #####: 2134:    LinkList l = newlinklist();
+    #####: 2135:    int ne = noerrs;
+        -: 2136:
+    #####: 2137:    noerrs = 1;
+    #####: 2138:    addlinknode(l, dupstring(str));
+    #####: 2139:    prefork(l, 0, NULL);
+    #####: 2140:    noerrs = ne;
+    #####: 2141:    if (!errflag && nonempty(l) &&
+    #####: 2142:	((char *) peekfirst(l)) && ((char *) peekfirst(l))[0])
+    #####: 2143:	return dupstring(peekfirst(l));
+    #####: 2144:    errflag &= ~ERRFLAG_ERROR;
+        -: 2145:
+    #####: 2146:    return dupstring(str);
+        -: 2147:}
+        -: 2148:
+        -: 2149:/* This reads a directory and adds the files to the list of  *
+        -: 2150: * matches.  The parameters say which files should be added. */
+        -: 2151:
+        -: 2152:/**/
+        -: 2153:static void
+    #####: 2154:gen_matches_files(int dirs, int execs, int all)
+        -: 2155:{
+        -: 2156:    DIR *d;
+        -: 2157:    struct stat buf;
+    #####: 2158:    char *n, p[PATH_MAX+1], *q = NULL, *e, *pathpref;
+    #####: 2159:    LinkList l = NULL;
+    #####: 2160:    int ns = 0, ng = opts[NULLGLOB], test, aw = addwhat, pathpreflen;
+        -: 2161:
+    #####: 2162:    opts[NULLGLOB] = 1;
+        -: 2163:
+    #####: 2164:    if (*psuf) {
+        -: 2165:	/* If there is a path suffix, check if it doesn't have a `*' or *
+        -: 2166:	 * `)' at the end (this is used to determine if we should use   *
+        -: 2167:	 * globbing).                                                   */
+    #####: 2168:	q = psuf + strlen(psuf) - 1;
+    #####: 2169:	ns = !(*q == Star || *q == Outpar);
+    #####: 2170:	l = newlinklist();
+        -: 2171:	/* And generate only directory names. */
+    #####: 2172:	dirs = 1;
+    #####: 2173:	all = execs = 0;
+        -: 2174:    }
+        -: 2175:    /* Open directory. */
+    #####: 2176:    if (prpre && *prpre) {
+    #####: 2177:	pathpref = dupstring(prpre);
+    #####: 2178:	unmetafy(pathpref, &pathpreflen);
+    #####: 2179:	if (pathpreflen > PATH_MAX)
+    #####: 2180:	    return;
+        -: 2181:	/* system needs NULL termination, not provided by unmetafy */
+    #####: 2182:	pathpref[pathpreflen] = '\0';
+        -: 2183:    } else {
+    #####: 2184:	pathpref = NULL;
+    #####: 2185:	pathpreflen = 0;
+        -: 2186:    }
+    #####: 2187:    if ((d = opendir(pathpref ? pathpref : "."))) {
+        -: 2188:	/* If we search only special files, prepare a path buffer for stat. */
+    #####: 2189:	if (!all && pathpreflen) {
+        -: 2190:	    /* include null byte we carefully added */
+    #####: 2191:	    memcpy(p, pathpref, pathpreflen+1);
+        -: 2192:	}
+    #####: 2193:	q = p + pathpreflen;
+        -: 2194:	/* Fine, now read the directory. */
+    #####: 2195:	while ((n = zreaddir(d, 1)) && !errflag) {
+        -: 2196:	    /* Ignore files beginning with `.' unless the thing we found on *
+        -: 2197:	     * the command line also starts with a dot or GLOBDOTS is set.  */
+    #####: 2198:	    if (*n != '.' || *fpre == '.' || isset(GLOBDOTS)) {
+    #####: 2199:		addwhat = execs ? -8 : -5;
+    #####: 2200:		if (filecomp)
+        -: 2201:		    /* If we have a pattern for the filename check, use it. */
+    #####: 2202:		    test = pattry(filecomp, n);
+        -: 2203:		else {
+        -: 2204:		    /* Otherwise use the prefix and suffix strings directly. */
+    #####: 2205:		    e = n + strlen(n) - fsl;
+    #####: 2206:		    if ((test = !strncmp(n, fpre, fpl)))
+    #####: 2207:			test = !strcmp(e, fsuf);
+    #####: 2208:		    if (!test && mstack) {
+    #####: 2209:			test = 1;
+    #####: 2210:			addwhat = CC_FILES;
+        -: 2211:		    }
+        -: 2212:		}
+        -: 2213:		/* Filename didn't match? */
+    #####: 2214:		if (!test)
+    #####: 2215:		    continue;
+    #####: 2216:		if (!all) {
+        -: 2217:		    char *ums;
+        -: 2218:		    int umlen;
+        -: 2219:		    /* We still have to check the file type, so prepare *
+        -: 2220:		     * the path buffer by appending the filename.       */
+    #####: 2221:		    ums = dupstring(n);
+    #####: 2222:		    unmetafy(ums, &umlen);
+    #####: 2223:		    if (umlen + pathpreflen + 1 > PATH_MAX)
+    #####: 2224:			continue;
+    #####: 2225:		    memcpy(q, ums, umlen);
+    #####: 2226:		    q[umlen] = '\0';
+        -: 2227:		    /* And do the stat. */
+    #####: 2228:		    if (stat(p, &buf) < 0)
+    #####: 2229:			continue;
+        -: 2230:		}
+    #####: 2231:		if (all ||
+    #####: 2232:		    (dirs && S_ISDIR(buf.st_mode)) ||
+    #####: 2233:		    (execs && S_ISREG(buf.st_mode) && (buf.st_mode&S_IXUGO))) {
+        -: 2234:		    /* If we want all files or the file has the right type... */
+    #####: 2235:		    if (*psuf) {
+        -: 2236:			/* We have to test for a path suffix. */
+    #####: 2237:			int o = strlen(p), tt;
+        -: 2238:
+    #####: 2239:			if (o + strlen(psuf) > PATH_MAX)
+    #####: 2240:			    continue;
+        -: 2241:			/* Append it to the path buffer. */
+    #####: 2242:			strcpy(p + o, psuf);
+        -: 2243:
+        -: 2244:			/* Do we have to use globbing? */
+    #####: 2245:			if (ispattern ||
+    #####: 2246:			    (ns && comppatmatch && *comppatmatch)) {
+        -: 2247:			    /* Yes, so append a `*' if needed. */
+    #####: 2248:			    if (ns && comppatmatch && *comppatmatch == '*') {
+    #####: 2249:				int tl = strlen(p);
+        -: 2250:
+    #####: 2251:				p[tl] = Star;
+    #####: 2252:				p[tl + 1] = '\0';
+        -: 2253:			    }
+        -: 2254:			    /* Do the globbing... */
+    #####: 2255:			    remnulargs(p);
+    #####: 2256:			    addlinknode(l, p);
+    #####: 2257:			    globlist(l, 0);
+        -: 2258:			    /* And see if that produced a filename. */
+    #####: 2259:			    tt = nonempty(l);
+    #####: 2260:			    while (ugetnode(l));
+        -: 2261:			} else
+        -: 2262:			    /* Otherwise just check, if we have access *
+        -: 2263:			     * to the file.                            */
+    #####: 2264:			    tt = !access(p, F_OK);
+        -: 2265:
+    #####: 2266:			p[o] = '\0';
+    #####: 2267:			if (tt)
+        -: 2268:			    /* Ok, we can add the filename to the *
+        -: 2269:			     * list of matches.                   */
+    #####: 2270:			    addmatch(dupstring(n), NULL);
+        -: 2271:		    } else
+        -: 2272:			/* We want all files, so just add the name *
+        -: 2273:			 * to the matches.                         */
+    #####: 2274:			addmatch(dupstring(n), NULL);
+        -: 2275:		}
+        -: 2276:	    }
+        -: 2277:	}
+    #####: 2278:	closedir(d);
+        -: 2279:    }
+    #####: 2280:    opts[NULLGLOB] = ng;
+    #####: 2281:    addwhat = aw;
+        -: 2282:}
+        -: 2283:
+        -: 2284:/* This returns the node with the given data. */
+        -: 2285:/* ...should probably be moved to linklist.c. */
+        -: 2286:
+        -: 2287:static LinkNode
+    #####: 2288:findnode(LinkList list, void *dat)
+        -: 2289:{
+    #####: 2290:    LinkNode tmp = firstnode(list);
+        -: 2291:
+    #####: 2292:    while (tmp && getdata(tmp) != dat) incnode(tmp);
+        -: 2293:
+    #####: 2294:    return tmp;
+        -: 2295:}
+        -: 2296:
+        -: 2297:/* A simple counter to avoid endless recursion between old and new style *
+        -: 2298: * completion. */
+        -: 2299:
+        -: 2300:static int cdepth = 0;
+        -: 2301:
+        -: 2302:#define MAX_CDEPTH 16
+        -: 2303:
+        -: 2304:/**/
+        -: 2305:static int
+    #####: 2306:makecomplistctl(int flags)
+        -: 2307:{
+        -: 2308:    Heap oldheap;
+        -: 2309:    int ret;
+        -: 2310:
+    #####: 2311:    if (cdepth == MAX_CDEPTH)
+    #####: 2312:	return 0;
+        -: 2313:
+    #####: 2314:    cdepth++;
+    #####: 2315:    SWITCHHEAPS(oldheap, compheap) {
+    #####: 2316:	int ooffs = offs, lip, lp;
+    #####: 2317:	char *str = comp_str(&lip, &lp, 0), *t;
+    #####: 2318:	char *os = cmdstr, **ow = clwords, **p, **q, qc;
+    #####: 2319:	int on = clwnum, op = clwpos, ois =  instring, oib = inbackt;
+    #####: 2320:	char *oisuf = isuf, *oqp = qipre, *oqs = qisuf, *oaq = autoq;
+        -: 2321:	char buf[3];
+        -: 2322:
+    #####: 2323:	if (compquote && (qc = *compquote)) {
+    #####: 2324:	    if (qc == '`') {
+    #####: 2325:		instring = QT_NONE;
+        -: 2326:		/*
+        -: 2327:		 * Yes, inbackt has always been set to zero here.  I'm
+        -: 2328:		 * sure there's a simple explanation.
+        -: 2329:		 */
+    #####: 2330:		inbackt = 0;
+    #####: 2331:		autoq = "";
+        -: 2332:	    } else {
+    #####: 2333:		switch (qc) {
+    #####: 2334:		case '\'':
+    #####: 2335:		    instring = QT_SINGLE;
+    #####: 2336:		    break;
+        -: 2337:
+    #####: 2338:		case '"':
+    #####: 2339:		    instring = QT_DOUBLE;
+    #####: 2340:		    break;
+        -: 2341:
+    #####: 2342:		case '$':
+    #####: 2343:		    instring = QT_DOLLARS;
+    #####: 2344:		    break;
+        -: 2345:		}
+    #####: 2346:		inbackt = 0;
+    #####: 2347:		strcpy(buf, *compquote == '$' ? compquote+1 : compquote);
+    #####: 2348:		autoq = buf;
+        -: 2349:	    }
+        -: 2350:	} else {
+    #####: 2351:	    instring = QT_NONE;
+    #####: 2352:	    inbackt = 0;
+    #####: 2353:	    autoq = "";
+        -: 2354:	}
+    #####: 2355:	qipre = ztrdup(compqiprefix ? compqiprefix : "");
+    #####: 2356:	qisuf = ztrdup(compqisuffix ? compqisuffix : "");
+    #####: 2357:	isuf = dupstring(compisuffix);
+    #####: 2358:	ctokenize(isuf);
+    #####: 2359:	remnulargs(isuf);
+    #####: 2360:	clwnum = arrlen(compwords);
+    #####: 2361:	clwpos = compcurrent - 1;
+    #####: 2362:	cmdstr = ztrdup(compwords[0]);
+    #####: 2363:	clwords = (char **) zalloc((clwnum + 1) * sizeof(char *));
+    #####: 2364:	for (p = compwords, q = clwords; *p; p++, q++) {
+    #####: 2365:	    t = dupstring(*p);
+    #####: 2366:	    tokenize(t);
+    #####: 2367:	    remnulargs(t);
+    #####: 2368:	    *q = ztrdup(t);
+        -: 2369:	}
+    #####: 2370:	*q = NULL;
+    #####: 2371:	offs = lip + lp;
+    #####: 2372:	incompfunc = 2;
+    #####: 2373:	ret = makecomplistglobal(str, !clwpos, COMP_COMPLETE, flags);
+    #####: 2374:	incompfunc = 1;
+    #####: 2375:	isuf = oisuf;
+    #####: 2376:	zsfree(qipre);
+    #####: 2377:	zsfree(qisuf);
+    #####: 2378:	qipre = oqp;
+    #####: 2379:	qisuf = oqs;
+    #####: 2380:	instring = ois;
+    #####: 2381:	inbackt = oib;
+    #####: 2382:	autoq = oaq;
+    #####: 2383:	offs = ooffs;
+    #####: 2384:	zsfree(cmdstr);
+    #####: 2385:	freearray(clwords);
+    #####: 2386:	cmdstr = os;
+    #####: 2387:	clwords = ow;
+    #####: 2388:	clwnum = on;
+    #####: 2389:	clwpos = op;
+    #####: 2390:    } SWITCHBACKHEAPS(oldheap);
+    #####: 2391:    cdepth--;
+        -: 2392:
+    #####: 2393:    return ret;
+        -: 2394:}
+        -: 2395:
+        -: 2396:/* This function gets the compctls for the given command line and *
+        -: 2397: * adds all completions for them. */
+        -: 2398:
+        -: 2399:/**/
+        -: 2400:static int
+    #####: 2401:makecomplistglobal(char *os, int incmd, UNUSED(int lst), int flags)
+        -: 2402:{
+    #####: 2403:    Compctl cc = NULL;
+        -: 2404:    char *s;
+        -: 2405:
+    #####: 2406:    ccont = CC_CCCONT;
+    #####: 2407:    cc_dummy.suffix = NULL;
+        -: 2408:
+    #####: 2409:    if (linwhat == IN_ENV) {
+        -: 2410:        /* Default completion for parameter values. */
+    #####: 2411:	if (!(flags & CFN_DEFAULT)) {
+    #####: 2412:	    cc = &cc_default;
+    #####: 2413:	    keypm = NULL;
+        -: 2414:	}
+    #####: 2415:    } else if (linwhat == IN_MATH) {
+    #####: 2416:	if (!(flags & CFN_DEFAULT)) {
+    #####: 2417:	    if (insubscr >= 2) {
+        -: 2418:		/* Inside subscript of assoc array, complete keys. */
+    #####: 2419:		cc_dummy.mask = 0;
+    #####: 2420:		cc_dummy.suffix = (insubscr == 2 ? "]" : "");
+        -: 2421:	    } else {
+        -: 2422:		/* Other math environment, complete paramete names. */
+    #####: 2423:		keypm = NULL;
+    #####: 2424:		cc_dummy.mask = CC_PARAMS;
+        -: 2425:	    }
+    #####: 2426:	    cc = &cc_dummy;
+    #####: 2427:	    cc_dummy.refc = 10000;
+        -: 2428:	}
+    #####: 2429:    } else if (linwhat == IN_COND) {
+        -: 2430:	/* We try to be clever here: in conditions we complete option   *
+        -: 2431:	 * names after a `-o', file names after `-nt', `-ot', and `-ef' *
+        -: 2432:	 * and file names and parameter names elsewhere.                */
+    #####: 2433:	if (!(flags & CFN_DEFAULT)) {
+    #####: 2434:	    s = clwpos ? clwords[clwpos - 1] : "";
+    #####: 2435:	    cc_dummy.mask = !strcmp("-o", s) ? CC_OPTIONS :
+    #####: 2436:		((*s == '-' && s[1] && !s[2]) ||
+    #####: 2437:		 !strcmp("-nt", s) ||
+    #####: 2438:		 !strcmp("-ot", s) ||
+    #####: 2439:		 !strcmp("-ef", s)) ? CC_FILES :
+        -: 2440:		(CC_FILES | CC_PARAMS);
+    #####: 2441:	    cc = &cc_dummy;
+    #####: 2442:	    cc_dummy.refc = 10000;
+    #####: 2443:	    keypm = NULL;
+        -: 2444:	}
+    #####: 2445:    } else if (linredir) {
+    #####: 2446:	if (!(flags & CFN_DEFAULT)) {
+        -: 2447:	    /* In redirections use default completion. */
+    #####: 2448:	    cc = &cc_default;
+    #####: 2449:	    keypm = NULL;
+        -: 2450:	}
+        -: 2451:    } else {
+        -: 2452:	/* Otherwise get the matches for the command. */
+    #####: 2453:	keypm = NULL;
+    #####: 2454:	return makecomplistcmd(os, incmd, flags);
+        -: 2455:    }
+    #####: 2456:    if (cc) {
+        -: 2457:	/* First, use the -T compctl. */
+    #####: 2458:	if (!(flags & CFN_FIRST)) {
+    #####: 2459:	    makecomplistcc(&cc_first, os, incmd);
+        -: 2460:
+    #####: 2461:	    if (!(ccont & CC_CCCONT))
+    #####: 2462:		return 0;
+        -: 2463:	}
+    #####: 2464:	makecomplistcc(cc, os, incmd);
+    #####: 2465:	return 1;
+        -: 2466:    }
+    #####: 2467:    return 0;
+        -: 2468:}
+        -: 2469:
+        -: 2470:/* This produces the matches for a command. */
+        -: 2471:
+        -: 2472:/**/
+        -: 2473:static int
+    #####: 2474:makecomplistcmd(char *os, int incmd, int flags)
+        -: 2475:{
+        -: 2476:    Compctl cc;
+        -: 2477:    Compctlp ccp;
+        -: 2478:    char *s;
+    #####: 2479:    int ret = 0;
+        -: 2480:
+        -: 2481:    /* First, use the -T compctl. */
+    #####: 2482:    if (!(flags & CFN_FIRST)) {
+    #####: 2483:	makecomplistcc(&cc_first, os, incmd);
+        -: 2484:
+    #####: 2485:	if (!(ccont & CC_CCCONT))
+    #####: 2486:	    return 0;
+        -: 2487:    }
+        -: 2488:    /* Then search the pattern compctls, with the command name and the *
+        -: 2489:     * full pathname of the command. */
+    #####: 2490:    if (cmdstr) {
+    #####: 2491:	ret |= makecomplistpc(os, incmd);
+    #####: 2492:	if (!(ccont & CC_CCCONT))
+    #####: 2493:	    return ret;
+        -: 2494:    }
+        -: 2495:    /* If the command string starts with `=', try the path name of the *
+        -: 2496:     * command. */
+    #####: 2497:    if (cmdstr && cmdstr[0] == Equals) {
+    #####: 2498:	char *c = findcmd(cmdstr + 1, 1, 0);
+        -: 2499:
+    #####: 2500:	if (c) {
+    #####: 2501:	    zsfree(cmdstr);
+    #####: 2502:	    cmdstr = ztrdup(c);
+        -: 2503:	}
+        -: 2504:    }
+        -: 2505:
+        -: 2506:    /* Find the compctl for this command, trying the full name and then *
+        -: 2507:     * the trailing pathname component. If that doesn't yield anything, *
+        -: 2508:     * use default completion. */
+    #####: 2509:    if (incmd)
+    #####: 2510:	cc = &cc_compos;
+    #####: 2511:    else if (!(cmdstr &&
+    #####: 2512:	  (((ccp = (Compctlp) compctltab->getnode(compctltab, cmdstr)) &&
+    #####: 2513:	    (cc = ccp->cc)) ||
+    #####: 2514:	   ((s = dupstring(cmdstr)) && remlpaths(&s, 1) &&
+    #####: 2515:	    (ccp = (Compctlp) compctltab->getnode(compctltab, s)) &&
+    #####: 2516:	    (cc = ccp->cc))))) {
+    #####: 2517:	if (flags & CFN_DEFAULT)
+    #####: 2518:	    return ret;
+    #####: 2519:	cc = &cc_default;
+        -: 2520:    } else
+    #####: 2521:	ret|= 1;
+    #####: 2522:    makecomplistcc(cc, os, incmd);
+    #####: 2523:    return ret;
+        -: 2524:}
+        -: 2525:
+        -: 2526:/* This adds the matches for the pattern compctls. */
+        -: 2527:
+        -: 2528:/**/
+        -: 2529:static int
+    #####: 2530:makecomplistpc(char *os, int incmd)
+        -: 2531:{
+        -: 2532:    Patcomp pc;
+        -: 2533:    Patprog pat;
+        -: 2534:    char *s;
+    #####: 2535:    int ret = 0;
+        -: 2536:
+    #####: 2537:    s = ((shfunctab->getnode(shfunctab, cmdstr) ||
+    #####: 2538:	  builtintab->getnode(builtintab, cmdstr)) ? NULL :
+    #####: 2539:	 findcmd(cmdstr, 1, 0));
+        -: 2540:
+    #####: 2541:    for (pc = patcomps; pc; pc = pc->next) {
+    #####: 2542:	if ((pat = patcompile(pc->pat, PAT_STATIC, NULL)) &&
+    #####: 2543:	    (pattry(pat, cmdstr) ||
+    #####: 2544:	     (s && pattry(pat, s)))) {
+    #####: 2545:	    makecomplistcc(pc->cc, os, incmd);
+    #####: 2546:	    ret |= 2;
+    #####: 2547:	    if (!(ccont & CC_CCCONT))
+    #####: 2548:		return ret;
+        -: 2549:	}
+        -: 2550:    }
+    #####: 2551:    return ret;
+        -: 2552:}
+        -: 2553:
+        -: 2554:/* This produces the matches for one compctl. */
+        -: 2555:
+        -: 2556:/**/
+        -: 2557:static void
+    #####: 2558:makecomplistcc(Compctl cc, char *s, int incmd)
+        -: 2559:{
+    #####: 2560:    cc->refc++;
+    #####: 2561:    if (!ccused)
+    #####: 2562:	ccused = newlinklist();
+    #####: 2563:    addlinknode(ccused, cc);
+        -: 2564:
+    #####: 2565:    ccont = 0;
+        -: 2566:
+    #####: 2567:    makecomplistor(cc, s, incmd, 0, 0);
+    #####: 2568:}
+        -: 2569:
+        -: 2570:/* This adds the completions for one run of [x]or'ed completions. */
+        -: 2571:
+        -: 2572:/**/
+        -: 2573:static void
+    #####: 2574:makecomplistor(Compctl cc, char *s, int incmd, int compadd, int sub)
+        -: 2575:{
+    #####: 2576:    int mn, ct, um = usemenu;
+        -: 2577:
+        -: 2578:    /* Loop over xors. */
+        -: 2579:    do {
+    #####: 2580:	mn = mnum;
+        -: 2581:
+        -: 2582:	/* Loop over ors. */
+        -: 2583:	do {
+        -: 2584:	    /* Reset the range information if we are not in a sub-list. */
+    #####: 2585:	    if (!sub) {
+    #####: 2586:		brange = 0;
+    #####: 2587:		erange = clwnum - 1;
+        -: 2588:	    }
+    #####: 2589:	    usemenu = 0;
+    #####: 2590:	    makecomplistlist(cc, s, incmd, compadd);
+    #####: 2591:	    um |= usemenu;
+        -: 2592:
+    #####: 2593:	    ct = cc->mask2 & CC_XORCONT;
+        -: 2594:
+    #####: 2595:	    cc = cc->xor;
+    #####: 2596:	} while (cc && ct);
+        -: 2597:
+        -: 2598:	/* Stop if we got some matches. */
+    #####: 2599:	if (mn != mnum)
+    #####: 2600:	    break;
+    #####: 2601:	if (cc) {
+    #####: 2602:	    ccont &= ~(CC_DEFCONT | CC_PATCONT);
+    #####: 2603:	    if (!sub)
+    #####: 2604:		ccont &= ~CC_CCCONT;
+        -: 2605:	}
+    #####: 2606:    } while (cc);
+        -: 2607:
+    #####: 2608:    usemenu = um;
+    #####: 2609:}
+        -: 2610:
+        -: 2611:/* This dispatches for simple and extended completion. */
+        -: 2612:
+        -: 2613:/**/
+        -: 2614:static void
+    #####: 2615:makecomplistlist(Compctl cc, char *s, int incmd, int compadd)
+        -: 2616:{
+    #####: 2617:    int oloffs = offs, owe = we, owb = wb, ocs = zlemetacs;
+        -: 2618:
+        -: 2619:    METACHECK();
+        -: 2620:
+    #####: 2621:    if (cc->ext)
+        -: 2622:	/* Handle extended completion. */
+    #####: 2623:	makecomplistext(cc, s, incmd);
+        -: 2624:    else
+        -: 2625:	/* Only normal flags. */
+    #####: 2626:	makecomplistflags(cc, s, incmd, compadd);
+        -: 2627:
+        -: 2628:    /* Reset some information variables for the next try. */
+    #####: 2629:    errflag &= ~ERRFLAG_ERROR;
+    #####: 2630:    offs = oloffs;
+    #####: 2631:    wb = owb;
+    #####: 2632:    we = owe;
+    #####: 2633:    zlemetacs = ocs;
+    #####: 2634:}
+        -: 2635:
+        -: 2636:/* This add matches for extended completion patterns */
+        -: 2637:
+        -: 2638:/**/
+        -: 2639:static void
+    #####: 2640:makecomplistext(Compctl occ, char *os, int incmd)
+        -: 2641:{
+        -: 2642:    Compctl compc;
+        -: 2643:    Compcond or, cc;
+        -: 2644:    Patprog pprog;
+    #####: 2645:    int compadd, m = 0, d = 0, t, tt, i, j, a, b, ins;
+    #####: 2646:    char *sc = NULL, *s, *ss;
+        -: 2647:
+    #####: 2648:    ins = (instring != QT_NONE ? instring : (inbackt ? QT_BACKTICK : 0));
+        -: 2649:
+        -: 2650:    /* This loops over the patterns separated by `-'s. */
+    #####: 2651:    for (compc = occ->ext; compc; compc = compc->next) {
+    #####: 2652:	compadd = t = brange = 0;
+    #####: 2653:	erange = clwnum - 1;
+        -: 2654:	/* This loops over OR'ed patterns. */
+    #####: 2655:	for (cc = compc->cond; cc && !t; cc = or) {
+    #####: 2656:	    or = cc->or;
+        -: 2657:	    /* This loops over AND'ed patterns. */
+    #####: 2658:	    for (t = 1; cc && t; cc = cc->and) {
+        -: 2659:		/* And this loops over [...] pairs. */
+    #####: 2660:		for (t = i = 0; i < cc->n && !t; i++) {
+    #####: 2661:		    s = NULL;
+    #####: 2662:		    brange = 0;
+    #####: 2663:		    erange = clwnum - 1;
+    #####: 2664:		    switch (cc->type) {
+    #####: 2665:		    case CCT_QUOTE:
+    #####: 2666:			t = ((cc->u.s.s[i][0] == 's' && ins == QT_SINGLE) ||
+    #####: 2667:			     (cc->u.s.s[i][0] == 'd' && ins == QT_DOUBLE) ||
+    #####: 2668:			     (cc->u.s.s[i][0] == 'b' && ins == QT_BACKTICK));
+    #####: 2669:			break;
+    #####: 2670:		    case CCT_POS:
+    #####: 2671:			tt = clwpos;
+    #####: 2672:			goto cct_num;
+    #####: 2673:		    case CCT_NUMWORDS:
+    #####: 2674:			tt = clwnum;
+    #####: 2675:		    cct_num:
+    #####: 2676:			if ((a = cc->u.r.a[i]) < 0)
+    #####: 2677:			    a += clwnum;
+    #####: 2678:			if ((b = cc->u.r.b[i]) < 0)
+    #####: 2679:			    b += clwnum;
+    #####: 2680:			if (cc->type == CCT_POS)
+    #####: 2681:			    brange = a, erange = b;
+    #####: 2682:			t = (tt >= a && tt <= b);
+    #####: 2683:			break;
+    #####: 2684:		    case CCT_CURSUF:
+        -: 2685:		    case CCT_CURPRE:
+    #####: 2686:			s = ztrdup(clwpos < clwnum ? os : "");
+    #####: 2687:			untokenize(s);
+    #####: 2688:			if (isset(COMPLETEINWORD)) s[offs] = '\0';
+    #####: 2689:			sc = rembslash(cc->u.s.s[i]);
+    #####: 2690:			a = strlen(sc);
+    #####: 2691:			if (!strncmp(s, sc, a)) {
+    #####: 2692:			    compadd = (cc->type == CCT_CURSUF ? a : 0);
+    #####: 2693:			    t = 1;
+        -: 2694:			}
+    #####: 2695:			break;
+    #####: 2696:		    case CCT_CURSUB:
+        -: 2697:		    case CCT_CURSUBC:
+    #####: 2698:			if (clwpos < 0 || clwpos >= clwnum)
+    #####: 2699:			    t = 0;
+        -: 2700:			else {
+    #####: 2701:			    s = ztrdup(os);
+    #####: 2702:			    untokenize(s);
+    #####: 2703:			    if (isset(COMPLETEINWORD)) s[offs] = '\0';
+    #####: 2704:			    a = getcpat(s,
+    #####: 2705:					cc->u.s.p[i],
+    #####: 2706:					cc->u.s.s[i],
+    #####: 2707:					cc->type == CCT_CURSUBC);
+    #####: 2708:			    if (a != -1)
+    #####: 2709:				compadd = a, t = 1;
+        -: 2710:			}
+    #####: 2711:			break;
+        -: 2712:			
+    #####: 2713:		    case CCT_CURPAT:
+        -: 2714:		    case CCT_CURSTR:
+    #####: 2715:			tt = clwpos;
+    #####: 2716:			goto cct_str;
+    #####: 2717:		    case CCT_WORDPAT:
+        -: 2718:		    case CCT_WORDSTR:
+    #####: 2719:			tt = 0;
+    #####: 2720:		    cct_str:
+    #####: 2721:			if ((a = tt + cc->u.s.p[i]) < 0)
+    #####: 2722:			    a += clwnum;
+    #####: 2723:			s = ztrdup((a < 0 || a >= clwnum) ? "" :
+    #####: 2724:				   clwords[a]);
+    #####: 2725:			untokenize(s);
+        -: 2726:			
+    #####: 2727:			if (cc->type == CCT_CURPAT ||
+    #####: 2728:			    cc->type == CCT_WORDPAT) {
+    #####: 2729:			    tokenize(ss = dupstring(cc->u.s.s[i]));
+    #####: 2730:			    t = ((pprog = patcompile(ss, PAT_STATIC, NULL)) &&
+    #####: 2731:				 pattry(pprog, s));
+        -: 2732:			} else
+    #####: 2733:			    t = (!strcmp(s, rembslash(cc->u.s.s[i])));
+    #####: 2734:			break;
+    #####: 2735:		    case CCT_RANGESTR:
+        -: 2736:		    case CCT_RANGEPAT:
+    #####: 2737:			if (cc->type == CCT_RANGEPAT)
+    #####: 2738:			    tokenize(sc = dupstring(cc->u.l.a[i]));
+    #####: 2739:			for (j = clwpos - 1; j > 0; j--) {
+    #####: 2740:			    untokenize(s = ztrdup(clwords[j]));
+    #####: 2741:			    if (cc->type == CCT_RANGESTR)
+    #####: 2742:				sc = rembslash(cc->u.l.a[i]);
+    #####: 2743:			    if (cc->type == CCT_RANGESTR ?
+    #####: 2744:				!strncmp(s, sc, strlen(sc)) :
+    #####: 2745:				((pprog = patcompile(sc, PAT_STATIC, 0)) &&
+    #####: 2746:				 pattry(pprog, s))) {
+    #####: 2747:				zsfree(s);
+    #####: 2748:				brange = j + 1;
+    #####: 2749:				t = 1;
+    #####: 2750:				break;
+        -: 2751:			    }
+    #####: 2752:			    zsfree(s);
+        -: 2753:			}
+    #####: 2754:			if (t && cc->u.l.b[i]) {
+    #####: 2755:			    if (cc->type == CCT_RANGEPAT)
+    #####: 2756:				tokenize(sc = dupstring(cc->u.l.b[i]));
+    #####: 2757:			    for (j++; j < clwnum; j++) {
+    #####: 2758:				untokenize(s = ztrdup(clwords[j]));
+    #####: 2759:				if (cc->type == CCT_RANGESTR)
+    #####: 2760:				    sc = rembslash(cc->u.l.b[i]);
+    #####: 2761:				if (cc->type == CCT_RANGESTR ?
+    #####: 2762:				    !strncmp(s, sc, strlen(sc)) :
+    #####: 2763:				    ((pprog = patcompile(sc, PAT_STATIC, 0)) &&
+    #####: 2764:				     pattry(pprog, s))) {
+    #####: 2765:				    zsfree(s);
+    #####: 2766:				    erange = j - 1;
+    #####: 2767:				    t = clwpos <= erange;
+    #####: 2768:				    break;
+        -: 2769:				}
+    #####: 2770:				zsfree(s);
+        -: 2771:			    }
+        -: 2772:			}
+    #####: 2773:			s = NULL;
+        -: 2774:		    }
+    #####: 2775:		    zsfree(s);
+        -: 2776:		}
+        -: 2777:	    }
+        -: 2778:	}
+    #####: 2779:	if (t) {
+        -: 2780:	    /* The patterns matched, use the flags. */
+    #####: 2781:	    m = 1;
+    #####: 2782:	    ccont &= ~(CC_PATCONT | CC_DEFCONT);
+    #####: 2783:	    makecomplistor(compc, os, incmd, compadd, 1);
+    #####: 2784:	    if (!d && (ccont & CC_DEFCONT)) {
+    #####: 2785:		d = 1;
+    #####: 2786:		compadd = 0;
+    #####: 2787:		brange = 0;
+    #####: 2788:		erange = clwnum - 1;
+    #####: 2789:		makecomplistflags(occ, os, incmd, 0);
+        -: 2790:	    }
+    #####: 2791:	    if (!(ccont & CC_PATCONT))
+    #####: 2792:		break;
+        -: 2793:	}
+        -: 2794:    }
+        -: 2795:    /* If no pattern matched, use the standard flags. */
+    #####: 2796:    if (!m) {
+    #####: 2797:	compadd = 0;
+    #####: 2798:	brange = 0;
+    #####: 2799:	erange = clwnum - 1;
+    #####: 2800:	makecomplistflags(occ, os, incmd, 0);
+        -: 2801:    }
+    #####: 2802:}
+        -: 2803:
+        -: 2804:/**/
+        -: 2805:static int
+    #####: 2806:sep_comp_string(char *ss, char *s, int noffs)
+        -: 2807:{
+    #####: 2808:    LinkList foo = newlinklist();
+        -: 2809:    LinkNode n;
+    #####: 2810:    int owe = we, owb = wb, ocs = zlemetacs, swb, swe, scs, soffs, ne = noerrs;
+    #####: 2811:    int sl = strlen(ss), tl, got = 0, i = 0, cur = -1, oll = zlemetall, remq;
+    #####: 2812:    int ois = instring, oib = inbackt, ona = noaliases;
+    #####: 2813:    char *tmp, *p, *ns, *ol = zlemetaline, sav, *oaq = autoq;
+        -: 2814:    char *qp, *qs, *ts;
+        -: 2815:
+    #####: 2816:    swb = swe = soffs = 0;
+    #####: 2817:    ns = NULL;
+        -: 2818:
+        -: 2819:    METACHECK();
+        -: 2820:
+        -: 2821:    /* Put the string in the lexer buffer and call the lexer to *
+        -: 2822:     * get the words we have to expand.                        */
+    #####: 2823:    addedx = 1;
+    #####: 2824:    noerrs = 1;
+    #####: 2825:    zcontext_save();
+    #####: 2826:    lexflags = LEXFLAGS_ZLE;
+    #####: 2827:    tmp = (char *) zhalloc(tl = sl + 3 + strlen(s));
+    #####: 2828:    strcpy(tmp, ss);
+    #####: 2829:    tmp[sl] = ' ';
+    #####: 2830:    memcpy(tmp + sl + 1, s, noffs);
+    #####: 2831:    tmp[(scs = zlemetacs = sl + 1 + noffs)] = 'x';
+    #####: 2832:    strcpy(tmp + sl + 2 + noffs, s + noffs);
+    #####: 2833:    if ((remq = (*compqstack == QT_BACKSLASH)))
+    #####: 2834:	tmp = rembslash(tmp);
+    #####: 2835:    inpush(dupstrspace(tmp), 0, NULL);
+    #####: 2836:    zlemetaline = tmp;
+    #####: 2837:    zlemetall = tl - 1;
+    #####: 2838:    strinbeg(0);
+    #####: 2839:    noaliases = 1;
+        -: 2840:    do {
+    #####: 2841:	ctxtlex();
+    #####: 2842:	if (tok == LEXERR) {
+        -: 2843:	    int j;
+        -: 2844:
+    #####: 2845:	    if (!tokstr)
+    #####: 2846:		break;
+    #####: 2847:	    for (j = 0, p = tokstr; *p; p++)
+    #####: 2848:		if (*p == Snull || *p == Dnull)
+    #####: 2849:		    j++;
+    #####: 2850:	    if (j & 1) {
+    #####: 2851:		tok = STRING;
+    #####: 2852:		if (p > tokstr && p[-1] == ' ')
+    #####: 2853:		    p[-1] = '\0';
+        -: 2854:	    }
+        -: 2855:	}
+    #####: 2856:	if (tok == ENDINPUT || tok == LEXERR)
+        -: 2857:	    break;
+    #####: 2858:	if (tokstr && *tokstr)
+    #####: 2859:	    addlinknode(foo, (p = ztrdup(tokstr)));
+        -: 2860:	else
+    #####: 2861:	    p = NULL;
+    #####: 2862:	if (!got && !lexflags) {
+        -: 2863:	    DPUTS(!p, "no current word in substr");
+    #####: 2864:	    got = 1;
+    #####: 2865:	    cur = i;
+    #####: 2866:	    swb = wb - 1;
+    #####: 2867:	    swe = we - 1;
+    #####: 2868:	    soffs = zlemetacs - swb;
+    #####: 2869:	    chuck(p + soffs);
+    #####: 2870:	    ns = dupstring(p);
+        -: 2871:	}
+    #####: 2872:	i++;
+    #####: 2873:    } while (tok != ENDINPUT && tok != LEXERR);
+    #####: 2874:    noaliases = ona;
+    #####: 2875:    strinend();
+    #####: 2876:    inpop();
+    #####: 2877:    errflag &= ~ERRFLAG_ERROR;
+    #####: 2878:    noerrs = ne;
+    #####: 2879:    zcontext_restore();
+    #####: 2880:    wb = owb;
+    #####: 2881:    we = owe;
+    #####: 2882:    zlemetacs = ocs;
+    #####: 2883:    zlemetaline = ol;
+    #####: 2884:    zlemetall = oll;
+    #####: 2885:    if (cur < 0 || i < 1)
+    #####: 2886:	return 1;
+    #####: 2887:    owb = offs;
+    #####: 2888:    offs = soffs;
+    #####: 2889:    if ((p = check_param(ns, 0, 1))) {
+    #####: 2890:	for (p = ns; *p; p++)
+    #####: 2891:	    if (*p == Dnull)
+    #####: 2892:		*p = '"';
+    #####: 2893:	    else if (*p == Snull)
+    #####: 2894:		*p = '\'';
+        -: 2895:    }
+    #####: 2896:    offs = owb;
+        -: 2897:
+    #####: 2898:    untokenize(ts = dupstring(ns));
+        -: 2899:
+    #####: 2900:    if (*ns == Snull || *ns == Dnull ||
+    #####: 2901:	((*ns == String || *ns == Qstring) && ns[1] == Snull)) {
+    #####: 2902:	char *tsptr = ts, *nsptr = ns, sav;
+    #####: 2903:	switch (*ns) {
+    #####: 2904:	case Snull:
+    #####: 2905:	    instring = QT_SINGLE;
+    #####: 2906:	    break;
+        -: 2907:
+    #####: 2908:	case Dnull:
+    #####: 2909:	    instring = QT_DOUBLE;
+    #####: 2910:	    break;
+        -: 2911:
+    #####: 2912:	default:
+    #####: 2913:	    instring = QT_DOLLARS;
+    #####: 2914:	    nsptr++;
+    #####: 2915:	    tsptr++;
+    #####: 2916:	    break;
+        -: 2917:	}
+        -: 2918:
+    #####: 2919:	inbackt = 0;
+    #####: 2920:	swb++;
+    #####: 2921:	if (nsptr[strlen(nsptr) - 1] == *nsptr && nsptr[1])
+    #####: 2922:	    swe--;
+    #####: 2923:	sav = *++tsptr;
+    #####: 2924:	*tsptr = '\0';
+    #####: 2925:	autoq = compqstack[1] ? "" : multiquote(ts, 1);
+    #####: 2926:	*(ts = tsptr) = sav;
+        -: 2927:    } else {
+    #####: 2928:	instring = QT_NONE;
+    #####: 2929:	autoq = "";
+        -: 2930:    }
+    #####: 2931:    for (p = ns, i = swb; *p; p++, i++) {
+    #####: 2932:	if (inull(*p)) {
+    #####: 2933:	    if (i < scs) {
+    #####: 2934:		soffs--;
+    #####: 2935:		if (remq && *p == Bnull && p[1])
+    #####: 2936:		    swb -= 2;
+        -: 2937:	    }
+    #####: 2938:	    if (p[1] || *p != Bnull) {
+    #####: 2939:		if (*p == Bnull) {
+    #####: 2940:		    if (scs == i + 1)
+    #####: 2941:			scs++, soffs++;
+        -: 2942:		} else {
+    #####: 2943:		    if (scs > i--)
+    #####: 2944:			scs--;
+        -: 2945:		}
+        -: 2946:	    } else {
+    #####: 2947:		if (scs == swe)
+    #####: 2948:		    scs--;
+        -: 2949:	    }
+    #####: 2950:	    chuck(p--);
+        -: 2951:	}
+        -: 2952:    }
+    #####: 2953:    ns = ts;
+        -: 2954:
+    #####: 2955:    if (instring != QT_NONE && strchr(compqstack, QT_BACKSLASH)) {
+    #####: 2956:	int rl = strlen(ns), ql = strlen(multiquote(ns, !!compqstack[1]));
+        -: 2957:
+    #####: 2958:	if (ql > rl)
+    #####: 2959:	    swb -= ql - rl;
+        -: 2960:    }
+    #####: 2961:    sav = s[(i = swb - sl - 1)];
+    #####: 2962:    s[i] = '\0';
+    #####: 2963:    qp = tricat(qipre, multiquote(s, 0), "");
+    #####: 2964:    s[i] = sav;
+    #####: 2965:    if (swe < swb)
+    #####: 2966:	swe = swb;
+    #####: 2967:    swe -= sl + 1;
+    #####: 2968:    sl = strlen(s);
+    #####: 2969:    if (swe > sl) {
+    #####: 2970:	swe = sl;
+    #####: 2971:	if ((int)strlen(ns) > swe - swb + 1)
+    #####: 2972:	    ns[swe - swb + 1] = '\0';
+        -: 2973:    }
+    #####: 2974:    qs = tricat(multiquote(s + swe, 0), qisuf, "");
+    #####: 2975:    sl = strlen(ns);
+    #####: 2976:    if (soffs > sl)
+    #####: 2977:	soffs = sl;
+        -: 2978:
+        -: 2979:    {
+    #####: 2980:	char **ow = clwords, *os = cmdstr, *oqp = qipre, *oqs = qisuf;
+    #####: 2981:	char *oqst = compqstack, compnewchar[2];
+    #####: 2982:	int olws = clwsize, olwn = clwnum, olwp = clwpos;
+    #####: 2983:	int obr = brange, oer = erange, oof = offs;
+    #####: 2984:	unsigned long occ = ccont;
+        -: 2985:
+    #####: 2986:	compnewchar[0] = (char)(instring != QT_NONE ? (char)instring :
+        -: 2987:				QT_BACKSLASH);
+    #####: 2988:	compnewchar[1] = '\0';
+    #####: 2989:	compqstack = tricat(compnewchar, compqstack, "");
+        -: 2990:
+    #####: 2991:	clwsize = clwnum = countlinknodes(foo);
+    #####: 2992:	clwords = (char **) zalloc((clwnum + 1) * sizeof(char *));
+    #####: 2993:	for (n = firstnode(foo), i = 0; n; incnode(n), i++) {
+    #####: 2994:	    p = clwords[i] = (char *) getdata(n);
+    #####: 2995:	    untokenize(p);
+        -: 2996:	}
+    #####: 2997:	clwords[i] = NULL;
+    #####: 2998:	clwpos = cur;
+    #####: 2999:	cmdstr = ztrdup(clwords[0]);
+    #####: 3000:	brange = 0;
+    #####: 3001:	erange = clwnum - 1;
+    #####: 3002:	qipre = qp;
+    #####: 3003:	qisuf = qs;
+    #####: 3004:	offs = soffs;
+    #####: 3005:	ccont = CC_CCCONT;
+    #####: 3006:	makecomplistcmd(ns, !clwpos, CFN_FIRST);
+    #####: 3007:	ccont = occ;
+    #####: 3008:	offs = oof;
+    #####: 3009:	zsfree(cmdstr);
+    #####: 3010:	cmdstr = os;
+    #####: 3011:	freearray(clwords);
+    #####: 3012:	clwords = ow;
+    #####: 3013:	clwsize = olws;
+    #####: 3014:	clwnum = olwn;
+    #####: 3015:	clwpos = olwp;
+    #####: 3016:	brange = obr;
+    #####: 3017:	erange = oer;
+    #####: 3018:	zsfree(qipre);
+    #####: 3019:	qipre = oqp;
+    #####: 3020:	zsfree(qisuf);
+    #####: 3021:	qisuf = oqs;
+    #####: 3022:	zsfree(compqstack);
+    #####: 3023:	compqstack = oqst;
+        -: 3024:    }
+    #####: 3025:    autoq = oaq;
+    #####: 3026:    instring = ois;
+    #####: 3027:    inbackt = oib;
+        -: 3028:
+    #####: 3029:    return 0;
+        -: 3030:}
+        -: 3031:
+        -: 3032:/* This adds the completions for the flags in the given compctl. */
+        -: 3033:
+        -: 3034:/**/
+        -: 3035:static void
+    #####: 3036:makecomplistflags(Compctl cc, char *s, int incmd, int compadd)
+        -: 3037:{
+    #####: 3038:    int t, sf1, sf2, ooffs, um = usemenu, delit, oaw, gflags;
+    #####: 3039:    int mn = mnum, ohp = haspattern;
+    #####: 3040:    char *p, *sd = NULL, *tt, *s1, *s2, *os =  dupstring(s);
+        -: 3041:    struct cmlist ms;
+        -: 3042:
+    #####: 3043:    ccont |= (cc->mask2 & (CC_CCCONT | CC_DEFCONT | CC_PATCONT));
+        -: 3044:
+    #####: 3045:    if (incompfunc != 1 && ccstack && findnode(ccstack, cc))
+    #####: 3046:	return;
+        -: 3047:
+    #####: 3048:    if (!ccstack)
+    #####: 3049:	ccstack = newlinklist();
+    #####: 3050:    addlinknode(ccstack, cc);
+        -: 3051:
+    #####: 3052:    if (incompfunc != 1 && allccs) {
+    #####: 3053:	if (findnode(allccs, cc)) {
+    #####: 3054:	    uremnode(ccstack, firstnode(ccstack));
+    #####: 3055:	    return;
+        -: 3056:	}
+    #####: 3057:	addlinknode(allccs, cc);
+        -: 3058:    }
+        -: 3059:    /* Go to the end of the word if complete_in_word is not set. */
+    #####: 3060:    if (unset(COMPLETEINWORD) && zlemetacs != we)
+    #####: 3061:	zlemetacs = we, offs = strlen(s);
+        -: 3062:
+    #####: 3063:    s = dupstring(s);
+    #####: 3064:    delit = ispattern = 0;
+    #####: 3065:    usemenu = um;
+    #####: 3066:    patcomp = filecomp = NULL;
+    #####: 3067:    rpre = rsuf = lpre = lsuf = ppre = psuf = lppre = lpsuf =
+    #####: 3068:	fpre = fsuf = ipre = ripre = prpre = 
+    #####: 3069:	qfpre = qfsuf = qrpre = qrsuf = qlpre = qlsuf = NULL;
+        -: 3070:
+    #####: 3071:    curcc = cc;
+        -: 3072:
+    #####: 3073:    mflags = 0;
+    #####: 3074:    gflags = (((cc->mask2 & CC_NOSORT ) ? CGF_NOSORT  : 0) |
+    #####: 3075:	      ((cc->mask2 & CC_UNIQALL) ? CGF_UNIQALL : 0) |
+    #####: 3076:	      ((cc->mask2 & CC_UNIQCON) ? CGF_UNIQCON : 0));
+    #####: 3077:    if (cc->gname) {
+    #####: 3078:	endcmgroup(NULL);
+    #####: 3079:	begcmgroup(cc->gname, gflags);
+        -: 3080:    }
+    #####: 3081:    if (cc->ylist) {
+    #####: 3082:	endcmgroup(NULL);
+    #####: 3083:	begcmgroup(NULL, gflags);
+        -: 3084:    }
+    #####: 3085:    if (cc->mask & CC_REMOVE)
+    #####: 3086:	mflags |= CMF_REMOVE;
+    #####: 3087:    if (cc->explain) {
+    #####: 3088:	curexpl = (Cexpl) zhalloc(sizeof(struct cexpl));
+    #####: 3089:	curexpl->count = curexpl->fcount = 0;
+        -: 3090:    } else
+    #####: 3091:	curexpl = NULL;
+        -: 3092:    /* compadd is the number of characters we have to ignore at the  *
+        -: 3093:     * beginning of the word.                                        */
+    #####: 3094:    if (compadd) {
+    #####: 3095:	ipre = dupstring(s);
+    #####: 3096:	ipre[compadd] = '\0';
+    #####: 3097:	untokenize(ipre);
+    #####: 3098:	wb += compadd;
+    #####: 3099:	s += compadd;
+    #####: 3100:	if ((offs -= compadd) < 0) {
+        -: 3101:	    /* It's bigger than our word prefix, so we can't help here... */
+    #####: 3102:	    uremnode(ccstack, firstnode(ccstack));
+    #####: 3103:	    return;
+        -: 3104:	}
+        -: 3105:    } else
+    #####: 3106:	ipre = NULL;
+        -: 3107:
+    #####: 3108:    if (cc->matcher) {
+    #####: 3109:	ms.next = mstack;
+    #####: 3110:	ms.matcher = cc->matcher;
+    #####: 3111:	mstack = &ms;
+        -: 3112:
+    #####: 3113:	if (!mnum)
+    #####: 3114:	    add_bmatchers(cc->matcher);
+        -: 3115:
+    #####: 3116:	addlinknode(matchers, cc->matcher);
+    #####: 3117:	cc->matcher->refc++;
+        -: 3118:    }
+    #####: 3119:    if (mnum && (mstack || bmatchers))
+    #####: 3120:	update_bmatchers();
+        -: 3121:
+        -: 3122:    /* Insert the prefix (compctl -P), if any. */
+    #####: 3123:    if (cc->prefix) {
+    #####: 3124:	int pl = 0;
+        -: 3125:
+    #####: 3126:	if (*s) {
+    #####: 3127:	    char *dp = rembslash(cc->prefix);
+        -: 3128:	    /* First find out how much of the prefix is already on the line. */
+    #####: 3129:	    sd = dupstring(s);
+    #####: 3130:	    untokenize(sd);
+    #####: 3131:	    pl = pfxlen(dp, sd);
+    #####: 3132:	    s += pl;
+    #####: 3133:	    sd += pl;
+    #####: 3134:	    offs -= pl;
+        -: 3135:	}
+        -: 3136:    }
+        -: 3137:    /* Does this compctl have a suffix (compctl -S)? */
+    #####: 3138:    if (cc->suffix) {
+    #####: 3139:	char *sdup = rembslash(cc->suffix);
+    #####: 3140:	int sl = strlen(sdup), suffixll;
+        -: 3141:
+        -: 3142:	/* Ignore trailing spaces. */
+    #####: 3143:	for (p = sdup + sl - 1; p >= sdup && *p == ' '; p--, sl--);
+    #####: 3144:	p[1] = '\0';
+        -: 3145:
+    #####: 3146:	if (!sd) {
+    #####: 3147:	    sd = dupstring(s);
+    #####: 3148:	    untokenize(sd);
+        -: 3149:	}
+        -: 3150:	/* If the suffix is already there, ignore it (and don't add *
+        -: 3151:	 * it again).                                               */
+    #####: 3152:	if (*sd && (suffixll = strlen(sd)) >= sl &&
+    #####: 3153:	    offs <= suffixll - sl && !strcmp(sdup, sd + suffixll - sl))
+    #####: 3154:	    s[suffixll - sl] = '\0';
+        -: 3155:    }
+        -: 3156:    /* Do we have one of the special characters `~' and `=' at the beginning? */
+    #####: 3157:    if (incompfunc || ((ic = *s) != Tilde && ic != Equals))
+    #####: 3158:	ic = 0;
+        -: 3159:
+        -: 3160:    /* Check if we have to complete a parameter name... */
+    #####: 3161:    if (!incompfunc && (p = check_param(s, 1, 0))) {
+    #####: 3162:	s = p;
+        -: 3163:	/* And now make sure that we complete parameter names. */
+    #####: 3164:	cc = &cc_dummy;
+    #####: 3165:	cc_dummy.refc = 10000;
+    #####: 3166:	cc_dummy.mask = CC_PARAMS | CC_ENVVARS;
+        -: 3167:    }
+    #####: 3168:    ooffs = offs;
+        -: 3169:    /* If we have to ignore the word, do that. */
+    #####: 3170:    if (cc->mask & CC_DELETE) {
+    #####: 3171:	delit = 1;
+    #####: 3172:	*s = '\0';
+    #####: 3173:	offs = 0;
+    #####: 3174:	if (isset(AUTOMENU))
+    #####: 3175:	    usemenu = 1;
+        -: 3176:    }
+        -: 3177:
+        -: 3178:    /* Compute line prefix/suffix. */
+    #####: 3179:    lpl = offs;
+    #####: 3180:    lpre = zhalloc(lpl + 1);
+    #####: 3181:    if (comppatmatch)
+        -: 3182:    {
+        -: 3183:	int ccount;
+        -: 3184:	char *psrc, *pdst;
+    #####: 3185:	for (ccount = 0, psrc = s, pdst = lpre;
+    #####: 3186:	     ccount < lpl;
+    #####: 3187:	     ++ccount, ++psrc, ++pdst)
+        -: 3188:	{
+    #####: 3189:	    if (*psrc == Meta)
+        -: 3190:	    {
+    #####: 3191:		ccount++;
+    #####: 3192:		*pdst++ = *psrc++;
+    #####: 3193:		*pdst = *psrc;
+    #####: 3194:	    } else if (*psrc == Dash)
+    #####: 3195:		*pdst = '-';
+        -: 3196:	    else
+    #####: 3197:		*pdst = *psrc;
+        -: 3198:	}
+        -: 3199:    }
+        -: 3200:    else
+    #####: 3201:	memcpy(lpre, s, lpl);
+    #####: 3202:    lpre[lpl] = '\0';
+    #####: 3203:    qlpre = quotename(lpre);
+    #####: 3204:    lsuf = dupstring(s + offs);
+    #####: 3205:    lsl = strlen(lsuf);
+    #####: 3206:    qlsuf = quotename(lsuf);
+        -: 3207:
+        -: 3208:    /* First check for ~.../... */
+    #####: 3209:    if (ic == Tilde) {
+    #####: 3210:	for (p = lpre + lpl; p > lpre; p--)
+    #####: 3211:	    if (*p == '/')
+    #####: 3212:		break;
+        -: 3213:
+    #####: 3214:	if (*p == '/')
+    #####: 3215:	    ic = 0;
+        -: 3216:    }
+        -: 3217:    /* Compute real prefix/suffix. */
+        -: 3218:
+    #####: 3219:    noreal = !delit;
+    #####: 3220:    for (p = lpre; *p && *p != String && *p != Tick; p++);
+    #####: 3221:    tt = ic && !ispar ? lpre + 1 : lpre;
+    #####: 3222:    rpre = (*p || *lpre == Tilde || *lpre == Equals) ?
+    #####: 3223:	(noreal = 0, getreal(tt)) :
+    #####: 3224:	dupstring(tt);
+    #####: 3225:    qrpre = quotename(rpre);
+        -: 3226:
+    #####: 3227:    for (p = lsuf; *p && *p != String && *p != Tick; p++);
+    #####: 3228:    rsuf = *p ? (noreal = 0, getreal(lsuf)) : dupstring(lsuf);
+    #####: 3229:    qrsuf = quotename(rsuf);
+        -: 3230:
+        -: 3231:    /* Check if word is a pattern. */
+        -: 3232:
+    #####: 3233:    for (s1 = NULL, sf1 = 0, p = rpre + (rpl = strlen(rpre)) - 1;
+    #####: 3234:	 p >= rpre && (ispattern != 3 || !sf1);
+    #####: 3235:	 p--)
+    #####: 3236:	if (itok(*p) && (p > rpre || (*p != Equals && *p != Tilde)))
+    #####: 3237:	    ispattern |= sf1 ? 1 : 2;
+    #####: 3238:	else if (*p == '/') {
+    #####: 3239:	    sf1++;
+    #####: 3240:	    if (!s1)
+    #####: 3241:		s1 = p;
+        -: 3242:	}
+    #####: 3243:    rsl = strlen(rsuf);
+    #####: 3244:    for (s2 = NULL, sf2 = t = 0, p = rsuf; *p && (!t || !sf2); p++)
+    #####: 3245:	if (itok(*p))
+    #####: 3246:	    t |= sf2 ? 4 : 2;
+    #####: 3247:	else if (*p == '/') {
+    #####: 3248:	    sf2++;
+    #####: 3249:	    if (!s2)
+    #####: 3250:		s2 = p;
+        -: 3251:	}
+    #####: 3252:    ispattern = ispattern | t;
+        -: 3253:
+        -: 3254:    /* But if we were asked not to do glob completion, we never treat the *
+        -: 3255:     * thing as a pattern.                                                */
+    #####: 3256:    if (!comppatmatch || !*comppatmatch)
+    #####: 3257:	ispattern = 0;
+        -: 3258:
+    #####: 3259:    if (ispattern) {
+        -: 3260:	/* The word should be treated as a pattern, so compute the matcher. */
+    #####: 3261:	p = (char *) zhalloc(rpl + rsl + 2);
+    #####: 3262:	strcpy(p, rpre);
+    #####: 3263:	if (rpl && p[rpl - 1] != Star &&
+    #####: 3264:	    (!comppatmatch || *comppatmatch == '*')) {
+    #####: 3265:	    p[rpl] = Star;
+    #####: 3266:	    strcpy(p + rpl + 1, rsuf);
+        -: 3267:	} else
+    #####: 3268:	    strcpy(p + rpl, rsuf);
+    #####: 3269:	patcomp = patcompile(p, 0, NULL);
+    #####: 3270:	haspattern = 1;
+        -: 3271:    }
+    #####: 3272:    if (!patcomp) {
+    #####: 3273:	untokenize(rpre);
+    #####: 3274:	untokenize(rsuf);
+        -: 3275:
+    #####: 3276:	rpl = strlen(rpre);
+    #####: 3277:	rsl = strlen(rsuf);
+        -: 3278:    }
+        -: 3279:    else
+        -: 3280:    {
+    #####: 3281:	for (p = rpre; *p; ++p)
+    #####: 3282:	    if (*p == Dash)
+    #####: 3283:		*p = '-';
+    #####: 3284:	for (p = rsuf; *p; ++p)
+    #####: 3285:	    if (*p == Dash)
+    #####: 3286:		*p = '-';
+        -: 3287:    }
+    #####: 3288:    untokenize(lpre);
+    #####: 3289:    untokenize(lsuf);
+        -: 3290:
+    #####: 3291:    if (!(cc->mask & CC_DELETE))
+    #####: 3292:	hasmatched = 1;
+        -: 3293:
+        -: 3294:    /* Handle completion of files specially (of course). */
+        -: 3295:
+    #####: 3296:    if ((cc->mask & (CC_FILES | CC_DIRS | CC_COMMPATH)) || cc->glob) {
+        -: 3297:	/* s1 and s2 point to the last/first slash in the prefix/suffix. */
+    #####: 3298:	if (!s1)
+    #####: 3299:	    s1 = rpre;
+    #####: 3300:	if (!s2)
+    #####: 3301:	    s2 = rsuf + rsl;
+        -: 3302:
+        -: 3303:	/* Compute the path prefix/suffix. */
+    #####: 3304:	if (*s1 != '/')
+    #####: 3305:	    ppre = "";
+        -: 3306:	else
+    #####: 3307:	    ppre = dupstrpfx(rpre, s1 - rpre + 1);
+    #####: 3308:	psuf = dupstring(s2);
+        -: 3309:
+    #####: 3310:	if (zlemetacs != wb) {
+    #####: 3311:	    char save = zlemetaline[zlemetacs];
+        -: 3312:
+    #####: 3313:	    zlemetaline[zlemetacs] = 0;
+    #####: 3314:	    lppre = dupstring(zlemetaline + wb +
+    #####: 3315:			      (qipre && *qipre ?
+    #####: 3316:			       (strlen(qipre) -
+    #####: 3317:				(*qipre == '\'' || *qipre == '\"')) : 0));
+    #####: 3318:	    zlemetaline[zlemetacs] = save;
+    #####: 3319:	    if (brbeg) {
+        -: 3320:		Brinfo bp;
+        -: 3321:
+    #####: 3322:		for (bp = brbeg; bp; bp = bp->next)
+    #####: 3323:		    strcpy(lppre + bp->qpos,
+    #####: 3324:			   lppre + bp->qpos + strlen(bp->str));
+        -: 3325:	    }
+    #####: 3326:	    if ((p = strrchr(lppre, '/'))) {
+    #####: 3327:		p[1] = '\0';
+    #####: 3328:		lppl = strlen(lppre);
+    #####: 3329:	    } else if (!sf1) {
+    #####: 3330:		lppre = NULL;
+    #####: 3331:		lppl = 0;
+        -: 3332:	    } else {
+    #####: 3333:		lppre = ppre;
+    #####: 3334:		lppl = strlen(lppre);
+        -: 3335:	    }
+        -: 3336:	} else {
+    #####: 3337:	    lppre = NULL;
+    #####: 3338:	    lppl = 0;
+        -: 3339:	}
+    #####: 3340:	if (zlemetacs != we) {
+    #####: 3341:	    int end = we;
+    #####: 3342:	    char save = zlemetaline[end];
+        -: 3343:
+    #####: 3344:	    if (qisuf && *qisuf) {
+    #####: 3345:		int ql = strlen(qisuf);
+        -: 3346:
+    #####: 3347:		end -= ql - (qisuf[ql-1] == '\'' || qisuf[ql-1] == '"');
+        -: 3348:	    }
+    #####: 3349:	    zlemetaline[end] = 0;
+    #####: 3350:	    lpsuf = dupstring(zlemetaline + zlemetacs);
+    #####: 3351:	    zlemetaline[end] = save;
+    #####: 3352:	    if (brend) {
+        -: 3353:		Brinfo bp;
+        -: 3354:
+    #####: 3355:		for (bp = brend; bp; bp = bp->next) {
+    #####: 3356:		    char *p2 = lpsuf + (we - zlemetacs) - bp->qpos;
+    #####: 3357:		    char *p1 = p2 - strlen(bp->str);
+    #####: 3358:		    memmove(p1, p2, strlen(p2) + 1);
+        -: 3359:		}
+        -: 3360:	    }
+    #####: 3361:	    if (!(lpsuf = strchr(lpsuf, '/')) && sf2)
+    #####: 3362:		lpsuf = psuf;
+    #####: 3363:	    lpsl = (lpsuf ? strlen(lpsuf) : 0);
+        -: 3364:	} else {
+    #####: 3365:	    lpsuf = NULL;
+    #####: 3366:	    lpsl = 0;
+        -: 3367:	}
+        -: 3368:
+        -: 3369:	/* And get the file prefix. */
+    #####: 3370:	fpre = dupstring(((s1 == s || s1 == rpre || ic) &&
+    #####: 3371:			  (*s != '/' || zlemetacs == wb)) ? s1 : s1 + 1);
+    #####: 3372:	qfpre = quotename(fpre);
+        -: 3373:	/* And the suffix. */
+    #####: 3374:	fsuf = dupstrpfx(rsuf, s2 - rsuf);
+    #####: 3375:	qfsuf = quotename(fsuf);
+        -: 3376:
+    #####: 3377:	if (comppatmatch && *comppatmatch && (ispattern & 2)) {
+        -: 3378:	    int t2;
+        -: 3379:
+        -: 3380:	    /* We have to use globbing, so compute the pattern from *
+        -: 3381:	     * the file prefix and suffix with a `*' between them.  */
+    #####: 3382:	    p = (char *) zhalloc((t2 = strlen(fpre)) + strlen(fsuf) + 2);
+    #####: 3383:	    strcpy(p, fpre);
+    #####: 3384:	    if ((!t2 || p[t2 - 1] != Star) && *fsuf != Star &&
+    #####: 3385:		(!comppatmatch || *comppatmatch == '*'))
+    #####: 3386:		p[t2++] = Star;
+    #####: 3387:	    strcpy(p + t2, fsuf);
+    #####: 3388:	    filecomp = patcompile(p, 0, NULL);
+        -: 3389:	}
+    #####: 3390:	if (!filecomp) {
+    #####: 3391:	    untokenize(fpre);
+    #####: 3392:	    untokenize(fsuf);
+        -: 3393:
+    #####: 3394:	    fpl = strlen(fpre);
+    #####: 3395:	    fsl = strlen(fsuf);
+        -: 3396:	}
+    #####: 3397:	addwhat = -1;
+        -: 3398:
+        -: 3399:	/* Completion after `~', maketildelist adds the usernames *
+        -: 3400:	 * and named directories.                                 */
+    #####: 3401:	if (ic == Tilde) {
+    #####: 3402:	    char *oi = ipre;
+        -: 3403:
+    #####: 3404:	    ipre = (ipre ? dyncat("~", ipre) : "~");
+    #####: 3405:	    maketildelist();
+    #####: 3406:	    ipre = oi;
+    #####: 3407:	} else if (ic == Equals) {
+        -: 3408:	    /* Completion after `=', get the command names from *
+        -: 3409:	     * the cmdnamtab and aliases from aliastab.         */
+    #####: 3410:	    char *oi = ipre;
+        -: 3411:
+    #####: 3412:	    ipre = (ipre ? dyncat("=", ipre) : "=");
+    #####: 3413:	    if (isset(HASHLISTALL))
+    #####: 3414:		cmdnamtab->filltable(cmdnamtab);
+    #####: 3415:	    dumphashtable(cmdnamtab, -7);
+    #####: 3416:	    dumphashtable(aliastab, -2);
+    #####: 3417:	    ipre = oi;
+        -: 3418:	} else {
+        -: 3419:	    /* Normal file completion... */
+    #####: 3420:	    if (ispattern & 1) {
+        -: 3421:		/* But with pattern matching. */
+    #####: 3422:		LinkList l = newlinklist();
+        -: 3423:		LinkNode n;
+    #####: 3424:		int ng = opts[NULLGLOB];
+        -: 3425:
+    #####: 3426:		opts[NULLGLOB] = 1;
+        -: 3427:
+    #####: 3428:		addwhat = 0;
+    #####: 3429:		p = (char *) zhalloc(lpl + lsl + 3);
+    #####: 3430:		strcpy(p, lpre);
+    #####: 3431:		if (*lsuf != '*' && *lpre && lpre[lpl - 1] != '*')
+    #####: 3432:		    strcat(p, "*");
+    #####: 3433:		strcat(p, lsuf);
+    #####: 3434:		if (*lsuf && lsuf[lsl - 1] != '*' && lsuf[lsl - 1] != ')')
+    #####: 3435:		    strcat(p, "*");
+        -: 3436:
+        -: 3437:		/* Do the globbing. */
+    #####: 3438:		tokenize(p);
+    #####: 3439:		remnulargs(p);
+    #####: 3440:		addlinknode(l, p);
+    #####: 3441:		globlist(l, 0);
+        -: 3442:
+    #####: 3443:		if (nonempty(l)) {
+        -: 3444:		    /* And add the resulting words. */
+    #####: 3445:		    mflags |= CMF_FILE;
+    #####: 3446:		    for (n = firstnode(l); n; incnode(n))
+    #####: 3447:			addmatch(getdata(n), NULL);
+    #####: 3448:		    mflags &= ~CMF_FILE;
+        -: 3449:		}
+    #####: 3450:		opts[NULLGLOB] = ng;
+        -: 3451:	    } else {
+    #####: 3452:		char **dirs = 0, *ta[2];
+        -: 3453:
+        -: 3454:		/* No pattern matching. */
+    #####: 3455:		addwhat = CC_FILES;
+        -: 3456:
+    #####: 3457:		if (cc->withd) {
+        -: 3458:		    char **pp, **npp, *tp;
+    #####: 3459:		    int tl = strlen(ppre) + 2, pl;
+        -: 3460:
+    #####: 3461:		    if ((pp = get_user_var(cc->withd))) {
+    #####: 3462:			dirs = npp =
+    #####: 3463:			    (char**) zhalloc(sizeof(char *)*(arrlen(pp)+1));
+    #####: 3464:			while (*pp) {
+    #####: 3465:			    pl = strlen(*pp);
+    #####: 3466:			    tp = (char *) zhalloc(strlen(*pp) + tl);
+    #####: 3467:			    strcpy(tp, *pp);
+    #####: 3468:			    tp[pl] = '/';
+    #####: 3469:			    strcpy(tp + pl + 1, ppre);
+    #####: 3470:			    *npp++ = tp;
+    #####: 3471:			    pp++;
+        -: 3472:			}
+    #####: 3473:			*npp = NULL;
+        -: 3474:		    }
+        -: 3475:		}
+    #####: 3476:		if (!dirs) {
+    #####: 3477:		    dirs = ta;
+    #####: 3478:		    if (cc->withd) {
+        -: 3479:			char *tp;
+    #####: 3480:			int pl = strlen(cc->withd);
+        -: 3481:
+    #####: 3482:			ta[0] = tp = (char *) zhalloc(strlen(ppre) + pl + 2);
+    #####: 3483:			strcpy(tp, cc->withd);
+    #####: 3484:			tp[pl] = '/';
+    #####: 3485:			strcpy(tp + pl + 1, ppre);
+        -: 3486:		    } else
+    #####: 3487:			ta[0] = ppre;
+    #####: 3488:		    ta[1] = NULL;
+        -: 3489:		}
+    #####: 3490:		while (*dirs) {
+    #####: 3491:		    prpre = *dirs;
+        -: 3492:
+    #####: 3493:		    if (sf2)
+        -: 3494:			/* We are in the path, so add only directories. */
+    #####: 3495:			gen_matches_files(1, 0, 0);
+        -: 3496:		    else {
+    #####: 3497:			if (cc->mask & CC_FILES)
+        -: 3498:			    /* Add all files. */
+    #####: 3499:			    gen_matches_files(0, 0, 1);
+    #####: 3500:			else if (cc->mask & CC_COMMPATH) {
+        -: 3501:			    /* Completion of command paths. */
+    #####: 3502:			    if (sf1 || cc->withd)
+        -: 3503:				/* There is a path prefix, so add *
+        -: 3504:				 * directories and executables.   */
+    #####: 3505:				gen_matches_files(1, 1, 0);
+        -: 3506:			    else {
+        -: 3507:				/* No path prefix, so add the things *
+        -: 3508:				 * reachable via the PATH variable.  */
+    #####: 3509:				char **pc = path, *pp = prpre;
+        -: 3510:
+    #####: 3511:				for (; *pc; pc++)
+    #####: 3512:				    if (!**pc || (pc[0][0] == '.' && !pc[0][1]))
+        -: 3513:					break;
+    #####: 3514:				if (*pc) {
+    #####: 3515:				    prpre = "./";
+    #####: 3516:				    gen_matches_files(1, 1, 0);
+    #####: 3517:				    prpre = pp;
+        -: 3518:				}
+        -: 3519:			    }
+    #####: 3520:			} else if (cc->mask & CC_DIRS)
+    #####: 3521:			    gen_matches_files(1, 0, 0);
+        -: 3522:			/* The compctl has a glob pattern (compctl -g). */
+    #####: 3523:			if (cc->glob) {
+    #####: 3524:			    int ns, pl = strlen(prpre), o, paalloc;
+    #####: 3525:			    char *g = dupstring(cc->glob), *pa;
+        -: 3526:			    char *p2, *p3;
+    #####: 3527:			    int ne = noerrs, md = opts[MARKDIRS];
+        -: 3528:
+        -: 3529:			    /* These are used in the globbing code to make *
+        -: 3530:			     * things a bit faster.                        */
+    #####: 3531:			    if (ispattern || mstack)
+    #####: 3532:				glob_pre = glob_suf = NULL;
+        -: 3533:			    else {
+    #####: 3534:				glob_pre = fpre;
+    #####: 3535:				glob_suf = fsuf;
+        -: 3536:			    }
+    #####: 3537:			    noerrs = 1;
+    #####: 3538:			    addwhat = -6;
+    #####: 3539:			    o = strlen(prpre);
+    #####: 3540:			    pa = (char *)zalloc(paalloc = o + PATH_MAX);
+    #####: 3541:			    strcpy(pa, prpre);
+    #####: 3542:			    opts[MARKDIRS] = 0;
+        -: 3543:
+        -: 3544:			    /* The compctl -g string may contain more than *
+        -: 3545:			     * one pattern, so we need a loop.             */
+    #####: 3546:			    while (*g) {
+    #####: 3547:				LinkList l = newlinklist();
+        -: 3548:				int ng;
+        -: 3549:
+        -: 3550:				/* Find the blank terminating the pattern. */
+    #####: 3551:				while (*g && inblank(*g))
+    #####: 3552:				    g++;
+        -: 3553:				/* Oops, we already reached the end of the
+        -: 3554:				   string. */
+    #####: 3555:				if (!*g)
+    #####: 3556:				    break;
+    #####: 3557:				for (p = g + 1; *p && !inblank(*p); p++)
+    #####: 3558:				    if (*p == '\\' && p[1])
+    #####: 3559:					p++;
+        -: 3560:				/* Get the pattern string. */
+    #####: 3561:				tokenize(g = dupstrpfx(g, p - g));
+    #####: 3562:				if (*g == '=' && isset(EQUALS))
+    #####: 3563:				    *g = Equals;
+    #####: 3564:				if (*g == '~')
+    #####: 3565:				    *g = Tilde;
+    #####: 3566:				remnulargs(g);
+    #####: 3567:				if ((*g == Equals || *g == Tilde) && !cc->withd) {
+        -: 3568:				/* The pattern has a `~' or `=' at the  *
+        -: 3569:				 * beginning, so we expand this and use *
+        -: 3570:				 * the result.                          */
+    #####: 3571:				    filesub(&g, 0);
+    #####: 3572:				    addlinknode(l, dupstring(g));
+    #####: 3573:				} else if (*g == '/' && !cc->withd)
+        -: 3574:				/* The pattern is a full path (starting *
+        -: 3575:				 * with '/'), so add it unchanged.      */
+    #####: 3576:				    addlinknode(l, dupstring(g));
+        -: 3577:				else {
+        -: 3578:				/* It's a simple pattern, so append it to *
+        -: 3579:				 * the path we have on the command line.  */
+    #####: 3580:				    int minlen = o + strlen(g);
+    #####: 3581:				    if (minlen >= paalloc)
+    #####: 3582:					pa = (char *)
+    #####: 3583:					    zrealloc(pa, paalloc = minlen+1);
+    #####: 3584:				    strcpy(pa + o, g);
+    #####: 3585:				    addlinknode(l, dupstring(pa));
+        -: 3586:				}
+        -: 3587:				/* Do the globbing. */
+    #####: 3588:				ng = opts[NULLGLOB];
+    #####: 3589:				opts[NULLGLOB] = 1;
+    #####: 3590:				globlist(l, 0);
+    #####: 3591:				opts[NULLGLOB] = ng;
+        -: 3592:				/* Get the results. */
+    #####: 3593:				if (nonempty(l) && peekfirst(l)) {
+    #####: 3594:				    for (p2 = (char *)peekfirst(l); *p2; p2++)
+    #####: 3595:					if (itok(*p2))
+    #####: 3596:					    break;
+    #####: 3597:				    if (!*p2) {
+    #####: 3598:					if ((*g == Equals || *g == Tilde ||
+    #####: 3599:					     *g == '/') || cc->withd) {
+        -: 3600:					    /* IF the pattern started with `~',  *
+        -: 3601:					     * `=', or `/', add the result only, *
+        -: 3602:					     * if it really matches what we have *
+        -: 3603:					     * on the line.                      *
+        -: 3604:					     * Do this if an initial directory   *
+        -: 3605:					     * was specified, too.               */
+    #####: 3606:					    while ((p2 = (char *)ugetnode(l)))
+    #####: 3607:						if (strpfx(prpre, p2))
+    #####: 3608:						    addmatch(p2 + pl, NULL);
+        -: 3609:					} else {
+        -: 3610:					    /* Otherwise ignore the path we *
+        -: 3611:					     * prepended to the pattern.    */
+    #####: 3612:					    while ((p2 = p3 =
+        -: 3613:						    (char *)ugetnode(l))) {
+    #####: 3614:						for (ns = sf1; *p3 && ns; p3++)
+    #####: 3615:						    if (*p3 == '/')
+    #####: 3616:							ns--;
+        -: 3617:
+    #####: 3618:						addmatch(p3, NULL);
+        -: 3619:					    }
+        -: 3620:					}
+        -: 3621:				    }
+        -: 3622:				}
+    #####: 3623:				pa[o] = '\0';
+    #####: 3624:				g = p;
+        -: 3625:			    }
+    #####: 3626:			    glob_pre = glob_suf = NULL;
+    #####: 3627:			    noerrs = ne;
+    #####: 3628:			    opts[MARKDIRS] = md;
+        -: 3629:
+    #####: 3630:			    zfree(pa, paalloc);
+        -: 3631:			}
+        -: 3632:		    }
+    #####: 3633:		    dirs++;
+        -: 3634:		}
+    #####: 3635:		prpre = NULL;
+        -: 3636:	    }
+        -: 3637:	}
+    #####: 3638:	lppre = lpsuf = NULL;
+    #####: 3639:	lppl = lpsl = 0;
+        -: 3640:    }
+    #####: 3641:    if (ic) {
+        -: 3642:	/* Now change the `~' and `=' tokens to the real characters so *
+        -: 3643:	 * that things starting with these characters will be added.   */
+    #####: 3644:	rpre = dyncat((ic == Tilde) ? "~" : "=", rpre);
+    #####: 3645:	rpl++;
+    #####: 3646:	qrpre = dyncat((ic == Tilde) ? "~" : "=", qrpre);
+        -: 3647:    }
+    #####: 3648:    if (!ic && (cc->mask & CC_COMMPATH) && !*ppre && !*psuf) {
+        -: 3649:	/* If we have to complete commands, add alias names, *
+        -: 3650:	 * shell functions and builtins too.                 */
+    #####: 3651:	dumphashtable(aliastab, -3);
+    #####: 3652:	dumphashtable(reswdtab, -3);
+    #####: 3653:	dumphashtable(shfunctab, -3);
+    #####: 3654:	dumphashtable(builtintab, -3);
+    #####: 3655:	if (isset(HASHLISTALL))
+    #####: 3656:	    cmdnamtab->filltable(cmdnamtab);
+    #####: 3657:	dumphashtable(cmdnamtab, -3);
+        -: 3658:	/* And parameter names if autocd and cdablevars are set. */
+    #####: 3659:	if (isset(AUTOCD) && isset(CDABLEVARS))
+    #####: 3660:	    dumphashtable(paramtab, -4);
+        -: 3661:    }
+    #####: 3662:    oaw = addwhat = (cc->mask & CC_QUOTEFLAG) ? -2 : CC_QUOTEFLAG;
+        -: 3663:
+    #####: 3664:    if (cc->mask & CC_NAMED)
+        -: 3665:	/* Add named directories. */
+    #####: 3666:	dumphashtable(nameddirtab, addwhat);
+    #####: 3667:    if (cc->mask & CC_OPTIONS)
+        -: 3668:	/* Add option names. */
+    #####: 3669:	dumphashtable(optiontab, addwhat);
+    #####: 3670:    if (cc->mask & CC_VARS) {
+        -: 3671:	/* And parameter names. */
+    #####: 3672:	dumphashtable(paramtab, -9);
+    #####: 3673:	addwhat = oaw;
+        -: 3674:    }
+    #####: 3675:    if (cc->mask & CC_BINDINGS) {
+        -: 3676:	/* And zle function names... */
+    #####: 3677:	dumphashtable(thingytab, CC_BINDINGS);
+    #####: 3678:	addwhat = oaw;
+        -: 3679:    }
+    #####: 3680:    if (cc->keyvar) {
+        -: 3681:	/* This adds things given to the compctl -k flag *
+        -: 3682:	 * (from a parameter or a list of words).        */
+    #####: 3683:	char **usr = get_user_var(cc->keyvar);
+        -: 3684:
+    #####: 3685:	if (usr)
+    #####: 3686:	    while (*usr)
+    #####: 3687:		addmatch(*usr++, NULL);
+        -: 3688:    }
+    #####: 3689:    if (cc->mask & CC_USERS) {
+        -: 3690:	/* Add user names. */
+    #####: 3691:	maketildelist();
+    #####: 3692:	addwhat = oaw;
+        -: 3693:    }
+    #####: 3694:    if (cc->func) {
+        -: 3695:	/* This handles the compctl -K flag. */
+        -: 3696:	Shfunc shfunc;
+        -: 3697:	char **r;
+    #####: 3698:	int lv = lastval;
+        -: 3699:	    
+        -: 3700:	/* Get the function. */
+    #####: 3701:	if ((shfunc = getshfunc(cc->func))) {
+        -: 3702:	    /* We have it, so build a argument list. */
+    #####: 3703:	    LinkList args = newlinklist();
+    #####: 3704:	    int osc = sfcontext;
+        -: 3705:		
+    #####: 3706:	    addlinknode(args, cc->func);
+        -: 3707:		
+    #####: 3708:	    if (delit) {
+    #####: 3709:		p = dupstrpfx(os, ooffs);
+    #####: 3710:		untokenize(p);
+    #####: 3711:		addlinknode(args, p);
+    #####: 3712:		p = dupstring(os + ooffs);
+    #####: 3713:		untokenize(p);
+    #####: 3714:		addlinknode(args, p);
+        -: 3715:	    } else {
+    #####: 3716:		addlinknode(args, lpre);
+    #####: 3717:		addlinknode(args, lsuf);
+        -: 3718:	    }
+        -: 3719:		
+        -: 3720:	    /* This flag allows us to use read -l and -c. */
+    #####: 3721:	    if (incompfunc != 1)
+    #####: 3722:		incompctlfunc = 1;
+    #####: 3723:	    sfcontext = SFC_COMPLETE;
+        -: 3724:	    /* Call the function. */
+    #####: 3725:	    doshfunc(shfunc, args, 1);
+    #####: 3726:	    sfcontext = osc;
+    #####: 3727:	    incompctlfunc = 0;
+        -: 3728:	    /* And get the result from the reply parameter. */
+    #####: 3729:	    if ((r = get_user_var("reply")))
+    #####: 3730:		while (*r)
+    #####: 3731:		    addmatch(*r++, NULL);
+        -: 3732:	}
+    #####: 3733:	lastval = lv;
+        -: 3734:    }
+    #####: 3735:    if (cc->mask & (CC_JOBS | CC_RUNNING | CC_STOPPED)) {
+        -: 3736:	/* Get job names. */
+        -: 3737:	int i;
+        -: 3738:	char *j;
+        -: 3739:
+    #####: 3740:	for (i = 0; i <= maxjob; i++)
+    #####: 3741:	    if ((jobtab[i].stat & STAT_INUSE) &&
+    #####: 3742:		jobtab[i].procs && jobtab[i].procs->text[0]) {
+    #####: 3743:		int stopped = jobtab[i].stat & STAT_STOPPED;
+        -: 3744:
+    #####: 3745:		j = dupstring(jobtab[i].procs->text);
+    #####: 3746:		if ((cc->mask & CC_JOBS) ||
+    #####: 3747:		    (stopped && (cc->mask & CC_STOPPED)) ||
+    #####: 3748:		    (!stopped && (cc->mask & CC_RUNNING)))
+    #####: 3749:		    addmatch(j, NULL);
+        -: 3750:	    }
+        -: 3751:    }
+    #####: 3752:    if (cc->str) {
+        -: 3753:	/* Get the stuff from a compctl -s. */
+    #####: 3754:	LinkList foo = newlinklist();
+        -: 3755:	LinkNode n;
+    #####: 3756:	int first = 1, ng = opts[NULLGLOB], oowe = we, oowb = wb;
+    #####: 3757:	int ona = noaliases;
+        -: 3758:	char *tmpbuf;
+        -: 3759:
+    #####: 3760:	opts[NULLGLOB] = 1;
+        -: 3761:
+        -: 3762:	/* Put the string in the lexer buffer and call the lexer to *
+        -: 3763:	 * get the words we have to expand.                        */
+    #####: 3764:	zcontext_save();
+    #####: 3765:	lexflags = LEXFLAGS_ZLE;
+    #####: 3766:	tmpbuf = (char *)zhalloc(strlen(cc->str) + 5);
+    #####: 3767:	sprintf(tmpbuf, "foo %s", cc->str); /* KLUDGE! */
+    #####: 3768:	inpush(tmpbuf, 0, NULL);
+    #####: 3769:	strinbeg(0);
+    #####: 3770:	noaliases = 1;
+        -: 3771:	do {
+    #####: 3772:	    ctxtlex();
+    #####: 3773:	    if (tok == ENDINPUT || tok == LEXERR)
+        -: 3774:		break;
+    #####: 3775:	    if (!first && tokstr && *tokstr)
+    #####: 3776:		addlinknode(foo, ztrdup(tokstr));
+    #####: 3777:	    first = 0;
+    #####: 3778:	} while (tok != ENDINPUT && tok != LEXERR);
+    #####: 3779:	noaliases = ona;
+    #####: 3780:	strinend();
+    #####: 3781:	inpop();
+    #####: 3782:	errflag &= ~ERRFLAG_ERROR;
+    #####: 3783:	zcontext_restore();
+        -: 3784:	/* Fine, now do full expansion. */
+    #####: 3785:	prefork(foo, 0, NULL);
+    #####: 3786:	if (!errflag) {
+    #####: 3787:	    globlist(foo, 0);
+    #####: 3788:	    if (!errflag)
+        -: 3789:		/* And add the resulting words as matches. */
+    #####: 3790:		for (n = firstnode(foo); n; incnode(n))
+    #####: 3791:		    addmatch(getdata(n), NULL);
+        -: 3792:	}
+    #####: 3793:	opts[NULLGLOB] = ng;
+    #####: 3794:	we = oowe;
+    #####: 3795:	wb = oowb;
+        -: 3796:    }
+    #####: 3797:    if (cc->hpat) {
+        -: 3798:	/* We have a pattern to take things from the history. */
+    #####: 3799:	Patprog pprogc = NULL;
+        -: 3800:	char *e, *h, hpatsav;
+    #####: 3801:	zlong i = addhistnum(curhist,-1,HIST_FOREIGN), n = cc->hnum;
+    #####: 3802:	Histent he = gethistent(i, GETHIST_UPWARD);
+        -: 3803:
+        -: 3804:	/* Parse the pattern, if it isn't the null string. */
+    #####: 3805:	if (*(cc->hpat)) {
+    #####: 3806:	    char *thpat = dupstring(cc->hpat);
+        -: 3807:
+    #####: 3808:	    tokenize(thpat);
+    #####: 3809:	    pprogc = patcompile(thpat, 0, NULL);
+        -: 3810:	}
+        -: 3811:	/* n holds the number of history line we have to search. */
+    #####: 3812:	if (!n)
+    #####: 3813:	    n = -1;
+        -: 3814:
+        -: 3815:	/* Now search the history. */
+    #####: 3816:	while (n-- && he) {
+        -: 3817:	    int iwords;
+    #####: 3818:	    for (iwords = he->nwords - 1; iwords >= 0; iwords--) {
+    #####: 3819:		h = he->node.nam + he->words[iwords*2];
+    #####: 3820:		e = he->node.nam + he->words[iwords*2+1];
+    #####: 3821:		hpatsav = *e;
+    #####: 3822:		*e = '\0';
+        -: 3823:		/* We now have a word from the history, ignore it *
+        -: 3824:		 * if it begins with a quote or `$'.              */
+    #####: 3825:		if (*h != '\'' && *h != '"' && *h != '`' && *h != '$' &&
+    #####: 3826:		    (!pprogc || pattry(pprogc, h)))
+        -: 3827:		    /* Otherwise add it if it was matched. */
+    #####: 3828:		    addmatch(dupstring(h), NULL);
+    #####: 3829:		if (hpatsav)
+    #####: 3830:		    *e = hpatsav;
+        -: 3831:	    }
+    #####: 3832:	    he = up_histent(he);
+        -: 3833:	}
+    #####: 3834:	freepatprog(pprogc);
+        -: 3835:    }
+    #####: 3836:    if ((t = cc->mask & (CC_ARRAYS | CC_INTVARS | CC_ENVVARS | CC_SCALARS |
+        -: 3837:			 CC_READONLYS | CC_SPECIALS | CC_PARAMS)))
+        -: 3838:	/* Add various flavours of parameters. */
+    #####: 3839:	dumphashtable(paramtab, t);
+    #####: 3840:    if ((t = cc->mask & CC_SHFUNCS))
+        -: 3841:	/* Add shell functions. */
+    #####: 3842:	dumphashtable(shfunctab, t | (cc->mask & (CC_DISCMDS|CC_EXCMDS)));
+    #####: 3843:    if ((t = cc->mask & CC_BUILTINS))
+        -: 3844:	/* Add builtins. */
+    #####: 3845:	dumphashtable(builtintab, t | (cc->mask & (CC_DISCMDS|CC_EXCMDS)));
+    #####: 3846:    if ((t = cc->mask & CC_EXTCMDS)) {
+        -: 3847:	/* Add external commands */
+    #####: 3848:	if (isset(HASHLISTALL))
+    #####: 3849:	    cmdnamtab->filltable(cmdnamtab);
+    #####: 3850:	dumphashtable(cmdnamtab, t | (cc->mask & (CC_DISCMDS|CC_EXCMDS)));
+        -: 3851:    }
+    #####: 3852:    if ((t = cc->mask & CC_RESWDS))
+        -: 3853:	/* Add reserved words */
+    #####: 3854:	dumphashtable(reswdtab, t | (cc->mask & (CC_DISCMDS|CC_EXCMDS)));
+    #####: 3855:    if ((t = cc->mask & (CC_ALREG | CC_ALGLOB)))
+        -: 3856:	/* Add the two types of aliases. */
+    #####: 3857:	dumphashtable(aliastab, t | (cc->mask & (CC_DISCMDS|CC_EXCMDS)));
+    #####: 3858:    if (keypm && cc == &cc_dummy) {
+        -: 3859:	/* Add the keys of the parameter in keypm. */
+    #####: 3860:	HashTable t = keypm->gsu.h->getfn(keypm);
+        -: 3861:
+    #####: 3862:	if (t)
+    #####: 3863:	    scanhashtable(t, 0, 0, PM_UNSET, addhnmatch, 0);
+    #####: 3864:	keypm = NULL;
+    #####: 3865:	cc_dummy.suffix = NULL;
+        -: 3866:    }
+    #####: 3867:    if (!errflag && cc->ylist) {
+        -: 3868:	/* generate the user-defined display list: if anything fails, *
+        -: 3869:	 * we silently allow the normal completion list to be used.   */
+    #####: 3870:	char **yaptr = NULL, *uv = NULL;
+        -: 3871:	Shfunc shfunc;
+        -: 3872:
+    #####: 3873:	if (cc->ylist[0] == '$' || cc->ylist[0] == '(') {
+        -: 3874:	    /* from variable */
+    #####: 3875:	    uv = cc->ylist + (cc->ylist[0] == '$');
+    #####: 3876:	} else if ((shfunc = getshfunc(cc->ylist))) {
+        -: 3877:	    /* from function:  pass completions as arg list */
+    #####: 3878:	    LinkList args = newlinklist();
+        -: 3879:	    LinkNode ln;
+        -: 3880:	    Cmatch m;
+    #####: 3881:	    int osc = sfcontext;
+        -: 3882:
+    #####: 3883:	    addlinknode(args, cc->ylist);
+    #####: 3884:	    for (ln = firstnode(matches); ln; ln = nextnode(ln)) {
+    #####: 3885:		m = (Cmatch) getdata(ln);
+    #####: 3886:		if (m->ppre) {
+    #####: 3887:		    char *s = (m->psuf ? m->psuf : "");
+    #####: 3888:		    char *p = (char *) zhalloc(strlen(m->ppre) + strlen(m->str) +
+    #####: 3889:					      strlen(s) + 1);
+        -: 3890:
+    #####: 3891:		    sprintf(p, "%s%s%s", m->ppre, m->str, s);
+    #####: 3892:		    addlinknode(args, dupstring(p));
+        -: 3893:		} else
+    #####: 3894:		    addlinknode(args, dupstring(m->str));
+        -: 3895:	    }
+        -: 3896:
+        -: 3897:	    /* No harm in allowing read -l and -c here, too */
+    #####: 3898:	    if (incompfunc != 1)
+    #####: 3899:		incompctlfunc = 1;
+    #####: 3900:	    sfcontext = SFC_COMPLETE;
+    #####: 3901:	    doshfunc(shfunc, args, 1);
+    #####: 3902:	    sfcontext = osc;
+    #####: 3903:	    incompctlfunc = 0;
+    #####: 3904:	    uv = "reply";
+        -: 3905:	}
+    #####: 3906:	if (uv)
+    #####: 3907:	    yaptr = get_user_var(uv);
+    #####: 3908:	if ((tt = cc->explain)) {
+    #####: 3909:	    tt = dupstring(tt);
+    #####: 3910:	    if ((cc->mask & CC_EXPANDEXPL) && !parsestr(&tt)) {
+    #####: 3911:		singsub(&tt);
+    #####: 3912:		untokenize(tt);
+        -: 3913:	    }
+    #####: 3914:	    curexpl->str = tt;
+    #####: 3915:	    if (cc->gname) {
+    #####: 3916:		endcmgroup(yaptr);
+    #####: 3917:		begcmgroup(cc->gname, gflags);
+    #####: 3918:		addexpl(0);
+        -: 3919:	    } else {
+    #####: 3920:		addexpl(0);
+    #####: 3921:		endcmgroup(yaptr);
+    #####: 3922:		begcmgroup("default", 0);
+        -: 3923:	    }
+        -: 3924:	} else {
+    #####: 3925:	    endcmgroup(yaptr);
+    #####: 3926:	    begcmgroup("default", 0);
+        -: 3927:	}
+    #####: 3928:    } else if ((tt = cc->explain)) {
+    #####: 3929:	tt = dupstring(tt);
+    #####: 3930:	if ((cc->mask & CC_EXPANDEXPL) && !parsestr(&tt)) {
+    #####: 3931:	    singsub(&tt);
+    #####: 3932:	    untokenize(tt);
+        -: 3933:	}
+    #####: 3934:	curexpl->str = tt;
+    #####: 3935:	addexpl(0);
+        -: 3936:    }
+    #####: 3937:    if (cc->subcmd) {
+        -: 3938:	/* Handle -l sub-completion. */
+    #####: 3939:	char **ow = clwords, *os = cmdstr, *ops = NULL;
+    #####: 3940:	int oldn = clwnum, oldp = clwpos, br;
+    #####: 3941:	unsigned long occ = ccont;
+        -: 3942:	
+    #####: 3943:	ccont = CC_CCCONT;
+        -: 3944:	
+        -: 3945:	/* So we restrict the words-array. */
+    #####: 3946:	if (brange >= clwnum)
+    #####: 3947:	    brange = clwnum - 1;
+    #####: 3948:	if (brange < 1)
+    #####: 3949:	    brange = 1;
+    #####: 3950:	if (erange >= clwnum)
+    #####: 3951:	    erange = clwnum - 1;
+    #####: 3952:	if (erange < 1)
+    #####: 3953:	    erange = 1;
+    #####: 3954:	clwnum = erange - brange + 1;
+    #####: 3955:	clwpos = clwpos - brange;
+    #####: 3956:	br = brange;
+        -: 3957:
+    #####: 3958:	if (cc->subcmd[0]) {
+        -: 3959:	    /* And probably put the command name given to the flag *
+        -: 3960:	     * in the array.                                       */
+    #####: 3961:	    clwpos++;
+    #####: 3962:	    clwnum++;
+    #####: 3963:	    incmd = 0;
+    #####: 3964:	    ops = clwords[br - 1];
+    #####: 3965:	    clwords[br - 1] = ztrdup(cc->subcmd);
+    #####: 3966:	    cmdstr = ztrdup(cc->subcmd);
+    #####: 3967:	    clwords += br - 1;
+        -: 3968:	} else {
+    #####: 3969:	    cmdstr = ztrdup(clwords[br]);
+    #####: 3970:	    incmd = !clwpos;
+    #####: 3971:	    clwords += br;
+        -: 3972:	}
+        -: 3973:	/* Produce the matches. */
+    #####: 3974:	makecomplistcmd(s, incmd, CFN_FIRST);
+        -: 3975:
+        -: 3976:	/* And restore the things we changed. */
+    #####: 3977:	clwords = ow;
+    #####: 3978:	zsfree(cmdstr);
+    #####: 3979:	cmdstr = os;
+    #####: 3980:	clwnum = oldn;
+    #####: 3981:	clwpos = oldp;
+    #####: 3982:	if (ops) {
+    #####: 3983:	    zsfree(clwords[br - 1]);
+    #####: 3984:	    clwords[br - 1] = ops;
+        -: 3985:	}
+    #####: 3986:	ccont = occ;
+        -: 3987:    }
+    #####: 3988:    if (cc->substr)
+    #####: 3989:	sep_comp_string(cc->substr, s, offs);
+    #####: 3990:    uremnode(ccstack, firstnode(ccstack));
+    #####: 3991:    if (cc->matcher)
+    #####: 3992:	mstack = mstack->next;
+        -: 3993:
+    #####: 3994:    if (mn == mnum)
+    #####: 3995:	haspattern = ohp;
+        -: 3996:}
+        -: 3997:
+        -: 3998:
+        -: 3999:static struct builtin bintab[] = {
+        -: 4000:    BUILTIN("compcall", 0, bin_compcall, 0, 0, 0, "TD", NULL),
+        -: 4001:    BUILTIN("compctl", 0, bin_compctl, 0, -1, 0, NULL, NULL),
+        -: 4002:};
+        -: 4003:
+        -: 4004:static struct features module_features = {
+        -: 4005:    bintab, sizeof(bintab)/sizeof(*bintab),
+        -: 4006:    NULL, 0,
+        -: 4007:    NULL, 0,
+        -: 4008:    NULL, 0,
+        -: 4009:    0
+        -: 4010:};
+        -: 4011:
+        -: 4012:/**/
+        -: 4013:int
+    #####: 4014:setup_(UNUSED(Module m))
+        -: 4015:{
+    #####: 4016:    compctlreadptr = compctlread;
+    #####: 4017:    createcompctltable();
+    #####: 4018:    cc_compos.mask = CC_COMMPATH;
+    #####: 4019:    cc_compos.mask2 = 0;
+    #####: 4020:    cc_default.refc = 10000;
+    #####: 4021:    cc_default.mask = CC_FILES;
+    #####: 4022:    cc_default.mask2 = 0;
+    #####: 4023:    cc_first.refc = 10000;
+    #####: 4024:    cc_first.mask = 0;
+    #####: 4025:    cc_first.mask2 = CC_CCCONT;
+        -: 4026:
+    #####: 4027:    lastccused = NULL;
+        -: 4028:
+    #####: 4029:    return 0;
+        -: 4030:}
+        -: 4031:
+        -: 4032:/**/
+        -: 4033:int
+    #####: 4034:features_(Module m, char ***features)
+        -: 4035:{
+    #####: 4036:    *features = featuresarray(m, &module_features);
+    #####: 4037:    return 0;
+        -: 4038:}
+        -: 4039:
+        -: 4040:/**/
+        -: 4041:int
+    #####: 4042:enables_(Module m, int **enables)
+        -: 4043:{
+    #####: 4044:    return handlefeatures(m, &module_features, enables);
+        -: 4045:}
+        -: 4046:
+        -: 4047:/**/
+        -: 4048:int
+    #####: 4049:boot_(UNUSED(Module m))
+        -: 4050:{
+    #####: 4051:    addhookfunc("compctl_make", (Hookfn) ccmakehookfn);
+    #####: 4052:    addhookfunc("compctl_cleanup", (Hookfn) cccleanuphookfn);
+    #####: 4053:    return 0;
+        -: 4054:}
+        -: 4055:
+        -: 4056:/**/
+        -: 4057:int
+    #####: 4058:cleanup_(Module m)
+        -: 4059:{
+    #####: 4060:    deletehookfunc("compctl_make", (Hookfn) ccmakehookfn);
+    #####: 4061:    deletehookfunc("compctl_cleanup", (Hookfn) cccleanuphookfn);
+    #####: 4062:    return setfeatureenables(m, &module_features, NULL);
+        -: 4063:}
+        -: 4064:
+        -: 4065:/**/
+        -: 4066:int
+    #####: 4067:finish_(UNUSED(Module m))
+        -: 4068:{
+    #####: 4069:    deletehashtable(compctltab);
+        -: 4070:
+    #####: 4071:    if (lastccused)
+    #####: 4072:	freelinklist(lastccused, (FreeFunc) freecompctl);
+        -: 4073:
+    #####: 4074:    compctlreadptr = fallback_compctlread;
+    #####: 4075:    return 0;
+        -: 4076:}
