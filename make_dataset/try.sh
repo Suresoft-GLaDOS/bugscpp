@@ -21,4 +21,4 @@ for FILE_NAME in ${FILE_LIST[@]}; do
     result="$result\n$output"
 done
 
-echo "$result"
+echo "$result" > ./make_dataset/ctags_result.txt
