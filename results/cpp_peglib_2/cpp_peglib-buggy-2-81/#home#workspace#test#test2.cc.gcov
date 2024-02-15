@@ -1,0 +1,1019 @@
+        -:    0:Source:/home/workspace/test/test2.cc
+        -:    0:Programs:4
+        -:    1:﻿#include "catch.hh"
+        -:    2:#include <peglib.h>
+        -:    3:
+        -:    4:using namespace peg;
+        -:    5:
+        -:    6:#ifdef DPP_ENABLE_GCOV
+        -:    7:#include <signal.h>
+        -:    8:void dpp_sighandler(int signum);
+        -:    9:static struct sigaction dpp_gcov_sigaction;
+        -:   10:extern "C" void __gcov_flush();
+    #####:   11:void dpp_gcov_flush(int signum) {
+    #####:   12:   __gcov_flush();
+    #####:   13:   exit(1);
+        -:   14:}
+    #####:   15:void dpp_gcov_handler(void(*dpp_gcov_flush)(int sig)) {
+    #####:   16:    dpp_gcov_sigaction.sa_handler = dpp_gcov_flush;
+    #####:   17:    for (int sig = 1; sig <= SIGRTMAX; ++sig) {
+    #####:   18:        sigaction(sig, &dpp_gcov_sigaction, NULL);
+        -:   19:    }
+    #####:   20:}
+        -:   21:#endif
+        -:   22:
+        1:   23:TEST_CASE("Infinite loop 1", "[infinite loop]")
+        -:   24:{
+        -:   25:    parser pg(R"(
+        -:   26:        ROOT  <- WH TOKEN* WH
+        -:   27:        TOKEN <- [a-z0-9]*
+        -:   28:        WH    <- [ \t]*
+    #####:   29:    )");
+        -:   30:
+    #####:   31:    REQUIRE(!pg);
+    #####:   32:}
+        -:   33:
+        1:   34:TEST_CASE("Infinite loop 2", "[infinite loop]")
+        -:   35:{
+        -:   36:    parser pg(R"(
+        -:   37:        ROOT  <- WH TOKEN+ WH
+        -:   38:        TOKEN <- [a-z0-9]*
+        -:   39:        WH    <- [ \t]*
+    #####:   40:    )");
+        -:   41:
+    #####:   42:    REQUIRE(!pg);
+    #####:   43:}
+        -:   44:
+        1:   45:TEST_CASE("Infinite loop 3", "[infinite loop]")
+        -:   46:{
+        -:   47:    parser pg(R"(
+        -:   48:        ROOT  <- WH TOKEN* WH
+        -:   49:        TOKEN <- !'word1'
+        -:   50:        WH    <- [ \t]*
+    #####:   51:    )");
+        -:   52:
+    #####:   53:    REQUIRE(!pg);
+    #####:   54:}
+        -:   55:
+        1:   56:TEST_CASE("Infinite loop 4", "[infinite loop]")
+        -:   57:{
+        -:   58:    parser pg(R"(
+        -:   59:        ROOT  <- WH TOKEN* WH
+        -:   60:        TOKEN <- &'word1'
+        -:   61:        WH    <- [ \t]*
+    #####:   62:    )");
+        -:   63:
+    #####:   64:    REQUIRE(!pg);
+    #####:   65:}
+        -:   66:
+        1:   67:TEST_CASE("Infinite loop 5", "[infinite loop]")
+        -:   68:{
+        -:   69:    parser pg(R"(
+        -:   70:        Numbers <- Number*
+        -:   71:        Number <- [0-9]+ / Spacing
+        -:   72:        Spacing <- ' ' / '\t' / '\n' / EOF # EOF is empty
+        -:   73:        EOF <- !.
+    #####:   74:    )");
+        -:   75:
+    #####:   76:    REQUIRE(!pg);
+    #####:   77:}
+        -:   78:
+        1:   79:TEST_CASE("Not infinite 1", "[infinite loop]")
+        -:   80:{
+        -:   81:    parser pg(R"(
+        -:   82:        Numbers <- Number* EOF
+        -:   83:        Number <- [0-9]+ / Spacing
+        -:   84:        Spacing <- ' ' / '\t' / '\n'
+        -:   85:        EOF <- !.
+    #####:   86:    )");
+        -:   87:
+    #####:   88:    REQUIRE(!!pg); // OK
+    #####:   89:}
+        -:   90:
+        1:   91:TEST_CASE("Not infinite 2", "[infinite loop]")
+        -:   92:{
+        -:   93:    parser pg(R"(
+        -:   94:        ROOT      <-  _ ('[' TAG_NAME ']' _)*
+        -:   95:        # In a sequence operator, if there is at least one non-empty element, we can treat it as non-empty
+        -:   96:        TAG_NAME  <-  (!']' .)+
+        -:   97:        _         <-  [ \t]*
+    #####:   98:    )");
+        -:   99:
+    #####:  100:    REQUIRE(!!pg); // OK
+    #####:  101:}
+        -:  102:
+        1:  103:TEST_CASE("Not infinite 3", "[infinite loop]")
+        -:  104:{
+        -:  105:    parser pg(R"(
+        -:  106:        EXPRESSION       <-  _ TERM (TERM_OPERATOR TERM)*
+        -:  107:        TERM             <-  FACTOR (FACTOR_OPERATOR FACTOR)*
+        -:  108:        FACTOR           <-  NUMBER / '(' _ EXPRESSION ')' _ # Recursive...
+        -:  109:        TERM_OPERATOR    <-  < [-+] > _
+        -:  110:        FACTOR_OPERATOR  <-  < [/*] > _
+        -:  111:        NUMBER           <-  < [0-9]+ > _
+        -:  112:        _                <-  [ \t\r\n]*
+    #####:  113:    )");
+        -:  114:
+    #####:  115:    REQUIRE(!!pg); // OK
+    #####:  116:}
+        -:  117:
+        1:  118:TEST_CASE("Precedence climbing", "[precedence]")
+        -:  119:{
+        -:  120:    parser parser(R"(
+        -:  121:        START            <-  _ EXPRESSION
+        -:  122:        EXPRESSION       <-  ATOM (OPERATOR ATOM)* {
+        -:  123:                               precedence
+        -:  124:                                 L + -
+        -:  125:                                 L * /
+        -:  126:                             }
+        -:  127:        ATOM             <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  128:        OPERATOR         <-  T([-+/*])
+        -:  129:        NUMBER           <-  T('-'? [0-9]+)
+        -:  130:		~_               <-  [ \t]*
+        -:  131:		T(S)             <-  < S > _
+    #####:  132:	)");
+        -:  133:
+        -:  134:    // Setup actions
+    #####:  135:    parser["EXPRESSION"] = [](const SemanticValues& sv) -> long {
+    #####:  136:        auto result = any_cast<long>(sv[0]);
+    #####:  137:        if (sv.size() > 1) {
+    #####:  138:            auto ope = any_cast<char>(sv[1]);
+    #####:  139:            auto num = any_cast<long>(sv[2]);
+    #####:  140:            switch (ope) {
+    #####:  141:                case '+': result += num; break;
+    #####:  142:                case '-': result -= num; break;
+    #####:  143:                case '*': result *= num; break;
+    #####:  144:                case '/': result /= num; break;
+        -:  145:            }
+        -:  146:        }
+    #####:  147:        return result;
+        -:  148:    };
+    #####:  149:    parser["OPERATOR"] = [](const SemanticValues& sv) { return *sv.c_str(); };
+    #####:  150:    parser["NUMBER"] = [](const SemanticValues& sv) { return atol(sv.c_str()); };
+        -:  151:
+    #####:  152:    bool ret = parser;
+    #####:  153:    REQUIRE(ret == true);
+        -:  154:
+        -:  155:    {
+    #####:  156:        auto expr = " 1 + 2 * 3 * (4 - 5 + 6) / 7 - 8 ";
+    #####:  157:        long val = 0;
+    #####:  158:        ret = parser.parse(expr, val);
+        -:  159:
+    #####:  160:        REQUIRE(ret == true);
+    #####:  161:        REQUIRE(val == -3);
+        -:  162:    }
+        -:  163:
+        -:  164:    {
+    #####:  165:      auto expr = "-1+-2--3"; // -1 + -2 - -3 = 0
+    #####:  166:      long val = 0;
+    #####:  167:      ret = parser.parse(expr, val);
+        -:  168:
+    #####:  169:      REQUIRE(ret == true);
+    #####:  170:      REQUIRE(val == 0);
+        -:  171:    }
+    #####:  172:}
+        -:  173:
+        1:  174:TEST_CASE("Precedence climbing with macro", "[precedence]")
+        -:  175:{
+        -:  176:    // Create a PEG parser
+        -:  177:    parser parser(R"(
+        -:  178:        EXPRESSION             <-  INFIX_EXPRESSION(ATOM, OPERATOR)
+        -:  179:        INFIX_EXPRESSION(A, O) <-  A (O A)* {
+        -:  180:                                     precedence
+        -:  181:                                       L + -
+        -:  182:                                       L * /
+        -:  183:                                   }
+        -:  184:        ATOM                   <-  NUMBER / '(' EXPRESSION ')'
+        -:  185:        OPERATOR               <-  < [-+/*] >
+        -:  186:        NUMBER                 <-  < '-'? [0-9]+ >
+        -:  187:        %whitespace            <-  [ \t]*
+    #####:  188:	)");
+        -:  189:
+    #####:  190:    bool ret = parser;
+    #####:  191:    REQUIRE(ret == true);
+        -:  192:
+        -:  193:    // Setup actions
+    #####:  194:    parser["INFIX_EXPRESSION"] = [](const SemanticValues& sv) -> long {
+    #####:  195:        auto result = any_cast<long>(sv[0]);
+    #####:  196:        if (sv.size() > 1) {
+    #####:  197:            auto ope = any_cast<char>(sv[1]);
+    #####:  198:            auto num = any_cast<long>(sv[2]);
+    #####:  199:            switch (ope) {
+    #####:  200:                case '+': result += num; break;
+    #####:  201:                case '-': result -= num; break;
+    #####:  202:                case '*': result *= num; break;
+    #####:  203:                case '/': result /= num; break;
+        -:  204:            }
+        -:  205:        }
+    #####:  206:        return result;
+        -:  207:    };
+    #####:  208:    parser["OPERATOR"] = [](const SemanticValues& sv) { return *sv.c_str(); };
+    #####:  209:    parser["NUMBER"] = [](const SemanticValues& sv) { return atol(sv.c_str()); };
+        -:  210:
+        -:  211:    {
+    #####:  212:        auto expr = " 1 + 2 * 3 * (4 - 5 + 6) / 7 - 8 ";
+    #####:  213:        long val = 0;
+    #####:  214:        ret = parser.parse(expr, val);
+        -:  215:
+    #####:  216:        REQUIRE(ret == true);
+    #####:  217:        REQUIRE(val == -3);
+        -:  218:    }
+        -:  219:
+        -:  220:    {
+    #####:  221:      auto expr = "-1+-2--3"; // -1 + -2 - -3 = 0
+    #####:  222:      long val = 0;
+    #####:  223:      ret = parser.parse(expr, val);
+        -:  224:
+    #####:  225:      REQUIRE(ret == true);
+    #####:  226:      REQUIRE(val == 0);
+        -:  227:    }
+    #####:  228:}
+        -:  229:
+        1:  230:TEST_CASE("Precedence climbing error1", "[precedence]")
+        -:  231:{
+        -:  232:    parser parser(R"(
+        -:  233:        START            <-  _ EXPRESSION
+        -:  234:        EXPRESSION       <-  ATOM (OPERATOR ATOM1)* {
+        -:  235:                               precedence
+        -:  236:                                 L + -
+        -:  237:                                 L * /
+        -:  238:                             }
+        -:  239:        ATOM             <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  240:        ATOM1            <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  241:        OPERATOR         <-  T([-+/*])
+        -:  242:        NUMBER           <-  T('-'? [0-9]+)
+        -:  243:		~_               <-  [ \t]*
+        -:  244:		T(S)             <-  < S > _
+    #####:  245:	)");
+        -:  246:
+    #####:  247:    bool ret = parser;
+    #####:  248:    REQUIRE(ret == false);
+    #####:  249:}
+        -:  250:
+        1:  251:TEST_CASE("Precedence climbing error2", "[precedence]")
+        -:  252:{
+        -:  253:    parser parser(R"(
+        -:  254:        START            <-  _ EXPRESSION
+        -:  255:        EXPRESSION       <-  ATOM OPERATOR ATOM {
+        -:  256:                               precedence
+        -:  257:                                 L + -
+        -:  258:                                 L * /
+        -:  259:                             }
+        -:  260:        ATOM             <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  261:        OPERATOR         <-  T([-+/*])
+        -:  262:        NUMBER           <-  T('-'? [0-9]+)
+        -:  263:		~_               <-  [ \t]*
+        -:  264:		T(S)             <-  < S > _
+    #####:  265:	)");
+        -:  266:
+    #####:  267:    bool ret = parser;
+    #####:  268:    REQUIRE(ret == false);
+    #####:  269:}
+        -:  270:
+        1:  271:TEST_CASE("Precedence climbing error3", "[precedence]") {
+        -:  272:    parser parser(R"(
+        -:  273:        EXPRESSION               <-  PRECEDENCE_PARSING(ATOM, OPERATOR)
+        -:  274:        PRECEDENCE_PARSING(A, O) <-  A (O A)+ {
+        -:  275:                                       precedence
+        -:  276:                                         L + -
+        -:  277:                                         L * /
+        -:  278:                                     }
+        -:  279:        ATOM                     <-  NUMBER / '(' EXPRESSION ')'
+        -:  280:        OPERATOR                 <-  < [-+/*] >
+        -:  281:        NUMBER                   <-  < '-'? [0-9]+ >
+        -:  282:        %whitespace              <-  [ \t]*
+    #####:  283:	)");
+        -:  284:
+    #####:  285:    bool ret = parser;
+    #####:  286:    REQUIRE(ret == false);
+    #####:  287:}
+        -:  288:
+        1:  289:TEST_CASE("Packrat parser test with %whitespace%", "[packrat]") {
+        -:  290:    peg::parser parser(R"(
+        -:  291:        ROOT         <-  'a'
+        -:  292:        %whitespace  <-  SPACE*
+        -:  293:        SPACE        <-  ' '
+    #####:  294:    )");
+        -:  295:
+    #####:  296:    parser.enable_packrat_parsing();
+        -:  297:
+    #####:  298:    auto ret = parser.parse("a");
+    #####:  299:    REQUIRE(ret == true);
+    #####:  300:}
+        -:  301:
+        1:  302:TEST_CASE("Packrat parser test with macro", "[packrat]")
+        -:  303:{
+        -:  304:    parser parser(R"(
+        -:  305:        EXPRESSION       <-  _ LIST(TERM, TERM_OPERATOR)
+        -:  306:        TERM             <-  LIST(FACTOR, FACTOR_OPERATOR)
+        -:  307:        FACTOR           <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  308:        TERM_OPERATOR    <-  T([-+])
+        -:  309:        FACTOR_OPERATOR  <-  T([/*])
+        -:  310:        NUMBER           <-  T([0-9]+)
+        -:  311:		~_               <-  [ \t]*
+        -:  312:		LIST(I, D)       <-  I (D I)*
+        -:  313:		T(S)             <-  < S > _
+    #####:  314:	)");
+        -:  315:
+    #####:  316:    parser.enable_packrat_parsing();
+        -:  317:
+    #####:  318:    auto ret = parser.parse(" 1 + 2 * 3 * (4 - 5 + 6) / 7 - 8 ");
+    #####:  319:    REQUIRE(ret == true);
+    #####:  320:}
+        -:  321:
+        1:  322:TEST_CASE("Backreference test", "[backreference]")
+        -:  323:{
+        -:  324:    parser parser(R"(
+        -:  325:        START  <- _ LQUOTE < (!RQUOTE .)* > RQUOTE _
+        -:  326:        LQUOTE <- 'R"' $delm< [a-zA-Z]* > '('
+        -:  327:        RQUOTE <- ')' $delm '"'
+        -:  328:        ~_     <- [ \t\r\n]*
+    #####:  329:    )");
+        -:  330:
+    #####:  331:    std::string token;
+    #####:  332:    parser["START"] = [&](const SemanticValues& sv) {
+    #####:  333:        token = sv.token();
+    #####:  334:    };
+        -:  335:
+        -:  336:    {
+    #####:  337:        token.clear();
+        -:  338:        auto ret = parser.parse(R"delm(
+        -:  339:            R"("hello world")"
+    #####:  340:        )delm");
+        -:  341:
+    #####:  342:        REQUIRE(ret == true);
+    #####:  343:        REQUIRE(token == "\"hello world\"");
+        -:  344:    }
+        -:  345:
+        -:  346:    {
+    #####:  347:        token.clear();
+        -:  348:        auto ret = parser.parse(R"delm(
+        -:  349:            R"foo("(hello world)")foo"
+    #####:  350:        )delm");
+        -:  351:
+    #####:  352:        REQUIRE(ret == true);
+    #####:  353:        REQUIRE(token == "\"(hello world)\"");
+        -:  354:    }
+        -:  355:
+        -:  356:    {
+    #####:  357:        token.clear();
+        -:  358:        auto ret = parser.parse(R"delm(
+        -:  359:            R"foo("(hello world)foo")foo"
+    #####:  360:        )delm");
+        -:  361:
+    #####:  362:        REQUIRE(ret == false);
+    #####:  363:        REQUIRE(token == "\"(hello world");
+        -:  364:    }
+        -:  365:
+        -:  366:    {
+    #####:  367:        token.clear();
+        -:  368:        auto ret = parser.parse(R"delm(
+        -:  369:            R"foo("(hello world)")bar"
+    #####:  370:        )delm");
+        -:  371:
+    #####:  372:        REQUIRE(ret == false);
+    #####:  373:        REQUIRE(token.empty());
+        -:  374:    }
+    #####:  375:}
+        -:  376:
+        1:  377:TEST_CASE("Invalid backreference test", "[backreference]")
+        -:  378:{
+        -:  379:    parser parser(R"(
+        -:  380:        START  <- _ LQUOTE (!RQUOTE .)* RQUOTE _
+        -:  381:        LQUOTE <- 'R"' $delm< [a-zA-Z]* > '('
+        -:  382:        RQUOTE <- ')' $delm2 '"'
+        -:  383:        ~_     <- [ \t\r\n]*
+    #####:  384:    )");
+        -:  385:
+    #####:  386:    REQUIRE_THROWS_AS(
+        -:  387:        parser.parse(R"delm(
+        -:  388:            R"foo("(hello world)")foo"
+        -:  389:        )delm"),
+        -:  390:        std::runtime_error);
+    #####:  391:}
+        -:  392:
+        -:  393:
+        1:  394:TEST_CASE("Nested capture test", "[backreference]")
+        -:  395:{
+        -:  396:    parser parser(R"(
+        -:  397:        ROOT      <- CONTENT
+        -:  398:        CONTENT   <- (ELEMENT / TEXT)*
+        -:  399:        ELEMENT   <- $(STAG CONTENT ETAG)
+        -:  400:        STAG      <- '<' $tag< TAG_NAME > '>'
+        -:  401:        ETAG      <- '</' $tag '>'
+        -:  402:        TAG_NAME  <- 'b' / 'u'
+        -:  403:        TEXT      <- TEXT_DATA
+        -:  404:        TEXT_DATA <- ![<] .
+    #####:  405:    )");
+        -:  406:
+    #####:  407:    REQUIRE(parser.parse("This is <b>a <u>test</u> text</b>."));
+    #####:  408:    REQUIRE(!parser.parse("This is <b>a <u>test</b> text</u>."));
+    #####:  409:    REQUIRE(!parser.parse("This is <b>a <u>test text</b>."));
+    #####:  410:    REQUIRE(!parser.parse("This is a <u>test</u> text</b>."));
+    #####:  411:}
+        -:  412:
+        1:  413:TEST_CASE("Backreference with Prioritized Choice test", "[backreference]")
+        -:  414:{
+        -:  415:    parser parser(R"(
+        -:  416:        TREE           <- WRONG_BRANCH / CORRECT_BRANCH
+        -:  417:        WRONG_BRANCH   <- BRANCH THAT IS_capture WRONG
+        -:  418:        CORRECT_BRANCH <- BRANCH THAT IS_backref CORRECT
+        -:  419:        BRANCH         <- 'branch'
+        -:  420:        THAT           <- 'that'
+        -:  421:        IS_capture     <- $ref<..>
+        -:  422:        IS_backref     <- $ref
+        -:  423:        WRONG          <- 'wrong'
+        -:  424:        CORRECT        <- 'correct'
+    #####:  425:    )");
+        -:  426:
+    #####:  427:    REQUIRE_THROWS_AS(parser.parse("branchthatiscorrect"), std::runtime_error);
+    #####:  428:}
+        -:  429:
+        1:  430:TEST_CASE("Backreference with Zero or More test", "[backreference]")
+        -:  431:{
+        -:  432:    parser parser(R"(
+        -:  433:        TREE           <- WRONG_BRANCH* CORRECT_BRANCH
+        -:  434:        WRONG_BRANCH   <- BRANCH THAT IS_capture WRONG
+        -:  435:        CORRECT_BRANCH <- BRANCH THAT IS_backref CORRECT
+        -:  436:        BRANCH         <- 'branch'
+        -:  437:        THAT           <- 'that'
+        -:  438:        IS_capture     <- $ref<..>
+        -:  439:        IS_backref     <- $ref
+        -:  440:        WRONG          <- 'wrong'
+        -:  441:        CORRECT        <- 'correct'
+    #####:  442:    )");
+        -:  443:
+    #####:  444:    REQUIRE(parser.parse("branchthatiswrongbranchthatiscorrect"));
+    #####:  445:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIscorrect"));
+    #####:  446:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIswrongbranchthatiscorrect"));
+    #####:  447:    REQUIRE(parser.parse("branchthatiswrongbranchthatIswrongbranchthatIscorrect"));
+    #####:  448:    REQUIRE_THROWS_AS(parser.parse("branchthatiscorrect"), std::runtime_error);
+    #####:  449:    REQUIRE_THROWS_AS(parser.parse("branchthatiswron_branchthatiscorrect"), std::runtime_error);
+    #####:  450:}
+        -:  451:
+        1:  452:TEST_CASE("Backreference with One or More test", "[backreference]")
+        -:  453:{
+        -:  454:    parser parser(R"(
+        -:  455:        TREE           <- WRONG_BRANCH+ CORRECT_BRANCH
+        -:  456:        WRONG_BRANCH   <- BRANCH THAT IS_capture WRONG
+        -:  457:        CORRECT_BRANCH <- BRANCH THAT IS_backref CORRECT
+        -:  458:        BRANCH         <- 'branch'
+        -:  459:        THAT           <- 'that'
+        -:  460:        IS_capture     <- $ref<..>
+        -:  461:        IS_backref     <- $ref
+        -:  462:        WRONG          <- 'wrong'
+        -:  463:        CORRECT        <- 'correct'
+    #####:  464:    )");
+        -:  465:
+    #####:  466:    REQUIRE(parser.parse("branchthatiswrongbranchthatiscorrect"));
+    #####:  467:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIscorrect"));
+    #####:  468:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIswrongbranchthatiscorrect"));
+    #####:  469:    REQUIRE(parser.parse("branchthatiswrongbranchthatIswrongbranchthatIscorrect"));
+    #####:  470:    REQUIRE(!parser.parse("branchthatiscorrect"));
+    #####:  471:    REQUIRE(!parser.parse("branchthatiswron_branchthatiscorrect"));
+    #####:  472:}
+        -:  473:
+        1:  474:TEST_CASE("Backreference with Option test", "[backreference]")
+        -:  475:{
+        -:  476:    parser parser(R"(
+        -:  477:        TREE           <- WRONG_BRANCH? CORRECT_BRANCH
+        -:  478:        WRONG_BRANCH   <- BRANCH THAT IS_capture WRONG
+        -:  479:        CORRECT_BRANCH <- BRANCH THAT IS_backref CORRECT
+        -:  480:        BRANCH         <- 'branch'
+        -:  481:        THAT           <- 'that'
+        -:  482:        IS_capture     <- $ref<..>
+        -:  483:        IS_backref     <- $ref
+        -:  484:        WRONG          <- 'wrong'
+        -:  485:        CORRECT        <- 'correct'
+    #####:  486:    )");
+        -:  487:
+    #####:  488:    REQUIRE(parser.parse("branchthatiswrongbranchthatiscorrect"));
+    #####:  489:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIscorrect"));
+    #####:  490:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIswrongbranchthatiscorrect"));
+    #####:  491:    REQUIRE(!parser.parse("branchthatiswrongbranchthatIswrongbranchthatIscorrect"));
+    #####:  492:    REQUIRE_THROWS_AS(parser.parse("branchthatiscorrect"), std::runtime_error);
+    #####:  493:    REQUIRE_THROWS_AS(parser.parse("branchthatiswron_branchthatiscorrect"), std::runtime_error);
+    #####:  494:}
+        -:  495:
+        1:  496:TEST_CASE("Repetition {0}", "[repetition]")
+        -:  497:{
+        -:  498:    parser parser(R"(
+        -:  499:        START <- '(' DIGIT{3} ') ' DIGIT{3} '-' DIGIT{4}
+        -:  500:        DIGIT <- [0-9]
+    #####:  501:    )");
+    #####:  502:    REQUIRE(parser.parse("(123) 456-7890"));
+    #####:  503:    REQUIRE(!parser.parse("(12a) 456-7890"));
+    #####:  504:    REQUIRE(!parser.parse("(123) 45-7890"));
+    #####:  505:    REQUIRE(!parser.parse("(123) 45-7a90"));
+    #####:  506:}
+        -:  507:
+        1:  508:TEST_CASE("Repetition {2,4}", "[repetition]")
+        -:  509:{
+        -:  510:    parser parser(R"(
+        -:  511:        START <- DIGIT{2,4}
+        -:  512:        DIGIT <- [0-9]
+    #####:  513:    )");
+    #####:  514:    REQUIRE(!parser.parse("1"));
+    #####:  515:    REQUIRE(parser.parse("12"));
+    #####:  516:    REQUIRE(parser.parse("123"));
+    #####:  517:    REQUIRE(parser.parse("1234"));
+    #####:  518:    REQUIRE(!parser.parse("12345"));
+    #####:  519:}
+        -:  520:
+        1:  521:TEST_CASE("Repetition {2,1}", "[repetition]")
+        -:  522:{
+        -:  523:    parser parser(R"(
+        -:  524:        START <- DIGIT{2,1} # invalid range
+        -:  525:        DIGIT <- [0-9]
+    #####:  526:    )");
+    #####:  527:    REQUIRE(!parser.parse("1"));
+    #####:  528:    REQUIRE(parser.parse("12"));
+    #####:  529:    REQUIRE(!parser.parse("123"));
+    #####:  530:}
+        -:  531:
+        1:  532:TEST_CASE("Repetition {2,}", "[repetition]")
+        -:  533:{
+        -:  534:    parser parser(R"(
+        -:  535:        START <- DIGIT{2,}
+        -:  536:        DIGIT <- [0-9]
+    #####:  537:    )");
+    #####:  538:    REQUIRE(!parser.parse("1"));
+    #####:  539:    REQUIRE(parser.parse("12"));
+    #####:  540:    REQUIRE(parser.parse("123"));
+    #####:  541:    REQUIRE(parser.parse("1234"));
+    #####:  542:}
+        -:  543:
+        1:  544:TEST_CASE("Repetition {,2}", "[repetition]")
+        -:  545:{
+        -:  546:    parser parser(R"(
+        -:  547:        START <- DIGIT{,2}
+        -:  548:        DIGIT <- [0-9]
+    #####:  549:    )");
+    #####:  550:    REQUIRE(parser.parse("1"));
+    #####:  551:    REQUIRE(parser.parse("12"));
+    #####:  552:    REQUIRE(!parser.parse("123"));
+    #####:  553:    REQUIRE(!parser.parse("1234"));
+    #####:  554:}
+        -:  555:
+        1:  556:TEST_CASE("Left recursive test", "[left recursive]")
+        -:  557:{
+        -:  558:    parser parser(R"(
+        -:  559:        A <- A 'a'
+        -:  560:        B <- A 'a'
+    #####:  561:    )");
+        -:  562:
+    #####:  563:    REQUIRE(!parser);
+    #####:  564:}
+        -:  565:
+        1:  566:TEST_CASE("Left recursive with option test", "[left recursive]")
+        -:  567:{
+        -:  568:    parser parser(R"(
+        -:  569:        A  <- 'a' / 'b'? B 'c'
+        -:  570:        B  <- A
+    #####:  571:    )");
+        -:  572:
+    #####:  573:    REQUIRE(!parser);
+    #####:  574:}
+        -:  575:
+        1:  576:TEST_CASE("Left recursive with zom test", "[left recursive]")
+        -:  577:{
+        -:  578:    parser parser(R"(
+        -:  579:        A <- 'a'* A*
+    #####:  580:    )");
+        -:  581:
+    #####:  582:    REQUIRE(!parser);
+    #####:  583:}
+        -:  584:
+        1:  585:TEST_CASE("Left recursive with a ZOM content rule", "[left recursive]")
+        -:  586:{
+        -:  587:    parser parser(R"(
+        -:  588:        A <- B
+        -:  589:        B <- _ A
+        -:  590:        _ <- ' '* # Zero or more
+    #####:  591:    )");
+        -:  592:
+    #####:  593:    REQUIRE(!parser);
+    #####:  594:}
+        -:  595:
+        1:  596:TEST_CASE("Left recursive with empty string test", "[left recursive]")
+        -:  597:{
+        -:  598:    parser parser(
+        -:  599:        " A <- '' A"
+    #####:  600:    );
+        -:  601:
+    #####:  602:    REQUIRE(!parser);
+    #####:  603:}
+        -:  604:
+        1:  605:TEST_CASE("User defined rule test", "[user rule]")
+        -:  606:{
+        -:  607:    auto g = parser(R"(
+        -:  608:        ROOT <- _ 'Hello' _ NAME '!' _
+        -:  609:    )",
+        -:  610:    {
+        -:  611:        {
+    #####:  612:            "NAME", usr([](const char* s, size_t n, SemanticValues& /*sv*/, any& /*dt*/) -> size_t {
+    #####:  613:                static std::vector<std::string> names = { "PEG", "BNF" };
+    #####:  614:                for (const auto& name: names) {
+    #####:  615:                    if (name.size() <= n && !name.compare(0, name.size(), s, name.size())) {
+    #####:  616:                        return name.size();
+        -:  617:                    }
+        -:  618:                }
+    #####:  619:                return static_cast<size_t>(-1);
+        -:  620:            })
+        -:  621:        },
+        -:  622:        {
+    #####:  623:            "~_", zom(cls(" \t\r\n"))
+        -:  624:        }
+    #####:  625:    });
+        -:  626:
+    #####:  627:    REQUIRE(g.parse(" Hello BNF! ") == true);
+    #####:  628:}
+        -:  629:
+        1:  630:TEST_CASE("Semantic predicate test", "[predicate]")
+        -:  631:{
+    #####:  632:    parser parser("NUMBER  <-  [0-9]+");
+        -:  633:
+    #####:  634:    parser["NUMBER"] = [](const SemanticValues& sv) {
+    #####:  635:        auto val = stol(sv.token(), nullptr, 10);
+    #####:  636:        if (val != 100) {
+    #####:  637:            throw parse_error("value error!!");
+        -:  638:        }
+    #####:  639:        return val;
+        -:  640:    };
+        -:  641:
+        -:  642:    long val;
+    #####:  643:    REQUIRE(parser.parse("100", val));
+    #####:  644:    REQUIRE(val == 100);
+        -:  645:
+    #####:  646:    parser.log = [](size_t line, size_t col, const std::string& msg) {
+    #####:  647:        REQUIRE(line == 1);
+    #####:  648:        REQUIRE(col == 1);
+    #####:  649:        REQUIRE(msg == "value error!!");
+    #####:  650:    };
+    #####:  651:    REQUIRE(!parser.parse("200", val));
+    #####:  652:}
+        -:  653:
+        1:  654:TEST_CASE("Japanese character", "[unicode]")
+        -:  655:{
+        -:  656:    peg::parser parser(u8R"(
+        -:  657:        文 <- 修飾語? 主語 述語 '。'
+        -:  658:        主語 <- 名詞 助詞
+        -:  659:        述語 <- 動詞 助詞
+        -:  660:        修飾語 <- 形容詞
+        -:  661:        名詞 <- 'サーバー' / 'クライアント'
+        -:  662:        形容詞 <- '古い' / '新しい'
+        -:  663:        動詞 <- '落ち' / '復旧し'
+        -:  664:        助詞 <- 'が' / 'を' / 'た' / 'ます' / 'に'
+    #####:  665:    )");
+        -:  666:
+    #####:  667:    bool ret = parser;
+    #####:  668:    REQUIRE(ret == true);
+        -:  669:
+    #####:  670:    REQUIRE(parser.parse(u8R"(サーバーを復旧します。)"));
+    #####:  671:}
+        -:  672:
+        1:  673:TEST_CASE("dot with a code", "[unicode]")
+        -:  674:{
+    #####:  675:    peg::parser parser(" S <- 'a' . 'b' ");
+    #####:  676:    REQUIRE(parser.parse(u8R"(aあb)"));
+    #####:  677:}
+        -:  678:
+        2:  679:TEST_CASE("dot with a char", "[unicode]")
+        -:  680:{
+        2:  681:    peg::parser parser(" S <- 'a' . 'b' ");
+        1:  682:    REQUIRE(parser.parse(u8R"(aåb)"));
+        1:  683:}
+        -:  684:
+        1:  685:TEST_CASE("character class", "[unicode]")
+        -:  686:{
+        -:  687:    peg::parser parser(R"(
+        -:  688:        S <- 'a' [い-おAさC-Eた-とは] 'b'
+    #####:  689:    )");
+        -:  690:
+    #####:  691:    bool ret = parser;
+    #####:  692:    REQUIRE(ret == true);
+        -:  693:
+    #####:  694:    REQUIRE(!parser.parse(u8R"(aあb)"));
+    #####:  695:    REQUIRE(parser.parse(u8R"(aいb)"));
+    #####:  696:    REQUIRE(parser.parse(u8R"(aうb)"));
+    #####:  697:    REQUIRE(parser.parse(u8R"(aおb)"));
+    #####:  698:    REQUIRE(!parser.parse(u8R"(aかb)"));
+    #####:  699:    REQUIRE(parser.parse(u8R"(aAb)"));
+    #####:  700:    REQUIRE(!parser.parse(u8R"(aBb)"));
+    #####:  701:    REQUIRE(parser.parse(u8R"(aEb)"));
+    #####:  702:    REQUIRE(!parser.parse(u8R"(aFb)"));
+    #####:  703:    REQUIRE(!parser.parse(u8R"(aそb)"));
+    #####:  704:    REQUIRE(parser.parse(u8R"(aたb)"));
+    #####:  705:    REQUIRE(parser.parse(u8R"(aちb)"));
+    #####:  706:    REQUIRE(parser.parse(u8R"(aとb)"));
+    #####:  707:    REQUIRE(!parser.parse(u8R"(aなb)"));
+    #####:  708:    REQUIRE(parser.parse(u8R"(aはb)"));
+    #####:  709:    REQUIRE(!parser.parse(u8R"(a?b)"));
+    #####:  710:}
+        -:  711:
+        -:  712:#if 0 // TODO: Unicode Grapheme support
+        -:  713:TEST_CASE("dot with a grapheme", "[unicode]")
+        -:  714:{
+        -:  715:    peg::parser parser(" S <- 'a' . 'b' ");
+        -:  716:    REQUIRE(parser.parse(u8R"(aसिb)"));
+        -:  717:}
+        -:  718:#endif
+        -:  719:
+        1:  720:TEST_CASE("Macro simple test", "[macro]")
+        -:  721:{
+        -:  722:    parser parser(R"(
+        -:  723:		S     <- HELLO WORLD
+        -:  724:		HELLO <- T('hello')
+        -:  725:		WORLD <- T('world')
+        -:  726:		T(a)  <- a [ \t]*
+    #####:  727:	)");
+        -:  728:
+    #####:  729:    REQUIRE(parser.parse("hello \tworld "));
+    #####:  730:}
+        -:  731:
+        1:  732:TEST_CASE("Macro two parameters", "[macro]")
+        -:  733:{
+        -:  734:    parser parser(R"(
+        -:  735:		S           <- HELLO_WORLD
+        -:  736:		HELLO_WORLD <- T('hello', 'world')
+        -:  737:		T(a, b)     <- a [ \t]* b [ \t]*
+    #####:  738:	)");
+        -:  739:
+    #####:  740:    REQUIRE(parser.parse("hello \tworld "));
+    #####:  741:}
+        -:  742:
+        1:  743:TEST_CASE("Macro syntax error", "[macro]")
+        -:  744:{
+        -:  745:    parser parser(R"(
+        -:  746:		S     <- T('hello')
+        -:  747:		T (a) <- a [ \t]*
+    #####:  748:	)");
+        -:  749:
+    #####:  750:    bool ret = parser;
+    #####:  751:    REQUIRE(ret == false);
+    #####:  752:}
+        -:  753:
+        1:  754:TEST_CASE("Macro missing argument", "[macro]")
+        -:  755:{
+        -:  756:    parser parser(R"(
+        -:  757:		S       <- T ('hello')
+        -:  758:		T(a, b) <- a [ \t]* b
+    #####:  759:	)");
+        -:  760:
+    #####:  761:    bool ret = parser;
+    #####:  762:    REQUIRE(ret == false);
+    #####:  763:}
+        -:  764:
+        1:  765:TEST_CASE("Macro reference syntax error", "[macro]")
+        -:  766:{
+        -:  767:    parser parser(R"(
+        -:  768:		S    <- T ('hello')
+        -:  769:		T(a) <- a [ \t]*
+    #####:  770:	)");
+        -:  771:
+    #####:  772:    bool ret = parser;
+    #####:  773:    REQUIRE(ret == false);
+    #####:  774:}
+        -:  775:
+        1:  776:TEST_CASE("Macro invalid macro reference error", "[macro]")
+        -:  777:{
+        -:  778:    parser parser(R"(
+        -:  779:		S <- T('hello')
+        -:  780:		T <- 'world'
+    #####:  781:	)");
+        -:  782:
+    #####:  783:    bool ret = parser;
+    #####:  784:    REQUIRE(ret == false);
+    #####:  785:}
+        -:  786:
+        1:  787:TEST_CASE("Macro calculator", "[macro]")
+        -:  788:{
+        -:  789:	// Create a PEG parser
+        -:  790:    parser parser(R"(
+        -:  791:        # Grammar for simple calculator...
+        -:  792:        EXPRESSION       <-  _ LIST(TERM, TERM_OPERATOR)
+        -:  793:        TERM             <-  LIST(FACTOR, FACTOR_OPERATOR)
+        -:  794:        FACTOR           <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  795:        TERM_OPERATOR    <-  T([-+])
+        -:  796:        FACTOR_OPERATOR  <-  T([/*])
+        -:  797:        NUMBER           <-  T([0-9]+)
+        -:  798:		~_               <-  [ \t]*
+        -:  799:		LIST(I, D)       <-  I (D I)*
+        -:  800:		T(S)             <-  < S > _
+    #####:  801:	)");
+        -:  802:
+        -:  803:	// Setup actions
+    #####:  804:    auto reduce = [](const SemanticValues& sv) -> long {
+    #####:  805:        auto result = any_cast<long>(sv[0]);
+    #####:  806:        for (auto i = 1u; i < sv.size(); i += 2) {
+    #####:  807:            auto num = any_cast<long>(sv[i + 1]);
+    #####:  808:            auto ope = any_cast<char>(sv[i]);
+    #####:  809:            switch (ope) {
+    #####:  810:                case '+': result += num; break;
+    #####:  811:                case '-': result -= num; break;
+    #####:  812:                case '*': result *= num; break;
+    #####:  813:                case '/': result /= num; break;
+        -:  814:            }
+        -:  815:        }
+    #####:  816:        return result;
+        -:  817:    };
+        -:  818:
+    #####:  819:    parser["EXPRESSION"]      = reduce;
+    #####:  820:    parser["TERM"]            = reduce;
+    #####:  821:    parser["TERM_OPERATOR"]   = [](const SemanticValues& sv) { return static_cast<char>(*sv.c_str()); };
+    #####:  822:    parser["FACTOR_OPERATOR"] = [](const SemanticValues& sv) { return static_cast<char>(*sv.c_str()); };
+    #####:  823:    parser["NUMBER"]          = [](const SemanticValues& sv) { return atol(sv.c_str()); };
+        -:  824:
+    #####:  825:    bool ret = parser;
+    #####:  826:    REQUIRE(ret == true);
+        -:  827:
+    #####:  828:	auto expr = " 1 + 2 * 3 * (4 - 5 + 6) / 7 - 8 ";
+    #####:  829:    long val = 0;
+    #####:  830:    ret = parser.parse(expr, val);
+        -:  831:
+    #####:  832:    REQUIRE(ret == true);
+    #####:  833:    REQUIRE(val == -3);
+    #####:  834:}
+        -:  835:
+        1:  836:TEST_CASE("Macro expression arguments", "[macro]")
+        -:  837:{
+        -:  838:    parser parser(R"(
+        -:  839:		S             <- M('hello' / 'Hello', 'world' / 'World')
+        -:  840:		M(arg0, arg1) <- arg0 [ \t]+ arg1
+    #####:  841:	)");
+        -:  842:
+    #####:  843:    REQUIRE(parser.parse("Hello world"));
+    #####:  844:}
+        -:  845:
+        1:  846:TEST_CASE("Macro recursive", "[macro]")
+        -:  847:{
+        -:  848:    parser parser(R"(
+        -:  849:		S    <- M('abc')
+        -:  850:		M(s) <- !s / s ' ' M(s / '123') / s
+    #####:  851:	)");
+        -:  852:
+    #####:  853:    REQUIRE(parser.parse(""));
+    #####:  854:    REQUIRE(parser.parse("abc"));
+    #####:  855:    REQUIRE(parser.parse("abc abc"));
+    #####:  856:    REQUIRE(parser.parse("abc 123 abc"));
+    #####:  857:}
+        -:  858:
+        1:  859:TEST_CASE("Macro recursive2", "[macro]")
+        -:  860:{
+        -:  861:	auto syntaxes = std::vector<const char*>{
+        -:  862:		"S <- M('abc') M(s) <- !s / s ' ' M(s* '-' '123') / s",
+        -:  863:		"S <- M('abc') M(s) <- !s / s ' ' M(s+ '-' '123') / s",
+        -:  864:		"S <- M('abc') M(s) <- !s / s ' ' M(s? '-' '123') / s",
+        -:  865:		"S <- M('abc') M(s) <- !s / s ' ' M(&s s+ '-' '123') / s",
+        -:  866:		"S <- M('abc') M(s) <- !s / s ' ' M(s '-' !s '123') / s",
+        -:  867:		"S <- M('abc') M(s) <- !s / s ' ' M(< s > '-' '123') / s",
+        -:  868:		"S <- M('abc') M(s) <- !s / s ' ' M(~s '-' '123') / s",
+    #####:  869:	};
+        -:  870:
+    #####:  871:	for (const auto& syntax: syntaxes) {
+    #####:  872:        parser parser(syntax);
+    #####:  873:        REQUIRE(parser.parse("abc abc-123"));
+        -:  874:	}
+    #####:  875:}
+        -:  876:
+        1:  877:TEST_CASE("Macro exclusive modifiers", "[macro]")
+        -:  878:{
+        -:  879:    parser parser(R"(
+        -:  880:		S                   <- Modifiers(!"") _
+        -:  881:		Modifiers(Appeared) <- (!Appeared) (
+        -:  882:								   Token('public') Modifiers(Appeared / 'public') /
+        -:  883:								   Token('static') Modifiers(Appeared / 'static') /
+        -:  884:								   Token('final') Modifiers(Appeared / 'final') /
+        -:  885:								   "")
+        -:  886:		Token(t)            <- t _
+        -:  887:		_                   <- [ \t\r\n]*
+    #####:  888:	)");
+        -:  889:
+    #####:  890:	REQUIRE(parser.parse("public"));
+    #####:  891:	REQUIRE(parser.parse("static"));
+    #####:  892:	REQUIRE(parser.parse("final"));
+    #####:  893:	REQUIRE(parser.parse("public static final"));
+    #####:  894:	REQUIRE(!parser.parse("public public"));
+    #####:  895:	REQUIRE(!parser.parse("public static public"));
+    #####:  896:}
+        -:  897:
+        1:  898:TEST_CASE("Macro token check test", "[macro]")
+        -:  899:{
+        -:  900:    parser parser(R"(
+        -:  901:        # Grammar for simple calculator...
+        -:  902:        EXPRESSION       <-  _ LIST(TERM, TERM_OPERATOR)
+        -:  903:        TERM             <-  LIST(FACTOR, FACTOR_OPERATOR)
+        -:  904:        FACTOR           <-  NUMBER / T('(') EXPRESSION T(')')
+        -:  905:        TERM_OPERATOR    <-  T([-+])
+        -:  906:        FACTOR_OPERATOR  <-  T([/*])
+        -:  907:        NUMBER           <-  T([0-9]+)
+        -:  908:		~_               <-  [ \t]*
+        -:  909:		LIST(I, D)       <-  I (D I)*
+        -:  910:		T(S)             <-  < S > _
+    #####:  911:	)");
+        -:  912:
+    #####:  913:    REQUIRE(parser["EXPRESSION"].is_token() == false);
+    #####:  914:    REQUIRE(parser["TERM"].is_token() == false);
+    #####:  915:    REQUIRE(parser["FACTOR"].is_token() == false);
+    #####:  916:    REQUIRE(parser["FACTOR_OPERATOR"].is_token() == true);
+    #####:  917:    REQUIRE(parser["NUMBER"].is_token() == true);
+    #####:  918:    REQUIRE(parser["_"].is_token() == true);
+    #####:  919:    REQUIRE(parser["LIST"].is_token() == false);
+    #####:  920:    REQUIRE(parser["T"].is_token() == true);
+    #####:  921:}
+        -:  922:
+        1:  923:TEST_CASE("Macro passes an arg to another macro", "[macro]") {
+        -:  924:  parser parser(R"(
+        -:  925:        A    <- B(C)
+        -:  926:        B(D) <- D
+        -:  927:        C    <- 'c'
+        -:  928:        D    <- 'd'
+    #####:  929:	)");
+        -:  930:
+    #####:  931:  REQUIRE(parser.parse("c"));
+    #####:  932:}
+        -:  933:
+        1:  934:TEST_CASE("Nested macro call", "[macro]") {
+        -:  935:#ifdef DPP_ENABLE_GCOV
+        -:  936:    {
+    #####:  937:        dpp_gcov_handler(dpp_gcov_flush);
+        -:  938:    }
+        -:  939:#endif
+        -:  940:  parser parser(R"(
+        -:  941:        A    <- B(T)
+        -:  942:        B(X) <- C(X)
+        -:  943:        C(Y) <- Y
+        -:  944:        T    <- 'val'
+    #####:  945:	)");
+        -:  946:
+    #####:  947:  REQUIRE(parser.parse("val"));
+    #####:  948:}
+        -:  949:
+        1:  950:TEST_CASE("Nested macro call2", "[macro]")
+        -:  951:{
+        -:  952:#ifdef DPP_ENABLE_GCOV
+        -:  953:    {
+    #####:  954:        dpp_gcov_handler(dpp_gcov_flush);
+        -:  955:    }
+        -:  956:#endif
+        -:  957:    parser parser(R"(
+        -:  958:        START           <- A('TestVal1', 'TestVal2')+
+        -:  959:        A(Aarg1, Aarg2) <- B(Aarg1) '#End'
+        -:  960:        B(Barg1)        <- '#' Barg1
+    #####:  961:	)");
+        -:  962:
+    #####:  963:    REQUIRE(parser.parse("#TestVal1#End"));
+    #####:  964:}
+        -:  965:
+        1:  966:TEST_CASE("Line information test", "[line information]") {
+        -:  967:    parser parser(R"(
+        -:  968:        S    <- _ (WORD _)+
+        -:  969:        WORD <- [A-Za-z]+
+        -:  970:        ~_   <- [ \t\r\n]+
+    #####:  971:    )");
+        -:  972:
+    #####:  973:    std::vector<std::pair<size_t, size_t>> locations;
+    #####:  974:    parser["WORD"] = [&](const peg::SemanticValues& sv) {
+    #####:  975:        locations.push_back(sv.line_info());
+    #####:  976:    };
+        -:  977:
+    #####:  978:    bool ret = parser;
+    #####:  979:    REQUIRE(ret == true);
+        -:  980:
+    #####:  981:    ret = parser.parse(" Mon Tue Wed \nThu  Fri  Sat\nSun\n");
+    #####:  982:    REQUIRE(ret == true);
+        -:  983:
+    #####:  984:    REQUIRE(locations[0] == std::make_pair<size_t, size_t>(1, 2));
+    #####:  985:    REQUIRE(locations[1] == std::make_pair<size_t, size_t>(1, 6));
+    #####:  986:    REQUIRE(locations[2] == std::make_pair<size_t, size_t>(1, 10));
+    #####:  987:    REQUIRE(locations[3] == std::make_pair<size_t, size_t>(2, 1));
+    #####:  988:    REQUIRE(locations[4] == std::make_pair<size_t, size_t>(2, 6));
+    #####:  989:    REQUIRE(locations[5] == std::make_pair<size_t, size_t>(2, 11));
+    #####:  990:    REQUIRE(locations[6] == std::make_pair<size_t, size_t>(3, 1));
+    #####:  991:}
+        -:  992:
+        1:  993:TEST_CASE("Dictionary", "[dic]")
+        -:  994:{
+        -:  995:    parser parser(R"(
+        -:  996:        START <- 'This month is ' MONTH '.'
+        -:  997:        MONTH <- 'Jan' | 'January' | 'Feb' | 'February'
+    #####:  998:	)");
+        -:  999:
+    #####: 1000:    REQUIRE(parser.parse("This month is Jan."));
+    #####: 1001:    REQUIRE(parser.parse("This month is January."));
+    #####: 1002:    REQUIRE_FALSE(parser.parse("This month is Jannuary."));
+    #####: 1003:    REQUIRE_FALSE(parser.parse("This month is ."));
+    #####: 1004:}
+        -: 1005:
+        1: 1006:TEST_CASE("Dictionary invalid", "[dic]")
+        -: 1007:{
+        -: 1008:    parser parser(R"(
+        -: 1009:        START <- 'This month is ' MONTH '.'
+        -: 1010:        MONTH <- 'Jan' | 'January' | [a-z]+ | 'Feb' | 'February'
+    #####: 1011:	)");
+        -: 1012:
+    #####: 1013:    bool ret = parser;
+    #####: 1014:    REQUIRE_FALSE(ret);
+        3: 1015:}
+        -: 1016:
+        -: 1017:// vim: et ts=4 sw=4 cin cino={1s ff=unix

@@ -1,0 +1,521 @@
+        -:    0:Source:/usr/include/c++/7/bits/regex_executor.tcc
+        -:    0:Programs:4
+        -:    1:// class template regex -*- C++ -*-
+        -:    2:
+        -:    3:// Copyright (C) 2013-2017 Free Software Foundation, Inc.
+        -:    4://
+        -:    5:// This file is part of the GNU ISO C++ Library.  This library is free
+        -:    6:// software; you can redistribute it and/or modify it under the
+        -:    7:// terms of the GNU General Public License as published by the
+        -:    8:// Free Software Foundation; either version 3, or (at your option)
+        -:    9:// any later version.
+        -:   10:
+        -:   11:// This library is distributed in the hope that it will be useful,
+        -:   12:// but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   13:// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   14:// GNU General Public License for more details.
+        -:   15:
+        -:   16:// Under Section 7 of GPL version 3, you are granted additional
+        -:   17:// permissions described in the GCC Runtime Library Exception, version
+        -:   18:// 3.1, as published by the Free Software Foundation.
+        -:   19:
+        -:   20:// You should have received a copy of the GNU General Public License and
+        -:   21:// a copy of the GCC Runtime Library Exception along with this program;
+        -:   22:// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+        -:   23:// <http://www.gnu.org/licenses/>.
+        -:   24:
+        -:   25:/**
+        -:   26: *  @file bits/regex_executor.tcc
+        -:   27: *  This is an internal header file, included by other library headers.
+        -:   28: *  Do not attempt to use it directly. @headername{regex}
+        -:   29: */
+        -:   30:
+        -:   31:namespace std _GLIBCXX_VISIBILITY(default)
+        -:   32:{
+        -:   33:namespace __detail
+        -:   34:{
+        -:   35:_GLIBCXX_BEGIN_NAMESPACE_VERSION
+        -:   36:
+        -:   37:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:   38:	   bool __dfs_mode>
+        -:   39:    bool _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:   40:    _M_search()
+        -:   41:    {
+        -:   42:      if (_M_search_from_first())
+        -:   43:	return true;
+        -:   44:      if (_M_flags & regex_constants::match_continuous)
+        -:   45:	return false;
+        -:   46:      _M_flags |= regex_constants::match_prev_avail;
+        -:   47:      while (_M_begin != _M_end)
+        -:   48:	{
+        -:   49:	  ++_M_begin;
+        -:   50:	  if (_M_search_from_first())
+        -:   51:	    return true;
+        -:   52:	}
+        -:   53:      return false;
+        -:   54:    }
+        -:   55:
+        -:   56:  // The _M_main function operates in different modes, DFS mode or BFS mode,
+        -:   57:  // indicated by template parameter __dfs_mode, and dispatches to one of the
+        -:   58:  // _M_main_dispatch overloads.
+        -:   59:  //
+        -:   60:  // ------------------------------------------------------------
+        -:   61:  //
+        -:   62:  // DFS mode:
+        -:   63:  //
+        -:   64:  // It applies a Depth-First-Search (aka backtracking) on given NFA and input
+        -:   65:  // string.
+        -:   66:  // At the very beginning the executor stands in the start state, then it
+        -:   67:  // tries every possible state transition in current state recursively. Some
+        -:   68:  // state transitions consume input string, say, a single-char-matcher or a
+        -:   69:  // back-reference matcher; some don't, like assertion or other anchor nodes.
+        -:   70:  // When the input is exhausted and/or the current state is an accepting
+        -:   71:  // state, the whole executor returns true.
+        -:   72:  //
+        -:   73:  // TODO: This approach is exponentially slow for certain input.
+        -:   74:  //       Try to compile the NFA to a DFA.
+        -:   75:  //
+        -:   76:  // Time complexity: \Omega(match_length), O(2^(_M_nfa.size()))
+        -:   77:  // Space complexity: \theta(match_results.size() + match_length)
+        -:   78:  //
+        -:   79:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:   80:	   bool __dfs_mode>
+    #####:   81:    bool _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:   82:    _M_main_dispatch(_Match_mode __match_mode, __dfs)
+        -:   83:    {
+    #####:   84:      _M_has_sol = false;
+    #####:   85:      *_M_states._M_get_sol_pos() = _BiIter();
+    #####:   86:      _M_cur_results = _M_results;
+    #####:   87:      _M_dfs(__match_mode, _M_states._M_start);
+    #####:   88:      return _M_has_sol;
+        -:   89:    }
+        -:   90:
+        -:   91:  // ------------------------------------------------------------
+        -:   92:  //
+        -:   93:  // BFS mode:
+        -:   94:  //
+        -:   95:  // Russ Cox's article (http://swtch.com/~rsc/regexp/regexp1.html)
+        -:   96:  // explained this algorithm clearly.
+        -:   97:  //
+        -:   98:  // It first computes epsilon closure (states that can be achieved without
+        -:   99:  // consuming characters) for every state that's still matching,
+        -:  100:  // using the same DFS algorithm, but doesn't re-enter states (using
+        -:  101:  // _M_states._M_visited to check), nor follow _S_opcode_match.
+        -:  102:  //
+        -:  103:  // Then apply DFS using every _S_opcode_match (in _M_states._M_match_queue)
+        -:  104:  // as the start state.
+        -:  105:  //
+        -:  106:  // It significantly reduces potential duplicate states, so has a better
+        -:  107:  // upper bound; but it requires more overhead.
+        -:  108:  //
+        -:  109:  // Time complexity: \Omega(match_length * match_results.size())
+        -:  110:  //                  O(match_length * _M_nfa.size() * match_results.size())
+        -:  111:  // Space complexity: \Omega(_M_nfa.size() + match_results.size())
+        -:  112:  //                   O(_M_nfa.size() * match_results.size())
+        -:  113:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  114:	   bool __dfs_mode>
+    #####:  115:    bool _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  116:    _M_main_dispatch(_Match_mode __match_mode, __bfs)
+        -:  117:    {
+    #####:  118:      _M_states._M_queue(_M_states._M_start, _M_results);
+    #####:  119:      bool __ret = false;
+    #####:  120:      while (1)
+        -:  121:	{
+    #####:  122:	  _M_has_sol = false;
+    #####:  123:	  if (_M_states._M_match_queue.empty())
+    #####:  124:	    break;
+    #####:  125:	  std::fill_n(_M_states._M_visited_states.get(), _M_nfa.size(), false);
+    #####:  126:	  auto __old_queue = std::move(_M_states._M_match_queue);
+    #####:  127:	  for (auto& __task : __old_queue)
+        -:  128:	    {
+    #####:  129:	      _M_cur_results = std::move(__task.second);
+    #####:  130:	      _M_dfs(__match_mode, __task.first);
+        -:  131:	    }
+    #####:  132:	  if (__match_mode == _Match_mode::_Prefix)
+    #####:  133:	    __ret |= _M_has_sol;
+    #####:  134:	  if (_M_current == _M_end)
+    #####:  135:	    break;
+    #####:  136:	  ++_M_current;
+        -:  137:	}
+    #####:  138:      if (__match_mode == _Match_mode::_Exact)
+    #####:  139:	__ret = _M_has_sol;
+    #####:  140:      _M_states._M_match_queue.clear();
+    #####:  141:      return __ret;
+        -:  142:    }
+        -:  143:
+        -:  144:  // Return whether now match the given sub-NFA.
+        -:  145:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  146:	   bool __dfs_mode>
+    #####:  147:    bool _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  148:    _M_lookahead(_StateIdT __next)
+        -:  149:    {
+        -:  150:      // Backreferences may refer to captured content.
+        -:  151:      // We may want to make this faster by not copying,
+        -:  152:      // but let's not be clever prematurely.
+    #####:  153:      _ResultsVec __what(_M_cur_results);
+    #####:  154:      _Executor __sub(_M_current, _M_end, __what, _M_re, _M_flags);
+    #####:  155:      __sub._M_states._M_start = __next;
+    #####:  156:      if (__sub._M_search_from_first())
+        -:  157:	{
+    #####:  158:	  for (size_t __i = 0; __i < __what.size(); __i++)
+    #####:  159:	    if (__what[__i].matched)
+    #####:  160:	      _M_cur_results[__i] = __what[__i];
+    #####:  161:	  return true;
+        -:  162:	}
+    #####:  163:      return false;
+        -:  164:    }
+        -:  165:
+        -:  166:  // __rep_count records how many times (__rep_count.second)
+        -:  167:  // this node is visited under certain input iterator
+        -:  168:  // (__rep_count.first). This prevent the executor from entering
+        -:  169:  // infinite loop by refusing to continue when it's already been
+        -:  170:  // visited more than twice. It's `twice` instead of `once` because
+        -:  171:  // we need to spare one more time for potential group capture.
+        -:  172:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  173:    bool __dfs_mode>
+    #####:  174:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  175:    _M_rep_once_more(_Match_mode __match_mode, _StateIdT __i)
+        -:  176:    {
+    #####:  177:      const auto& __state = _M_nfa[__i];
+    #####:  178:      auto& __rep_count = _M_rep_count[__i];
+    #####:  179:      if (__rep_count.second == 0 || __rep_count.first != _M_current)
+        -:  180:	{
+    #####:  181:	  auto __back = __rep_count;
+    #####:  182:	  __rep_count.first = _M_current;
+    #####:  183:	  __rep_count.second = 1;
+    #####:  184:	  _M_dfs(__match_mode, __state._M_alt);
+    #####:  185:	  __rep_count = __back;
+        -:  186:	}
+        -:  187:      else
+        -:  188:	{
+    #####:  189:	  if (__rep_count.second < 2)
+        -:  190:	    {
+    #####:  191:	      __rep_count.second++;
+    #####:  192:	      _M_dfs(__match_mode, __state._M_alt);
+    #####:  193:	      __rep_count.second--;
+        -:  194:	    }
+        -:  195:	}
+    #####:  196:    };
+        -:  197:
+        -:  198:  // _M_alt branch is "match once more", while _M_next is "get me out
+        -:  199:  // of this quantifier". Executing _M_next first or _M_alt first don't
+        -:  200:  // mean the same thing, and we need to choose the correct order under
+        -:  201:  // given greedy mode.
+        -:  202:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  203:	   bool __dfs_mode>
+    #####:  204:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  205:    _M_handle_repeat(_Match_mode __match_mode, _StateIdT __i)
+        -:  206:    {
+    #####:  207:      const auto& __state = _M_nfa[__i];
+        -:  208:
+        -:  209:      // Greedy.
+    #####:  210:      if (!__state._M_neg)
+        -:  211:	{
+    #####:  212:	  _M_rep_once_more(__match_mode, __i);
+        -:  213:	  // If it's DFS executor and already accepted, we're done.
+    #####:  214:	  if (!__dfs_mode || !_M_has_sol)
+    #####:  215:	    _M_dfs(__match_mode, __state._M_next);
+        -:  216:	}
+        -:  217:      else // Non-greedy mode
+        -:  218:	{
+        -:  219:	  if (__dfs_mode)
+        -:  220:	    {
+        -:  221:	      // vice-versa.
+    #####:  222:	      _M_dfs(__match_mode, __state._M_next);
+    #####:  223:	      if (!_M_has_sol)
+    #####:  224:		_M_rep_once_more(__match_mode, __i);
+        -:  225:	    }
+        -:  226:	  else
+        -:  227:	    {
+        -:  228:	      // DON'T attempt anything, because there's already another
+        -:  229:	      // state with higher priority accepted. This state cannot
+        -:  230:	      // be better by attempting its next node.
+    #####:  231:	      if (!_M_has_sol)
+        -:  232:		{
+    #####:  233:		  _M_dfs(__match_mode, __state._M_next);
+        -:  234:		  // DON'T attempt anything if it's already accepted. An
+        -:  235:		  // accepted state *must* be better than a solution that
+        -:  236:		  // matches a non-greedy quantifier one more time.
+    #####:  237:		  if (!_M_has_sol)
+    #####:  238:		    _M_rep_once_more(__match_mode, __i);
+        -:  239:		}
+        -:  240:	    }
+        -:  241:	}
+    #####:  242:    }
+        -:  243:
+        -:  244:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  245:	   bool __dfs_mode>
+    #####:  246:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  247:    _M_handle_subexpr_begin(_Match_mode __match_mode, _StateIdT __i)
+        -:  248:    {
+    #####:  249:      const auto& __state = _M_nfa[__i];
+        -:  250:
+    #####:  251:      auto& __res = _M_cur_results[__state._M_subexpr];
+    #####:  252:      auto __back = __res.first;
+    #####:  253:      __res.first = _M_current;
+    #####:  254:      _M_dfs(__match_mode, __state._M_next);
+    #####:  255:      __res.first = __back;
+    #####:  256:    }
+        -:  257:
+        -:  258:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  259:	   bool __dfs_mode>
+    #####:  260:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  261:    _M_handle_subexpr_end(_Match_mode __match_mode, _StateIdT __i)
+        -:  262:    {
+    #####:  263:      const auto& __state = _M_nfa[__i];
+        -:  264:
+    #####:  265:      auto& __res = _M_cur_results[__state._M_subexpr];
+    #####:  266:      auto __back = __res;
+    #####:  267:      __res.second = _M_current;
+    #####:  268:      __res.matched = true;
+    #####:  269:      _M_dfs(__match_mode, __state._M_next);
+    #####:  270:      __res = __back;
+    #####:  271:    }
+        -:  272:
+        -:  273:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  274:	   bool __dfs_mode>
+    #####:  275:    inline void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  276:    _M_handle_line_begin_assertion(_Match_mode __match_mode, _StateIdT __i)
+        -:  277:    {
+    #####:  278:      const auto& __state = _M_nfa[__i];
+    #####:  279:      if (_M_at_begin())
+    #####:  280:	_M_dfs(__match_mode, __state._M_next);
+    #####:  281:    }
+        -:  282:
+        -:  283:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  284:	   bool __dfs_mode>
+    #####:  285:    inline void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  286:    _M_handle_line_end_assertion(_Match_mode __match_mode, _StateIdT __i)
+        -:  287:    {
+    #####:  288:      const auto& __state = _M_nfa[__i];
+    #####:  289:      if (_M_at_end())
+    #####:  290:	_M_dfs(__match_mode, __state._M_next);
+    #####:  291:    }
+        -:  292:
+        -:  293:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  294:	   bool __dfs_mode>
+    #####:  295:    inline void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  296:    _M_handle_word_boundary(_Match_mode __match_mode, _StateIdT __i)
+        -:  297:    {
+    #####:  298:      const auto& __state = _M_nfa[__i];
+    #####:  299:      if (_M_word_boundary() == !__state._M_neg)
+    #####:  300:	_M_dfs(__match_mode, __state._M_next);
+    #####:  301:    }
+        -:  302:
+        -:  303:  // Here __state._M_alt offers a single start node for a sub-NFA.
+        -:  304:  // We recursively invoke our algorithm to match the sub-NFA.
+        -:  305:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  306:	   bool __dfs_mode>
+    #####:  307:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  308:    _M_handle_subexpr_lookahead(_Match_mode __match_mode, _StateIdT __i)
+        -:  309:    {
+    #####:  310:      const auto& __state = _M_nfa[__i];
+    #####:  311:      if (_M_lookahead(__state._M_alt) == !__state._M_neg)
+    #####:  312:	_M_dfs(__match_mode, __state._M_next);
+    #####:  313:    }
+        -:  314:
+        -:  315:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  316:	   bool __dfs_mode>
+    #####:  317:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  318:    _M_handle_match(_Match_mode __match_mode, _StateIdT __i)
+        -:  319:    {
+    #####:  320:      const auto& __state = _M_nfa[__i];
+        -:  321:
+    #####:  322:      if (_M_current == _M_end)
+    #####:  323:	return;
+        -:  324:      if (__dfs_mode)
+        -:  325:	{
+    #####:  326:	  if (__state._M_matches(*_M_current))
+        -:  327:	    {
+    #####:  328:	      ++_M_current;
+    #####:  329:	      _M_dfs(__match_mode, __state._M_next);
+    #####:  330:	      --_M_current;
+        -:  331:	    }
+        -:  332:	}
+        -:  333:      else
+    #####:  334:	if (__state._M_matches(*_M_current))
+    #####:  335:	  _M_states._M_queue(__state._M_next, _M_cur_results);
+        -:  336:    }
+        -:  337:
+        -:  338:  // First fetch the matched result from _M_cur_results as __submatch;
+        -:  339:  // then compare it with
+        -:  340:  // (_M_current, _M_current + (__submatch.second - __submatch.first)).
+        -:  341:  // If matched, keep going; else just return and try another state.
+        -:  342:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  343:	   bool __dfs_mode>
+    #####:  344:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  345:    _M_handle_backref(_Match_mode __match_mode, _StateIdT __i)
+        -:  346:    {
+        -:  347:      __glibcxx_assert(__dfs_mode);
+        -:  348:
+    #####:  349:      const auto& __state = _M_nfa[__i];
+    #####:  350:      auto& __submatch = _M_cur_results[__state._M_backref_index];
+    #####:  351:      if (!__submatch.matched)
+    #####:  352:	return;
+    #####:  353:      auto __last = _M_current;
+    #####:  354:      for (auto __tmp = __submatch.first;
+    #####:  355:	   __last != _M_end && __tmp != __submatch.second;
+        -:  356:	   ++__tmp)
+    #####:  357:	++__last;
+    #####:  358:      if (_M_re._M_automaton->_M_traits.transform(__submatch.first,
+        -:  359:						  __submatch.second)
+    #####:  360:	  == _M_re._M_automaton->_M_traits.transform(_M_current, __last))
+        -:  361:	{
+    #####:  362:	  if (__last != _M_current)
+        -:  363:	    {
+    #####:  364:	      auto __backup = _M_current;
+    #####:  365:	      _M_current = __last;
+    #####:  366:	      _M_dfs(__match_mode, __state._M_next);
+    #####:  367:	      _M_current = __backup;
+        -:  368:	    }
+        -:  369:	  else
+    #####:  370:	    _M_dfs(__match_mode, __state._M_next);
+        -:  371:	}
+        -:  372:    }
+        -:  373:
+        -:  374:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  375:	   bool __dfs_mode>
+    #####:  376:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  377:    _M_handle_accept(_Match_mode __match_mode, _StateIdT __i)
+        -:  378:    {
+        -:  379:      if (__dfs_mode)
+        -:  380:	{
+        -:  381:	  __glibcxx_assert(!_M_has_sol);
+    #####:  382:	  if (__match_mode == _Match_mode::_Exact)
+    #####:  383:	    _M_has_sol = _M_current == _M_end;
+        -:  384:	  else
+    #####:  385:	    _M_has_sol = true;
+    #####:  386:	  if (_M_current == _M_begin
+    #####:  387:	      && (_M_flags & regex_constants::match_not_null))
+    #####:  388:	    _M_has_sol = false;
+    #####:  389:	  if (_M_has_sol)
+        -:  390:	    {
+    #####:  391:	      if (_M_nfa._M_flags & regex_constants::ECMAScript)
+    #####:  392:		_M_results = _M_cur_results;
+        -:  393:	      else // POSIX
+        -:  394:		{
+        -:  395:		  __glibcxx_assert(_M_states._M_get_sol_pos());
+        -:  396:		  // Here's POSIX's logic: match the longest one. However
+        -:  397:		  // we never know which one (lhs or rhs of "|") is longer
+        -:  398:		  // unless we try both of them and compare the results.
+        -:  399:		  // The member variable _M_sol_pos records the end
+        -:  400:		  // position of the last successful match. It's better
+        -:  401:		  // to be larger, because POSIX regex is always greedy.
+        -:  402:		  // TODO: This could be slow.
+    #####:  403:		  if (*_M_states._M_get_sol_pos() == _BiIter()
+    #####:  404:		      || std::distance(_M_begin,
+    #####:  405:				       *_M_states._M_get_sol_pos())
+    #####:  406:			 < std::distance(_M_begin, _M_current))
+        -:  407:		    {
+    #####:  408:		      *_M_states._M_get_sol_pos() = _M_current;
+    #####:  409:		      _M_results = _M_cur_results;
+        -:  410:		    }
+        -:  411:		}
+        -:  412:	    }
+        -:  413:	}
+        -:  414:      else
+        -:  415:	{
+    #####:  416:	  if (_M_current == _M_begin
+    #####:  417:	      && (_M_flags & regex_constants::match_not_null))
+    #####:  418:	    return;
+    #####:  419:	  if (__match_mode == _Match_mode::_Prefix || _M_current == _M_end)
+    #####:  420:	    if (!_M_has_sol)
+        -:  421:	      {
+    #####:  422:		_M_has_sol = true;
+    #####:  423:		_M_results = _M_cur_results;
+        -:  424:	      }
+        -:  425:	}
+        -:  426:    }
+        -:  427:
+        -:  428:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  429:	   bool __dfs_mode>
+    #####:  430:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  431:    _M_handle_alternative(_Match_mode __match_mode, _StateIdT __i)
+        -:  432:    {
+    #####:  433:      const auto& __state = _M_nfa[__i];
+        -:  434:
+    #####:  435:      if (_M_nfa._M_flags & regex_constants::ECMAScript)
+        -:  436:	{
+        -:  437:	  // TODO: Fix BFS support. It is wrong.
+    #####:  438:	  _M_dfs(__match_mode, __state._M_alt);
+        -:  439:	  // Pick lhs if it matches. Only try rhs if it doesn't.
+    #####:  440:	  if (!_M_has_sol)
+    #####:  441:	    _M_dfs(__match_mode, __state._M_next);
+        -:  442:	}
+        -:  443:      else
+        -:  444:	{
+        -:  445:	  // Try both and compare the result.
+        -:  446:	  // See "case _S_opcode_accept:" handling above.
+    #####:  447:	  _M_dfs(__match_mode, __state._M_alt);
+    #####:  448:	  auto __has_sol = _M_has_sol;
+    #####:  449:	  _M_has_sol = false;
+    #####:  450:	  _M_dfs(__match_mode, __state._M_next);
+    #####:  451:	  _M_has_sol |= __has_sol;
+        -:  452:	}
+    #####:  453:    }
+        -:  454:
+        -:  455:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  456:	   bool __dfs_mode>
+    #####:  457:    void _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  458:    _M_dfs(_Match_mode __match_mode, _StateIdT __i)
+        -:  459:    {
+    #####:  460:      if (_M_states._M_visited(__i))
+    #####:  461:	return;
+        -:  462:
+    #####:  463:      switch (_M_nfa[__i]._M_opcode())
+        -:  464:	{
+    #####:  465:	case _S_opcode_repeat:
+    #####:  466:	  _M_handle_repeat(__match_mode, __i); break;
+    #####:  467:	case _S_opcode_subexpr_begin:
+    #####:  468:	  _M_handle_subexpr_begin(__match_mode, __i); break;
+    #####:  469:	case _S_opcode_subexpr_end:
+    #####:  470:	  _M_handle_subexpr_end(__match_mode, __i); break;
+    #####:  471:	case _S_opcode_line_begin_assertion:
+    #####:  472:	  _M_handle_line_begin_assertion(__match_mode, __i); break;
+    #####:  473:	case _S_opcode_line_end_assertion:
+    #####:  474:	  _M_handle_line_end_assertion(__match_mode, __i); break;
+    #####:  475:	case _S_opcode_word_boundary:
+    #####:  476:	  _M_handle_word_boundary(__match_mode, __i); break;
+    #####:  477:	case _S_opcode_subexpr_lookahead:
+    #####:  478:	  _M_handle_subexpr_lookahead(__match_mode, __i); break;
+    #####:  479:	case _S_opcode_match:
+    #####:  480:	  _M_handle_match(__match_mode, __i); break;
+    #####:  481:	case _S_opcode_backref:
+    #####:  482:	  _M_handle_backref(__match_mode, __i); break;
+    #####:  483:	case _S_opcode_accept:
+    #####:  484:	  _M_handle_accept(__match_mode, __i); break;
+    #####:  485:	case _S_opcode_alternative:
+    #####:  486:	  _M_handle_alternative(__match_mode, __i); break;
+        -:  487:	default:
+        -:  488:	  __glibcxx_assert(false);
+        -:  489:	}
+        -:  490:    }
+        -:  491:
+        -:  492:  // Return whether now is at some word boundary.
+        -:  493:  template<typename _BiIter, typename _Alloc, typename _TraitsT,
+        -:  494:	   bool __dfs_mode>
+    #####:  495:    bool _Executor<_BiIter, _Alloc, _TraitsT, __dfs_mode>::
+        -:  496:    _M_word_boundary() const
+        -:  497:    {
+    #####:  498:      if (_M_current == _M_begin && (_M_flags & regex_constants::match_not_bow))
+    #####:  499:	return false;
+    #####:  500:      if (_M_current == _M_end && (_M_flags & regex_constants::match_not_eow))
+    #####:  501:	return false;
+        -:  502:
+    #####:  503:      bool __left_is_word = false;
+    #####:  504:      if (_M_current != _M_begin
+    #####:  505:	  || (_M_flags & regex_constants::match_prev_avail))
+        -:  506:	{
+    #####:  507:	  auto __prev = _M_current;
+    #####:  508:	  if (_M_is_word(*std::prev(__prev)))
+    #####:  509:	    __left_is_word = true;
+        -:  510:	}
+    #####:  511:      bool __right_is_word =
+    #####:  512:        _M_current != _M_end && _M_is_word(*_M_current);
+        -:  513:
+    #####:  514:      return __left_is_word != __right_is_word;
+        -:  515:    }
+        -:  516:
+        -:  517:_GLIBCXX_END_NAMESPACE_VERSION
+        -:  518:} // namespace __detail
+        -:  519:} // namespace
