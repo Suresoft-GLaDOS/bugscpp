@@ -1,0 +1,311 @@
+        -:    0:Source:/home/workspace/src/pinyin.c
+        -:    1:/**
+        -:    2: * pinyin.c
+        -:    3: *
+        -:    4: * Copyright (c) 2005, 2006, 2008, 2012-2014
+        -:    5: *      libchewing Core Team. See ChangeLog for details.
+        -:    6: *
+        -:    7: * See the file "COPYING" for information on usage and redistribution
+        -:    8: * of this file.
+        -:    9: */
+        -:   10:
+        -:   11:/* @(#)pinyin.c
+        -:   12: */
+        -:   13:
+        -:   14:#include <stdio.h>
+        -:   15:#include <string.h>
+        -:   16:#include <stdlib.h>
+        -:   17:
+        -:   18:#include "global-private.h"
+        -:   19:#include "pinyin-private.h"
+        -:   20:#include "bopomofo-private.h"
+        -:   21:#include "private.h"
+        -:   22:
+       20:   23:void TerminatePinyin(ChewingData *pgdata)
+        -:   24:{
+       20:   25:    free(pgdata->static_data.hanyuInitialsMap);
+       20:   26:    free(pgdata->static_data.hanyuFinalsMap);
+       20:   27:}
+        -:   28:
+       18:   29:int InitPinyin(ChewingData *pgdata, const char *prefix)
+        -:   30:{
+        -:   31:    char filename[PATH_MAX];
+        -:   32:    int i;
+        -:   33:    FILE *fd;
+        -:   34:    int ret;
+        -:   35:
+       18:   36:    sprintf(filename, "%s" PLAT_SEPARATOR "%s", prefix, PINYIN_TAB_NAME);
+        -:   37:
+       18:   38:    fd = fopen(filename, "r");
+        -:   39:
+       18:   40:    if (!fd)
+    #####:   41:        return 0;
+        -:   42:
+       18:   43:    ret = fscanf(fd, "%d", &pgdata->static_data.HANYU_INITIALS);
+       18:   44:    if (ret != 1) {
+    #####:   45:        goto fail;
+        -:   46:    }
+       18:   47:    ++pgdata->static_data.HANYU_INITIALS;
+       18:   48:    pgdata->static_data.hanyuInitialsMap = ALC(keymap, pgdata->static_data.HANYU_INITIALS);
+      468:   49:    for (i = 0; i < pgdata->static_data.HANYU_INITIALS - 1; i++) {
+      450:   50:        ret = fscanf(fd, "%s %s",
+      450:   51:                     pgdata->static_data.hanyuInitialsMap[i].pinyin, pgdata->static_data.hanyuInitialsMap[i].bopomofo);
+      450:   52:        if (ret != 2) {
+    #####:   53:            goto fail;
+        -:   54:        }
+        -:   55:    }
+        -:   56:
+       18:   57:    ret = fscanf(fd, "%d", &pgdata->static_data.HANYU_FINALS);
+       18:   58:    if (ret != 1) {
+    #####:   59:        goto fail;
+        -:   60:    }
+       18:   61:    ++pgdata->static_data.HANYU_FINALS;
+       18:   62:    pgdata->static_data.hanyuFinalsMap = ALC(keymap, pgdata->static_data.HANYU_FINALS);
+     1638:   63:    for (i = 0; i < pgdata->static_data.HANYU_FINALS - 1; i++) {
+     1620:   64:        ret = fscanf(fd, "%s %s",
+     1620:   65:                     pgdata->static_data.hanyuFinalsMap[i].pinyin, pgdata->static_data.hanyuFinalsMap[i].bopomofo);
+     1620:   66:        if (ret != 2) {
+    #####:   67:            goto fail;
+        -:   68:        }
+        -:   69:    }
+        -:   70:
+       18:   71:    fclose(fd);
+       18:   72:    return 1;
+        -:   73:
+    #####:   74:fail:
+    #####:   75:    fclose(fd);
+    #####:   76:    return 0;
+        -:   77:}
+        -:   78:
+        -:   79:/**
+        -:   80: * Map pinyin key-sequence to Bopomofo key-sequence.
+        -:   81: * Caller should allocate char bopomofo[4].
+        -:   82: *
+        -:   83: * Non-Zero: Fail to fully convert
+        -:   84: *
+        -:   85: * @retval 0 Success
+        -:   86: */
+    #####:   87:int PinyinToBopomofo(ChewingData *pgdata, const char *pinyinKeySeq, char *bopomofoKeySeq, char *bopomofoKeySeqAlt)
+        -:   88:{
+    #####:   89:    const char *p, *cursor = NULL;
+    #####:   90:    const char *initial = 0;
+    #####:   91:    const char *final = 0;
+    #####:   92:    const char *seq = 0;
+        -:   93:    int i;
+        -:   94:
+        -:   95:    /* special cases for WG */
+    #####:   96:    if (!strcmp(pinyinKeySeq, "tzu")) {
+    #####:   97:        seq = "y yj";           /* ㄗ|ㄗㄨ */
+    #####:   98:    } else if (!strcmp(pinyinKeySeq, "ssu") || !strcmp(pinyinKeySeq, "szu")) {
+    #####:   99:        seq = "n n";            /* ㄙ|ㄙㄨ */
+        -:  100:    }
+        -:  101:
+        -:  102:    /* common multiple mapping */
+    #####:  103:    if (!strcmp(pinyinKeySeq, "e")) {
+    #####:  104:        seq = "k ,";            /* ㄜ|ㄝ */
+    #####:  105:    } else if (!strcmp(pinyinKeySeq, "ch")) {
+    #####:  106:        seq = "t f";            /* ㄔ|ㄑ */
+    #####:  107:    } else if (!strcmp(pinyinKeySeq, "sh")) {
+    #####:  108:        seq = "g v";            /* ㄕ|ㄒ */
+    #####:  109:    } else if (!strcmp(pinyinKeySeq, "c")) {
+    #####:  110:        seq = "h f";            /* ㄘ|ㄑ */
+    #####:  111:    } else if (!strcmp(pinyinKeySeq, "s")) {
+    #####:  112:        seq = "n v";            /* ㄙ|ㄒ */
+    #####:  113:    } else if (!strcmp(pinyinKeySeq, "nu")) {
+    #####:  114:        seq = "sj sm";          /* ㄋㄨ|ㄋㄩ */
+    #####:  115:    } else if (!strcmp(pinyinKeySeq, "lu")) {
+    #####:  116:        seq = "xj xm";          /* ㄌㄨ|ㄌㄩ */
+    #####:  117:    } else if (!strcmp(pinyinKeySeq, "luan")) {
+    #####:  118:        seq = "xj0 xm0";        /* ㄌㄨㄢ|ㄌㄩㄢ */
+    #####:  119:    } else if (!strcmp(pinyinKeySeq, "niu")) {
+    #####:  120:        seq = "su. sm";         /* ㄋㄧㄡ|ㄋㄩ */
+    #####:  121:    } else if (!strcmp(pinyinKeySeq, "liu")) {
+    #####:  122:        seq = "xu. xm";         /* ㄌㄧㄡ|ㄌㄩ */
+    #####:  123:    } else if (!strcmp(pinyinKeySeq, "jiu")) {
+    #####:  124:        seq = "ru. rm";         /* ㄐㄧㄡ|ㄐㄩ */
+    #####:  125:    } else if (!strcmp(pinyinKeySeq, "chiu")) {
+    #####:  126:        seq = "fu. fm";         /* ㄑㄧㄡ|ㄑㄩ */
+    #####:  127:    } else if (!strcmp(pinyinKeySeq, "shiu")) {
+    #####:  128:        seq = "vu. vm";         /* ㄒㄧㄡ|ㄒㄩ */
+    #####:  129:    } else if (!strcmp(pinyinKeySeq, "ju")) {
+    #####:  130:        seq = "rm 5j";          /* ㄐㄩ|ㄓㄨ */
+    #####:  131:    } else if (!strcmp(pinyinKeySeq, "juan")) {
+    #####:  132:        seq = "rm0 5j0";        /* ㄐㄩㄢ|ㄓㄨㄢ */
+        -:  133:    }
+        -:  134:
+        -:  135:    /* multiple mapping for each kbtype */
+    #####:  136:    switch (pgdata->bopomofoData.kbtype) {
+    #####:  137:    case KB_HANYU_PINYIN:
+    #####:  138:        if (!strcmp(pinyinKeySeq, "chi")) {
+    #####:  139:            seq = "t fu";       /* ㄔ|ㄑㄧ */
+    #####:  140:        } else if (!strcmp(pinyinKeySeq, "shi")) {
+    #####:  141:            seq = "g vu";       /* ㄕ|ㄒㄧ */
+    #####:  142:        } else if (!strcmp(pinyinKeySeq, "ci")) {
+    #####:  143:            seq = "h fu";       /* ㄘ|ㄑㄧ */
+    #####:  144:        } else if (!strcmp(pinyinKeySeq, "si")) {
+    #####:  145:            seq = "n vu";       /* ㄙ|ㄒㄧ */
+        -:  146:        }
+    #####:  147:        break;
+    #####:  148:    case KB_THL_PINYIN:
+    #####:  149:        if (!strcmp(pinyinKeySeq, "chi")) {
+    #####:  150:            seq = "fu t";       /* ㄑㄧ|ㄔ */
+    #####:  151:        } else if (!strcmp(pinyinKeySeq, "shi")) {
+    #####:  152:            seq = "vu g";       /* ㄒㄧ|ㄕ */
+    #####:  153:        } else if (!strcmp(pinyinKeySeq, "ci")) {
+    #####:  154:            seq = "fu h";       /* ㄑㄧ|ㄘ */
+    #####:  155:        } else if (!strcmp(pinyinKeySeq, "si")) {
+    #####:  156:            seq = "vu n";       /* ㄒㄧ|ㄙ */
+        -:  157:        }
+    #####:  158:        break;
+    #####:  159:    case KB_MPS2_PINYIN:
+    #####:  160:        if (!strcmp(pinyinKeySeq, "chi")) {
+    #####:  161:            seq = "fu t";       /* ㄑㄧ|ㄔ */
+    #####:  162:        } else if (!strcmp(pinyinKeySeq, "shi")) {
+    #####:  163:            seq = "vu g";       /* ㄒㄧ|ㄕ */
+    #####:  164:        } else if (!strcmp(pinyinKeySeq, "ci")) {
+    #####:  165:            seq = "fu h";       /* ㄑㄧ|ㄘ */
+    #####:  166:        } else if (!strcmp(pinyinKeySeq, "si")) {
+    #####:  167:            seq = "vu n";       /* ㄒㄧ|ㄙ */
+    #####:  168:        } else if (!strcmp(pinyinKeySeq, "niu")) {
+    #####:  169:            seq = "sm su.";     /* ㄋㄩ|ㄋㄧㄡ */
+    #####:  170:        } else if (!strcmp(pinyinKeySeq, "liu")) {
+    #####:  171:            seq = "xm xu.";     /* ㄌㄩ|ㄌㄧㄡ */
+    #####:  172:        } else if (!strcmp(pinyinKeySeq, "jiu")) {
+    #####:  173:            seq = "rm ru.";     /* ㄐㄩ|ㄐㄧㄡ */
+    #####:  174:        } else if (!strcmp(pinyinKeySeq, "chiu")) {
+    #####:  175:            seq = "fm fu.";     /* ㄑㄩ|ㄑㄧㄡ */
+    #####:  176:        } else if (!strcmp(pinyinKeySeq, "shiu")) {
+    #####:  177:            seq = "vm vu.";     /* ㄒㄩ|ㄒㄧㄡ */
+    #####:  178:        } else if (!strcmp(pinyinKeySeq, "ju")) {
+    #####:  179:            seq = "5j rm";      /* ㄓㄨ|ㄐㄩ */
+    #####:  180:        } else if (!strcmp(pinyinKeySeq, "juan")) {
+    #####:  181:            seq = "5j0 rm0";    /* ㄓㄨㄢ|ㄐㄩㄢ */
+    #####:  182:        } else if (!strcmp(pinyinKeySeq, "juen")) {
+    #####:  183:            seq = "5jp 5jp";    /* ㄓㄨㄣ|ㄓㄨㄣ */
+    #####:  184:        } else if (!strcmp(pinyinKeySeq, "tzu")) {
+    #####:  185:            seq = "yj y";       /* ㄗㄨ|ㄗ */
+        -:  186:        }
+    #####:  187:        break;
+        -:  188:    }
+    #####:  189:    if (seq != NULL) {
+        -:  190:        char s[BOPOMOFO_SIZE * 2 + 1];
+        -:  191:
+    #####:  192:        strcpy(s, seq);
+    #####:  193:        initial = strtok(s, " ");
+    #####:  194:        strcpy(bopomofoKeySeq, initial);
+    #####:  195:        initial = strtok(NULL, " ");
+    #####:  196:        strcpy(bopomofoKeySeqAlt, initial);
+    #####:  197:        return 0;
+        -:  198:    }
+        -:  199:
+        -:  200:
+    #####:  201:    for (i = 0; i < pgdata->static_data.HANYU_INITIALS; i++) {
+    #####:  202:        p = strstr(pinyinKeySeq, pgdata->static_data.hanyuInitialsMap[i].pinyin);
+    #####:  203:        if (p == pinyinKeySeq) {
+    #####:  204:            initial = pgdata->static_data.hanyuInitialsMap[i].bopomofo;
+    #####:  205:            cursor = pinyinKeySeq + strlen(pgdata->static_data.hanyuInitialsMap[i].pinyin);
+    #####:  206:            break;
+        -:  207:        }
+        -:  208:    }
+    #####:  209:    if (i == pgdata->static_data.HANYU_INITIALS) {
+        -:  210:        /* No initials. might be ㄧㄨㄩ */
+        -:  211:        /* XXX: I NEED Implementation
+        -:  212:           if(finalsKeySeq[0] != ) {
+        -:  213:           }
+        -:  214:         */
+    #####:  215:        return 1;
+        -:  216:    }
+        -:  217:
+    #####:  218:    if (cursor) {
+    #####:  219:        for (i = 0; i < pgdata->static_data.HANYU_FINALS; i++) {
+    #####:  220:            if (strcmp(cursor, pgdata->static_data.hanyuFinalsMap[i].pinyin) == 0) {
+    #####:  221:                final = pgdata->static_data.hanyuFinalsMap[i].bopomofo;
+    #####:  222:                break;
+        -:  223:            }
+        -:  224:        }
+    #####:  225:        if (i == pgdata->static_data.HANYU_FINALS) {
+    #####:  226:            return 2;
+        -:  227:        }
+        -:  228:    }
+        -:  229:
+        -:  230:    /* catch the above exceptions */
+    #####:  231:    if (!final) final = "";
+    #####:  232:    if (!initial) initial = "";
+        -:  233:
+        -:  234:    /* THL empty rime
+        -:  235:     * we use '=' in pinyin.tab as empty rime, restore it to ''
+        -:  236:     */
+    #####:  237:    if (!strcmp(final, "=")) {
+    #####:  238:        final = "";
+        -:  239:    }
+        -:  240:
+        -:  241:    /* Hanyu empty rime
+        -:  242:     * ㄓ/ㄔ/ㄕ/ㄖ/ㄗ/ㄘ/ㄙ + -i, -i is empty rime, not ㄧ
+        -:  243:     * */
+    #####:  244:    if (!strcmp(final, "u")) {
+    #####:  245:        if (!strcmp(initial, "5") ||
+    #####:  246:            !strcmp(initial, "t") ||
+    #####:  247:            !strcmp(initial, "g") ||
+    #####:  248:            !strcmp(initial, "b") || !strcmp(initial, "y") || !strcmp(initial, "h") || !strcmp(initial, "n")) {
+    #####:  249:            final = "";
+        -:  250:        }
+        -:  251:    }
+        -:  252:
+        -:  253:    /* Hanyu uan/un/u :
+        -:  254:     * ㄐ/ㄑ/ㄒ + -uan, -uan is ㄩㄢ, not ㄨㄢ
+        -:  255:     * ㄐ/ㄑ/ㄒ + -un,  -un is ㄩㄣ, not ㄨㄣ
+        -:  256:     * ㄐ/ㄑ/ㄒ + -u,   -u is ㄧ, not ㄨ
+        -:  257:     */
+    #####:  258:    if (!strcmp(initial, "f") || !strcmp(initial, "r") || !strcmp(initial, "v")) {
+    #####:  259:        if (!strcmp(final, "j0")) {
+    #####:  260:            final = "m0";
+    #####:  261:        } else if (!strcmp(final, "jp")) {
+    #####:  262:            final = "mp";
+    #####:  263:        } else if (!strcmp(final, "j")) {
+    #####:  264:            final = "m";
+        -:  265:        }
+        -:  266:
+        -:  267:    }
+        -:  268:
+        -:  269:    /* THL/MPS2 s/sh/c/ch/j :
+        -:  270:     * s-  + ー/ㄩ, s-  is ㄒ, not ㄙ (THL/Tongyong)
+        -:  271:     * sh- + ー/ㄩ, sh- is ㄒ, not ㄕ (MPS2)
+        -:  272:     * c-  + ー/ㄩ, c-  is ㄑ, not ㄘ (Tongyong)
+        -:  273:     * ch- + ㄧ/ㄩ, ch- is ㄑ, not ㄔ (THL)
+        -:  274:     * j-  + other than ー/ㄩ, j-  is ㄓ, not ㄐ (MPS2)
+        -:  275:     */
+        -:  276:
+    #####:  277:    if (final == strstr(final, "u") || final == strstr(final, "m")) {
+    #####:  278:        if (!strcmp(initial, "n")) {
+    #####:  279:            initial = "v";
+    #####:  280:        } else if (!strcmp(initial, "g")) {
+    #####:  281:            initial = "v";
+    #####:  282:        } else if (!strcmp(initial, "h")) {
+    #####:  283:            initial = "f";
+    #####:  284:        } else if (!strcmp(initial, "t")) {
+    #####:  285:            initial = "f";
+        -:  286:        }
+        -:  287:    } else {
+    #####:  288:        if (!strcmp(initial, "r")) {
+    #####:  289:            initial = "5";
+        -:  290:        }
+        -:  291:    }
+        -:  292:
+        -:  293:    /* THL supplemental set
+        -:  294:     * ㄅ/ㄆ/ㄇ/ㄈ + -ㄨㄥ, -ㄨㄥ is another reading of -ㄥ
+        -:  295:     * ㄅ/ㄆ/ㄇ/ㄈ + -ㄨㄛ, -ㄨㄛ is another reading of -ㄛ
+        -:  296:     */
+    #####:  297:    if (!strcmp(initial, "1") || !strcmp(initial, "q") || !strcmp(initial, "a") || !strcmp(initial, "z")) {
+        -:  298:
+    #####:  299:        if (!strcmp(final, "ji")) {
+    #####:  300:            final = "i";
+    #####:  301:        } else if (!strcmp(final, "j/")) {
+    #####:  302:            final = "/";
+        -:  303:        }
+        -:  304:
+        -:  305:    }
+        -:  306:
+    #####:  307:    sprintf(bopomofoKeySeq, "%s%s", initial, final);
+    #####:  308:    strcpy(bopomofoKeySeqAlt, bopomofoKeySeq);
+    #####:  309:    return 0;
+        -:  310:}

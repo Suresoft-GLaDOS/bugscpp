@@ -1,9 +1,9 @@
 import os
 
-pre_path = './bugscpp/results/cpp_peglib_1/'
+pre_path = './bugscpp/results/libchewing_5_with_b/'
 dir_list = os.listdir(pre_path)
 # print(dir_list)
-wf = open('./autofl/data/bugscpp/cpp_peglib_1/failing_tests', 'w')
+wf = open('./data/bugscpp/libchewing_5/failing_tests', 'w')
 for dir in dir_list:
     num = dir.split('-')[-1]
     file_name = num+".test"

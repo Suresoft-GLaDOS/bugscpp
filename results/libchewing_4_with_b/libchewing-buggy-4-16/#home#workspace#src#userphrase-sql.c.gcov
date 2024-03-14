@@ -1,0 +1,493 @@
+        -:    0:Source:/home/workspace/src/userphrase-sql.c
+        -:    1:/**
+        -:    2: * userphrase-sql.c
+        -:    3: *
+        -:    4: * Copyright (c) 2014
+        -:    5: *	libchewing Core Team. See ChangeLog for details.
+        -:    6: *
+        -:    7: * See the file "COPYING" for information on usage and redistribution
+        -:    8: * of this file.
+        -:    9: */
+        -:   10:
+        -:   11:#include <assert.h>
+        -:   12:#include <stdlib.h>
+        -:   13:#include <string.h>
+        -:   14:#include <stdio.h>
+        -:   15:
+        -:   16:#include "chewing-utf8-util.h"
+        -:   17:#include "dict-private.h"
+        -:   18:#include "tree-private.h"
+        -:   19:#include "userphrase-private.h"
+        -:   20:#include "private.h"
+        -:   21:#include "key2pho-private.h"
+        -:   22:
+      426:   23:static int UserBindPhone(
+        -:   24:	ChewingData *pgdata,
+        -:   25:	int index,
+        -:   26:	const uint16_t phoneSeq[],
+        -:   27:	int len)
+        -:   28:{
+        -:   29:	int i;
+        -:   30:	int ret;
+        -:   31:
+     426*:   32:	assert(pgdata);
+     426*:   33:	assert(phoneSeq);
+        -:   34:
+      426:   35:	if (len > MAX_PHRASE_LEN) {
+        1:   36:		LOG_WARN("phoneSeq length %d > MAX_PHRASE_LEN(%d)", len, MAX_PHRASE_LEN);
+        1:   37:		return -1;
+        -:   38:	}
+        -:   39:
+      425:   40:	ret = sqlite3_bind_int(
+        -:   41:		pgdata->static_data.stmt_userphrase[index],
+        -:   42:		BIND_USERPHRASE_LENGTH, len);
+      425:   43:	if (ret != SQLITE_OK) {
+    #####:   44:		LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:   45:		return ret;
+        -:   46:	}
+        -:   47:
+     1170:   48:	for (i = 0; i < len; ++i) {
+      745:   49:		ret = sqlite3_bind_int(
+        -:   50:			pgdata->static_data.stmt_userphrase[index],
+        -:   51:			BIND_USERPHRASE_PHONE_0 + i,
+      745:   52:			phoneSeq[i]);
+      745:   53:		if (ret != SQLITE_OK) {
+    #####:   54:			LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:   55:			return ret;
+        -:   56:		}
+        -:   57:	}
+        -:   58:
+     4355:   59:	for (i = len; i < MAX_PHRASE_LEN; ++i) {
+     3930:   60:		ret = sqlite3_bind_int(
+        -:   61:			pgdata->static_data.stmt_userphrase[index],
+        -:   62:			BIND_USERPHRASE_PHONE_0 + i,
+        -:   63:			0);
+     3930:   64:		if (ret != SQLITE_OK) {
+    #####:   65:			LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:   66:			return ret;
+        -:   67:		}
+        -:   68:	}
+        -:   69:
+      425:   70:	return SQLITE_OK;
+        -:   71:}
+        -:   72:
+        -:   73:
+        -:   74:/* load the orginal frequency from the static dict */
+       19:   75:static int LoadOriginalFreq( ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[], int len )
+        -:   76:{
+        -:   77:	const TreeType *tree_pos;
+        -:   78:	int retval;
+       19:   79:	Phrase *phrase = ALC( Phrase, 1 );
+        -:   80:
+       19:   81:	tree_pos = TreeFindPhrase( pgdata, 0, len - 1, phoneSeq );
+       19:   82:	if ( tree_pos ) {
+       16:   83:		GetPhraseFirst( pgdata, phrase, tree_pos );
+        -:   84:		do {
+        -:   85:			/* find the same phrase */
+       20:   86:			if ( ! strcmp(
+       20:   87:				phrase->phrase,
+        -:   88:				wordSeq ) ) {
+       16:   89:				retval = phrase->freq;
+       16:   90:				free( phrase );
+       16:   91:				return retval;
+        -:   92:			}
+        4:   93:		} while ( GetVocabNext( pgdata, phrase ) );
+        -:   94:	}
+        -:   95:
+        3:   96:	free( phrase );
+        3:   97:	return FREQ_INIT_VALUE;
+        -:   98:}
+        -:   99:
+        -:  100:/* find the maximum frequency of the same phrase */
+       22:  101:static int LoadMaxFreq(ChewingData *pgdata, const uint16_t phoneSeq[], int len)
+        -:  102:{
+        -:  103:	const TreeType *tree_pos;
+       22:  104:	Phrase *phrase = ALC(Phrase, 1);
+       22:  105:	int maxFreq = FREQ_INIT_VALUE;
+        -:  106:	int max_userphrase_freq;
+        -:  107:	int ret;
+        -:  108:
+       22:  109:	tree_pos = TreeFindPhrase(pgdata, 0, len - 1, phoneSeq);
+       22:  110:	if (tree_pos) {
+       19:  111:		GetPhraseFirst(pgdata, phrase, tree_pos);
+        -:  112:		do {
+      124:  113:			if (phrase->freq > maxFreq)
+       15:  114:				maxFreq = phrase->freq;
+      124:  115:		} while(GetVocabNext(pgdata, phrase));
+        -:  116:	}
+       22:  117:	free(phrase);
+        -:  118:
+      22*:  119:	assert(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_GET_MAX_FREQ]);
+        -:  120:
+       22:  121:	ret = UserBindPhone(pgdata, STMT_USERPHRASE_GET_MAX_FREQ, phoneSeq, len);
+       22:  122:	if (ret != SQLITE_OK) {
+    #####:  123:		LOG_ERROR("UserBindPhone returns %d", ret);
+    #####:  124:		return maxFreq;
+        -:  125:	}
+        -:  126:
+       22:  127:	ret = sqlite3_step(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_GET_MAX_FREQ]);
+       22:  128:	if (ret !=  SQLITE_ROW)
+    #####:  129:		return maxFreq;
+        -:  130:
+       22:  131:	ret = sqlite3_reset(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_GET_MAX_FREQ]);
+       22:  132:	if (ret != SQLITE_OK) {
+    #####:  133:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####:  134:		return maxFreq;
+        -:  135:	}
+        -:  136:
+       22:  137:	max_userphrase_freq = sqlite3_column_int(
+        -:  138:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_GET_MAX_FREQ],
+       22:  139:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_GET_MAX_FREQ].column[COLUMN_USERPHRASE_USER_FREQ]);
+        -:  140:
+       22:  141:	if (max_userphrase_freq > maxFreq)
+    #####:  142:		maxFreq = max_userphrase_freq;
+        -:  143:
+       22:  144:	return maxFreq;
+        -:  145:}
+        -:  146:
+        -:  147:/* compute the new updated freqency */
+        3:  148:static int UpdateFreq( int freq, int maxfreq, int origfreq, int deltatime )
+        -:  149:{
+        -:  150:	int delta;
+        -:  151:
+        -:  152:	/* Short interval */
+        3:  153:	if ( deltatime < 4000 ) {
+        3:  154:		delta = ( freq >= maxfreq ) ?
+        2:  155:			min(
+        2:  156:				( maxfreq - origfreq ) / 5 + 1,
+        3:  157:				SHORT_INCREASE_FREQ ) :
+        1:  158:			max(
+        1:  159:				( maxfreq - origfreq ) / 5 + 1,
+        -:  160:				SHORT_INCREASE_FREQ );
+        3:  161:		return min( freq + delta, MAX_ALLOW_FREQ );
+        -:  162:	}
+        -:  163:	/* Medium interval */
+    #####:  164:	else if ( deltatime < 50000 ) {
+    #####:  165:		delta = ( freq >= maxfreq ) ?
+    #####:  166:			min(
+    #####:  167:				( maxfreq - origfreq ) / 10 + 1,
+    #####:  168:				MEDIUM_INCREASE_FREQ ) :
+    #####:  169:			max(
+    #####:  170:				( maxfreq - origfreq ) / 10 + 1,
+        -:  171:				MEDIUM_INCREASE_FREQ );
+    #####:  172:		return min( freq + delta, MAX_ALLOW_FREQ );
+        -:  173:	}
+        -:  174:	/* long interval */
+        -:  175:	else {
+    #####:  176:		delta = max( ( freq - origfreq ) / 5, LONG_DECREASE_FREQ );
+    #####:  177:		return max( freq - delta, origfreq );
+        -:  178:	}
+        -:  179:}
+        -:  180:
+       22:  181:static int GetCurrentLifeTime( ChewingData *pgdata )
+        -:  182:{
+       22:  183:	return pgdata->static_data.new_lifetime;
+        -:  184:}
+        -:  185:
+       22:  186:static void LogUserPhrase(
+        -:  187:	ChewingData *pgdata,
+        -:  188:	const uint16_t phoneSeq[],
+        -:  189:	const char wordSeq[],
+        -:  190:	int orig_freq,
+        -:  191:	int max_freq,
+        -:  192:	int user_freq,
+        -:  193:	int recent_time)
+        -:  194:{
+        -:  195:	/* Size of each phone is len("0x1234 ") = 7 */
+       22:  196:	char buf[7 * MAX_PHRASE_LEN + 1] = { 0 };
+        -:  197:	int i;
+        -:  198:
+       77:  199:	for (i = 0; i < MAX_PHRASE_LEN; ++i) {
+       76:  200:		if (phoneSeq[i] == 0)
+       21:  201:			break;
+       55:  202:		snprintf(buf + 7 * i, 7 + 1, "%#06x ", phoneSeq[i]);
+        -:  203:	}
+        -:  204:
+       22:  205:	LOG_INFO( "userphrase %s, phone = %s, orig_freq = %d, max_freq = %d, user_freq = %d, recent_time = %d",
+        -:  206:		wordSeq, buf, orig_freq, max_freq, user_freq, recent_time );
+       22:  207:}
+        -:  208:
+        3:  209:void UserUpdatePhraseBegin( ChewingData *pgdata )
+        -:  210:{
+        3:  211:	sqlite3_exec( pgdata->static_data.db, "BEGIN", 0, 0, 0 );
+        3:  212:}
+        -:  213:
+       23:  214:int UserUpdatePhrase(ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[])
+        -:  215:{
+        -:  216:	int ret;
+        -:  217:	int action;
+        -:  218:	int phone_len;
+        -:  219:	int word_len;
+        -:  220:
+        -:  221:	int orig_freq;
+        -:  222:	int max_freq;
+        -:  223:	int user_freq;
+        -:  224:	int recent_time;
+        -:  225:	int orig_time;
+        -:  226:
+      23*:  227:	assert(pgdata);
+      23*:  228:	assert(phoneSeq);
+      23*:  229:	assert(wordSeq);
+        -:  230:
+       23:  231:	phone_len = GetPhoneLen(phoneSeq);
+       23:  232:	word_len = ueStrLen(wordSeq);
+        -:  233:
+       23:  234:	if (phone_len != word_len) {
+    #####:  235:		LOG_WARN("Do not update userphrase because phoneSeq length %d != wordSeq length %d", phone_len, word_len);
+    #####:  236:		return USER_UPDATE_FAIL;
+        -:  237:	}
+        -:  238:
+       23:  239:	if (word_len > MAX_PHRASE_LEN) {
+        1:  240:		LOG_WARN("wordSeq length %d > MAX_PHRASE_LEN (%d)", word_len, MAX_PHRASE_LEN);
+        1:  241:		return USER_UPDATE_FAIL;
+        -:  242:	}
+        -:  243:
+       22:  244:	ret = UserBindPhone(pgdata, STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE, phoneSeq, phone_len);
+       22:  245:	if (ret != SQLITE_OK) {
+    #####:  246:		LOG_ERROR("UserBindPhone returns %d", ret);
+    #####:  247:		action = USER_UPDATE_FAIL;
+    #####:  248:		goto end;
+        -:  249:	}
+        -:  250:
+       22:  251:	ret = sqlite3_bind_text(
+        -:  252:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE],
+        -:  253:		BIND_USERPHRASE_PHRASE,
+        -:  254:		wordSeq, -1, SQLITE_STATIC);
+       22:  255:	if (ret != SQLITE_OK) {
+    #####:  256:		LOG_ERROR("sqlite3_bind_text returns %d", ret);
+    #####:  257:		action = USER_UPDATE_FAIL;
+    #####:  258:		goto end;
+        -:  259:	}
+        -:  260:
+       22:  261:	recent_time = GetCurrentLifeTime(pgdata);
+        -:  262:
+       22:  263:	ret = sqlite3_step(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE]);
+       22:  264:	if (ret == SQLITE_ROW) {
+        3:  265:		action = USER_UPDATE_MODIFY;
+        -:  266:
+        3:  267:		orig_freq = sqlite3_column_int(
+        -:  268:			pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE],
+        3:  269:			SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE].column[COLUMN_USERPHRASE_ORIG_FREQ]);
+        -:  270:
+        3:  271:		max_freq = LoadMaxFreq(pgdata, phoneSeq, phone_len);
+        -:  272:
+        3:  273:		user_freq = sqlite3_column_int(
+        -:  274:			pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE],
+        3:  275:			SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE].column[COLUMN_USERPHRASE_USER_FREQ]);
+        -:  276:
+        3:  277:		orig_time = sqlite3_column_int(
+        -:  278:			pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE],
+        3:  279:			SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE].column[COLUMN_USERPHRASE_TIME]);
+        -:  280:
+        3:  281:		user_freq = UpdateFreq(user_freq, max_freq, orig_freq, recent_time - orig_time);
+        -:  282:	} else {
+       19:  283:		action = USER_UPDATE_INSERT;
+        -:  284:
+       19:  285:		orig_freq = LoadOriginalFreq(pgdata, phoneSeq, wordSeq, word_len);
+       19:  286:		max_freq = LoadMaxFreq(pgdata, phoneSeq, phone_len);
+       19:  287:		user_freq = orig_freq;
+        -:  288:	}
+        -:  289:
+      22*:  290:	assert(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT]);
+        -:  291:
+       22:  292:	ret = sqlite3_bind_int(
+        -:  293:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT],
+        -:  294:		BIND_USERPHRASE_TIME,
+        -:  295:		recent_time);
+       22:  296:	if (ret != SQLITE_OK) {
+    #####:  297:		LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:  298:		action = USER_UPDATE_FAIL;
+    #####:  299:		goto end;
+        -:  300:	}
+        -:  301:
+       22:  302:	ret = sqlite3_bind_int(
+        -:  303:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT],
+        -:  304:		BIND_USERPHRASE_USER_FREQ,
+        -:  305:		user_freq);
+       22:  306:	if (ret != SQLITE_OK) {
+    #####:  307:		LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:  308:		action = USER_UPDATE_FAIL;
+    #####:  309:		goto end;
+        -:  310:	}
+        -:  311:
+       22:  312:	ret = sqlite3_bind_int(
+        -:  313:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT],
+        -:  314:		BIND_USERPHRASE_MAX_FREQ,
+        -:  315:		max_freq);
+       22:  316:	if (ret != SQLITE_OK) {
+    #####:  317:		LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:  318:		action = USER_UPDATE_FAIL;
+    #####:  319:		goto end;
+        -:  320:	}
+        -:  321:
+       22:  322:	ret = sqlite3_bind_int(
+        -:  323:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT],
+        -:  324:		BIND_USERPHRASE_ORIG_FREQ,
+        -:  325:		orig_freq);
+       22:  326:	if (ret != SQLITE_OK) {
+    #####:  327:		LOG_ERROR("sqlite3_bind_int returns %d", ret);
+    #####:  328:		action = USER_UPDATE_FAIL;
+    #####:  329:		goto end;
+        -:  330:	}
+        -:  331:
+       22:  332:	ret = UserBindPhone(pgdata, STMT_USERPHRASE_UPSERT, phoneSeq, phone_len);
+       22:  333:	if (ret != SQLITE_OK) {
+    #####:  334:		LOG_ERROR("UserBindPhone returns %d", ret);
+    #####:  335:		action = USER_UPDATE_FAIL;
+    #####:  336:		goto end;
+        -:  337:	}
+        -:  338:
+       22:  339:	ret = sqlite3_bind_text(
+        -:  340:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT],
+        -:  341:		BIND_USERPHRASE_PHRASE,
+        -:  342:		wordSeq, -1, SQLITE_STATIC);
+       22:  343:	if (ret != SQLITE_OK) {
+    #####:  344:		LOG_ERROR("sqlite3_bind_text returns %d", ret);
+    #####:  345:		action = USER_UPDATE_FAIL;
+    #####:  346:		goto end;
+        -:  347:	}
+        -:  348:
+       22:  349:	ret = sqlite3_step(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT]);
+       22:  350:	if (ret != SQLITE_DONE) {
+    #####:  351:		LOG_ERROR("sqlite3_step returns %d", ret);
+    #####:  352:		action = USER_UPDATE_FAIL;
+    #####:  353:		goto end;
+        -:  354:	}
+        -:  355:
+       22:  356:	LogUserPhrase(pgdata, phoneSeq, wordSeq, orig_freq, max_freq, user_freq, recent_time);
+        -:  357:
+       22:  358:end:
+       22:  359:	ret = sqlite3_reset(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_UPSERT]);
+       22:  360:	if (ret != SQLITE_OK) {
+    #####:  361:		LOG_ERROR("sqlite3_reset returns %d", ret);
+        -:  362:	}
+        -:  363:
+       22:  364:	ret = sqlite3_reset(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE_PHRASE]);
+       22:  365:	if (ret != SQLITE_OK) {
+    #####:  366:		LOG_ERROR("sqlite3_reset returns %d", ret);
+        -:  367:	}
+        -:  368:
+       22:  369:	return action;
+        -:  370:}
+        -:  371:
+        3:  372:void UserUpdatePhraseEnd( ChewingData *pgdata )
+        -:  373:{
+        3:  374:	sqlite3_exec( pgdata->static_data.db, "END", 0, 0, 0 );
+        3:  375:}
+        -:  376:
+        6:  377:int UserRemovePhrase(ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[])
+        -:  378:{
+        -:  379:	int ret;
+        -:  380:	int len;
+        6:  381:	int affected = 0;
+        -:  382:
+       6*:  383:	assert(pgdata);
+       6*:  384:	assert(phoneSeq);
+       6*:  385:	assert(wordSeq);
+        -:  386:
+       6*:  387:	assert(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_DELETE]);
+        -:  388:
+        6:  389:	len = GetPhoneLen(phoneSeq);
+        6:  390:	ret = UserBindPhone(
+        -:  391:		pgdata, STMT_USERPHRASE_DELETE, phoneSeq, len);
+        6:  392:	if (ret != SQLITE_OK) {
+    #####:  393:		LOG_ERROR("UserBindPhone returns %d", ret);
+    #####:  394:		goto end;
+        -:  395:	}
+        -:  396:
+        6:  397:	ret = sqlite3_bind_text(
+        -:  398:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_DELETE],
+        -:  399:		BIND_USERPHRASE_PHRASE,
+        -:  400:		wordSeq, -1, SQLITE_STATIC);
+        6:  401:	if (ret != SQLITE_OK) {
+    #####:  402:		LOG_ERROR("sqlite3_bind_text returns %d", ret);
+    #####:  403:		goto end;
+        -:  404:	}
+        -:  405:
+        6:  406:	ret = sqlite3_step(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_DELETE]);
+        6:  407:	if (ret != SQLITE_DONE) {
+    #####:  408:		LOG_ERROR("sqlite3_step returns %d", ret);
+    #####:  409:		goto end;
+        -:  410:	}
+        -:  411:
+        6:  412:	affected = sqlite3_changes(pgdata->static_data.db);
+        -:  413:
+        6:  414:end:
+        6:  415:	ret = sqlite3_reset(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_DELETE]);
+        6:  416:	if (ret != SQLITE_OK) {
+    #####:  417:		LOG_ERROR("sqlite3_reset returns %d", ret);
+        -:  418:	}
+        -:  419:
+        6:  420:	return affected;
+        -:  421:}
+        -:  422:
+        -:  423:
+      354:  424:UserPhraseData *UserGetPhraseFirst(ChewingData *pgdata, const uint16_t phoneSeq[])
+        -:  425:{
+        -:  426:	int ret;
+        -:  427:	int len;
+        -:  428:
+     354*:  429:	assert(pgdata);
+     354*:  430:	assert(phoneSeq);
+        -:  431:
+     354*:  432:	assert(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE]);
+      354:  433:	ret = sqlite3_reset(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE]);
+      354:  434:	if (ret != SQLITE_OK) {
+    #####:  435:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####:  436:		return NULL;
+        -:  437:	}
+        -:  438:
+      354:  439:	len = GetPhoneLen(phoneSeq);
+      354:  440:	ret = UserBindPhone(pgdata, STMT_USERPHRASE_SELECT_BY_PHONE, phoneSeq, len);
+      354:  441:	if (ret != SQLITE_OK) {
+        1:  442:		LOG_ERROR("UserBindPhone returns %d", ret);
+        1:  443:		return NULL;
+        -:  444:	}
+        -:  445:
+      353:  446:	return UserGetPhraseNext(pgdata, phoneSeq);
+        -:  447:}
+        -:  448:
+      363:  449:UserPhraseData *UserGetPhraseNext(ChewingData *pgdata, const uint16_t phoneSeq[])
+        -:  450:{
+        -:  451:	int ret;
+        -:  452:
+     363*:  453:	assert(pgdata);
+     363*:  454:	assert(phoneSeq);
+        -:  455:
+      363:  456:	ret = sqlite3_step(pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE]);
+      363:  457:	if (ret !=  SQLITE_ROW) return NULL;
+        -:  458:
+        -:  459:	/* FIXME: shall not remove const here. */
+       76:  460:	pgdata->userphrase_data.wordSeq = (char *) sqlite3_column_text(
+        -:  461:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE],
+       38:  462:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE].column[COLUMN_USERPHRASE_PHRASE]);
+       38:  463:	pgdata->userphrase_data.phoneSeq = (uint16_t *) phoneSeq;
+        -:  464:
+       76:  465:	pgdata->userphrase_data.recentTime = sqlite3_column_int(
+        -:  466:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE],
+       38:  467:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE].column[COLUMN_USERPHRASE_TIME]);
+        -:  468:
+       76:  469:	pgdata->userphrase_data.userfreq = sqlite3_column_int(
+        -:  470:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE],
+       38:  471:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE].column[COLUMN_USERPHRASE_USER_FREQ]);
+        -:  472:
+       76:  473:	pgdata->userphrase_data.maxfreq = sqlite3_column_int(
+        -:  474:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE],
+       38:  475:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE].column[COLUMN_USERPHRASE_MAX_FREQ]);
+        -:  476:
+       76:  477:	pgdata->userphrase_data.origfreq = sqlite3_column_int(
+        -:  478:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT_BY_PHONE],
+       38:  479:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT_BY_PHONE].column[COLUMN_USERPHRASE_ORIG_FREQ]);
+        -:  480:
+       38:  481:	return &pgdata->userphrase_data;
+        -:  482:}
+        -:  483:
+      354:  484:void UserGetPhraseEnd(ChewingData *pgdata, const uint16_t phoneSeq[])
+        -:  485:{
+        -:  486:	/* FIXME: Remove this */
+      354:  487:}
+        -:  488:
+       72:  489:void IncreaseLifeTime( ChewingData *pgdata )
+        -:  490:{
+       72:  491:	++pgdata->static_data.new_lifetime;
+       72:  492:}

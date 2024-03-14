@@ -1,0 +1,613 @@
+        -:    0:Source:/home/workspace/src/hash.c
+        -:    1:/**
+        -:    2: * hash.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004, 2005, 2006, 2007, 2008, 2011, 2012, 2013
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:#include <assert.h>
+        -:   15:#include <string.h>
+        -:   16:#include <sys/stat.h>
+        -:   17:/* ISO C99 Standard: 7.10/5.2.4.2.1 Sizes of integer types */
+        -:   18:#include <limits.h>
+        -:   19:#include <stdlib.h>
+        -:   20:#include <stdio.h>
+        -:   21:
+        -:   22:#include "chewing-private.h"
+        -:   23:#include "chewing-utf8-util.h"
+        -:   24:#include "hash-private.h"
+        -:   25:#include "private.h"
+        -:   26:#include "memory-private.h"
+        -:   27:
+        1:   28:int AlcUserPhraseSeq( UserPhraseData *pData, int phonelen, int wordlen )
+        -:   29:{
+        1:   30:	pData->phoneSeq = ALC( uint16_t, phonelen + 1 );
+        1:   31:	if ( !pData->phoneSeq )
+    #####:   32:		goto error;
+        1:   33:	pData->wordSeq = ALC( char, wordlen + 1 );
+        1:   34:	if ( !pData->wordSeq )
+    #####:   35:		goto error;
+        -:   36:
+        1:   37:	return 1;
+        -:   38:
+    #####:   39:error:
+    #####:   40:	free( pData->phoneSeq );
+    #####:   41:	free( pData->wordSeq );
+    #####:   42:	return 0;
+        -:   43:}
+        -:   44:
+        6:   45:static int PhoneSeqTheSame( const uint16_t p1[], const uint16_t p2[] )
+        -:   46:{
+        -:   47:	int i;
+        6:   48:	if ( ! p1 || ! p2 )	/* FIXME: should not happend. */
+    #####:   49:		return 0;
+        -:   50:
+       18:   51:	for ( i = 0; ( p1[ i ] != 0 && p2[ i ] != 0 ); i++ ) {
+       12:   52:		if ( p1[ i ] != p2[ i ] )
+    #####:   53:			return 0;
+        -:   54:	}
+        6:   55:	if ( p1[ i ] != p2[ i ] )
+    #####:   56:		return 0;
+        6:   57:	return 1;
+        -:   58:}
+        -:   59:
+       28:   60:static unsigned int HashFunc( const uint16_t phoneSeq[] )
+        -:   61:{
+       28:   62:	int i, value = 0;
+        -:   63:
+       68:   64:	for ( i = 0; phoneSeq[ i ] != 0; i++ )
+       40:   65:		value ^= phoneSeq[ i ];
+       28:   66:	return ( value & ( HASH_TABLE_SIZE - 1 ) );
+        -:   67:}
+        -:   68:
+       27:   69:HASH_ITEM *HashFindPhonePhrase( ChewingData *pgdata, const uint16_t phoneSeq[], HASH_ITEM *pItemLast )
+        -:   70:{
+       51:   71:	HASH_ITEM *pNow = pItemLast ?
+        -:   72:			pItemLast->next :
+       24:   73:			pgdata->static_data.hashtable[ HashFunc( phoneSeq ) ];
+        -:   74:
+      27*:   75:	for ( ; pNow; pNow = pNow->next )
+        5:   76:		if ( PhoneSeqTheSame( pNow->data.phoneSeq, phoneSeq ) )
+        5:   77:			return pNow;
+       22:   78:	return NULL;
+        -:   79:}
+        -:   80:
+    #####:   81:HASH_ITEM **HashFindHead( ChewingData *pgdata, const uint16_t phoneSeq[] )
+        -:   82:{
+    #####:   83:	assert( pgdata );
+    #####:   84:	assert( phoneSeq );
+        -:   85:
+    #####:   86:	return &pgdata->static_data.hashtable[ HashFunc( phoneSeq ) ];
+        -:   87:}
+        -:   88:
+        3:   89:HASH_ITEM *HashFindEntry( ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[] )
+        -:   90:{
+        -:   91:	HASH_ITEM *pItem;
+        -:   92:	int hashvalue;
+        -:   93:
+        3:   94:	hashvalue = HashFunc( phoneSeq );
+        -:   95:
+       3*:   96:	for ( pItem = pgdata->static_data.hashtable[ hashvalue ]; pItem ; pItem = pItem->next ) {
+        1:   97:		if (
+        2:   98:			! strcmp( pItem->data.wordSeq, wordSeq ) &&
+        1:   99:			PhoneSeqTheSame( pItem->data.phoneSeq, phoneSeq ) ) {
+        1:  100:			return pItem;
+        -:  101:		}
+        -:  102:	}
+        2:  103:	return NULL;
+        -:  104:}
+        -:  105:
+        1:  106:HASH_ITEM *HashInsert( ChewingData *pgdata, UserPhraseData *pData )
+        -:  107:{
+        -:  108:	int hashvalue;
+        -:  109:	HASH_ITEM *pItem;
+        -:  110:
+        1:  111:	pItem = HashFindEntry( pgdata, pData->phoneSeq, pData->wordSeq );
+        1:  112:	if ( pItem != NULL )
+    #####:  113:		return pItem;
+        -:  114:
+        1:  115:	pItem = ALC( HASH_ITEM, 1 );
+        1:  116:	if ( ! pItem )
+    #####:  117:		return NULL;  /* Error occurs */
+        -:  118:
+        1:  119:	hashvalue = HashFunc( pData->phoneSeq );
+        -:  120:	/* set the new element */
+        1:  121:	pItem->next = pgdata->static_data.hashtable[ hashvalue ];
+        -:  122:
+        1:  123:	memcpy( &( pItem->data ), pData, sizeof( pItem->data ) );
+        1:  124:	pItem->item_index = -1;
+        -:  125:
+        -:  126:	/* set link to the new element */
+        1:  127:	pgdata->static_data.hashtable[ hashvalue ] = pItem;
+        -:  128:
+        1:  129:	return pItem;
+        -:  130:}
+        -:  131:
+    #####:  132:HASH_ITEM *FindNextHash( const ChewingData *pgdata, HASH_ITEM *curr )
+        -:  133:{
+    #####:  134:	unsigned int hash_value = 0;
+        -:  135:
+    #####:  136:	assert( pgdata );
+        -:  137:
+    #####:  138:	if ( curr ) {
+    #####:  139:		if ( curr->next )
+    #####:  140:			return curr->next;
+        -:  141:		/* Find next entry in hash table. */
+    #####:  142:		hash_value = HashFunc( curr->data.phoneSeq ) + 1;
+        -:  143:	}
+        -:  144:
+    #####:  145:	for (; hash_value < HASH_TABLE_SIZE; ++hash_value )
+    #####:  146:		if ( pgdata->static_data.hashtable[hash_value] )
+    #####:  147:			return pgdata->static_data.hashtable[hash_value];
+    #####:  148:	return NULL;
+        -:  149:}
+        -:  150:
+        2:  151:static void HashItem2String( char *str, HASH_ITEM *pItem )
+        -:  152:{
+        -:  153:	int i, len;
+        -:  154:	char buf[ FIELD_SIZE ];
+        -:  155:
+        2:  156:	sprintf( str, "%s ", pItem->data.wordSeq );
+        2:  157:	len = ueStrLen( pItem->data.wordSeq );
+        6:  158:	for ( i = 0; i < len; i++ ) {
+        4:  159:		sprintf( buf, "%hu ", pItem->data.phoneSeq[ i ] );
+        4:  160:		strcat( str, buf );
+        -:  161:	}
+        2:  162:	sprintf(
+        -:  163:		buf, "%d %d %d %d",
+        -:  164:		pItem->data.userfreq, pItem->data.recentTime,
+        -:  165:		pItem->data.maxfreq, pItem->data.origfreq );
+        2:  166:	strcat( str, buf );
+        2:  167:}
+        -:  168:
+        -:  169:/*
+        -:  170: * capacity of 'str' MUST bigger then FIELD_SIZE !
+        -:  171: */
+        2:  172:static void HashItem2Binary( char *str, HASH_ITEM *pItem )
+        -:  173:{
+        -:  174:	int i, phraselen;
+        -:  175:	char *pc;
+        -:  176:
+        2:  177:	memset( str, 0, FIELD_SIZE );
+        2:  178:	if ( sizeof(int) * 4 + ueStrLen( pItem->data.wordSeq ) * 2 +
+        2:  179:	     strlen( pItem->data.wordSeq ) >= FIELD_SIZE ) {
+        -:  180:		/* exceed buffer size */
+    #####:  181:		return;
+        -:  182:	}
+        -:  183:
+        -:  184:	/* freq info */
+        2:  185:	PutInt32PreservedEndian( pItem->data.userfreq, &str[ 0 ] );
+        2:  186:	PutInt32PreservedEndian( pItem->data.recentTime, &str[ 4 ] );
+        2:  187:	PutInt32PreservedEndian( pItem->data.maxfreq, &str[ 8 ] );
+        2:  188:	PutInt32PreservedEndian( pItem->data.origfreq, &str[ 12 ] );
+        -:  189:
+        -:  190:	/* phone seq*/
+        2:  191:	phraselen = ueStrLen( pItem->data.wordSeq );
+        2:  192:	str[ 16 ] = phraselen;
+        2:  193:	pc = &str[ 17 ];
+        6:  194:	for ( i = 0; i < phraselen; i++ ) {
+        4:  195:		PutUint16PreservedEndian( pItem->data.phoneSeq[ i ], pc );
+        4:  196:		pc += 2;
+        -:  197:	}
+        -:  198:
+        -:  199:	/* phrase */
+        2:  200:	*pc = strlen( pItem->data.wordSeq );
+        2:  201:	strcpy( (pc + 1), pItem->data.wordSeq );
+        2:  202:	pItem->data.wordSeq[ (unsigned char) *pc ] = '\0';
+        -:  203:}
+        -:  204:
+        2:  205:void HashModify( ChewingData *pgdata, HASH_ITEM *pItem )
+        -:  206:{
+        -:  207:	FILE *outfile;
+        -:  208:	char str[ FIELD_SIZE + 1 ];
+        -:  209:
+        2:  210:	outfile = fopen( pgdata->static_data.hashfilename, "r+b" );
+        2:  211:	if ( !outfile )
+    #####:  212:		return;
+        -:  213:
+        -:  214:	/* update "lifetime" */
+        2:  215:	fseek( outfile, strlen( BIN_HASH_SIG ), SEEK_SET );
+        2:  216:	fwrite( &pgdata->static_data.chewing_lifetime, 1, 4, outfile );
+        2:  217:	sprintf( str, "%d", pgdata->static_data.chewing_lifetime );
+        2:  218:	DEBUG_OUT( "HashModify-1: '%-75s'\n", str );
+        -:  219:
+        -:  220:	/* update record */
+        2:  221:	if ( pItem->item_index < 0 ) {
+        1:  222:		fseek( outfile, 0, SEEK_END );
+        1:  223:		pItem->item_index =
+        1:  224:			( ftell( outfile ) - 4 - strlen( BIN_HASH_SIG ) ) / FIELD_SIZE;
+        -:  225:	}
+        -:  226:	else {
+        1:  227:		fseek( outfile,
+        1:  228:			pItem->item_index * FIELD_SIZE + 4 + strlen( BIN_HASH_SIG ),
+        -:  229:			SEEK_SET );
+        -:  230:	}
+        -:  231:
+        2:  232:	HashItem2String( str, pItem );
+        2:  233:	DEBUG_OUT( "HashModify-2: '%-75s'\n", str );
+        -:  234:
+        2:  235:	HashItem2Binary( str, pItem );
+        2:  236:	fwrite( str, 1, FIELD_SIZE, outfile );
+        2:  237:	fflush( outfile );
+        2:  238:	fclose( outfile );
+        -:  239:}
+        -:  240:
+    #####:  241:static int isValidChineseString( char *str )
+        -:  242:{
+    #####:  243:	if ( str == NULL || *str == '\0' ) {
+    #####:  244:		return 0;
+        -:  245:	}
+    #####:  246:	while ( *str != '\0' )  {
+    #####:  247:		int len = ueBytesFromChar( (unsigned char) *str );
+    #####:  248:		if ( len <= 1 ) {
+    #####:  249:			return 0;
+        -:  250:		}
+    #####:  251:		str += len;
+        -:  252:	};
+    #####:  253:	return 1;
+        -:  254:}
+        -:  255:
+        -:  256:/**
+        -:  257: * @return 1, 0 or -1
+        -:  258: * retval 0	end of file
+        -:  259: * retval 1	continue
+        -:  260: * retval -1	ignore this record
+        -:  261: */
+    #####:  262:static int ReadHashItem_bin( const char *srcbuf, HASH_ITEM *pItem, int item_index )
+        -:  263:{
+        -:  264:	int len, i;
+        -:  265:	const char *pc;
+        -:  266:
+    #####:  267:	memset( pItem, 0, sizeof(HASH_ITEM) );
+        -:  268:
+        -:  269:	/* freq info */
+    #####:  270:	pItem->data.userfreq	= GetInt32PreservedEndian(&srcbuf[ 0 ]);
+    #####:  271:	pItem->data.recentTime	= GetInt32PreservedEndian(&srcbuf[ 4 ]);
+    #####:  272:	pItem->data.maxfreq	= GetInt32PreservedEndian(&srcbuf[ 8 ]);
+    #####:  273:	pItem->data.origfreq	= GetInt32PreservedEndian(&srcbuf[ 12 ]);
+        -:  274:
+        -:  275:	/*
+        -:  276:	 * Due to a bug in 0.3.5, some userphrase has negative frequency value.
+        -:  277:	 * In this case, we just skip this record.
+        -:  278:	 *
+        -:  279:	 * See https://github.com/chewing/libchewing/issues/75
+        -:  280:	 */
+    #####:  281:	if ( pItem->data.userfreq < 0 || pItem->data.recentTime < 0 ||
+    #####:  282:		pItem->data.maxfreq < 0 || pItem->data.origfreq < 0 )
+    #####:  283:		goto ignore_corrupted_record;
+        -:  284:
+        -:  285:	/* phone seq, length in num of chi words */
+    #####:  286:	len = (int) srcbuf[ 16 ];
+    #####:  287:	pItem->data.phoneSeq = ALC( uint16_t, len + 1 );
+    #####:  288:	pc = &srcbuf[ 17 ];
+    #####:  289:	for ( i = 0; i < len; i++ ) {
+    #####:  290:		pItem->data.phoneSeq[ i ] = GetUint16PreservedEndian( pc );
+    #####:  291:		pc += 2;
+        -:  292:	}
+    #####:  293:	pItem->data.phoneSeq[ i ] = 0;
+        -:  294:
+        -:  295:	/* phrase, length in num of bytes */
+    #####:  296:	pItem->data.wordSeq = ALC( char, (*pc) + 1 );
+    #####:  297:	strcpy( pItem->data.wordSeq, (char *) (pc + 1) );
+    #####:  298:	pItem->data.wordSeq[ (unsigned int) *pc ] = '\0';
+        -:  299:
+        -:  300:	/* This record is removed by UserRemovePhrase */
+    #####:  301:	if ( pItem->data.wordSeq[0] == 0 && pItem->data.phoneSeq[0] == 0 )
+    #####:  302:		goto ignore_corrupted_record;
+        -:  303:
+        -:  304:	/* Invalid UTF-8 Chinese characters found */
+    #####:  305:	if ( ! isValidChineseString( pItem->data.wordSeq ) ) {
+    #####:  306:		goto ignore_corrupted_record;
+        -:  307:	}
+        -:  308:
+        -:  309:	/* set item_index */
+    #####:  310:	pItem->item_index = item_index;
+        -:  311:
+    #####:  312:	return 1; /* continue */
+        -:  313:
+    #####:  314:ignore_corrupted_record:
+    #####:  315:	if ( pItem->data.phoneSeq != NULL ) {
+    #####:  316:		free( pItem->data.phoneSeq );
+    #####:  317:		pItem->data.phoneSeq = NULL;
+        -:  318:	}
+    #####:  319:	if ( pItem->data.wordSeq != NULL ) {
+    #####:  320:		free( pItem->data.wordSeq );
+    #####:  321:		pItem->data.wordSeq = NULL;
+        -:  322:	}
+    #####:  323:	return -1; /* ignore */
+        -:  324:}
+        -:  325:
+        -:  326:/**
+        -:  327: * @return 1, 0 or -1
+        -:  328: * retval -1 Ignore bad data item
+        -:  329: */
+    #####:  330:static int ReadHashItem_txt( FILE *infile, HASH_ITEM *pItem, int item_index )
+        -:  331:{
+        -:  332:	int len, i, word_len;
+        -:  333:	char wordbuf[ 64 ];
+        -:  334:
+        -:  335:	/* read wordSeq */
+    #####:  336:	if ( fscanf( infile, "%s", wordbuf ) != 1 )
+    #####:  337:		return 0;
+        -:  338:
+        -:  339:	/* Invalid UTF-8 Chinese characters found */
+    #####:  340:	if ( ! isValidChineseString( wordbuf ) ) {
+    #####:  341:		fseek( infile, FIELD_SIZE - strlen( wordbuf ) - 1, SEEK_CUR );
+    #####:  342:		return -1;
+        -:  343:	}
+        -:  344:
+    #####:  345:	word_len = strlen( wordbuf );
+    #####:  346:	pItem->data.wordSeq = ALC( char, word_len + 1 );
+    #####:  347:	strcpy( pItem->data.wordSeq, wordbuf );
+        -:  348:
+        -:  349:	/* read phoneSeq */
+    #####:  350:	len = ueStrLen( pItem->data.wordSeq );
+    #####:  351:	pItem->data.phoneSeq = ALC( uint16_t, len + 1 );
+    #####:  352:	for ( i = 0; i < len; i++ )
+    #####:  353:		if ( fscanf( infile, "%hu", &( pItem->data.phoneSeq[ i ] ) ) != 1 )
+    #####:  354:			return 0;
+    #####:  355:	pItem->data.phoneSeq[ len ] = 0;
+        -:  356:
+        -:  357:	/* read userfreq & recentTime */
+    #####:  358:	if ( fscanf( infile, "%d %d %d %d",
+        -:  359:	             &(pItem->data.userfreq),
+        -:  360:	             &(pItem->data.recentTime),
+        -:  361:	             &(pItem->data.maxfreq),
+        -:  362:	             &(pItem->data.origfreq) ) != 4 )
+    #####:  363:		return 0;
+        -:  364:
+        -:  365:	/* set item_index */
+    #####:  366:	pItem->item_index = item_index;
+        -:  367:
+    #####:  368:	return 1;
+        -:  369:}
+        -:  370:
+        2:  371:static FILE *open_file_get_length(
+        -:  372:		const char *filename,
+        -:  373:		const char *otype, int *size)
+        -:  374:{
+        2:  375:	FILE *tf = fopen( filename, otype );
+        2:  376:	if ( tf == NULL ) {
+    #####:  377:		return NULL;
+        -:  378:	}
+        2:  379:	if ( size != NULL ) {
+        2:  380:		fseek( tf, 0, SEEK_END );
+        2:  381:		*size = ftell( tf );
+        2:  382:		fseek( tf, 0, SEEK_SET );
+        -:  383:	}
+        2:  384:	return tf;
+        -:  385:}
+        -:  386:
+        2:  387:static char *_load_hash_file( const char *filename, int *size )
+        -:  388:{
+        -:  389:	int flen;
+        2:  390:	char *pd = NULL;
+        -:  391:	FILE *tf;
+        -:  392:
+        2:  393:	tf = open_file_get_length( filename, "rb", &flen );
+        2:  394:	if ( tf == NULL ) {
+    #####:  395:		goto err_load_file;
+        -:  396:	}
+        2:  397:	pd = ALC( char, flen );
+        2:  398:	if ( pd == NULL ) {
+    #####:  399:		goto err_load_file;
+        -:  400:	}
+        2:  401:	if ( fread( pd, flen, 1, tf ) != 1 ) {
+    #####:  402:		goto err_load_file;
+        -:  403:	}
+        2:  404:	fclose( tf );
+        2:  405:	if ( size != NULL )
+        2:  406:		*size = flen;
+        2:  407:	return pd;
+        -:  408:
+    #####:  409:err_load_file:
+    #####:  410:	if ( pd != NULL )
+    #####:  411:		free( pd );
+    #####:  412:	if ( tf != NULL )
+    #####:  413:		fclose( tf );
+    #####:  414:	return NULL;
+        -:  415:}
+        -:  416:
+        -:  417:/* migrate from text-based hash to binary form */
+    #####:  418:static int migrate_hash_to_bin( ChewingData *pgdata )
+        -:  419:{
+        -:  420:	FILE *txtfile;
+        -:  421:	char oldname[ 256 ], *dump, *seekdump;
+        -:  422:	HASH_ITEM item;
+        -:  423:	int item_index, iret, tflen;
+        -:  424:	int ret;
+    #####:  425:	const char *ofilename = pgdata->static_data.hashfilename;
+        -:  426:
+        -:  427:	/* allocate dump buffer */
+    #####:  428:	txtfile = open_file_get_length( ofilename, "r", &tflen );
+    #####:  429:	if ( txtfile == NULL ) {
+    #####:  430:		return 0;
+        -:  431:	}
+    #####:  432:	dump = ALC( char, tflen * 2 );
+    #####:  433:	if ( dump == NULL ) {
+    #####:  434:		fclose( txtfile );
+    #####:  435:		return 0;
+        -:  436:	}
+    #####:  437:	ret = fscanf( txtfile, "%d", &pgdata->static_data.chewing_lifetime );
+    #####:  438:	if ( ret != 1 ) {
+    #####:  439:		return 0;
+        -:  440:	}
+        -:  441:
+        -:  442:	/* prepare the bin file */
+    #####:  443:	seekdump = dump;
+    #####:  444:	memcpy( seekdump, BIN_HASH_SIG, strlen( BIN_HASH_SIG ) );
+    #####:  445:	memcpy( seekdump + strlen( BIN_HASH_SIG ),
+    #####:  446:	        &pgdata->static_data.chewing_lifetime,
+        -:  447:		sizeof(pgdata->static_data.chewing_lifetime) );
+    #####:  448:	seekdump += strlen( BIN_HASH_SIG ) + sizeof(pgdata->static_data.chewing_lifetime);
+        -:  449:
+        -:  450:	/* migrate */
+    #####:  451:	item_index = 0;
+        -:  452:	while ( 1 ) {
+    #####:  453:		iret = ReadHashItem_txt( txtfile, &item, ++item_index );
+        -:  454:
+    #####:  455:		if ( iret == -1 ) {
+    #####:  456:			--item_index;
+    #####:  457:			continue;
+        -:  458:		}
+    #####:  459:		else if ( iret == 0 )
+    #####:  460:			break;
+        -:  461:
+    #####:  462:		HashItem2Binary( seekdump, &item );
+    #####:  463:		seekdump += FIELD_SIZE;
+    #####:  464:		free( item.data.phoneSeq );
+    #####:  465:		free( item.data.wordSeq );
+        -:  466:	};
+    #####:  467:	fclose( txtfile );
+        -:  468:
+        -:  469:	/* backup as *.old */
+    #####:  470:	snprintf( oldname, sizeof(oldname), "%s%s", ofilename, ".old" );
+    #####:  471:	PLAT_UNLINK( oldname );
+    #####:  472:	PLAT_RENAME( ofilename, oldname );
+        -:  473:
+        -:  474:	/* dump new file */
+    #####:  475:	PLAT_UNLINK( ofilename );
+    #####:  476:	txtfile = fopen( ofilename, "w+b" );
+    #####:  477:	fwrite( dump, seekdump - dump, 1, txtfile );
+    #####:  478:	fflush( txtfile );
+    #####:  479:	fclose( txtfile );
+    #####:  480:	free( dump );
+        -:  481:
+    #####:  482:	return 1;
+        -:  483:}
+        -:  484:
+    32768:  485:void FreeHashItem( HASH_ITEM *pItem )
+        -:  486:{
+    32769:  487:	while ( pItem ) {
+        1:  488:		HASH_ITEM *next = pItem->next;
+        1:  489:		free( pItem->data.phoneSeq );
+        1:  490:		free( pItem->data.wordSeq );
+        1:  491:		free( pItem );
+        1:  492:		pItem = next;
+        -:  493:	}
+    32768:  494:}
+        -:  495:
+        2:  496:void TerminateHash( ChewingData *pgdata )
+        -:  497:{
+        -:  498:	HASH_ITEM *pItem;
+        -:  499:	int i;
+    32770:  500:	for ( i = 0; i < HASH_TABLE_SIZE; ++i ) {
+    32768:  501:		pItem = pgdata->static_data.hashtable[ i ];
+    32768:  502:		DEBUG_CHECKPOINT();
+    32768:  503:		FreeHashItem( pItem );
+        -:  504:	}
+        2:  505:}
+        -:  506:
+        2:  507:void setHashFileName( ChewingData *pgdata )
+        -:  508:{
+        -:  509:	char *path;
+        -:  510:
+        2:  511:	path = getenv( "CHEWING_USER_PATH" );
+        -:  512:
+        -:  513:	/* make sure of write permission */
+        2:  514:	if ( path && access( path, W_OK ) == 0 ) {
+        2:  515:		snprintf( pgdata->static_data.hashfilename, sizeof( pgdata->static_data.hashfilename ),
+        -:  516:			"%s" PLAT_SEPARATOR "%s", path, HASH_FILE );
+        2:  517:		return;
+        -:  518:	}
+        -:  519:
+    #####:  520:	path = getenv( "HOME" );
+    #####:  521:	if ( !path ) {
+    #####:  522:		path = PLAT_TMPDIR;
+        -:  523:	}
+        -:  524:
+    #####:  525:	snprintf( pgdata->static_data.hashfilename, sizeof( pgdata->static_data.hashfilename ),
+        -:  526:		"%s%s", path, CHEWING_HASH_PATH);
+    #####:  527:	PLAT_MKDIR( pgdata->static_data.hashfilename );
+    #####:  528:	strcat( pgdata->static_data.hashfilename, PLAT_SEPARATOR );
+    #####:  529:	strcat( pgdata->static_data.hashfilename, HASH_FILE );
+        -:  530:}
+        -:  531:
+        2:  532:int InitHash( ChewingData *pgdata )
+        -:  533:{
+        2:  534:	HASH_ITEM item, *pItem, *pPool = NULL;
+        2:  535:	int item_index, hashvalue, iret, fsize, hdrlen, oldest = INT_MAX;
+        -:  536:	char *dump, *seekdump;
+        -:  537:
+        2:  538:	setHashFileName( pgdata );
+        2:  539:	memset( pgdata->static_data.hashtable, 0, sizeof( pgdata->static_data.hashtable ) );
+        -:  540:
+        2:  541:open_hash_file:
+        2:  542:	dump = _load_hash_file( pgdata->static_data.hashfilename, &fsize );
+        2:  543:	hdrlen = strlen( BIN_HASH_SIG ) + sizeof(pgdata->static_data.chewing_lifetime);
+        2:  544:	item_index = 0;
+       2*:  545:	if ( dump == NULL || fsize < hdrlen ) {
+        -:  546:		FILE *outfile;
+    #####:  547:		outfile = fopen( pgdata->static_data.hashfilename, "w+b" );
+    #####:  548:		if ( ! outfile ) {
+    #####:  549:			if ( dump ) {
+    #####:  550:				free( dump );
+        -:  551:			}
+    #####:  552:			return 0;
+        -:  553:		}
+    #####:  554:		pgdata->static_data.chewing_lifetime = 0;
+    #####:  555:		fwrite( BIN_HASH_SIG, 1, strlen( BIN_HASH_SIG ), outfile );
+    #####:  556:		fwrite( &pgdata->static_data.chewing_lifetime, 1,
+        -:  557:		                sizeof(pgdata->static_data.chewing_lifetime), outfile );
+    #####:  558:		fclose( outfile );
+        -:  559:	}
+        -:  560:	else {
+        2:  561:		if ( memcmp(dump, BIN_HASH_SIG, strlen(BIN_HASH_SIG)) != 0 ) {
+        -:  562:			/* perform migrate from text-based to binary form */
+    #####:  563:			free( dump );
+    #####:  564:			if ( ! migrate_hash_to_bin( pgdata ) ) {
+    #####:  565:				return  0;
+        -:  566:			}
+    #####:  567:			goto open_hash_file;
+        -:  568:		}
+        -:  569:
+        2:  570:		pgdata->static_data.chewing_lifetime = *(int *) (dump + strlen( BIN_HASH_SIG ));
+        2:  571:		seekdump = dump + hdrlen;
+        2:  572:		fsize -= hdrlen;
+        -:  573:
+        2:  574:		while ( fsize >= FIELD_SIZE ) {
+    #####:  575:			iret = ReadHashItem_bin( seekdump, &item, item_index++ );
+        -:  576:			/* Ignore illegal data */
+    #####:  577:			if ( iret == -1 ) {
+    #####:  578:				seekdump += FIELD_SIZE;
+    #####:  579:				fsize -= FIELD_SIZE;
+    #####:  580:				--item_index;
+    #####:  581:				continue;
+        -:  582:			}
+    #####:  583:			else if ( iret == 0 )
+    #####:  584:				break;
+        -:  585:
+    #####:  586:			pItem = ALC( HASH_ITEM, 1 );
+    #####:  587:			memcpy( pItem, &item, sizeof( HASH_ITEM ) );
+    #####:  588:			pItem->next = pPool;
+    #####:  589:			pPool = pItem;
+        -:  590:
+    #####:  591:			if ( oldest > pItem->data.recentTime ) {
+    #####:  592:				oldest = pItem->data.recentTime;
+        -:  593:			}
+        -:  594:
+    #####:  595:			seekdump += FIELD_SIZE;
+    #####:  596:			fsize -= FIELD_SIZE;
+        -:  597:		}
+        2:  598:		free( dump );
+        -:  599:
+        2:  600:		while ( pPool ) {
+    #####:  601:			pItem = pPool;
+    #####:  602:			pPool = pItem->next;
+        -:  603:
+    #####:  604:			hashvalue = HashFunc( pItem->data.phoneSeq );
+    #####:  605:			pItem->next = pgdata->static_data.hashtable[ hashvalue ];
+    #####:  606:			pgdata->static_data.hashtable[ hashvalue ] = pItem;
+    #####:  607:			pItem->data.recentTime -= oldest;
+        -:  608:		}
+        2:  609:		pgdata->static_data.chewing_lifetime -= oldest;
+        -:  610:	}
+        2:  611:	return 1;
+        -:  612:}

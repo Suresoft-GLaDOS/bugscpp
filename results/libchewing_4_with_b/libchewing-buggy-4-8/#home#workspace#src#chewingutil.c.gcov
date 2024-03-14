@@ -1,0 +1,1563 @@
+        -:    0:Source:/home/workspace/src/chewingutil.c
+        -:    1:/**
+        -:    2: * chewingutil.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004, 2005, 2006, 2008, 2010, 2011, 2012
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/* This file is encoded in UTF-8 */
+        -:   16:#ifdef HAVE_CONFIG_H
+        -:   17:#include <config.h>
+        -:   18:#endif
+        -:   19:
+        -:   20:#include <ctype.h>
+        -:   21:#include <string.h>
+        -:   22:#include <assert.h>
+        -:   23:#include <stdlib.h>
+        -:   24:#include <stdio.h>
+        -:   25:
+        -:   26:#include "chewing-utf8-util.h"
+        -:   27:#include "global.h"
+        -:   28:#include "global-private.h"
+        -:   29:#include "chewingutil.h"
+        -:   30:#include "zuin-private.h"
+        -:   31:#include "choice-private.h"
+        -:   32:#include "tree-private.h"
+        -:   33:#include "userphrase-private.h"
+        -:   34:#include "private.h"
+        -:   35:
+        -:   36:#ifdef HAVE_ASPRINTF
+        -:   37:/* asprintf is provided by GNU extensions and *BSD */
+        -:   38:#ifndef _GNU_SOURCE
+        -:   39:#define _GNU_SOURCE
+        -:   40:#endif
+        -:   41:#include <stdio.h>
+        -:   42:#else
+        -:   43:#include "plat_path.h"
+        -:   44:#endif
+        -:   45:
+        -:   46:extern const char * const zhuin_tab[];
+        -:   47:static void MakePreferInterval( ChewingData *pgdata );
+        -:   48:static void ShiftInterval( ChewingOutput *pgo, ChewingData *pgdata );
+        -:   49:static int ChewingKillSelectIntervalAcross( int cursor, ChewingData *pgdata );
+        -:   50:
+        -:   51:static int FindSymbolKey( const char *symbol );
+        -:   52:
+        -:   53:/* Note: Keep synchronize with `FindEasySymbolIndex`! */
+        -:   54:static const char G_EASY_SYMBOL_KEY[EASY_SYMBOL_KEY_TAB_LEN] = {
+        -:   55:	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        -:   56:	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        -:   57:	'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        -:   58:	'U', 'V', 'W', 'X', 'Y', 'Z'
+        -:   59:};
+        -:   60:
+        -:   61:/*
+        -:   62: * FindEasySymbolIndex(ch) = char ch's index in G_EASY_SYMBOL_KEY
+        -:   63: * Just return -1 if not found.
+        -:   64: */
+      728:   65:static int FindEasySymbolIndex( char ch )
+        -:   66:{
+        -:   67:	/**
+        -:   68:	 * '0' => 0, ..., '9' => 9
+        -:   69:	 * 'A' => 10, 'B' => 11, ... 'Z' => 35
+        -:   70:	 */
+      728:   71:	if ( isdigit( ch ) ) {
+    #####:   72:		return ch - '0';
+        -:   73:	}
+      728:   74:	else if ( isupper( ch ) ) {
+      728:   75:		return ch - 'A' + 10;
+        -:   76:	}
+        -:   77:	else {
+    #####:   78:		return -1;
+        -:   79:	}
+        -:   80:}
+        -:   81:
+    #####:   82:void SetUpdatePhraseMsg(
+        -:   83:		ChewingData *pgdata, const char *addWordSeq,
+        -:   84:		int len, int state )
+        -:   85:{
+    #####:   86:	if ( state == USER_UPDATE_INSERT ) {
+        -:   87:		/* 加入： */
+    #####:   88:		snprintf( pgdata->showMsg, sizeof( pgdata->showMsg ), "\xE5\x8A\xA0\xE5\x85\xA5\xEF\xBC\x9A%s", addWordSeq );
+        -:   89:	} else {
+        -:   90:		/* 已有： */
+    #####:   91:		snprintf( pgdata->showMsg, sizeof( pgdata->showMsg ), "\xE5\xB7\xB2\xE6\x9C\x89\xEF\xBC\x9A%s", addWordSeq );
+        -:   92:	}
+    #####:   93:	pgdata->showMsgLen = AUX_PREFIX_LEN + len;
+    #####:   94:}
+        -:   95:
+    #####:   96:int NoSymbolBetween( ChewingData *pgdata, int begin, int end )
+        -:   97:{
+        -:   98:	int i;
+        -:   99:
+    #####:  100:	for ( i = begin; i < end; ++i ) {
+    #####:  101:		if ( pgdata->preeditBuf[ i ].category == CHEWING_SYMBOL ) {
+    #####:  102:			return 0;
+        -:  103:		}
+        -:  104:	}
+        -:  105:
+    #####:  106:	return 1;
+        -:  107:}
+        -:  108:
+        1:  109:int ChewingIsEntering( ChewingData *pgdata )
+        -:  110:{
+        1:  111:	if ( pgdata->choiceInfo.isSymbol != WORD_CHOICE )
+    #####:  112:		return 1;
+        -:  113:	return (
+       1*:  114:		pgdata->chiSymbolBufLen != 0 ||
+    #####:  115:		ZuinIsEntering( &( pgdata->zuinData ) ) );
+        -:  116:}
+        -:  117:
+        5:  118:int HaninSymbolInput( ChewingData *pgdata )
+        -:  119:{
+        -:  120:	unsigned int i;
+        -:  121:
+        5:  122:	ChoiceInfo *pci = &( pgdata->choiceInfo );
+        5:  123:	AvailInfo *pai = &( pgdata->availInfo );
+        -:  124:
+        -:  125:	/* No available symbol table */
+        5:  126:	if ( ! pgdata->static_data.symbol_table )
+    #####:  127:		return ZUIN_ABSORB;
+        -:  128:
+        5:  129:	pci->nTotalChoice = 0;
+       70:  130:	for ( i = 0; i < pgdata->static_data.n_symbol_entry; i++ ) {
+       65:  131:		strcpy( pci->totalChoiceStr[ pci->nTotalChoice ],
+       65:  132:			pgdata->static_data.symbol_table[ i ]->category );
+       65:  133:		pci->nTotalChoice++;
+        -:  134:	}
+        5:  135:	pai->avail[ 0 ].len = 1;
+        5:  136:	pai->avail[ 0 ].id = NULL;
+        5:  137:	pai->nAvail = 1;
+        5:  138:	pai->currentAvail = 0;
+        5:  139:	pci->nChoicePerPage = pgdata->config.candPerPage;
+       5*:  140:	assert( pci->nTotalChoice > 0 );
+        5:  141:	pci->nPage = CEIL_DIV( pci->nTotalChoice, pci->nChoicePerPage );
+        5:  142:	pci->pageNo = 0;
+        5:  143:	pci->isSymbol = SYMBOL_CATEGORY_CHOICE;
+        5:  144:	return ZUIN_ABSORB;
+        -:  145:}
+        -:  146:
+    #####:  147:static int _Inner_InternalSpecialSymbol(
+        -:  148:		int key, ChewingData *pgdata,
+        -:  149:		char symkey, const char * const chibuf )
+        -:  150:{
+        -:  151:	int kbtype;
+        -:  152:	PreeditBuf *buf;
+        -:  153:
+    #####:  154:	if ( key == symkey && NULL != chibuf ) {
+    #####:  155:		assert( pgdata->chiSymbolBufLen >= pgdata->chiSymbolCursor );
+        -:  156:
+    #####:  157:		buf = &pgdata->preeditBuf[ pgdata->chiSymbolCursor ];
+        -:  158:
+    #####:  159:		memmove( &pgdata->preeditBuf[ pgdata->chiSymbolCursor + 1 ],
+    #####:  160:			&pgdata->preeditBuf[ pgdata->chiSymbolCursor ],
+        -:  161:			sizeof( pgdata->preeditBuf[ 0 ] ) *
+    #####:  162:			( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+        -:  163:
+    #####:  164:		strncpy( buf->char_, chibuf, sizeof( buf->char_) );
+    #####:  165:		buf->category = CHEWING_SYMBOL;
+        -:  166:
+        -:  167:		/* Save Symbol Key */
+    #####:  168:		memmove(
+    #####:  169:			&( pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor + 1 ] ),
+    #####:  170:			&( pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] ),
+        -:  171:			sizeof( pgdata->symbolKeyBuf[0] ) *
+    #####:  172:			( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+    #####:  173:		pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] = key;
+    #####:  174:		pgdata->bUserArrCnnct[ PhoneSeqCursor( pgdata ) ] = 0;
+    #####:  175:		pgdata->chiSymbolCursor++;
+    #####:  176:		pgdata->chiSymbolBufLen++;
+        -:  177:		/* reset Zuin data */
+        -:  178:		/* Don't forget the kbtype */
+    #####:  179:		kbtype = pgdata->zuinData.kbtype;
+    #####:  180:		memset( &( pgdata->zuinData ), 0, sizeof( ZuinData ) );
+    #####:  181:		pgdata->zuinData.kbtype = kbtype;
+    #####:  182:		return 1;
+        -:  183:	}
+    #####:  184:	return 0;
+        -:  185:}
+        -:  186:
+    #####:  187:static int InternalSpecialSymbol(
+        -:  188:		int key, ChewingData *pgdata,
+        -:  189:		int nSpecial, const char keybuf[], const char * const chibuf[] )
+        -:  190:{
+    #####:  191:	int i, rtn = ZUIN_IGNORE; /* very strange and difficult to understand */
+        -:  192:
+    #####:  193:	for ( i = 0; i < nSpecial; i++ ) {
+    #####:  194:		if ( 1 == _Inner_InternalSpecialSymbol( key, pgdata, keybuf[ i ], chibuf[ i ]) ) {
+    #####:  195:			rtn = ZUIN_ABSORB;
+    #####:  196:			break;
+        -:  197:		}
+        -:  198:	}
+    #####:  199:	return rtn;
+        -:  200:}
+        -:  201:
+    #####:  202:int SpecialSymbolInput( int key, ChewingData *pgdata )
+        -:  203:{
+        -:  204:	static const char keybuf[] = {
+        -:  205:		'[', ']', '{', '}', '\'','<', ':', '\"', '>',
+        -:  206:		'~', '!', '@', '#', '$', '%', '^', '&', '*',
+        -:  207:		'(', ')', '_', '+', '=','\\', '|', '?',
+        -:  208:		',', '.', ';'
+        -:  209:	};
+        -:  210:
+        -:  211:	static const char * const chibuf[] = {
+        -:  212:		"\xE3\x80\x8C", "\xE3\x80\x8D", "\xE3\x80\x8E", "\xE3\x80\x8F",
+        -:  213:			/* "「", "」", "『", "』" */
+        -:  214:		"\xE3\x80\x81", "\xEF\xBC\x8C", "\xEF\xBC\x9A", "\xEF\xBC\x9B",
+        -:  215:			/* "、", "，", "：", "；" */
+        -:  216:		"\xE3\x80\x82", "\xEF\xBD\x9E", "\xEF\xBC\x81", "\xEF\xBC\xA0",
+        -:  217:			/* "。", "～", "！", "＠" */
+        -:  218:		"\xEF\xBC\x83", "\xEF\xBC\x84", "\xEF\xBC\x85", "\xEF\xB8\xBF",
+        -:  219:			/* "＃", "＄", "％", "︿" */
+        -:  220:		"\xEF\xBC\x86", "\xEF\xBC\x8A", "\xEF\xBC\x88", "\xEF\xBC\x89",
+        -:  221:			/* "＆", "＊", "（", "）" */
+        -:  222:		"\xE2\x80\x94", "\xEF\xBC\x8B", "\xEF\xBC\x9D", "\xEF\xBC\xBC",
+        -:  223:			/* "—", "＋", "＝", "＼" */
+        -:  224:		"\xEF\xBD\x9C", "\xEF\xBC\x9F", "\xEF\xBC\x8C", "\xE3\x80\x82",
+        -:  225:			/* "｜", "？", "，", "。" */
+        -:  226:		"\xEF\xBC\x9B"
+        -:  227:			/* "；" */
+        -:  228:	};
+        -:  229:	STATIC_ASSERT( ARRAY_SIZE( keybuf ) == ARRAY_SIZE( chibuf ) );
+        -:  230:
+    #####:  231:	return InternalSpecialSymbol( key, pgdata, ARRAY_SIZE( keybuf ), keybuf, chibuf );
+        -:  232:}
+        -:  233:
+    #####:  234:int FullShapeSymbolInput( int key, ChewingData *pgdata )
+        -:  235:{
+        -:  236:	int rtn;
+        -:  237:	static char keybuf[] = {
+        -:  238:		'0', '1', '2', '3',  '4',  '5', '6', '7', '8', '9',
+        -:  239:		'a', 'b', 'c', 'd',  'e',  'f', 'g', 'h', 'i', 'j',
+        -:  240:		'k', 'l', 'm', 'n',  'o',  'p', 'q', 'r', 's', 't',
+        -:  241:		'u', 'v', 'w', 'x',  'y',  'z', 'A', 'B', 'C', 'D',
+        -:  242:		'E', 'F', 'G', 'H',  'I',  'J', 'K', 'L', 'M', 'N',
+        -:  243:		'O', 'P', 'Q', 'R',  'S',  'T', 'U', 'V', 'W', 'X',
+        -:  244:		'Y', 'Z', ' ', '\"', '\'', '/', '<', '>', '`', '[',
+        -:  245:		']', '{', '}', '+',  '-'
+        -:  246:	};
+        -:  247:	static const char *chibuf[] = {
+        -:  248:		"\xEF\xBC\x90","\xEF\xBC\x91","\xEF\xBC\x92","\xEF\xBC\x93",
+        -:  249:			/* "０","１","２","３" */
+        -:  250:		"\xEF\xBC\x94","\xEF\xBC\x95","\xEF\xBC\x96","\xEF\xBC\x97",
+        -:  251:			/* "４","５","６","７" */
+        -:  252:		"\xEF\xBC\x98","\xEF\xBC\x99","\xEF\xBD\x81","\xEF\xBD\x82",
+        -:  253:			/* "８","９","ａ","ｂ" */
+        -:  254:		"\xEF\xBD\x83","\xEF\xBD\x84","\xEF\xBD\x85","\xEF\xBD\x86",
+        -:  255:			/* "ｃ","ｄ","ｅ","ｆ" */
+        -:  256:		"\xEF\xBD\x87","\xEF\xBD\x88","\xEF\xBD\x89","\xEF\xBD\x8A",
+        -:  257:			/* "ｇ","ｈ","ｉ","ｊ" */
+        -:  258:		"\xEF\xBD\x8B","\xEF\xBD\x8C","\xEF\xBD\x8D","\xEF\xBD\x8E",
+        -:  259:			/* "ｋ","ｌ","ｍ","ｎ" */
+        -:  260:		"\xEF\xBD\x8F","\xEF\xBD\x90","\xEF\xBD\x91","\xEF\xBD\x92",
+        -:  261:			/* "ｏ","ｐ","ｑ","ｒ" */
+        -:  262:		"\xEF\xBD\x93","\xEF\xBD\x94","\xEF\xBD\x95","\xEF\xBD\x96",
+        -:  263:			/* "ｓ","ｔ","ｕ","ｖ" */
+        -:  264:		"\xEF\xBD\x97","\xEF\xBD\x98","\xEF\xBD\x99","\xEF\xBD\x9A",
+        -:  265:			/* "ｗ","ｘ","ｙ","ｚ" */
+        -:  266:		"\xEF\xBC\xA1","\xEF\xBC\xA2","\xEF\xBC\xA3","\xEF\xBC\xA4",
+        -:  267:			/* "Ａ","Ｂ","Ｃ","Ｄ" */
+        -:  268:		"\xEF\xBC\xA5","\xEF\xBC\xA6","\xEF\xBC\xA7","\xEF\xBC\xA8",
+        -:  269:			/* "Ｅ","Ｆ","Ｇ","Ｈ" */
+        -:  270:		"\xEF\xBC\xA9","\xEF\xBC\xAA","\xEF\xBC\xAB","\xEF\xBC\xAC",
+        -:  271:			/* "Ｉ","Ｊ","Ｋ","Ｌ" */
+        -:  272:		"\xEF\xBC\xAD","\xEF\xBC\xAE","\xEF\xBC\xAF","\xEF\xBC\xB0",
+        -:  273:			/* "Ｍ","Ｎ","Ｏ","Ｐ" */
+        -:  274:		"\xEF\xBC\xB1","\xEF\xBC\xB2","\xEF\xBC\xB3","\xEF\xBC\xB4",
+        -:  275:			/* "Ｑ","Ｒ","Ｓ","Ｔ" */
+        -:  276:		"\xEF\xBC\xB5","\xEF\xBC\xB6","\xEF\xBC\xB7","\xEF\xBC\xB8",
+        -:  277:			/* "Ｕ","Ｖ","Ｗ","Ｘ" */
+        -:  278:		"\xEF\xBC\xB9","\xEF\xBC\xBA","\xE3\x80\x80","\xE2\x80\x9D",
+        -:  279:			/* "Ｙ","Ｚ","　","”" */
+        -:  280:		"\xE2\x80\x99","\xEF\xBC\x8F","\xEF\xBC\x9C","\xEF\xBC\x9E",
+        -:  281:			/* "’","／","＜","＞" */
+        -:  282:		"\xE2\x80\xB5","\xE3\x80\x94","\xE3\x80\x95","\xEF\xBD\x9B",
+        -:  283:			/* "‵","〔""〕","｛" */
+        -:  284:		"\xEF\xBD\x9D","\xEF\xBC\x8B","\xEF\xBC\x8D"
+        -:  285:			/* "｝","＋","－" */
+        -:  286:	};
+        -:  287:	STATIC_ASSERT( ARRAY_SIZE( keybuf ) == ARRAY_SIZE( chibuf ) );
+        -:  288:
+    #####:  289:	rtn = InternalSpecialSymbol( key, pgdata, ARRAY_SIZE( keybuf ), keybuf, chibuf );
+    #####:  290:	if ( rtn == ZUIN_IGNORE )
+    #####:  291:		rtn = SpecialSymbolInput( key, pgdata );
+    #####:  292:	return (rtn == ZUIN_IGNORE ? SYMBOL_KEY_ERROR : SYMBOL_KEY_OK);
+        -:  293:}
+        -:  294:
+    #####:  295:int EasySymbolInput( int key, ChewingData *pgdata )
+        -:  296:{
+        -:  297:	int rtn, loop, _index;
+        -:  298:	char wordbuf[ 8 ];
+        -:  299:
+    #####:  300:	int nSpecial = EASY_SYMBOL_KEY_TAB_LEN;
+        -:  301:
+    #####:  302:	_index = FindEasySymbolIndex( key );
+    #####:  303:	if ( -1 != _index ) {
+    #####:  304:		for ( loop = 0; loop < pgdata->static_data.g_easy_symbol_num[ _index ]; ++loop ) {
+    #####:  305:			ueStrNCpy( wordbuf,
+    #####:  306:				ueStrSeek( pgdata->static_data.g_easy_symbol_value[ _index ],
+        -:  307:					loop),
+        -:  308:				1, 1 );
+    #####:  309:			rtn = _Inner_InternalSpecialSymbol(
+        -:  310:					key, pgdata, key, wordbuf );
+        -:  311:		}
+    #####:  312:		return SYMBOL_KEY_OK;
+        -:  313:	}
+        -:  314:
+    #####:  315:	rtn = InternalSpecialSymbol(
+        -:  316:			key, pgdata, nSpecial,
+    #####:  317:			G_EASY_SYMBOL_KEY, (const char **) pgdata->static_data.g_easy_symbol_value );
+    #####:  318:	if ( rtn == ZUIN_IGNORE )
+    #####:  319:		rtn = SpecialSymbolInput( key, pgdata );
+    #####:  320:	return ( rtn == ZUIN_IGNORE ? SYMBOL_KEY_ERROR : SYMBOL_KEY_OK );
+        -:  321:}
+        -:  322:
+       10:  323:int SymbolChoice( ChewingData *pgdata, int sel_i )
+        -:  324:{
+        -:  325:	int kbtype;
+        -:  326:	int i;
+        -:  327:	int symbol_type;
+        -:  328:	int key;
+        -:  329:
+      10*:  330:	if ( ! pgdata->static_data.symbol_table && pgdata->choiceInfo.isSymbol != SYMBOL_CHOICE_UPDATE )
+    #####:  331:		return ZUIN_ABSORB;
+        -:  332:
+       10:  333:	if ( pgdata->choiceInfo.isSymbol == SYMBOL_CATEGORY_CHOICE &&
+        5:  334:			0 == pgdata->static_data.symbol_table[sel_i]->nSymbols )
+    #####:  335:		symbol_type = SYMBOL_CHOICE_INSERT;
+        -:  336:	else
+       10:  337:		symbol_type = pgdata->choiceInfo.isSymbol;
+        -:  338:
+        -:  339:	/* level one, symbol category */
+       10:  340:	if ( symbol_type == SYMBOL_CATEGORY_CHOICE ) {
+        5:  341:		ChoiceInfo* pci = &pgdata->choiceInfo;
+        5:  342:		AvailInfo* pai = &pgdata->availInfo;
+        -:  343:
+        -:  344:		/* Display all symbols in this category */
+        5:  345:		pci->nTotalChoice = 0;
+      155:  346:		for ( i = 0; i < pgdata->static_data.symbol_table[ sel_i ]->nSymbols; i++ ) {
+      150:  347:			ueStrNCpy( pci->totalChoiceStr[ pci->nTotalChoice ],
+      150:  348:					pgdata->static_data.symbol_table[ sel_i ]->symbols[ i ], 1, 1 );
+      150:  349:			pci->nTotalChoice++;
+        -:  350:		}
+        5:  351:		pai->avail[ 0 ].len = 1;
+        5:  352:		pai->avail[ 0 ].id = NULL;
+        5:  353:		pai->nAvail = 1;
+        5:  354:		pai->currentAvail = 0;
+        5:  355:		pci->nChoicePerPage = pgdata->config.candPerPage;
+       5*:  356:		assert( pci->nTotalChoice > 0 );
+        5:  357:		pci->nPage = CEIL_DIV( pci->nTotalChoice, pci->nChoicePerPage );
+        5:  358:		pci->pageNo = 0;
+        5:  359:		pci->isSymbol = SYMBOL_CHOICE_INSERT;
+        -:  360:	}
+        -:  361:	else { /* level 2 symbol or OpenSymbolChoice */
+        -:  362:		/* TODO: FIXME, this part is buggy! */
+        5:  363:		PreeditBuf *buf = &pgdata->preeditBuf[ pgdata->chiSymbolCursor ];
+        -:  364:
+        5:  365:		if ( symbol_type == SYMBOL_CHOICE_INSERT ) {
+       5*:  366:			assert( pgdata->chiSymbolCursor <= pgdata->chiSymbolBufLen );
+        -:  367:
+        5:  368:			memmove( &pgdata->preeditBuf[ pgdata->chiSymbolCursor + 1 ],
+        5:  369:				&pgdata->preeditBuf[ pgdata->chiSymbolCursor ],
+        -:  370:				sizeof( pgdata->preeditBuf[ 0 ] ) *
+        5:  371:				( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+        -:  372:		}
+        5:  373:		strncpy( buf->char_,
+        5:  374:			pgdata->choiceInfo.totalChoiceStr[ sel_i ],
+        -:  375:			sizeof( buf->char_) );
+        5:  376:		buf->category = CHEWING_SYMBOL;
+        -:  377:
+        -:  378:		/* This is very strange */
+        5:  379:		key = FindSymbolKey( pgdata->choiceInfo.totalChoiceStr[ sel_i ] );
+       5*:  380:		pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] = key ? key : '0';
+        -:  381:
+        5:  382:		pgdata->bUserArrCnnct[ PhoneSeqCursor( pgdata ) ] = 0;
+        5:  383:		ChoiceEndChoice(pgdata);
+        -:  384:		/* Don't forget the kbtype */
+        5:  385:		kbtype = pgdata->zuinData.kbtype;
+        5:  386:		memset( &( pgdata->zuinData ), 0, sizeof( ZuinData ) );
+        5:  387:		pgdata->zuinData.kbtype = kbtype;
+        -:  388:
+        5:  389:		if ( symbol_type == SYMBOL_CHOICE_INSERT ) {
+        5:  390:			pgdata->chiSymbolBufLen++;
+        5:  391:			pgdata->chiSymbolCursor ++ ;
+        -:  392:		}
+        -:  393:
+        5:  394:		pgdata->choiceInfo.isSymbol = WORD_CHOICE;
+        -:  395:	}
+       10:  396:	return ZUIN_ABSORB;
+        -:  397:}
+        -:  398:
+    #####:  399:int SymbolInput( int key, ChewingData *pgdata )
+        -:  400:{
+    #####:  401:	if ( isprint( (char) key ) && /* other character was ignored */
+    #####:  402:	     (pgdata->chiSymbolBufLen < MAX_PHONE_SEQ_LEN) ) { /* protect the buffer */
+    #####:  403:		PreeditBuf *buf = &pgdata->preeditBuf[ pgdata->chiSymbolCursor ];
+        -:  404:
+    #####:  405:		assert( pgdata->chiSymbolCursor <= pgdata->chiSymbolBufLen );
+        -:  406:
+    #####:  407:		memmove( &pgdata->preeditBuf[ pgdata->chiSymbolCursor + 1 ],
+    #####:  408:			&pgdata->preeditBuf[ pgdata->chiSymbolCursor ],
+        -:  409:			sizeof( pgdata->preeditBuf[ 0 ] ) *
+    #####:  410:			( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+        -:  411:
+    #####:  412:		buf->char_[0] = (char) key;
+    #####:  413:		buf->char_[1] = 0;
+    #####:  414:		buf->category = CHEWING_SYMBOL;
+        -:  415:
+        -:  416:		/* Save Symbol Key */
+    #####:  417:		memmove( &( pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor + 1 ] ),
+    #####:  418:			&( pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] ),
+        -:  419:			sizeof( pgdata->symbolKeyBuf[ 0 ] ) *
+    #####:  420:			( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+    #####:  421:			pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] = toupper( key );
+        -:  422:
+    #####:  423:		pgdata->bUserArrCnnct[ PhoneSeqCursor( pgdata ) ] = 0;
+    #####:  424:		pgdata->chiSymbolCursor++;
+    #####:  425:		pgdata->chiSymbolBufLen++;
+    #####:  426:		return SYMBOL_KEY_OK;
+        -:  427:	}
+    #####:  428:	return SYMBOL_KEY_ERROR;
+        -:  429:}
+        -:  430:
+    #####:  431:static int CompInterval( const IntervalType *a, const IntervalType *b )
+        -:  432:{
+    #####:  433:	int cmp = a->from - b->from;
+    #####:  434:	if ( cmp )
+    #####:  435:		return cmp;
+    #####:  436:	return ( a->to - b->to );
+        -:  437:}
+        -:  438:
+    #####:  439:static int FindIntervalFrom( int from, IntervalType inte[], int nInte )
+        -:  440:{
+        -:  441:	int i;
+        -:  442:
+    #####:  443:	for ( i = 0; i < nInte; i++ )
+    #####:  444:		if ( inte[ i ].from == from )
+    #####:  445:			return i;
+    #####:  446:	return -1;
+        -:  447:}
+        -:  448:
+        1:  449:void WriteChiSymbolToCommitBuf( ChewingData *pgdata, ChewingOutput *pgo, int len )
+        -:  450:{
+        -:  451:	int i;
+        -:  452:	char *pos;
+        -:  453:
+       1*:  454:	assert( pgdata );
+       1*:  455:	assert( pgo );
+        -:  456:
+        1:  457:	pgo->commitBufLen = len;
+        -:  458:
+        1:  459:	pos = pgo->commitBuf;
+        3:  460:	for ( i = 0; i < pgo->commitBufLen; ++i ) {
+       2*:  461:		assert( pos + MAX_UTF8_SIZE + 1 < pgo->commitBuf + sizeof( pgo->commitBuf ) );
+        2:  462:		strcpy( pos, pgdata->preeditBuf[ i ].char_ );
+        2:  463:		pos += strlen( pgdata->preeditBuf[ i ].char_ );
+        -:  464:	}
+        1:  465:	*pos = 0;
+        1:  466:}
+        -:  467:
+       78:  468:static int CountReleaseNum( ChewingData *pgdata )
+        -:  469:{
+        -:  470:	int remain, i;
+        -:  471:
+       78:  472:	remain = pgdata->config.maxChiSymbolLen - pgdata->chiSymbolBufLen;
+       78:  473:	if ( remain >= 0 )
+       78:  474:		return 0;
+        -:  475:
+    #####:  476:	qsort(
+    #####:  477:		pgdata->preferInterval,
+    #####:  478:		pgdata->nPrefer,
+        -:  479:		sizeof( IntervalType ),
+        -:  480:		(CompFuncType) CompInterval );
+        -:  481:
+    #####:  482:	if ( ! ChewingIsChiAt( 0, pgdata ) ) {
+    #####:  483:		for ( i = 0; i < pgdata->chiSymbolCursor; ++i ) {
+    #####:  484:			if ( ChewingIsChiAt( i, pgdata ) ) {
+    #####:  485:				break;
+        -:  486:			}
+        -:  487:		}
+    #####:  488:		return i;
+        -:  489:	}
+        -:  490:
+    #####:  491:	i = FindIntervalFrom( 0, pgdata->preferInterval, pgdata->nPrefer );
+    #####:  492:	if ( i >= 0 ) {
+    #####:  493:		return ( pgdata->preferInterval[ i ].to - pgdata->preferInterval[ i ].from );
+        -:  494:	}
+        -:  495:
+    #####:  496:	return 1;
+        -:  497:}
+        -:  498:
+    #####:  499:static void KillFromLeft( ChewingData *pgdata, int nKill )
+        -:  500:{
+        -:  501:	int i;
+        -:  502:
+    #####:  503:	for ( i = 0; i < nKill; i++ )
+    #####:  504:		ChewingKillChar( pgdata, 0, DECREASE_CURSOR );
+    #####:  505:}
+        -:  506:
+        3:  507:void CleanAllBuf( ChewingData *pgdata )
+        -:  508:{
+        -:  509:	/* 1 */
+        3:  510:	pgdata->nPhoneSeq = 0 ;
+        3:  511:	memset( pgdata->phoneSeq, 0, sizeof( pgdata->phoneSeq ) );
+        -:  512:	/* 2 */
+        3:  513:	pgdata->chiSymbolBufLen = 0;
+        3:  514:	memset( pgdata->preeditBuf, 0, sizeof( pgdata->preeditBuf ) );
+        -:  515:	/* 3 */
+        3:  516:	memset( pgdata->bUserArrBrkpt, 0, sizeof( pgdata->bUserArrBrkpt ) );
+        -:  517:	/* 4 */
+        3:  518:	pgdata->nSelect = 0;
+        -:  519:	/* 5 */
+        3:  520:	pgdata->chiSymbolCursor = 0;
+        -:  521:	/* 6 */
+        3:  522:	memset( pgdata->bUserArrCnnct, 0, sizeof( pgdata->bUserArrCnnct ) );
+        -:  523:
+        3:  524:	pgdata->phrOut.nNumCut = 0;
+        -:  525:
+        3:  526:	memset( pgdata->symbolKeyBuf, 0, sizeof( pgdata->symbolKeyBuf ) );
+        -:  527:
+        3:  528:	pgdata->nPrefer = 0;
+        3:  529:}
+        -:  530:
+       78:  531:int ReleaseChiSymbolBuf( ChewingData *pgdata, ChewingOutput *pgo )
+        -:  532:{
+        -:  533:	int throwEnd;
+        -:  534:
+       78:  535:	throwEnd = CountReleaseNum( pgdata );
+        -:  536:
+        -:  537:	/*
+        -:  538:	* When current buffer size exceeds maxChiSymbolLen,
+        -:  539:	* we need to throw some of the characters at the head of the buffer and
+        -:  540:	* commit them.
+        -:  541:	*/
+       78:  542:	if ( throwEnd ) {
+        -:  543:		/*
+        -:  544:		 * count how many chinese words in "chiSymbolBuf[ 0 .. (throwEnd - 1)]"
+        -:  545:		 * And release from "chiSymbolBuf" && "phoneSeq"
+        -:  546:		 */
+    #####:  547:		WriteChiSymbolToCommitBuf( pgdata, pgo, throwEnd );
+    #####:  548:		KillFromLeft( pgdata, throwEnd );
+        -:  549:	}
+       78:  550:	return throwEnd;
+        -:  551:}
+        -:  552:
+    #####:  553:static int ChewingIsBreakPoint( int cursor, ChewingData *pgdata )
+        -:  554:{
+        -:  555:	static const char * const BREAK_WORD[] = {
+        -:  556:		"\xE6\x98\xAF", "\xE7\x9A\x84", "\xE4\xBA\x86", "\xE4\xB8\x8D",
+        -:  557:		/* 是              的              了              不 */
+        -:  558:		"\xE4\xB9\x9F", "\xE8\x80\x8C", "\xE4\xBD\xA0", "\xE6\x88\x91",
+        -:  559:		/* 也              而              你              我 */
+        -:  560:		"\xE4\xBB\x96", "\xE8\x88\x87", "\xE5\xAE\x83", "\xE5\xA5\xB9",
+        -:  561:		/* 他              與              它              她 */
+        -:  562:		"\xE5\x85\xB6", "\xE5\xB0\xB1", "\xE5\x92\x8C", "\xE6\x88\x96",
+        -:  563:		/* 其              就              和              或 */
+        -:  564:		"\xE5\x80\x91", "\xE6\x80\xA7", "\xE5\x93\xA1", "\xE5\xAD\x90",
+        -:  565:		/* 們              性              員              子 */
+        -:  566:		"\xE4\xB8\x8A", "\xE4\xB8\x8B", "\xE4\xB8\xAD", "\xE5\x85\xA7",
+        -:  567:		/* 上              下              中              內 */
+        -:  568:		"\xE5\xA4\x96", "\xE5\x8C\x96", "\xE8\x80\x85", "\xE5\xAE\xB6",
+        -:  569:		/* 外              化              者              家 */
+        -:  570:		"\xE5\x85\x92", "\xE5\xB9\xB4", "\xE6\x9C\x88", "\xE6\x97\xA5",
+        -:  571:		/* 兒              年              月              日 */
+        -:  572:		"\xE6\x99\x82", "\xE5\x88\x86", "\xE7\xA7\x92", "\xE8\xA1\x97",
+        -:  573:		/* 時              分              秒              街 */
+        -:  574:		"\xE8\xB7\xAF", "\xE6\x9D\x91",
+        -:  575:		/* 路              村 */
+        -:  576:		"\xE5\x9C\xA8",
+        -:  577:		/* 在 */
+        -:  578:	};
+        -:  579:	int i;
+        -:  580:
+    #####:  581:	if ( ! ChewingIsChiAt( cursor, pgdata ) )
+    #####:  582:		return 1;
+        -:  583:
+    #####:  584:	for ( i = 0; i < ARRAY_SIZE( BREAK_WORD ); ++i )
+    #####:  585:		if ( ! strcmp( pgdata->preeditBuf[ cursor ].char_, BREAK_WORD[ i ]) )
+    #####:  586:			return 1;
+        -:  587:
+    #####:  588:	return 0;
+        -:  589:}
+        -:  590:
+        1:  591:void AutoLearnPhrase( ChewingData *pgdata )
+        -:  592:{
+        -:  593:	uint16_t bufPhoneSeq[ MAX_PHONE_SEQ_LEN + 1 ];
+        1:  594:	char bufWordSeq[ MAX_PHONE_SEQ_LEN * MAX_UTF8_SIZE + 1 ] = { 0 };
+        -:  595:	char *pos;
+        -:  596:	int i;
+        -:  597:	int from;
+        -:  598:	int fromPreeditBuf;
+        -:  599:	int len;
+        1:  600:	int prev_pos = 0;
+        1:  601:	int pending_pos = 0;
+        -:  602:
+        -:  603:	/*
+        -:  604:	 * FIXME: pgdata->preferInterval does not consider symbol, so we need to
+        -:  605:	 * do translate when using APIs that considering symbol.
+        -:  606:	 */
+        -:  607:
+        1:  608:	UserUpdatePhraseBegin( pgdata );
+        -:  609:
+        2:  610:	for ( i = 0; i < pgdata->nPrefer; i++ ) {
+        1:  611:		from = pgdata->preferInterval[ i ].from;
+        1:  612:		len = pgdata->preferInterval[i].to - from;
+        1:  613:		fromPreeditBuf = toPreeditBufIndex( pgdata, from );
+        -:  614:
+        1:  615:		LOG_VERBOSE( "interval from = %d, fromPreeditBuf = %d, len = %d, pending_pos = %d", from, fromPreeditBuf, len, pending_pos );
+        -:  616:
+       1*:  617:		if ( pending_pos != 0 && pending_pos < fromPreeditBuf ) {
+        -:  618:			/*
+        -:  619:			 * There is a pending phrase in buffer and it is not
+        -:  620:			 * connected to current phrase. We store it as
+        -:  621:			 * userphrase here.
+        -:  622:			 */
+    #####:  623:			UserUpdatePhrase( pgdata, bufPhoneSeq, bufWordSeq );
+    #####:  624:			prev_pos = 0;
+    #####:  625:			pending_pos = 0;
+        -:  626:		}
+        -:  627:
+       1*:  628:		if ( len == 1 && !ChewingIsBreakPoint( fromPreeditBuf, pgdata ) ) {
+        -:  629:			/*
+        -:  630:			 * There is a length one phrase and it is not a break
+        -:  631:			 * point. We store it and try to connect to other length
+        -:  632:			 * one phrase if possible.
+        -:  633:			 */
+    #####:  634:			memcpy( bufPhoneSeq + prev_pos, &pgdata->phoneSeq[ from ], sizeof( uint16_t ) * len );
+    #####:  635:			bufPhoneSeq[ prev_pos + len ] = (uint16_t) 0;
+        -:  636:
+    #####:  637:			pos = ueStrSeek( bufWordSeq, prev_pos );
+    #####:  638:			copyStringFromPreeditBuf( pgdata, fromPreeditBuf, len,
+    #####:  639:				pos, bufWordSeq + sizeof( bufWordSeq ) - pos );
+    #####:  640:			prev_pos += len;
+    #####:  641:			pending_pos = fromPreeditBuf + len;
+        -:  642:
+        -:  643:		} else {
+        1:  644:			if ( pending_pos ) {
+        -:  645:				/*
+        -:  646:				 * Clean pending phrase because we cannot join
+        -:  647:				 * it with current phrase.
+        -:  648:				 */
+    #####:  649:				UserUpdatePhrase( pgdata, bufPhoneSeq, bufWordSeq );
+    #####:  650:				prev_pos = 0;
+    #####:  651:				pending_pos = 0;
+        -:  652:			}
+        1:  653:			memcpy( bufPhoneSeq, &pgdata->phoneSeq[ from ], sizeof( uint16_t ) * len );
+        1:  654:			bufPhoneSeq[ len ] = (uint16_t) 0;
+        1:  655:			copyStringFromPreeditBuf( pgdata, fromPreeditBuf, len, bufWordSeq, sizeof( bufWordSeq ) );
+        1:  656:			UserUpdatePhrase( pgdata, bufPhoneSeq, bufWordSeq );
+        -:  657:		}
+        -:  658:	}
+        -:  659:
+        1:  660:	if ( pending_pos ) {
+    #####:  661:		UserUpdatePhrase( pgdata, bufPhoneSeq, bufWordSeq );
+    #####:  662:		prev_pos = 0;
+    #####:  663:		pending_pos = 0;
+        -:  664:	}
+        -:  665:
+        1:  666:	UserUpdatePhraseEnd( pgdata );
+        1:  667:}
+        -:  668:
+       25:  669:int AddChi( uint16_t phone, uint16_t phoneAlt, ChewingData *pgdata )
+        -:  670:{
+        -:  671:	int i;
+       25:  672:	int cursor = PhoneSeqCursor( pgdata );
+        -:  673:
+        -:  674:	/* shift the selectInterval */
+      25*:  675:	for ( i = 0; i < pgdata->nSelect; i++ ) {
+    #####:  676:		if ( pgdata->selectInterval[ i ].from >= cursor ) {
+    #####:  677:			pgdata->selectInterval[ i ].from++;
+    #####:  678:			pgdata->selectInterval[ i ].to++;
+        -:  679:		}
+        -:  680:	}
+        -:  681:
+        -:  682:	/* shift the Brkpt */
+      25*:  683:	assert( pgdata->nPhoneSeq >= cursor );
+       25:  684:	memmove(
+       25:  685:		&( pgdata->bUserArrBrkpt[ cursor + 2 ] ),
+       25:  686:		&( pgdata->bUserArrBrkpt[ cursor + 1 ] ),
+       25:  687:		sizeof( int ) * ( pgdata->nPhoneSeq - cursor ) );
+       25:  688:	memmove(
+       25:  689:		&( pgdata->bUserArrCnnct[ cursor + 2 ] ),
+       25:  690:		&( pgdata->bUserArrCnnct[ cursor + 1 ] ),
+       25:  691:		sizeof( int ) * ( pgdata->nPhoneSeq - cursor ) );
+        -:  692:
+        -:  693:	/* add to phoneSeq */
+       25:  694:	memmove(
+       25:  695:		&( pgdata->phoneSeq[ cursor + 1 ] ),
+       25:  696:		&( pgdata->phoneSeq[ cursor ] ) ,
+       25:  697:		sizeof( uint16_t ) * ( pgdata->nPhoneSeq - cursor ) );
+       25:  698:	pgdata->phoneSeq[ cursor ] = phone;
+       25:  699:	memmove(
+       25:  700:		&( pgdata->phoneSeqAlt[ cursor + 1 ] ),
+       25:  701:		&( pgdata->phoneSeqAlt[ cursor ] ) ,
+       25:  702:		sizeof( uint16_t ) * ( pgdata->nPhoneSeq - cursor ) );
+       25:  703:	pgdata->phoneSeqAlt[ cursor ] = phoneAlt;
+       25:  704:	pgdata->nPhoneSeq ++;
+        -:  705:
+        -:  706:	/* add to chiSymbolBuf */
+      25*:  707:	assert( pgdata->chiSymbolBufLen >= pgdata->chiSymbolCursor );
+       25:  708:	memmove(
+       25:  709:		&( pgdata->preeditBuf[ pgdata->chiSymbolCursor + 1 ] ),
+       25:  710:		&( pgdata->preeditBuf[ pgdata->chiSymbolCursor ] ) ,
+       25:  711:		sizeof( pgdata->preeditBuf[0] ) * ( pgdata->chiSymbolBufLen - pgdata->chiSymbolCursor ) );
+        -:  712:	/* "0" means Chinese word */
+       25:  713:	pgdata->preeditBuf[ pgdata->chiSymbolCursor ].category = CHEWING_CHINESE;
+       25:  714:	pgdata->chiSymbolBufLen++;
+       25:  715:	pgdata->chiSymbolCursor++;
+        -:  716:
+       25:  717:	return 0;
+        -:  718:}
+        -:  719:
+      166:  720:static void ShowChewingData( ChewingData *pgdata )
+        -:  721:{
+        -:  722:	int i ;
+        -:  723:
+      166:  724:	DEBUG_OUT(
+        -:  725:		"nPhoneSeq : %d\n"
+        -:  726:		"phoneSeq  : ",
+        -:  727:		pgdata->nPhoneSeq );
+      251:  728:	for ( i = 0; i < pgdata->nPhoneSeq; i++ )
+       85:  729:		DEBUG_OUT( "%hu ", pgdata->phoneSeq[ i ] );
+      166:  730:	DEBUG_OUT(
+        -:  731:		"[cursor : %d]\n"
+        -:  732:		"nSelect : %d\n"
+        -:  733:		"selectStr       selectInterval\n",
+        -:  734:		PhoneSeqCursor( pgdata ),
+        -:  735:		pgdata->nSelect );
+      167:  736:	for ( i = 0; i < pgdata->nSelect; i++ ) {
+        1:  737:		DEBUG_OUT(
+        -:  738:			"  %14s%4d%4d\n",
+        -:  739:			pgdata->selectStr[ i ],
+        -:  740:			pgdata->selectInterval[ i ].from,
+        -:  741:			pgdata->selectInterval[ i ].to );
+        -:  742:	}
+        -:  743:
+      166:  744:	DEBUG_OUT( "bUserArrCnnct : " );
+      417:  745:	for ( i = 0; i <= pgdata->nPhoneSeq; i++ )
+      251:  746:		DEBUG_OUT( "%d ", pgdata->bUserArrCnnct[ i ] );
+      166:  747:	DEBUG_OUT( "\n" );
+        -:  748:
+      166:  749:	DEBUG_OUT( "bUserArrBrkpt : " );
+      417:  750:	for ( i = 0; i <= pgdata->nPhoneSeq; i++ )
+      251:  751:		DEBUG_OUT( "%d ", pgdata->bUserArrBrkpt[ i ] );
+      166:  752:	DEBUG_OUT( "\n" );
+        -:  753:
+      166:  754:	DEBUG_OUT( "bArrBrkpt     : " );
+      417:  755:	for ( i = 0; i <= pgdata->nPhoneSeq; i++ )
+      251:  756:		DEBUG_OUT( "%d ", pgdata->bArrBrkpt[ i ] );
+      166:  757:	DEBUG_OUT( "\n" );
+        -:  758:
+      166:  759:	DEBUG_OUT(
+        -:  760:		"bChiSym : %d , bSelect : %d\n",
+        -:  761:		pgdata->bChiSym,
+        -:  762:		pgdata->bSelect );
+      166:  763:}
+        -:  764:
+      166:  765:int CallPhrasing( ChewingData *pgdata, int all_phrasing )
+        -:  766:{
+        -:  767:	/* set "bSymbolArrBrkpt" && "bArrBrkpt" */
+      166:  768:	int i, ch_count = 0;
+        -:  769:
+      166:  770:	memcpy(
+      166:  771:		pgdata->bArrBrkpt,
+      166:  772:		pgdata->bUserArrBrkpt,
+        -:  773:		(MAX_PHONE_SEQ_LEN + 1) * sizeof( int ) );
+      166:  774:	memset(
+      166:  775:		pgdata->bSymbolArrBrkpt, 0,
+        -:  776:		(MAX_PHONE_SEQ_LEN + 1) * sizeof( int ) );
+        -:  777:
+      259:  778:	for ( i = 0; i < pgdata->chiSymbolBufLen; i++ ) {
+       93:  779:		if ( ChewingIsChiAt( i, pgdata ) )
+       85:  780:			ch_count++;
+        -:  781:		else {
+        8:  782:			pgdata->bArrBrkpt[ ch_count ] = 1;
+        8:  783:			pgdata->bSymbolArrBrkpt[ ch_count ] = 1;
+        -:  784:		}
+        -:  785:	}
+        -:  786:
+        -:  787:	/* kill select interval */
+      251:  788:	for ( i = 0; i < pgdata->nPhoneSeq; i++ ) {
+       85:  789:		if ( pgdata->bArrBrkpt[ i ] ) {
+    #####:  790:			ChewingKillSelectIntervalAcross( i, pgdata );
+        -:  791:		}
+        -:  792:	}
+        -:  793:
+      166:  794:	ShowChewingData(pgdata);
+        -:  795:
+        -:  796:	/* then phrasing */
+      166:  797:	Phrasing( pgdata, all_phrasing );
+        -:  798:
+        -:  799:	/* and then make prefer interval */
+      166:  800:	MakePreferInterval( pgdata );
+        -:  801:
+      166:  802:	return 0;
+        -:  803:}
+        -:  804:
+        -:  805:
+    #####:  806:static void Union( int set1,int set2, int parent[] )
+        -:  807:{
+    #####:  808:	if ( set1 != set2 )
+    #####:  809:		parent[ max( set1, set2 ) ] = min( set1, set2 );
+    #####:  810:}
+        -:  811:
+       16:  812:static int SameSet( int set1,int set2, int parent[] )
+        -:  813:{
+       16:  814:	while ( parent[ set1 ] != 0 ) {
+    #####:  815:		set1 = parent[ set1 ];
+        -:  816:	}
+       16:  817:	while ( parent[ set2 ] != 0 ) {
+    #####:  818:		set2 = parent[ set2 ];
+        -:  819:	}
+       16:  820:	return ( set1 == set2 );
+        -:  821:}
+        -:  822:
+        -:  823:/* make prefer interval from phrOut->dispInterval */
+      166:  824:static void MakePreferInterval( ChewingData *pgdata )
+        -:  825:{
+        -:  826:	int i, j, set_no;
+        -:  827:	int belong_set[ MAX_PHONE_SEQ_LEN + 1 ];
+        -:  828:	int parent[ MAX_PHONE_SEQ_LEN + 1 ];
+        -:  829:
+      166:  830:	memset( belong_set, 0 , sizeof( int ) * ( MAX_PHONE_SEQ_LEN + 1 ) );
+      166:  831:	memset( parent, 0, sizeof( int ) * ( MAX_PHONE_SEQ_LEN + 1 ) );
+        -:  832:
+        -:  833:	/* for each interval */
+      235:  834:	for ( i = 0; i < pgdata->phrOut.nDispInterval; i++ ) {
+      223:  835:		for (
+       69:  836:			j = pgdata->phrOut.dispInterval[ i ].from;
+      154:  837:			j < pgdata->phrOut.dispInterval[ i ].to;
+       85:  838:			j++ ) {
+       85:  839:			belong_set[ j ] = i + 1;
+        -:  840:		}
+        -:  841:	}
+      166:  842:	set_no = i + 1;
+      251:  843:	for ( i = 0; i < pgdata->nPhoneSeq; i++ )
+       85:  844:		if ( belong_set[i] == 0 )
+    #####:  845:			belong_set[ i ] = set_no++;
+        -:  846:
+        -:  847:	/* for each connect point */
+      182:  848:	for ( i = 1; i < pgdata->nPhoneSeq; i++ ) {
+       16:  849:		if ( pgdata->bUserArrCnnct[ i ] ) {
+    #####:  850:			Union( belong_set[ i - 1 ], belong_set[ i ], parent );
+        -:  851:		}
+        -:  852:	}
+        -:  853:
+        -:  854:	/* generate new intervals */
+      166:  855:	pgdata->nPrefer = 0;
+      166:  856:	i = 0;
+      235:  857:	while ( i < pgdata->nPhoneSeq ) {
+       85:  858:		for ( j = i + 1; j < pgdata->nPhoneSeq; j++ )
+       16:  859:			if ( ! SameSet( belong_set[ i ], belong_set[ j ], parent ) )
+    #####:  860:				break;
+        -:  861:
+       69:  862:		pgdata->preferInterval[ pgdata->nPrefer ].from = i;
+       69:  863:		pgdata->preferInterval[ pgdata->nPrefer ].to = j;
+       69:  864:		pgdata->nPrefer++;
+       69:  865:		i = j;
+        -:  866:	}
+      166:  867:}
+        -:  868:
+        -:  869:/* for MakeOutput */
+       96:  870:static void ShiftInterval( ChewingOutput *pgo, ChewingData *pgdata )
+        -:  871:{
+       96:  872:	int i, arrPos[ MAX_PHONE_SEQ_LEN ], k = 0, from, len;
+        -:  873:
+      149:  874:	for ( i = 0; i < pgdata->chiSymbolBufLen; i++ ) {
+       53:  875:		if ( ChewingIsChiAt( i, pgdata ) ) {
+       48:  876:			arrPos[ k++ ] = i;
+        -:  877:		}
+        -:  878:	}
+       96:  879:	arrPos[ k ] = i;
+        -:  880:
+       96:  881:	pgo->nDispInterval = pgdata->nPrefer;
+      134:  882:	for ( i = 0; i < pgdata->nPrefer; i++ ) {
+       38:  883:		from = pgdata->preferInterval[ i ].from;
+       38:  884:		len = pgdata->preferInterval[ i ].to - from;
+       38:  885:		pgo->dispInterval[ i ].from = arrPos[ from ];
+       38:  886:		pgo->dispInterval[ i ].to = arrPos[ from ] + len;
+        -:  887:	}
+       96:  888:}
+        -:  889:
+       96:  890:int MakeOutput( ChewingOutput *pgo, ChewingData *pgdata )
+        -:  891:{
+        -:  892:	int i;
+        -:  893:	char *pos;
+        -:  894:
+        -:  895:	/* fill zero to chiSymbolBuf first */
+       96:  896:	pgo->preeditBuf[0] = 0;
+       96:  897:	pgo->bopomofoBuf[0] = 0;
+        -:  898:
+       96:  899:	pos = pgo->preeditBuf;
+      149:  900:	for ( i = 0; i < pgdata->chiSymbolBufLen &&
+       53:  901:		pos < pgo->preeditBuf + sizeof( pgo->preeditBuf ) + MAX_UTF8_SIZE + 1; ++i ) {
+       53:  902:		strncpy( pos, pgdata->preeditBuf[ i ].char_, MAX_UTF8_SIZE + 1 );
+       53:  903:		pos += strlen( pgdata->preeditBuf[ i ].char_ );
+        -:  904:	}
+        -:  905:
+        -:  906:	/* fill point */
+       96:  907:	pgo->PointStart = pgdata->PointStart;
+       96:  908:	pgo->PointEnd = pgdata->PointEnd;
+        -:  909:
+        -:  910:	/* fill other fields */
+       96:  911:	pgo->chiSymbolBufLen = pgdata->chiSymbolBufLen;
+       96:  912:	pgo->chiSymbolCursor = pgdata->chiSymbolCursor;
+        -:  913:
+        -:  914:	/* fill zuinBuf */
+       96:  915:	if ( pgdata->zuinData.kbtype >= KB_HANYU_PINYIN ) {
+    #####:  916:		strcpy( pgo->bopomofoBuf, pgdata->zuinData.pinYinData.keySeq );
+        -:  917:	} else {
+      480:  918:		for ( i = 0; i < ZUIN_SIZE; i++ ) {
+      384:  919:			if ( pgdata->zuinData.pho_inx[ i ] != 0 ) {
+       66:  920:				ueStrNCpy( pgo->bopomofoBuf + strlen( pgo->bopomofoBuf ),
+       66:  921:					ueConstStrSeek( (zhuin_tab[ i ] + 2),
+       66:  922:						pgdata->zuinData.pho_inx[ i ] - 1 ),
+        -:  923:					1, STRNCPY_CLOSE );
+        -:  924:			}
+        -:  925:		}
+        -:  926:	}
+        -:  927:
+       96:  928:	ShiftInterval( pgo, pgdata );
+       96:  929:	memcpy(
+       96:  930:		pgo->dispBrkpt, pgdata->bUserArrBrkpt,
+        -:  931:		sizeof( pgo->dispBrkpt[ 0 ] ) * ( MAX_PHONE_SEQ_LEN + 1 ) );
+       96:  932:	pgo->pci = &( pgdata->choiceInfo );
+       96:  933:	pgo->bChiSym = pgdata->bChiSym;
+       96:  934:	memcpy( pgo->selKey, pgdata->config.selKey, sizeof( pgdata->config.selKey ) );
+       96:  935:	pgdata->bShowMsg = 0;
+       96:  936:	return 0;
+        -:  937:}
+        -:  938:
+       90:  939:int MakeOutputWithRtn( ChewingOutput *pgo, ChewingData *pgdata, int keystrokeRtn )
+        -:  940:{
+       90:  941:	pgo->keystrokeRtn = keystrokeRtn;
+       90:  942:	return MakeOutput( pgo, pgdata );
+        -:  943:}
+        -:  944:
+    #####:  945:void MakeOutputAddMsgAndCleanInterval( ChewingOutput *pgo, ChewingData *pgdata )
+        -:  946:{
+    #####:  947:	pgdata->bShowMsg = 1;
+    #####:  948:	pgo->nDispInterval = 0;
+    #####:  949:}
+        -:  950:
+        1:  951:int AddSelect( ChewingData *pgdata, int sel_i )
+        -:  952:{
+        -:  953:	int length, nSelect, cursor;
+        -:  954:
+        -:  955:	/* save the typing time */
+        1:  956:	length = pgdata->availInfo.avail[ pgdata->availInfo.currentAvail ].len;
+        1:  957:	nSelect = pgdata->nSelect;
+        -:  958:
+        -:  959:	/* change "selectStr" , "selectInterval" , and "nSelect" of ChewingData */
+        1:  960:	ueStrNCpy( pgdata->selectStr[ nSelect ],
+        1:  961:			pgdata->choiceInfo.totalChoiceStr[ sel_i ],
+        -:  962:			length, 1 );
+        1:  963:	cursor = PhoneSeqCursor( pgdata );
+        1:  964:	pgdata->selectInterval[ nSelect ].from = cursor;
+        1:  965:	pgdata->selectInterval[ nSelect ].to = cursor + length;
+        1:  966:	pgdata->nSelect++;
+        1:  967:	return 0;
+        -:  968:}
+        -:  969:
+        6:  970:int CountSelKeyNum( int key, ChewingData *pgdata )
+        -:  971:	/* return value starts from 0.  If less than zero : error key */
+        -:  972:{
+        -:  973:	int i;
+        -:  974:
+       12:  975:	for ( i = 0; i < MAX_SELKEY; i++ )
+       12:  976:		if ( pgdata->config.selKey[ i ] == key )
+        6:  977:			return i;
+    #####:  978:	return -1;
+        -:  979:}
+        -:  980:
+      243:  981:int CountSymbols( ChewingData *pgdata, int to )
+        -:  982:{
+        -:  983:	int chi;
+        -:  984:	int i;
+      356:  985:	for ( chi = i = 0; i < to; i++ ) {
+      113:  986:		if ( ChewingIsChiAt( i, pgdata ) )
+      105:  987:			chi++;
+        -:  988:	}
+      243:  989:	return to - chi;
+        -:  990:}
+        -:  991:
+      242:  992:int PhoneSeqCursor( ChewingData *pgdata )
+        -:  993:{
+      242:  994:	int cursor = pgdata->chiSymbolCursor - CountSymbols( pgdata, pgdata->chiSymbolCursor );
+      242:  995:	return cursor > 0 ? cursor : 0;
+        -:  996:}
+        -:  997:
+      344:  998:int ChewingIsChiAt( int chiSymbolCursor, ChewingData *pgdata )
+        -:  999:{
+      344: 1000:	return pgdata->preeditBuf[ chiSymbolCursor ].category == CHEWING_CHINESE;
+        -: 1001:}
+        -: 1002:
+        1: 1003:void RemoveSelectElement( int i, ChewingData *pgdata )
+        -: 1004:{
+        1: 1005:	if ( --pgdata->nSelect == i )
+        1: 1006:		return;
+    #####: 1007:	pgdata->selectInterval[ i ] = pgdata->selectInterval[ pgdata->nSelect ];
+    #####: 1008:	strcpy( pgdata->selectStr[ i ], pgdata->selectStr[ pgdata->nSelect ] );
+        -: 1009:}
+        -: 1010:
+    #####: 1011:static int ChewingKillSelectIntervalAcross( int cursor, ChewingData *pgdata )
+        -: 1012:{
+        -: 1013:	int i;
+    #####: 1014:	for ( i = 0; i < pgdata->nSelect; i++ ) {
+    #####: 1015:		if ( pgdata->selectInterval[ i ].from < cursor &&
+    #####: 1016:			pgdata->selectInterval[ i ].to > cursor ) {
+    #####: 1017:			RemoveSelectElement( i, pgdata );
+    #####: 1018:			i--;
+        -: 1019:		}
+        -: 1020:	}
+    #####: 1021:	return 0;
+        -: 1022:}
+        -: 1023:
+    #####: 1024:static int KillCharInSelectIntervalAndBrkpt( ChewingData *pgdata, int cursorToKill )
+        -: 1025:{
+        -: 1026:	int i;
+        -: 1027:
+    #####: 1028:	for ( i = 0; i < pgdata->nSelect; i++ ) {
+    #####: 1029:		if ( pgdata->selectInterval[ i ].from <= cursorToKill &&
+    #####: 1030:			pgdata->selectInterval[ i ].to > cursorToKill ) {
+    #####: 1031:			RemoveSelectElement( i, pgdata );
+    #####: 1032:			i--;      /* the last one was swap to i, we need to recheck i */
+        -: 1033:		}
+    #####: 1034:		else if( pgdata->selectInterval[ i ].from > cursorToKill ) {
+    #####: 1035:			pgdata->selectInterval[ i ].from--;
+    #####: 1036:			pgdata->selectInterval[ i ].to--;
+        -: 1037:		}
+        -: 1038:	}
+    #####: 1039:	assert ( pgdata->nPhoneSeq >= cursorToKill );
+    #####: 1040:	memmove(
+    #####: 1041:		&( pgdata->bUserArrBrkpt[ cursorToKill ] ),
+    #####: 1042:		&( pgdata->bUserArrBrkpt[ cursorToKill + 1 ] ),
+    #####: 1043:		sizeof( int ) * ( pgdata->nPhoneSeq - cursorToKill ) );
+    #####: 1044:	memmove(
+    #####: 1045:		&( pgdata->bUserArrCnnct[ cursorToKill ] ),
+    #####: 1046:		&( pgdata->bUserArrCnnct[ cursorToKill + 1 ] ),
+    #####: 1047:		sizeof( int ) * ( pgdata->nPhoneSeq - cursorToKill ) );
+        -: 1048:
+    #####: 1049:	return 0;
+        -: 1050:}
+        -: 1051:
+    #####: 1052:int ChewingKillChar(
+        -: 1053:		ChewingData *pgdata,
+        -: 1054:		int chiSymbolCursorToKill,
+        -: 1055:		int minus )
+        -: 1056:{
+        -: 1057:	int tmp, cursorToKill;
+    #####: 1058:	tmp = pgdata->chiSymbolCursor;
+    #####: 1059:	pgdata->chiSymbolCursor = chiSymbolCursorToKill;
+    #####: 1060:	cursorToKill = PhoneSeqCursor( pgdata );
+    #####: 1061:	pgdata->chiSymbolCursor = tmp;
+    #####: 1062:	if ( ChewingIsChiAt( chiSymbolCursorToKill, pgdata ) ) {
+    #####: 1063:		KillCharInSelectIntervalAndBrkpt(pgdata, cursorToKill);
+    #####: 1064:		assert( pgdata->nPhoneSeq - cursorToKill - 1 >= 0 );
+    #####: 1065:		memmove(
+    #####: 1066:			&( pgdata->phoneSeq[ cursorToKill ] ),
+    #####: 1067:			&(pgdata->phoneSeq[ cursorToKill + 1 ] ),
+    #####: 1068:			(pgdata->nPhoneSeq - cursorToKill - 1) * sizeof( uint16_t ) );
+    #####: 1069:		pgdata->nPhoneSeq--;
+        -: 1070:	}
+    #####: 1071:	pgdata->symbolKeyBuf[ chiSymbolCursorToKill ] = 0;
+    #####: 1072:	assert( pgdata->chiSymbolBufLen - chiSymbolCursorToKill );
+    #####: 1073:	memmove(
+    #####: 1074:		& pgdata->preeditBuf[ chiSymbolCursorToKill ],
+    #####: 1075:		& pgdata->preeditBuf[ chiSymbolCursorToKill + 1 ],
+    #####: 1076:		sizeof ( pgdata->preeditBuf[0] ) * (pgdata->chiSymbolBufLen - chiSymbolCursorToKill) );
+    #####: 1077:	pgdata->chiSymbolBufLen--;
+    #####: 1078:	pgdata->chiSymbolCursor -= minus;
+    #####: 1079:	if (pgdata->chiSymbolCursor < 0)
+    #####: 1080:		pgdata->chiSymbolCursor = 0;
+    #####: 1081:	return 0;
+        -: 1082:}
+        -: 1083:
+    #####: 1084:int IsPreferIntervalConnted( int cursor, ChewingData *pgdata )
+        -: 1085:{
+        -: 1086:	int i;
+        -: 1087:
+    #####: 1088:	for ( i = 0; i < pgdata->nPrefer; i++ ) {
+    #####: 1089:		if (
+    #####: 1090:			pgdata->preferInterval[ i ].from < cursor &&
+    #####: 1091:			pgdata->preferInterval[ i ].to > cursor )
+    #####: 1092:			return 1;
+        -: 1093:	}
+    #####: 1094:	return 0;
+        -: 1095:}
+        -: 1096:
+        -: 1097:static const char * const symbol_buf[][ 50 ] = {
+        -: 1098:	{ "0", "\xC3\xB8", 0 },
+        -: 1099:		/* "ø" */
+        -: 1100:	{ "[", "\xE3\x80\x8C", "\xE3\x80\x8E", "\xE3\x80\x8A", "\xE3\x80\x88",
+        -: 1101:		  "\xE3\x80\x90", "\xE3\x80\x94", 0 },
+        -: 1102:		/* "「", "『", "《", "〈", "【", "〔" */
+        -: 1103:	{ "]", "\xE3\x80\x8D", "\xE3\x80\x8F", "\xE3\x80\x8B", "\xE3\x80\x89",
+        -: 1104:		  "\xE3\x80\x91", "\xE3\x80\x95", 0 },
+        -: 1105:		/* "」", "』", "》", "〉", "】", "〕" */
+        -: 1106:	{ "{", "\xEF\xBD\x9B", 0 },
+        -: 1107:		/* "｛" */
+        -: 1108:	{ "}", "\xEF\xBD\x9D", 0 },
+        -: 1109:		/* "｝" */
+        -: 1110:	{ "<", "\xEF\xBC\x8C", "\xE2\x86\x90", 0 },
+        -: 1111:		/* "，", "←" */
+        -: 1112:	{ ">", "\xE3\x80\x82", "\xE2\x86\x92", "\xEF\xBC\x8E", 0 },
+        -: 1113:		/* "。", "→", "．" */
+        -: 1114:	{ "?", "\xEF\xBC\x9F", "\xC2\xBF", 0 },
+        -: 1115:		/* "？", "¿" */
+        -: 1116:	{ "!", "\xEF\xBC\x81", "\xE2\x85\xA0","\xC2\xA1", 0 },
+        -: 1117:		/* "！", "Ⅰ","¡" */
+        -: 1118:	{ "@", "\xEF\xBC\xA0", "\xE2\x85\xA1", "\xE2\x8A\x95", "\xE2\x8A\x99",
+        -: 1119:		  "\xE3\x8A\xA3", "\xEF\xB9\xAB", 0 },
+        -: 1120:		/* "＠", "Ⅱ", "⊕", "⊙", "㊣", "﹫" */
+        -: 1121:	{ "#", "\xEF\xBC\x83", "\xE2\x85\xA2", "\xEF\xB9\x9F", 0 },
+        -: 1122:		/* "＃", "Ⅲ", "﹟" */
+        -: 1123:	{ "$", "\xEF\xBC\x84", "\xE2\x85\xA3", "\xE2\x82\xAC", "\xEF\xB9\xA9",
+        -: 1124:		  "\xEF\xBF\xA0", "\xE2\x88\xAE","\xEF\xBF\xA1", "\xEF\xBF\xA5", 0 },
+        -: 1125:		/* "＄", "Ⅳ", "€", "﹩", "￠", "∮","￡", "￥" */
+        -: 1126:	{ "%", "\xEF\xBC\x85", "\xE2\x85\xA4", 0 },
+        -: 1127:		/* "％", "Ⅴ" */
+        -: 1128:	{ "^", "\xEF\xB8\xBF", "\xE2\x85\xA5", "\xEF\xB9\x80", "\xEF\xB8\xBD",
+        -: 1129:		  "\xEF\xB8\xBE", 0 },
+        -: 1130:		/* "︿", "Ⅵ", "﹀", "︽", "︾" */
+        -: 1131:	{ "&", "\xEF\xBC\x86", "\xE2\x85\xA6", "\xEF\xB9\xA0", 0 },
+        -: 1132:		/* "＆", "Ⅶ", "﹠" */
+        -: 1133:	{ "*", "\xEF\xBC\x8A", "\xE2\x85\xA7", "\xC3\x97", "\xE2\x80\xBB",
+        -: 1134:		  "\xE2\x95\xB3", "\xEF\xB9\xA1", "\xE2\x98\xAF", "\xE2\x98\x86",
+        -: 1135:		  "\xE2\x98\x85", 0 },
+        -: 1136:		/* "＊", "Ⅷ", "×", "※", "╳", "﹡", "☯", "☆", "★" */
+        -: 1137:	{ "(", "\xEF\xBC\x88", "\xE2\x85\xA8", 0 },
+        -: 1138:		/* "（", "Ⅸ" */
+        -: 1139:	{ ")", "\xEF\xBC\x89", "\xE2\x85\xA9", 0 },
+        -: 1140:		/* "）", "Ⅹ" */
+        -: 1141:	{ "_", "\xE2\x80\x94", "\xEF\xBC\x8D", "\xE2\x80\x95", "\xE2\x80\x93",
+        -: 1142:		  "\xE2\x86\x90", "\xE2\x86\x92", "\xEF\xBC\xBF", "\xEF\xBF\xA3",
+        -: 1143:		  "\xEF\xB9\x8D", "\xEF\xB9\x89", "\xEF\xB9\x8E", "\xEF\xB9\x8A",
+        -: 1144:		  "\xEF\xB9\x8F", "\xef\xb9\x8b", "\xE2\x80\xA6", "\xE2\x80\xA5",
+        -: 1145:		  "\xC2\xAF", 0 },
+        -: 1146:		/* "—", "－", "―", "–"
+        -: 1147:		 * "←", "→", "＿", "￣"
+        -: 1148:		 * "﹍", "﹉", "﹎", "﹊"
+        -: 1149:		 * "﹏", "﹋", "…", "‥"
+        -: 1150:		 * "¯" */
+        -: 1151:	{ "+", "\xEF\xBC\x8B", "\xC2\xB1", "\xEF\xB9\xA2", 0 },
+        -: 1152:		/* "＋", "±", "﹢" */
+        -: 1153:	{ "=", "\xEF\xBC\x9D", "\xE2\x89\x92", "\xE2\x89\xA0", "\xE2\x89\xA1",
+        -: 1154:		  "\xE2\x89\xA6", "\xE2\x89\xA7", "\xEF\xB9\xA6", 0 },
+        -: 1155:		/* "＝", "≒", "≠", "≡", "≦", "≧", "﹦" */
+        -: 1156:	{ "`", "\xE3\x80\x8F", "\xE3\x80\x8E", "\xE2\x80\xB2", "\xE2\x80\xB5", 0 },
+        -: 1157:		/* "』", "『", "′", "‵" */
+        -: 1158:	{ "~", "\xEF\xBD\x9E", 0 },
+        -: 1159:		/* "～" */
+        -: 1160:	{ ":", "\xEF\xBC\x9A", "\xEF\xBC\x9B", "\xEF\xB8\xB0", "\xEF\xB9\x95", 0 },
+        -: 1161:		/* "：", "；", "︰", "﹕" */
+        -: 1162:	{ "\"", "\xEF\xBC\x9B", 0 },
+        -: 1163:		/* "；" */
+        -: 1164:	{ "\'", "\xE3\x80\x81", "\xE2\x80\xA6", "\xE2\x80\xA5", 0 },
+        -: 1165:		/* "、", "…", "‥" */
+        -: 1166:	{ "\\", "\xEF\xBC\xBC", "\xE2\x86\x96", "\xE2\x86\x98", "\xEF\xB9\xA8", 0 },
+        -: 1167:		/* "＼", "↖", "↘", "﹨" */
+        -: 1168:	{ "-", "\xE2\x80\x94", "\xEF\xBC\x8D", "\xE2\x80\x95", "\xE2\x80\x93",
+        -: 1169:		  "\xE2\x86\x90", "\xE2\x86\x92", "\xEF\xBC\xBF", "\xEF\xBF\xA3",
+        -: 1170:		  "\xEF\xB9\x8D", "\xEF\xB9\x89", "\xEF\xB9\x8E", "\xEF\xB9\x8A",
+        -: 1171:		  "\xEF\xB9\x8F", "\xef\xb9\x8b", "\xE2\x80\xA6", "\xE2\x80\xA5",
+        -: 1172:		  "\xC2\xAF", 0 },
+        -: 1173:		/* "—", "－", "―", "–"
+        -: 1174:		 * "←", "→", "＿", "￣"
+        -: 1175:		 * "﹍", "﹉", "﹎", "﹊"
+        -: 1176:		 * "﹏", "﹋", "…", "‥"
+        -: 1177:		 * "¯" */
+        -: 1178:	{ "/", "\xEF\xBC\x8F", "\xC3\xB7", "\xE2\x86\x97", "\xE2\x86\x99",
+        -: 1179:		  "\xE2\x88\x95", 0 },
+        -: 1180:		/* "／","÷","↗","↙","∕" */
+        -: 1181:	{ "|", "\xE2\x86\x91", "\xE2\x86\x93", "\xE2\x88\xA3", "\xE2\x88\xA5",
+        -: 1182:		  "\xEF\xB8\xB1", "\xEF\xB8\xB3", "\xEF\xB8\xB4" ,0 },
+        -: 1183:		/* "↑", "↓", "∣", "∥", "︱", "︳", "︴" */
+        -: 1184:	{ "A", "\xC3\x85","\xCE\x91", "\xCE\xB1", "\xE2\x94\x9C", "\xE2\x95\xA0",
+        -: 1185:		  "\xE2\x95\x9F", "\xE2\x95\x9E", 0 },
+        -: 1186:		/* "Å","Α", "α", "├", "╠", "╟", "╞" */
+        -: 1187:	{ "B", "\xCE\x92", "\xCE\xB2","\xE2\x88\xB5", 0 },
+        -: 1188:		/* "Β", "β","∵" */
+        -: 1189:	{ "C", "\xCE\xA7", "\xCF\x87", "\xE2\x94\x98", "\xE2\x95\xAF",
+        -: 1190:		  "\xE2\x95\x9D", "\xE2\x95\x9C", "\xE2\x95\x9B", "\xE3\x8F\x84",
+        -: 1191:		  "\xE2\x84\x83", "\xE3\x8E\x9D", "\xE2\x99\xA3", "\xC2\xA9", 0 },
+        -: 1192:		/* "Χ", "χ", "┘", "╯", "╝", "╜", "╛"
+        -: 1193:		 * "㏄", "℃", "㎝", "♣", "©" */
+        -: 1194:	{ "D", "\xCE\x94", "\xCE\xB4", "\xE2\x97\x87", "\xE2\x97\x86",
+        -: 1195:		  "\xE2\x94\xA4", "\xE2\x95\xA3", "\xE2\x95\xA2", "\xE2\x95\xA1",
+        -: 1196:		  "\xE2\x99\xA6", 0 },
+        -: 1197:		/* "Δ", "δ", "◇", "◆", "┤", "╣", "╢", "╡","♦" */
+        -: 1198:	{ "E", "\xCE\x95", "\xCE\xB5", "\xE2\x94\x90", "\xE2\x95\xAE",
+        -: 1199:		  "\xE2\x95\x97", "\xE2\x95\x93", "\xE2\x95\x95", 0 },
+        -: 1200:		/* "Ε", "ε", "┐", "╮", "╗", "╓", "╕" */
+        -: 1201:	{ "F", "\xCE\xA6", "\xCF\x88", "\xE2\x94\x82", "\xE2\x95\x91",
+        -: 1202:		  "\xE2\x99\x80", 0 },
+        -: 1203:		/* "Φ", "ψ", "│", "║", "♀" */
+        -: 1204:	{ "G", "\xCE\x93", "\xCE\xB3", 0 },
+        -: 1205:		/* "Γ", "γ" */
+        -: 1206:	{ "H", "\xCE\x97", "\xCE\xB7","\xE2\x99\xA5", 0 },
+        -: 1207:		/* "Η", "η","♥" */
+        -: 1208:	{ "I", "\xCE\x99", "\xCE\xB9", 0 },
+        -: 1209:		/* "Ι", "ι" */
+        -: 1210:	{ "J", "\xCF\x86", 0 },
+        -: 1211:		/* "φ" */
+        -: 1212:	{ "K", "\xCE\x9A", "\xCE\xBA","\xE3\x8E\x9E", "\xE3\x8F\x8E", 0 },
+        -: 1213:		/* "Κ", "κ","㎞", "㏎" */
+        -: 1214:	{ "L", "\xCE\x9B", "\xCE\xBB","\xE3\x8F\x92", "\xE3\x8F\x91", 0 },
+        -: 1215:		/* "Λ", "λ","㏒", "㏑" */
+        -: 1216:	{ "M", "\xCE\x9C", "\xCE\xBC", "\xE2\x99\x82", "\xE2\x84\x93",
+        -: 1217:		  "\xE3\x8E\x8E", "\xE3\x8F\x95", "\xE3\x8E\x9C","\xE3\x8E\xA1", 0 },
+        -: 1218:		/* "Μ", "μ", "♂", "ℓ", "㎎", "㏕", "㎜","㎡" */
+        -: 1219:	{ "N", "\xCE\x9D", "\xCE\xBD","\xE2\x84\x96", 0 },
+        -: 1220:		/* "Ν", "ν","№" */
+        -: 1221:	{ "O", "\xCE\x9F", "\xCE\xBF", 0 },
+        -: 1222:		/* "Ο", "ο" */
+        -: 1223:	{ "P", "\xCE\xA0", "\xCF\x80", 0 },
+        -: 1224:		/* "Π", "π" */
+        -: 1225:	{ "Q", "\xCE\x98", "\xCE\xB8","\xD0\x94","\xE2\x94\x8C", "\xE2\x95\xAD",
+        -: 1226:		  "\xE2\x95\x94", "\xE2\x95\x93", "\xE2\x95\x92", 0 },
+        -: 1227:		/* "Θ", "θ","Д","┌", "╭", "╔", "╓", "╒" */
+        -: 1228:	{ "R", "\xCE\xA1", "\xCF\x81", "\xE2\x94\x80", "\xE2\x95\x90" ,"\xC2\xAE" , 0 },
+        -: 1229:		/* "Ρ", "ρ", "─", "═" ,"®" */
+        -: 1230:	{ "S", "\xCE\xA3", "\xCF\x83", "\xE2\x88\xB4", "\xE2\x96\xA1",
+        -: 1231:		  "\xE2\x96\xA0", "\xE2\x94\xBC", "\xE2\x95\xAC", "\xE2\x95\xAA",
+        -: 1232:		  "\xE2\x95\xAB", "\xE2\x88\xAB", "\xC2\xA7", "\xE2\x99\xA0", 0 },
+        -: 1233:		/* "Σ", "σ", "∴", "□", "■", "┼", "╬", "╪", "╫"
+        -: 1234:		 * "∫", "§", "♠" */
+        -: 1235:	{ "T", "\xCE\xA4", "\xCF\x84", "\xCE\xB8", "\xE2\x96\xB3", "\xE2\x96\xB2",
+        -: 1236:		  "\xE2\x96\xBD", "\xE2\x96\xBC", "\xE2\x84\xA2", "\xE2\x8A\xBF",
+        -: 1237:		  "\xE2\x84\xA2", 0 },
+        -: 1238:		/* "Τ", "τ","θ","△","▲","▽","▼","™","⊿", "™" */
+        -: 1239:	{ "U", "\xCE\xA5", "\xCF\x85","\xCE\xBC","\xE2\x88\xAA", "\xE2\x88\xA9", 0 },
+        -: 1240:		/* "Υ", "υ","μ","∪", "∩" */
+        -: 1241:	{ "V", "\xCE\xBD", 0 },
+        -: 1242:	{ "W", "\xE2\x84\xA6", "\xCF\x89", "\xE2\x94\xAC", "\xE2\x95\xA6",
+        -: 1243:		  "\xE2\x95\xA4", "\xE2\x95\xA5", 0 },
+        -: 1244:		/* "Ω", "ω", "┬", "╦", "╤", "╥" */
+        -: 1245:	{ "X", "\xCE\x9E", "\xCE\xBE", "\xE2\x94\xB4", "\xE2\x95\xA9",
+        -: 1246:		  "\xE2\x95\xA7", "\xE2\x95\xA8", 0 },
+        -: 1247:		/* "Ξ", "ξ", "┴", "╩", "╧", "╨" */
+        -: 1248:	{ "Y", "\xCE\xA8", 0 },
+        -: 1249:		/* "Ψ" */
+        -: 1250:	{ "Z", "\xCE\x96", "\xCE\xB6", "\xE2\x94\x94", "\xE2\x95\xB0",
+        -: 1251:		  "\xE2\x95\x9A", "\xE2\x95\x99", "\xE2\x95\x98", 0 },
+        -: 1252:		/* "Ζ", "ζ", "└", "╰", "╚", "╙", "╘" */
+        -: 1253:};
+        -: 1254:
+        5: 1255:static int FindSymbolKey( const char *symbol )
+        -: 1256:{
+        -: 1257:	unsigned int i;
+        -: 1258:	const char * const *buf;
+       30: 1259:	for ( i = 0; i < ARRAY_SIZE( symbol_buf ); ++i ) {
+      135: 1260:		for ( buf = symbol_buf[ i ]; *buf; ++buf )	{
+      110: 1261:			if (  0 == strcmp( *buf, symbol ) )
+        5: 1262:				return *symbol_buf[ i ][ 0 ];
+        -: 1263:		}
+        -: 1264:	}
+    #####: 1265:	return 0;
+        -: 1266:}
+        -: 1267:
+        3: 1268:int OpenSymbolChoice( ChewingData *pgdata )
+        -: 1269:{
+        3: 1270:	int i, symbol_buf_len = ARRAY_SIZE( symbol_buf );
+        -: 1271:	const char * const *pBuf;
+        3: 1272:	ChoiceInfo *pci = &( pgdata->choiceInfo );
+        3: 1273:	pci->oldChiSymbolCursor = pgdata->chiSymbolCursor;
+        -: 1274:
+        -: 1275:	/* see if there is some word in the cursor position */
+        3: 1276:	if ( pgdata->chiSymbolCursor == pgdata->chiSymbolBufLen )
+        3: 1277:		pgdata->chiSymbolCursor--;
+        3: 1278:	if ( pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] == '1' ) {
+    #####: 1279:		pgdata->bSelect = 1;
+    #####: 1280:		HaninSymbolInput( pgdata );
+    #####: 1281:		return 0;
+        -: 1282:	}
+       18: 1283:	for ( i = 0; i < symbol_buf_len; i++ ) {
+       18: 1284:		if ( symbol_buf[ i ][ 0 ][ 0 ] ==
+       18: 1285:				pgdata->symbolKeyBuf[ pgdata->chiSymbolCursor ] ) {
+        3: 1286:			pBuf = symbol_buf[i];
+        3: 1287:			break;
+        -: 1288:		}
+        -: 1289:	}
+        3: 1290:	if ( i == symbol_buf_len ) {
+    #####: 1291:		ChoiceEndChoice( pgdata );
+    #####: 1292:		return 0;
+        -: 1293:	}
+        3: 1294:	pci->nTotalChoice = 0;
+        9: 1295:	for ( i = 1; pBuf[ i ]; i++ ) {
+        6: 1296:		ueStrNCpy( pci->totalChoiceStr[ pci->nTotalChoice ],
+        6: 1297:				pBuf[ i ], ueStrLen( pBuf[i] ), 1 );
+        6: 1298:		pci->nTotalChoice++;
+        -: 1299:	}
+        -: 1300:
+        3: 1301:	pci->nChoicePerPage = pgdata->config.candPerPage;
+       3*: 1302:	assert( pci->nTotalChoice > 0 );
+        3: 1303:	pci->nPage = CEIL_DIV( pci->nTotalChoice, pci->nChoicePerPage );
+        3: 1304:	pci->pageNo = 0;
+        3: 1305:	pci->isSymbol = SYMBOL_CHOICE_UPDATE;
+        -: 1306:
+        3: 1307:	pgdata->bSelect = 1;
+        3: 1308:	pgdata->availInfo.nAvail = 1;
+        3: 1309:	pgdata->availInfo.currentAvail = 0;
+        3: 1310:	pgdata->availInfo.avail[ 0 ].id = NULL;
+        3: 1311:	pgdata->availInfo.avail[ 0 ].len = 1;
+        3: 1312:	return 0;
+        -: 1313:}
+        -: 1314:
+       28: 1315:int InitSymbolTable( ChewingData *pgdata, const char *prefix )
+        -: 1316:{
+        -: 1317:	static const unsigned int MAX_SYMBOL_ENTRY = 100;
+        -: 1318:	static const size_t LINE_LEN = 512; // shall be long enough?
+        -: 1319:
+       28: 1320:	char *filename = NULL;
+       28: 1321:	FILE *file = NULL;
+       28: 1322:	char *line = NULL;
+       28: 1323:	SymbolEntry **entry = NULL;
+        -: 1324:	char *category_end;
+        -: 1325:	const char *symbols;
+        -: 1326:	char *symbols_end;
+        -: 1327:	const char *symbol;
+        -: 1328:	size_t i;
+        -: 1329:	size_t len;
+        -: 1330:	size_t size;
+       28: 1331:	int ret = -1;
+        -: 1332:
+       28: 1333:	pgdata->static_data.n_symbol_entry = 0;
+       28: 1334:	pgdata->static_data.symbol_table = NULL;
+        -: 1335:
+       28: 1336:	ret = asprintf( &filename, "%s" PLAT_SEPARATOR "%s",
+        -: 1337:		prefix, SYMBOL_TABLE_FILE );
+       28: 1338:	if ( ret == -1 )
+    #####: 1339:		goto error;
+        -: 1340:
+       28: 1341:	file = fopen( filename, "r" );
+       28: 1342:	if ( !file )
+    #####: 1343:		goto error;
+        -: 1344:
+       28: 1345:	line = ALC( char, LINE_LEN );
+       28: 1346:	if ( !line )
+    #####: 1347:		goto error;
+        -: 1348:
+       28: 1349:	entry = ALC( SymbolEntry* , MAX_SYMBOL_ENTRY );
+       28: 1350:	if ( !entry )
+    #####: 1351:		goto error;
+        -: 1352:
+      392: 1353:	while ( fgets( line, LINE_LEN, file ) &&
+      364: 1354:		pgdata->static_data.n_symbol_entry < MAX_SYMBOL_ENTRY ) {
+        -: 1355:
+      364: 1356:		category_end = strpbrk( line, "=\r\n" );
+      364: 1357:		if ( !category_end )
+    #####: 1358:			goto error;
+        -: 1359:
+      364: 1360:		symbols = category_end + 1;
+      364: 1361:		symbols_end = strpbrk( symbols, "\r\n" );
+      364: 1362:		if ( symbols_end ) {
+      308: 1363:			*symbols_end = 0;
+      308: 1364:			len = ueStrLen( symbols );
+        -: 1365:
+      308: 1366:			entry[ pgdata->static_data.n_symbol_entry ] =
+      308: 1367:				( SymbolEntry* ) malloc( sizeof ( entry[0][0] ) +
+      308: 1368:					sizeof( entry[0][0].symbols[0] ) * len);
+      308: 1369:			if ( !entry[ pgdata->static_data.n_symbol_entry ] )
+    #####: 1370:				goto error;
+      308: 1371:			entry[ pgdata->static_data.n_symbol_entry ]
+      308: 1372:				->nSymbols = len;
+        -: 1373:
+      308: 1374:			symbol = symbols;
+        -: 1375:
+     8512: 1376:			for ( i = 0; i < len; ++i ) {
+     8204: 1377:				ueStrNCpy(
+     8204: 1378:					entry[ pgdata->static_data.n_symbol_entry ]->symbols[ i ],
+        -: 1379:					symbol, 1, 1 );
+        -: 1380:				// FIXME: What if symbol is combining sequences.
+     8204: 1381:				symbol += ueBytesFromChar( symbol[0] );
+        -: 1382:			}
+        -: 1383:
+        -: 1384:
+        -: 1385:		} else {
+       56: 1386:			entry[ pgdata->static_data.n_symbol_entry ] =
+       56: 1387:				( SymbolEntry* ) malloc( sizeof ( entry[0][0] ) );
+       56: 1388:			if ( !entry[ pgdata->static_data.n_symbol_entry ] )
+    #####: 1389:				goto error;
+        -: 1390:
+       56: 1391:			entry[ pgdata->static_data.n_symbol_entry ]
+       56: 1392:				->nSymbols = 0;
+        -: 1393:		}
+        -: 1394:
+      364: 1395:		*category_end = 0;
+      364: 1396:		ueStrNCpy(
+      364: 1397:			entry[pgdata->static_data.n_symbol_entry]->category,
+        -: 1398:			line, MAX_PHRASE_LEN, 1);
+        -: 1399:
+      364: 1400:		++pgdata->static_data.n_symbol_entry;
+        -: 1401:	}
+        -: 1402:
+       28: 1403:	size = sizeof( *pgdata->static_data.symbol_table ) *
+       28: 1404:		pgdata->static_data.n_symbol_entry;
+       28: 1405:	pgdata->static_data.symbol_table = ( SymbolEntry ** ) malloc( size );
+       28: 1406:	if ( !pgdata->static_data.symbol_table )
+    #####: 1407:		goto error;
+       28: 1408:	memcpy( pgdata->static_data.symbol_table, entry, size );
+        -: 1409:
+       28: 1410:	ret = 0;
+       28: 1411:end:
+       28: 1412:	free( entry );
+       28: 1413:	free( line );
+       28: 1414:	fclose( file );
+       28: 1415:	free ( filename );
+       28: 1416:	return ret;
+        -: 1417:
+    #####: 1418:error:
+    #####: 1419:	for ( i = 0; i < pgdata->static_data.n_symbol_entry; ++i ) {
+    #####: 1420:		free( entry[ i ] );
+        -: 1421:	}
+    #####: 1422:	goto end;
+        -: 1423:}
+        -: 1424:
+       28: 1425:void TerminateSymbolTable( ChewingData *pgdata )
+        -: 1426:{
+        -: 1427:	unsigned int i;
+       28: 1428:	if ( pgdata->static_data.symbol_table ) {
+      392: 1429:		for ( i = 0; i < pgdata->static_data.n_symbol_entry; ++i )
+      364: 1430:			free( pgdata->static_data.symbol_table[ i ] );
+       28: 1431:		free( pgdata->static_data.symbol_table );
+       28: 1432:		pgdata->static_data.n_symbol_entry = 0;
+       28: 1433:		pgdata->static_data.symbol_table = NULL;
+        -: 1434:	}
+       28: 1435:}
+        -: 1436:
+       28: 1437:int InitEasySymbolInput( ChewingData *pgdata, const char *prefix )
+        -: 1438:{
+        -: 1439:	static const size_t LINE_LEN = 512; // shall be long enough?
+        -: 1440:
+       28: 1441:	FILE *file = NULL;
+       28: 1442:	char *filename = NULL;
+       28: 1443:	char *line = NULL;
+        -: 1444:	int len;
+        -: 1445:	int _index;
+        -: 1446:	char *symbol;
+       28: 1447:	int ret = -1;
+        -: 1448:
+       28: 1449:	ret = asprintf( &filename, "%s" PLAT_SEPARATOR "%s",
+        -: 1450:			prefix, SOFTKBD_TABLE_FILE );
+       28: 1451:	if ( ret == -1 )
+    #####: 1452:		goto end;
+        -: 1453:
+       28: 1454:	file = fopen( filename, "r" );
+       28: 1455:	if ( !file )
+    #####: 1456:		goto end;
+        -: 1457:
+       28: 1458:	line = ALC( char, LINE_LEN );
+       28: 1459:	if ( !line )
+    #####: 1460:		goto end;
+        -: 1461:
+      756: 1462:	while ( fgets( line, LINE_LEN, file ) ) {
+      728: 1463:		if ( ' ' != line[ 1 ] )
+    #####: 1464:			continue;
+        -: 1465:
+        -: 1466:		// Remove tailing \n
+      728: 1467:		len = strcspn( line, "\r\n" );
+        -: 1468:
+      728: 1469:		line[ len ] = '\0';
+        -: 1470:
+      728: 1471:		_index = FindEasySymbolIndex( line[ 0 ] );
+      728: 1472:		if ( -1 == _index )
+    #####: 1473:			continue;
+        -: 1474:
+      728: 1475:		len = ueStrLen( &line[ 2 ] );
+      728: 1476:		if ( 0 == len || len > MAX_PHRASE_LEN )
+    #####: 1477:			continue;
+        -: 1478:
+      728: 1479:		symbol = ALC( char, strlen( &line[2] ) + 1 );
+      728: 1480:		if ( !symbol )
+    #####: 1481:			goto end;
+        -: 1482:
+      728: 1483:		ueStrNCpy( symbol, &line[ 2 ], len, 1 );
+        -: 1484:
+      728: 1485:		free( pgdata->static_data.g_easy_symbol_value[ _index ] );
+      728: 1486:		pgdata->static_data.g_easy_symbol_value[ _index ] = symbol;
+      728: 1487:		pgdata->static_data.g_easy_symbol_num[ _index ] = len;
+        -: 1488:	}
+       28: 1489:	ret = 0;
+       28: 1490:end:
+       28: 1491:	free( line );
+       28: 1492:	fclose( file );
+       28: 1493:	free ( filename );
+       28: 1494:	return ret;
+        -: 1495:}
+        -: 1496:
+       28: 1497:void TerminateEasySymbolTable( ChewingData *pgdata )
+        -: 1498:{
+        -: 1499:	unsigned int i;
+     1036: 1500:	for ( i = 0; i < EASY_SYMBOL_KEY_TAB_LEN ; ++i ) {
+     1008: 1501:		if ( NULL != pgdata->static_data.g_easy_symbol_value[ i ] ) {
+      728: 1502:			free( pgdata->static_data.g_easy_symbol_value[ i ] );
+      728: 1503:			pgdata->static_data.g_easy_symbol_value[ i ] = NULL;
+        -: 1504:		}
+     1008: 1505:		pgdata->static_data.g_easy_symbol_num[ i ] = 0;
+        -: 1506:	}
+       28: 1507:}
+        -: 1508:
+        1: 1509:void copyStringFromPreeditBuf(
+        -: 1510:	ChewingData *pgdata, int pos, int len,
+        -: 1511:	char *output, int output_len )
+        -: 1512:{
+        -: 1513:	int i;
+        -: 1514:	int x;
+        -: 1515:
+       1*: 1516:	assert( pgdata );
+       1*: 1517:	assert( 0 <= pos && pos + len < ARRAY_SIZE( pgdata->preeditBuf ) );
+       1*: 1518:	assert( output );
+       1*: 1519:	assert( output_len );
+        -: 1520:
+        1: 1521:	LOG_VERBOSE("Copy pos %d, len %d from preeditBuf", pos, len);
+        -: 1522:
+        3: 1523:	for ( i = pos; i < pos + len; ++i ) {
+        2: 1524:		x = strlen( pgdata->preeditBuf[ i ].char_ );
+        2: 1525:		if ( x >= output_len ) // overflow
+    #####: 1526:			return;
+        2: 1527:		memcpy( output, pgdata->preeditBuf[ i ].char_, x );
+        2: 1528:		output += x;
+        2: 1529:		output_len -= x;
+        -: 1530:	}
+        1: 1531:	output[0] = 0;
+        -: 1532:}
+        -: 1533:
+        -: 1534:/*
+        -: 1535: * This function converts phoneSeq index (which does not count symbol) to
+        -: 1536: * preeditBuf index (which does count symbol).
+        -: 1537: */
+       71: 1538:int toPreeditBufIndex( ChewingData *pgdata, int pos )
+        -: 1539:{
+        -: 1540:	int word_count;
+        -: 1541:	int i;
+        -: 1542:
+      71*: 1543:	assert( pgdata );
+      71*: 1544:	assert( 0 <= pos && pos <= MAX_CHI_SYMBOL_LEN );
+        -: 1545:
+      71*: 1546:	for ( i = 0, word_count = 0 ; i < MAX_CHI_SYMBOL_LEN ; ++i ) {
+       71: 1547:		if ( ChewingIsChiAt( i, pgdata ) )
+       71: 1548:			++word_count;
+        -: 1549:
+        -: 1550:		/*
+        -: 1551:		 * pos = 0 means finding the first word, so we need to add one
+        -: 1552:		 * here.
+        -: 1553:		 */
+       71: 1554:		if ( word_count == pos + 1 )
+       71: 1555:			break;
+        -: 1556:	}
+        -: 1557:
+       71: 1558:	LOG_VERBOSE( "translate phoneSeq index %d to preeditBuf index %d",
+        -: 1559:		pos, i );
+        -: 1560:
+       71: 1561:	return i;
+        -: 1562:}

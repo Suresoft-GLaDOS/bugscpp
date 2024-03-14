@@ -1,0 +1,225 @@
+        -:    0:Source:/home/workspace/src/userphrase.c
+        -:    1:/**
+        -:    2: * userphrase.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004, 2006
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:#include <assert.h>
+        -:   16:#include <stdlib.h>
+        -:   17:#include <string.h>
+        -:   18:#include <stdio.h>
+        -:   19:
+        -:   20:#include "chewing-utf8-util.h"
+        -:   21:#include "hash-private.h"
+        -:   22:#include "dict-private.h"
+        -:   23:#include "tree-private.h"
+        -:   24:#include "userphrase-private.h"
+        -:   25:#include "private.h"
+        -:   26:
+        -:   27:/* load the orginal frequency from the static dict */
+        2:   28:static int LoadOriginalFreq( ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[], int len )
+        -:   29:{
+        -:   30:	const TreeType *tree_pos;
+        -:   31:	int retval;
+        2:   32:	Phrase *phrase = ALC( Phrase, 1 );
+        -:   33:
+        2:   34:	tree_pos = TreeFindPhrase( pgdata, 0, len - 1, phoneSeq );
+        2:   35:	if ( tree_pos ) {
+        2:   36:		GetPhraseFirst( pgdata, phrase, tree_pos );
+        -:   37:		do {
+        -:   38:			/* find the same phrase */
+        4:   39:			if ( ! strcmp(
+        4:   40:				phrase->phrase,
+        -:   41:				wordSeq ) ) {
+        2:   42:				retval = phrase->freq;
+        2:   43:				free( phrase );
+        2:   44:				return retval;
+        -:   45:			}
+        2:   46:		} while ( GetVocabNext( pgdata, phrase ) );
+        -:   47:	}
+        -:   48:
+    #####:   49:	free( phrase );
+    #####:   50:	return FREQ_INIT_VALUE;
+        -:   51:}
+        -:   52:
+        -:   53:/* find the maximum frequency of the same phrase */
+        2:   54:static int LoadMaxFreq( ChewingData *pgdata, const uint16_t phoneSeq[], int len )
+        -:   55:{
+        -:   56:	const TreeType *tree_pos;
+        2:   57:	Phrase *phrase = ALC( Phrase, 1 );
+        2:   58:	int maxFreq = FREQ_INIT_VALUE;
+        -:   59:	UserPhraseData *uphrase;
+        -:   60:
+        2:   61:	tree_pos = TreeFindPhrase( pgdata, 0, len - 1, phoneSeq );
+        2:   62:	if ( tree_pos ) {
+        2:   63:		GetPhraseFirst( pgdata, phrase, tree_pos );
+        -:   64:		do {
+       31:   65:			if ( phrase->freq > maxFreq )
+        1:   66:				maxFreq = phrase->freq;
+       31:   67:		} while( GetVocabNext( pgdata, phrase ) );
+        -:   68:	}
+        2:   69:	free( phrase );
+        -:   70:
+        2:   71:	uphrase = UserGetPhraseFirst( pgdata, phoneSeq );
+        2:   72:	while ( uphrase ) {
+    #####:   73:		if ( uphrase->userfreq > maxFreq )
+    #####:   74:			maxFreq = uphrase->userfreq;
+    #####:   75:		uphrase = UserGetPhraseNext( pgdata, phoneSeq );
+        -:   76:	}
+        -:   77:
+        2:   78:	return maxFreq;
+        -:   79:}
+        -:   80:
+        -:   81:/* compute the new updated freqency */
+    #####:   82:static int UpdateFreq( int freq, int maxfreq, int origfreq, int deltatime )
+        -:   83:{
+        -:   84:	int delta;
+        -:   85:
+        -:   86:	/* Short interval */
+    #####:   87:	if ( deltatime < 4000 ) {
+    #####:   88:		delta = ( freq >= maxfreq ) ?
+    #####:   89:			min(
+    #####:   90:				( maxfreq - origfreq ) / 5 + 1,
+    #####:   91:				SHORT_INCREASE_FREQ ) :
+    #####:   92:			max(
+    #####:   93:				( maxfreq - origfreq ) / 5 + 1,
+        -:   94:				SHORT_INCREASE_FREQ );
+    #####:   95:		return min( freq + delta, MAX_ALLOW_FREQ );
+        -:   96:	}
+        -:   97:	/* Medium interval */
+    #####:   98:	else if ( deltatime < 50000 ) {
+    #####:   99:		delta = ( freq >= maxfreq ) ?
+    #####:  100:			min(
+    #####:  101:				( maxfreq - origfreq ) / 10 + 1,
+    #####:  102:				MEDIUM_INCREASE_FREQ ) :
+    #####:  103:			max(
+    #####:  104:				( maxfreq - origfreq ) / 10 + 1,
+        -:  105:				MEDIUM_INCREASE_FREQ );
+    #####:  106:		return min( freq + delta, MAX_ALLOW_FREQ );
+        -:  107:	}
+        -:  108:	/* long interval */
+        -:  109:	else {
+    #####:  110:		delta = max( ( freq - origfreq ) / 5, LONG_DECREASE_FREQ );
+    #####:  111:		return max( freq - delta, origfreq );
+        -:  112:	}
+        -:  113:}
+        -:  114:
+        2:  115:static void LogUserPhrase(
+        -:  116:	ChewingData *pgdata,
+        -:  117:	const uint16_t phoneSeq[],
+        -:  118:	const char wordSeq[],
+        -:  119:	int orig_freq,
+        -:  120:	int max_freq,
+        -:  121:	int user_freq,
+        -:  122:	int recent_time)
+        -:  123:{
+        -:  124:	/* Size of each phone is len("0x1234 ") = 7 */
+        2:  125:	char buf[7 * MAX_PHRASE_LEN + 1] = { 0 };
+        -:  126:	int i;
+        -:  127:
+        5:  128:	for ( i = 0; i < MAX_PHRASE_LEN; ++i ) {
+        5:  129:		if ( phoneSeq[i] == 0 )
+        2:  130:			break;
+        3:  131:		snprintf( buf + 7 * i, 7 + 1, "%#06x ", phoneSeq[i] );
+        -:  132:	}
+        -:  133:
+        2:  134:	LOG_INFO( "userphrase %s, phone = %s, orig_freq = %d, max_freq = %d, user_freq = %d, recent_time = %d\n",
+        -:  135:		wordSeq, buf, orig_freq, max_freq, user_freq, recent_time );
+        2:  136:}
+        -:  137:
+        2:  138:int UserUpdatePhrase( ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[] )
+        -:  139:{
+        -:  140:	HASH_ITEM *pItem;
+        -:  141:	UserPhraseData data;
+        -:  142:	int len;
+        -:  143:
+        2:  144:	len = ueStrLen( wordSeq );
+        2:  145:	pItem = HashFindEntry( pgdata, phoneSeq, wordSeq );
+        2:  146:	if ( ! pItem ) {
+        2:  147:		if ( ! AlcUserPhraseSeq( &data, len, strlen( wordSeq ) ) ) {
+    #####:  148:			return USER_UPDATE_FAIL;
+        -:  149:		}
+        -:  150:
+        2:  151:		memcpy( data.phoneSeq, phoneSeq, len * sizeof( phoneSeq[ 0 ] ) );
+        2:  152:		data.phoneSeq[ len ] = 0;
+        2:  153:		strcpy( data.wordSeq, wordSeq );
+        -:  154:
+        -:  155:		/* load initial freq */
+        2:  156:		data.origfreq = LoadOriginalFreq( pgdata, phoneSeq, wordSeq, len );
+        2:  157:		data.maxfreq = LoadMaxFreq( pgdata, phoneSeq, len );
+        -:  158:
+        2:  159:		data.userfreq = data.origfreq;
+        2:  160:		data.recentTime = pgdata->static_data.chewing_lifetime;
+        2:  161:		pItem = HashInsert( pgdata, &data );
+        2:  162:		LogUserPhrase( pgdata, phoneSeq, wordSeq, pItem->data.origfreq, pItem->data.maxfreq, pItem->data.userfreq, pItem->data.recentTime );
+        2:  163:		HashModify( pgdata, pItem );
+        2:  164:		return USER_UPDATE_INSERT;
+        -:  165:	}
+        -:  166:	else {
+    #####:  167:		pItem->data.maxfreq = LoadMaxFreq( pgdata, phoneSeq, len );
+    #####:  168:		pItem->data.userfreq = UpdateFreq(
+        -:  169:			pItem->data.userfreq,
+        -:  170:			pItem->data.maxfreq,
+        -:  171:			pItem->data.origfreq,
+    #####:  172:			pgdata->static_data.chewing_lifetime - pItem->data.recentTime );
+    #####:  173:		pItem->data.recentTime = pgdata->static_data.chewing_lifetime;
+    #####:  174:		LogUserPhrase( pgdata, phoneSeq, wordSeq, pItem->data.origfreq, pItem->data.maxfreq, pItem->data.userfreq, pItem->data.recentTime );
+    #####:  175:		HashModify( pgdata, pItem );
+    #####:  176:		return USER_UPDATE_MODIFY;
+        -:  177:	}
+        -:  178:}
+        -:  179:
+    #####:  180:void UserRemovePhrase( ChewingData *pgdata, const uint16_t phoneSeq[], const char wordSeq[] )
+        -:  181:{
+    #####:  182:	HASH_ITEM **prev = NULL;
+    #####:  183:	HASH_ITEM *item = NULL;
+        -:  184:
+    #####:  185:	assert( pgdata );
+    #####:  186:	assert( phoneSeq );
+    #####:  187:	assert( wordSeq );
+        -:  188:
+    #####:  189:	prev = HashFindHead( pgdata, phoneSeq );
+    #####:  190:	item = *prev;
+        -:  191:
+    #####:  192:	while ( item ) {
+    #####:  193:		if ( strcmp( item->data.wordSeq, wordSeq ) == 0 ) {
+        -:  194:			/* Remove this phrase by removing */
+    #####:  195:			item->data.phoneSeq[0] = 0;
+    #####:  196:			item->data.wordSeq[0] = 0;
+    #####:  197:			HashModify( pgdata, item );
+        -:  198:
+    #####:  199:			*prev = item->next;
+    #####:  200:			FreeHashItem( item );
+        -:  201:
+    #####:  202:			return;
+        -:  203:		}
+    #####:  204:		prev = &item->next;
+    #####:  205:		item = item->next;
+        -:  206:	}
+        -:  207:}
+        -:  208:
+       98:  209:UserPhraseData *UserGetPhraseFirst( ChewingData *pgdata, const uint16_t phoneSeq[] )
+        -:  210:{
+       98:  211:	pgdata->prev_userphrase = HashFindPhonePhrase( pgdata, phoneSeq, NULL );
+       98:  212:	if ( ! pgdata->prev_userphrase )
+       96:  213:		return NULL;
+        2:  214:	return &( pgdata->prev_userphrase->data );
+        -:  215:}
+        -:  216:
+        1:  217:UserPhraseData *UserGetPhraseNext( ChewingData *pgdata, const uint16_t phoneSeq[] )
+        -:  218:{
+        1:  219:	pgdata->prev_userphrase = HashFindPhonePhrase( pgdata, phoneSeq, pgdata->prev_userphrase );
+        1:  220:	if ( ! pgdata->prev_userphrase )
+        1:  221:		return NULL;
+    #####:  222:	return &( pgdata->prev_userphrase->data );
+        -:  223:}
+        -:  224:

@@ -1,0 +1,2490 @@
+        -:    0:Source:/home/workspace/src/chewingio.c
+        -:    1:/**
+        -:    2: * chewingio.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004-2008, 2010, 2011, 2012
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/**
+        -:   16: * @file chewingio.c
+        -:   17: * @brief Implement basic I/O routines for Chewing manipulation.
+        -:   18: */
+        -:   19:#ifdef HAVE_CONFIG_H
+        -:   20:  #include <config.h>
+        -:   21:#endif
+        -:   22:
+        -:   23:#include <assert.h>
+        -:   24:#include <string.h>
+        -:   25:#include <ctype.h>
+        -:   26:#include <stdlib.h>
+        -:   27:#include <stdio.h>
+        -:   28:
+        -:   29:#include "chewing-utf8-util.h"
+        -:   30:#include "global.h"
+        -:   31:#include "zuin-private.h"
+        -:   32:#include "chewingutil.h"
+        -:   33:#include "userphrase-private.h"
+        -:   34:#include "choice-private.h"
+        -:   35:#include "dict-private.h"
+        -:   36:#include "tree-private.h"
+        -:   37:#include "pinyin-private.h"
+        -:   38:#include "private.h"
+        -:   39:#include "chewingio.h"
+        -:   40:#include "mod_aux.h"
+        -:   41:#include "global-private.h"
+        -:   42:#include "plat_path.h"
+        -:   43:#include "chewing-private.h"
+        -:   44:#include "key2pho-private.h"
+        -:   45:
+        -:   46:#if WITH_SQLITE3
+        -:   47:#include "chewing-sql.h"
+        -:   48:#else
+        -:   49:#include "hash-private.h"
+        -:   50:#endif
+        -:   51:
+        -:   52:const char * const kb_type_str[] = {
+        -:   53:	"KB_DEFAULT",
+        -:   54:	"KB_HSU",
+        -:   55:	"KB_IBM",
+        -:   56:	"KB_GIN_YIEH",
+        -:   57:	"KB_ET",
+        -:   58:	"KB_ET26",
+        -:   59:	"KB_DVORAK",
+        -:   60:	"KB_DVORAK_HSU",
+        -:   61:	"KB_DACHEN_CP26",
+        -:   62:	"KB_HANYU_PINYIN",
+        -:   63:	"KB_THL_PINYIN",
+        -:   64:	"KB_MPS2_PINYIN"
+        -:   65:};
+        -:   66:
+        -:   67:const char * const DICT_FILES[] = {
+        -:   68:	DICT_FILE,
+        -:   69:	PHONE_TREE_FILE,
+        -:   70:	NULL,
+        -:   71:};
+        -:   72:
+        -:   73:const char * const SYMBOL_TABLE_FILES[] = {
+        -:   74:	SYMBOL_TABLE_FILE,
+        -:   75:	NULL,
+        -:   76:};
+        -:   77:
+        -:   78:const char * const EASY_SYMBOL_FILES[] = {
+        -:   79:	SOFTKBD_TABLE_FILE,
+        -:   80:	NULL,
+        -:   81:};
+        -:   82:
+        -:   83:const char * const PINYIN_FILES[] = {
+        -:   84:	PINYIN_TAB_NAME,
+        -:   85:	NULL,
+        -:   86:};
+        -:   87:
+    #####:   88:CHEWING_API int chewing_KBStr2Num( char str[] )
+        -:   89:{
+        -:   90:	int i;
+        -:   91:
+        -:   92:	STATIC_ASSERT( KB_TYPE_NUM == ARRAY_SIZE( kb_type_str ));
+    #####:   93:	for ( i = 0; i < KB_TYPE_NUM; i++) {
+    #####:   94:		if ( ! strcmp( str, kb_type_str[ i ] ) )
+    #####:   95:			return i;
+        -:   96:	}
+    #####:   97:	return KB_DEFAULT;
+        -:   98:}
+        -:   99:
+    #####:  100:static void chooseCandidate( ChewingContext *ctx, int toSelect, int key_buf_cursor )
+        -:  101:{
+    #####:  102:	ChewingData *pgdata = ctx->data;
+        -:  103:
+    #####:  104:	if ( toSelect ) {
+    #####:  105:		if ( ! pgdata->bSelect ) {
+    #####:  106:			ChoiceInitAvail( pgdata );
+        -:  107:		} else {
+    #####:  108:			if ( pgdata->config.bPhraseChoiceRearward ) {
+    #####:  109:				int avail_willbe = (pgdata->availInfo.currentAvail > 0) ?
+    #####:  110:					pgdata->availInfo.currentAvail - 1 :
+    #####:  111:					pgdata->availInfo.nAvail - 1;
+    #####:  112:				pgdata->chiSymbolCursor = pgdata->choiceInfo.oldChiSymbolCursor -
+    #####:  113:					pgdata->availInfo.avail[ avail_willbe ].len;
+    #####:  114:				if ( chewing_buffer_Len( ctx ) >
+    #####:  115:						pgdata->choiceInfo.oldChiSymbolCursor ) {
+    #####:  116:					pgdata->chiSymbolCursor++;
+        -:  117:				}
+        -:  118:			}
+        -:  119:
+    #####:  120:			if ( ChoiceHasNextAvail( pgdata ) )
+    #####:  121:				ChoiceNextAvail( pgdata );
+        -:  122:			else /* rollover */
+    #####:  123:				ChoiceFirstAvail( pgdata );
+        -:  124:		}
+    #####:  125:	} else if ( pgdata->symbolKeyBuf[ key_buf_cursor ] ) {
+        -:  126:		/* Open Symbol Choice List */
+    #####:  127:		if ( pgdata->choiceInfo.isSymbol == WORD_CHOICE ) {
+    #####:  128:			OpenSymbolChoice( pgdata );
+        -:  129:		}
+        -:  130:		/**
+        -:  131:		 * If these's only one candidate list available, ChoiceFirstAvail
+        -:  132:		 * will re-open the list, namely turn back to the firt page.
+        -:  133:		 * However, it doesn't work for symbols, therefore we
+        -:  134:		 * set the page number to 0 directly.
+        -:  135:		 */
+    #####:  136:		else if ( pgdata->bSelect ) {
+    #####:  137:			pgdata->choiceInfo.pageNo = 0;
+        -:  138:		}
+        -:  139:	} else {
+        -:  140:		/*
+        -:  141:		 * The cursor position is not word, nor symbol. The only
+        -:  142:		 * possible case is that user just uses ` to open symbol
+        -:  143:		 * selection. In this case, when chooseCandidate is called,
+        -:  144:		 * libchewing needs to reset pageNo to 0 to do rollover.
+        -:  145:		 */
+    #####:  146:		if ( pgdata-> bSelect ) {
+    #####:  147:			pgdata->choiceInfo.pageNo = 0;
+        -:  148:		}
+        -:  149:	}
+    #####:  150:}
+        -:  151:
+       92:  152:static void NullLogger( void *data UNUSED, int level UNUSED, const char *fmt UNUSED, ...)
+        -:  153:{
+       92:  154:}
+        -:  155:
+       23:  156:static ChewingData * allocate_ChewingData(
+        -:  157:	void (*logger)( void *data, int level, const char *fmt, ... ),
+        -:  158:	void *loggerdata
+        -:  159:)
+        -:  160:{
+        -:  161:	static const int DEFAULT_SELKEY[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' };
+        -:  162:
+       23:  163:	ChewingData *data = ALC( ChewingData, 1 );
+       23:  164:	if ( data ) {
+       23:  165:		data->config.candPerPage = MAX_SELKEY;
+       23:  166:		data->config.maxChiSymbolLen = MAX_CHI_SYMBOL_LEN;
+       23:  167:		data->logger = logger;
+       23:  168:		data->loggerData = loggerdata;
+       23:  169:		memcpy( data->config.selKey, DEFAULT_SELKEY, sizeof( data->config.selKey ) );
+        -:  170:	}
+        -:  171:
+       23:  172:	return data;
+        -:  173:}
+        -:  174:
+       23:  175:CHEWING_API ChewingContext *chewing_new2(
+        -:  176:	const char *syspath,
+        -:  177:	const char *userpath,
+        -:  178:	void (*logger)( void *data, int level, const char *fmt, ... ),
+        -:  179:	void *loggerdata
+        -:  180:)
+        -:  181:{
+        -:  182:	ChewingContext *ctx;
+        -:  183:	ChewingData *pgdata;
+        -:  184:	int ret;
+        -:  185:	char search_path[PATH_MAX];
+        -:  186:	char path[PATH_MAX];
+       23:  187:	char *userphrase_path = NULL;
+        -:  188:
+       23:  189:	if (!logger)
+       23:  190:		logger = NullLogger;
+        -:  191:
+       23:  192:	ctx = ALC( ChewingContext, 1 );
+       23:  193:	if ( !ctx )
+    #####:  194:		goto error;
+        -:  195:
+       23:  196:	ctx->output = ALC ( ChewingOutput, 1 );
+       23:  197:	if ( !ctx->output )
+    #####:  198:		goto error;
+        -:  199:
+       23:  200:	pgdata = allocate_ChewingData( logger, loggerdata );
+       23:  201:	if ( !pgdata )
+    #####:  202:		goto error;
+       23:  203:	ctx->data = pgdata;
+        -:  204:
+       23:  205:	LOG_API( "syspath = %d, userpath = %d", syspath, userpath );
+        -:  206:
+       23:  207:	chewing_Reset( ctx );
+        -:  208:
+       23:  209:	if ( syspath ) {
+    #####:  210:		strncpy( search_path, syspath, sizeof( search_path ) );
+        -:  211:	} else {
+       23:  212:		ret = get_search_path( search_path, sizeof( search_path ) );
+       23:  213:		if ( ret ) {
+    #####:  214:			LOG_ERROR( "get_search_path returns %d", ret );
+    #####:  215:			goto error;
+        -:  216:		}
+        -:  217:	}
+       23:  218:	LOG_VERBOSE("search_path is %s", search_path );
+        -:  219:
+       23:  220:	ret = find_path_by_files(
+        -:  221:		search_path, DICT_FILES, path, sizeof( path ) );
+       23:  222:	if ( ret ) {
+    #####:  223:		LOG_ERROR( "find_path_by_files returns %d", ret );
+    #####:  224:		goto error;
+        -:  225:	}
+        -:  226:
+       23:  227:	ret = InitDict( ctx->data, path );
+       23:  228:	if ( ret ) {
+    #####:  229:		LOG_ERROR( "InitDict returns %d", ret );
+    #####:  230:		goto error;
+        -:  231:	}
+        -:  232:
+       23:  233:	ret = InitTree( ctx->data, path );
+       23:  234:	if ( ret ) {
+    #####:  235:		LOG_ERROR( "InitTree returns %d", ret );
+    #####:  236:		goto error;
+        -:  237:	}
+        -:  238:
+       23:  239:	if ( userpath ) {
+    #####:  240:		userphrase_path = strdup( userpath );
+        -:  241:	} else {
+       23:  242:		userphrase_path = GetDefaultUserPhrasePath( ctx->data );
+        -:  243:	}
+        -:  244:
+       23:  245:	if (!userphrase_path) {
+    #####:  246:		LOG_ERROR("GetUserPhraseStoregePath returns %#p", path);
+    #####:  247:		goto error;
+        -:  248:	}
+        -:  249:
+       23:  250:	ret = InitUserphrase( ctx-> data, userphrase_path );
+       23:  251:	free( userphrase_path );
+        -:  252:
+       23:  253:	if ( ret ) {
+    #####:  254:		LOG_ERROR( "InitSql returns %d", ret );
+    #####:  255:		goto error;
+        -:  256:	}
+        -:  257:
+       23:  258:	ctx->cand_no = 0;
+        -:  259:
+       23:  260:	ret = find_path_by_files(
+        -:  261:		search_path, SYMBOL_TABLE_FILES, path, sizeof( path ) );
+       23:  262:	if ( ret ) {
+    #####:  263:		LOG_ERROR( "find_path_by_files returns %d", ret );
+    #####:  264:		goto error;
+        -:  265:	}
+        -:  266:
+       23:  267:	ret = InitSymbolTable( ctx->data, path );
+       23:  268:	if ( ret ) {
+    #####:  269:		LOG_ERROR( "InitSymbolTable returns %d", ret );
+    #####:  270:		goto error;
+        -:  271:	}
+        -:  272:
+       23:  273:	ret = find_path_by_files(
+        -:  274:		search_path, EASY_SYMBOL_FILES, path, sizeof( path ) );
+       23:  275:	if ( ret ) {
+    #####:  276:		LOG_ERROR( "find_path_by_files returns %d", ret );
+    #####:  277:		goto error;
+        -:  278:	}
+        -:  279:
+       23:  280:	ret = InitEasySymbolInput( ctx->data, path );
+       23:  281:	if ( ret ) {
+    #####:  282:		LOG_ERROR( "InitEasySymbolInput returns %d", ret );
+    #####:  283:		goto error;
+        -:  284:	}
+        -:  285:
+       23:  286:	ret = find_path_by_files(
+        -:  287:		search_path, PINYIN_FILES, path, sizeof( path ) );
+       23:  288:	if ( ret ) {
+    #####:  289:		LOG_ERROR( "find_path_by_files returns %d", ret );
+    #####:  290:		goto error;
+        -:  291:	}
+        -:  292:
+       23:  293:	ret = InitPinyin( ctx->data, path );
+       23:  294:	if ( !ret ) {
+    #####:  295:		LOG_ERROR( "InitPinyin returns %d", ret );
+    #####:  296:		goto error;
+        -:  297:	}
+        -:  298:
+       23:  299:	return ctx;
+    #####:  300:error:
+    #####:  301:	chewing_delete( ctx );
+    #####:  302:	return NULL;
+        -:  303:}
+        -:  304:
+       23:  305:CHEWING_API ChewingContext *chewing_new()
+        -:  306:{
+       23:  307:	return chewing_new2( NULL, NULL, NULL, NULL );
+        -:  308:}
+        -:  309:
+    #####:  310:CHEWING_API int chewing_Init(
+        -:  311:		const char *dataPath UNUSED,
+        -:  312:		const char *hashPath UNUSED)
+        -:  313:{
+    #####:  314:	return 0;
+        -:  315:}
+        -:  316:
+       23:  317:CHEWING_API int chewing_Reset( ChewingContext *ctx )
+        -:  318:{
+        -:  319:	ChewingData *pgdata;
+        -:  320:	ChewingStaticData static_data;
+        -:  321:	ChewingConfigData old_config;
+        -:  322:	void (*logger)( void *data, int level, const char *fmt, ...);
+        -:  323:	void *loggerData;
+        -:  324:
+       23:  325:	if ( !ctx ) {
+    #####:  326:		return -1;
+        -:  327:	}
+       23:  328:	pgdata = ctx->data;
+        -:  329:
+       23:  330:	LOG_API();
+        -:  331:
+        -:  332:	/* Backup old config and restore it after clearing pgdata structure. */
+       23:  333:	old_config = pgdata->config;
+       23:  334:	static_data = pgdata->static_data;
+       23:  335:	logger = pgdata->logger;
+       23:  336:	loggerData = pgdata->loggerData;
+       23:  337:	memset( pgdata, 0, sizeof( ChewingData ) );
+       23:  338:	pgdata->config = old_config;
+       23:  339:	pgdata->static_data = static_data;
+       23:  340:	pgdata->logger = logger;
+       23:  341:	pgdata->loggerData = loggerData;
+        -:  342:
+        -:  343:	/* zuinData */
+       23:  344:	memset( &( pgdata->zuinData ), 0, sizeof( ZuinData ) );
+        -:  345:
+        -:  346:	/* choiceInfo */
+       23:  347:	memset( &( pgdata->choiceInfo ), 0, sizeof( ChoiceInfo ) );
+        -:  348:
+       23:  349:	pgdata->chiSymbolCursor = 0;
+       23:  350:	pgdata->chiSymbolBufLen = 0;
+       23:  351:	pgdata->nPhoneSeq = 0;
+       23:  352:	memset( pgdata->bUserArrCnnct, 0, sizeof( int ) * ( MAX_PHONE_SEQ_LEN + 1 ) );
+       23:  353:	memset( pgdata->bUserArrBrkpt, 0, sizeof( int ) * ( MAX_PHONE_SEQ_LEN + 1 ) );
+       23:  354:	pgdata->bChiSym = CHINESE_MODE;
+       23:  355:	pgdata->bFullShape = HALFSHAPE_MODE;
+       23:  356:	pgdata->bSelect = 0;
+       23:  357:	pgdata->nSelect = 0;
+       23:  358:	pgdata->PointStart = -1;
+       23:  359:	pgdata->PointEnd = 0;
+       23:  360:	pgdata->phrOut.nNumCut = 0;
+       23:  361:	return 0;
+        -:  362:}
+        -:  363:
+    #####:  364:CHEWING_API int chewing_set_KBType( ChewingContext *ctx, int kbtype )
+        -:  365:{
+        -:  366:	ChewingData *pgdata;
+        -:  367:
+    #####:  368:	if ( !ctx ) {
+    #####:  369:		return -1;
+        -:  370:	}
+    #####:  371:	pgdata = ctx->data;
+        -:  372:
+    #####:  373:	LOG_API( "kbtype = %d", kbtype );
+        -:  374:
+    #####:  375:	if ( kbtype < KB_TYPE_NUM && kbtype >= 0  ) {
+    #####:  376:		ctx->data->zuinData.kbtype = kbtype;
+    #####:  377:		return 0;
+        -:  378:	} else {
+    #####:  379:		ctx->data->zuinData.kbtype = KB_DEFAULT;
+    #####:  380:		return -1;
+        -:  381:	}
+        -:  382:}
+        -:  383:
+    #####:  384:CHEWING_API int chewing_get_KBType( ChewingContext *ctx )
+        -:  385:{
+        -:  386:	ChewingData *pgdata;
+        -:  387:
+    #####:  388:	if ( !ctx ) {
+    #####:  389:		return -1;
+        -:  390:	}
+    #####:  391:	pgdata = ctx->data;
+        -:  392:
+    #####:  393:	LOG_API( "kbtype = %d", ctx->data->zuinData.kbtype );
+        -:  394:
+    #####:  395:	return ctx->data->zuinData.kbtype;
+        -:  396:}
+        -:  397:
+    #####:  398:CHEWING_API char* chewing_get_KBString( ChewingContext *ctx )
+        -:  399:{
+        -:  400:	ChewingData *pgdata;
+        -:  401:
+    #####:  402:	if ( !ctx ) {
+    #####:  403:		return strdup("");
+        -:  404:	}
+    #####:  405:	pgdata = ctx->data;
+        -:  406:
+    #####:  407:	LOG_API( "KBString = %s", kb_type_str[ ctx->data->zuinData.kbtype ] );
+        -:  408:
+    #####:  409:	return strdup( kb_type_str[ ctx->data->zuinData.kbtype ] );
+        -:  410:}
+        -:  411:
+    #####:  412:CHEWING_API void chewing_Terminate()
+        -:  413:{
+    #####:  414:}
+        -:  415:
+       23:  416:CHEWING_API void chewing_delete( ChewingContext *ctx )
+        -:  417:{
+       23:  418:	if ( ctx ) {
+       23:  419:		if ( ctx->data ) {
+       23:  420:			TerminatePinyin( ctx->data );
+       23:  421:			TerminateEasySymbolTable( ctx->data );
+       23:  422:			TerminateSymbolTable( ctx->data );
+       23:  423:			TerminateUserphrase( ctx->data );
+       23:  424:			TerminateTree( ctx->data );
+       23:  425:			TerminateDict( ctx->data );
+       23:  426:			free( ctx->data );
+        -:  427:		}
+        -:  428:
+       23:  429:		if ( ctx->output )
+       23:  430:			free( ctx->output);
+       23:  431:		free( ctx );
+        -:  432:	}
+       23:  433:	return;
+        -:  434:}
+        -:  435:
+       12:  436:CHEWING_API void chewing_free( void *p )
+        -:  437:{
+       12:  438:	free( p );
+       12:  439:}
+        -:  440:
+    #####:  441:CHEWING_API int chewing_Configure( ChewingContext *ctx, ChewingConfigData *pcd )
+        -:  442:{
+    #####:  443:	chewing_set_candPerPage( ctx, pcd->candPerPage );
+    #####:  444:	chewing_set_maxChiSymbolLen( ctx, pcd->maxChiSymbolLen );
+    #####:  445:	chewing_set_selKey( ctx, pcd->selKey, MAX_SELKEY );
+    #####:  446:	chewing_set_addPhraseDirection( ctx, pcd->bAddPhraseForward );
+    #####:  447:	chewing_set_spaceAsSelection( ctx, pcd->bSpaceAsSelection );
+    #####:  448:	chewing_set_escCleanAllBuf( ctx, pcd->bEscCleanAllBuf );
+    #####:  449:	chewing_set_autoShiftCur( ctx, pcd->bAutoShiftCur );
+    #####:  450:	chewing_set_easySymbolInput( ctx, pcd->bEasySymbolInput );
+    #####:  451:	chewing_set_phraseChoiceRearward( ctx, pcd->bPhraseChoiceRearward );
+        -:  452:
+    #####:  453:	return 0;
+        -:  454:}
+        -:  455:
+    #####:  456:CHEWING_API void chewing_set_candPerPage( ChewingContext *ctx, int n )
+        -:  457:{
+        -:  458:	ChewingData *pgdata;
+        -:  459:
+    #####:  460:	if ( !ctx ) {
+    #####:  461:		return;
+        -:  462:	}
+    #####:  463:	pgdata = ctx->data;
+        -:  464:
+    #####:  465:	LOG_API( "n = %d", n );
+        -:  466:
+    #####:  467:	if ( MIN_SELKEY <= n && n <= MAX_SELKEY )
+    #####:  468:		ctx->data->config.candPerPage = n;
+        -:  469:}
+        -:  470:
+    #####:  471:CHEWING_API int chewing_get_candPerPage( ChewingContext *ctx )
+        -:  472:{
+        -:  473:	ChewingData *pgdata;
+        -:  474:
+    #####:  475:	if ( !ctx ) {
+    #####:  476:		return -1;
+        -:  477:	}
+    #####:  478:	pgdata = ctx->data;
+        -:  479:
+    #####:  480:	LOG_API( "candPerPage = %d", ctx->data->config.candPerPage );
+        -:  481:
+    #####:  482:	return ctx->data->config.candPerPage;
+        -:  483:}
+        -:  484:
+        7:  485:CHEWING_API void chewing_set_maxChiSymbolLen( ChewingContext *ctx, int n )
+        -:  486:{
+        -:  487:	ChewingData *pgdata;
+        -:  488:
+        7:  489:	if ( !ctx ) {
+    #####:  490:		return;
+        -:  491:	}
+        7:  492:	pgdata = ctx->data;
+        -:  493:
+        7:  494:	LOG_API( "n = %d", n );
+        -:  495:
+        7:  496:	if ( MIN_CHI_SYMBOL_LEN <= n && n <= MAX_CHI_SYMBOL_LEN )
+        7:  497:		ctx->data->config.maxChiSymbolLen = n;
+        -:  498:}
+        -:  499:
+    #####:  500:CHEWING_API int chewing_get_maxChiSymbolLen( ChewingContext *ctx )
+        -:  501:{
+        -:  502:	ChewingData *pgdata;
+        -:  503:
+    #####:  504:	if ( !ctx ) {
+    #####:  505:		return -1;
+        -:  506:	}
+    #####:  507:	pgdata = ctx->data;
+        -:  508:
+    #####:  509:	LOG_API( "maxChiSymbolLen = %d", ctx->data->config.maxChiSymbolLen );
+        -:  510:
+    #####:  511:	return ctx->data->config.maxChiSymbolLen;
+        -:  512:}
+        -:  513:
+    #####:  514:CHEWING_API void chewing_set_selKey( ChewingContext *ctx, int *selkeys, int len)
+        -:  515:{
+        -:  516:	ChewingData *pgdata;
+        -:  517:
+    #####:  518:	if ( !ctx ) {
+    #####:  519:		return;
+        -:  520:	}
+    #####:  521:	pgdata = ctx->data;
+        -:  522:
+    #####:  523:	LOG_API();
+        -:  524:
+    #####:  525:	if ( !selkeys ) {
+    #####:  526:		return;
+        -:  527:	}
+        -:  528:
+    #####:  529:	if ( MIN_SELKEY <= len && len <= MAX_SELKEY ) {
+    #####:  530:		memset( ctx->data->config.selKey, 0, sizeof( ctx->data->config.selKey ) );
+    #####:  531:		memcpy( ctx->data->config.selKey, selkeys, sizeof( *selkeys ) * len );
+        -:  532:	}
+        -:  533:}
+        -:  534:
+    #####:  535:CHEWING_API int* chewing_get_selKey( ChewingContext *ctx )
+        -:  536:{
+        -:  537:	ChewingData *pgdata;
+        -:  538:
+    #####:  539:	if ( !ctx ) {
+    #####:  540:		return NULL;
+        -:  541:	}
+    #####:  542:	pgdata = ctx->data;
+        -:  543:
+    #####:  544:	LOG_API();
+        -:  545:
+    #####:  546:	int *selkeys = ALC( int , MAX_SELKEY );
+    #####:  547:	if ( selkeys ) {
+    #####:  548:		memcpy( selkeys, ctx->data->config.selKey,
+        -:  549:			sizeof( *selkeys ) * MAX_SELKEY );
+        -:  550:	}
+    #####:  551:	return selkeys;
+        -:  552:}
+        -:  553:
+        5:  554:CHEWING_API void chewing_set_addPhraseDirection( ChewingContext *ctx, int direction )
+        -:  555:{
+        -:  556:	ChewingData *pgdata;
+        -:  557:
+        5:  558:	if ( !ctx ) {
+    #####:  559:		return;
+        -:  560:	}
+        5:  561:	pgdata = ctx->data;
+        -:  562:
+        5:  563:	LOG_API( "direction = %d", direction );
+        -:  564:
+        5:  565:	if ( direction == 0 || direction == 1 )
+        5:  566:		ctx->data->config.bAddPhraseForward = direction;
+        -:  567:}
+        -:  568:
+    #####:  569:CHEWING_API int chewing_get_addPhraseDirection( ChewingContext *ctx )
+        -:  570:{
+        -:  571:	ChewingData *pgdata;
+        -:  572:
+    #####:  573:	if ( !ctx ) {
+    #####:  574:		return -1;
+        -:  575:	}
+    #####:  576:	pgdata = ctx->data;
+        -:  577:
+    #####:  578:	LOG_API( "bAddPhraseForward = %d", ctx->data->config.bAddPhraseForward );
+        -:  579:
+    #####:  580:	return ctx->data->config.bAddPhraseForward;
+        -:  581:}
+        -:  582:
+    #####:  583:CHEWING_API void chewing_set_spaceAsSelection( ChewingContext *ctx, int mode )
+        -:  584:{
+        -:  585:	ChewingData *pgdata;
+        -:  586:
+    #####:  587:	if ( !ctx ) {
+    #####:  588:		return;
+        -:  589:	}
+    #####:  590:	pgdata = ctx->data;
+        -:  591:
+    #####:  592:	LOG_API( "mode = %d", mode );
+        -:  593:
+    #####:  594:	if ( mode == 0 || mode == 1 )
+    #####:  595:		ctx->data->config.bSpaceAsSelection = mode;
+        -:  596:}
+        -:  597:
+    #####:  598:CHEWING_API int chewing_get_spaceAsSelection( ChewingContext *ctx )
+        -:  599:{
+        -:  600:	ChewingData *pgdata;
+        -:  601:
+    #####:  602:	if ( !ctx ) {
+    #####:  603:		return -1;
+        -:  604:	}
+    #####:  605:	pgdata = ctx->data;
+        -:  606:
+    #####:  607:	LOG_API( "bSpaceAsSelection = %d", ctx->data->config.bSpaceAsSelection );
+        -:  608:
+    #####:  609:	return ctx->data->config.bSpaceAsSelection;
+        -:  610:}
+        -:  611:
+    #####:  612:CHEWING_API void chewing_set_escCleanAllBuf( ChewingContext *ctx, int mode )
+        -:  613:{
+        -:  614:	ChewingData *pgdata;
+        -:  615:
+    #####:  616:	if ( !ctx ) {
+    #####:  617:		return;
+        -:  618:	}
+    #####:  619:	pgdata = ctx->data;
+        -:  620:
+    #####:  621:	LOG_API( "mode = %d", mode );
+        -:  622:
+    #####:  623:	if ( mode == 0 || mode == 1 )
+    #####:  624:		ctx->data->config.bEscCleanAllBuf = mode;
+        -:  625:}
+        -:  626:
+    #####:  627:CHEWING_API int chewing_get_escCleanAllBuf( ChewingContext *ctx )
+        -:  628:{
+        -:  629:	ChewingData *pgdata;
+        -:  630:
+    #####:  631:	if ( !ctx ) {
+    #####:  632:		return -1;
+        -:  633:	}
+    #####:  634:	pgdata = ctx->data;
+        -:  635:
+    #####:  636:	LOG_API( "bEscCleanAllBuf = %d", ctx->data->config.bEscCleanAllBuf );
+        -:  637:
+    #####:  638:	return ctx->data->config.bEscCleanAllBuf;
+        -:  639:}
+        -:  640:
+    #####:  641:CHEWING_API void chewing_set_hsuSelKeyType( ChewingContext *ctx, int mode )
+        -:  642:{
+        -:  643:	// XXX: This function is deprecated. No one read hsuSelKeyType.
+    #####:  644:	ctx->data->config.hsuSelKeyType = mode;
+    #####:  645:}
+        -:  646:
+    #####:  647:CHEWING_API int chewing_get_hsuSelKeyType( ChewingContext *ctx )
+        -:  648:{
+        -:  649:	// XXX: This function is deprecated. No one read hsuSelKeyType.
+    #####:  650:	return ctx->data->config.hsuSelKeyType;
+        -:  651:}
+        -:  652:
+    #####:  653:CHEWING_API void chewing_set_autoShiftCur( ChewingContext *ctx, int mode )
+        -:  654:{
+        -:  655:	ChewingData *pgdata;
+        -:  656:
+    #####:  657:	if ( !ctx ) {
+    #####:  658:		return;
+        -:  659:	}
+    #####:  660:	pgdata = ctx->data;
+        -:  661:
+    #####:  662:	LOG_API( "mode = %d", mode );
+        -:  663:
+    #####:  664:	if ( mode == 0 || mode == 1 )
+    #####:  665:		ctx->data->config.bAutoShiftCur = mode;
+        -:  666:}
+        -:  667:
+    #####:  668:CHEWING_API int chewing_get_autoShiftCur( ChewingContext *ctx )
+        -:  669:{
+        -:  670:	ChewingData *pgdata;
+        -:  671:
+    #####:  672:	if ( !ctx ) {
+    #####:  673:		return -1;
+        -:  674:	}
+    #####:  675:	pgdata = ctx->data;
+        -:  676:
+    #####:  677:	LOG_API( "bAutoShiftCur = %d", ctx->data->config.bAutoShiftCur );
+        -:  678:
+    #####:  679:	return ctx->data->config.bAutoShiftCur;
+        -:  680:}
+        -:  681:
+    #####:  682:CHEWING_API void chewing_set_easySymbolInput( ChewingContext *ctx, int mode )
+        -:  683:{
+        -:  684:	ChewingData *pgdata;
+        -:  685:
+    #####:  686:	if ( !ctx ) {
+    #####:  687:		return;
+        -:  688:	}
+    #####:  689:	pgdata = ctx->data;
+        -:  690:
+    #####:  691:	LOG_API( "mode = %d", mode );
+        -:  692:
+    #####:  693:	if ( mode == 0 || mode == 1 )
+    #####:  694:		ctx->data->config.bEasySymbolInput = mode;
+        -:  695:}
+        -:  696:
+    #####:  697:CHEWING_API int chewing_get_easySymbolInput( ChewingContext *ctx )
+        -:  698:{
+        -:  699:	ChewingData *pgdata;
+        -:  700:
+    #####:  701:	if ( !ctx ) {
+    #####:  702:		return -1;
+        -:  703:	}
+    #####:  704:	pgdata = ctx->data;
+        -:  705:
+    #####:  706:	LOG_API( "bEasySymbolInput = %d", ctx->data->config.bEasySymbolInput );
+        -:  707:
+    #####:  708:	return ctx->data->config.bEasySymbolInput;
+        -:  709:}
+        -:  710:
+    #####:  711:CHEWING_API void chewing_set_phraseChoiceRearward( ChewingContext *ctx, int mode )
+        -:  712:{
+        -:  713:	ChewingData *pgdata;
+        -:  714:
+    #####:  715:	if ( !ctx ) {
+    #####:  716:		return;
+        -:  717:	}
+    #####:  718:	pgdata = ctx->data;
+        -:  719:
+    #####:  720:	LOG_API( "mode = %d", mode );
+        -:  721:
+    #####:  722:	if ( mode == 0 || mode == 1 )
+    #####:  723:		ctx->data->config.bPhraseChoiceRearward = mode;
+        -:  724:}
+        -:  725:
+    #####:  726:CHEWING_API int chewing_get_phraseChoiceRearward( ChewingContext *ctx )
+        -:  727:{
+        -:  728:	ChewingData *pgdata;
+        -:  729:
+    #####:  730:	if ( !ctx ) {
+    #####:  731:		return -1;
+        -:  732:	}
+    #####:  733:	pgdata = ctx->data;
+        -:  734:
+    #####:  735:	LOG_API( "bPhraseChoiceRearward = %d", ctx->data->config.bPhraseChoiceRearward );
+        -:  736:
+    #####:  737:	return ctx->data->config.bPhraseChoiceRearward;
+        -:  738:}
+        -:  739:
+    #####:  740:CHEWING_API void chewing_set_ChiEngMode( ChewingContext *ctx, int mode )
+        -:  741:{
+        -:  742:	ChewingData *pgdata;
+        -:  743:
+    #####:  744:	if ( !ctx ) {
+    #####:  745:		return;
+        -:  746:	}
+    #####:  747:	pgdata = ctx->data;
+        -:  748:
+    #####:  749:	LOG_API( "mode = %d", mode );
+        -:  750:
+    #####:  751:	if ( mode == CHINESE_MODE || mode == SYMBOL_MODE ) {
+        -:  752:		// remove all data inside buffer as switching mode.
+    #####:  753:		ZuinRemoveAll( &( ctx->data->zuinData ) );
+    #####:  754:		MakeOutputWithRtn( ctx->output, ctx->data, KEYSTROKE_ABSORB);
+    #####:  755:		ctx->data->bChiSym = mode;
+        -:  756:	}
+        -:  757:}
+        -:  758:
+    #####:  759:CHEWING_API int chewing_get_ChiEngMode( ChewingContext *ctx )
+        -:  760:{
+        -:  761:	ChewingData *pgdata;
+        -:  762:
+    #####:  763:	if ( !ctx ) {
+    #####:  764:		return -1;
+        -:  765:	}
+    #####:  766:	pgdata = ctx->data;
+        -:  767:
+    #####:  768:	LOG_API( "bChiSym = %d", ctx->data->bChiSym );
+        -:  769:
+    #####:  770:	return ctx->data->bChiSym;
+        -:  771:}
+        -:  772:
+    #####:  773:CHEWING_API void chewing_set_ShapeMode( ChewingContext *ctx, int mode )
+        -:  774:{
+        -:  775:	ChewingData *pgdata;
+        -:  776:
+    #####:  777:	if ( !ctx ) {
+    #####:  778:		return;
+        -:  779:	}
+    #####:  780:	pgdata = ctx->data;
+        -:  781:
+    #####:  782:	LOG_API( "mode = %d", mode );
+        -:  783:
+    #####:  784:	if ( mode == HALFSHAPE_MODE || mode == FULLSHAPE_MODE )
+    #####:  785:		ctx->data->bFullShape = mode;
+        -:  786:}
+        -:  787:
+    #####:  788:CHEWING_API int chewing_get_ShapeMode( ChewingContext *ctx )
+        -:  789:{
+        -:  790:	ChewingData *pgdata;
+        -:  791:
+    #####:  792:	if ( !ctx ) {
+    #####:  793:		return -1;
+        -:  794:	}
+    #####:  795:	pgdata = ctx->data;
+        -:  796:
+    #####:  797:	LOG_API( "ctx->data->bFullShape = %d", ctx->data->bFullShape );
+        -:  798:
+    #####:  799:	return ctx->data->bFullShape;
+        -:  800:}
+        -:  801:
+       84:  802:static void CheckAndResetRange( ChewingData *pgdata )
+        -:  803:{
+       84:  804:	if ( pgdata->PointStart > -1 ) {
+        2:  805:		pgdata->PointStart = -1;
+        2:  806:		pgdata->PointEnd = 0;
+        -:  807:	}
+       84:  808:}
+        -:  809:
+        8:  810:static int SelectCandidate( ChewingData *pgdata, int num )
+        -:  811:{
+       8*:  812:	assert( pgdata );
+       8*:  813:	assert( pgdata->choiceInfo.pageNo >= 0 );
+        -:  814:
+        8:  815:	if ( 0 <= num && num < pgdata->choiceInfo.nTotalChoice ) {
+        8:  816:		if ( pgdata->choiceInfo.isSymbol != WORD_CHOICE ) {
+        8:  817:			SymbolChoice( pgdata, num );
+        -:  818:		}
+        -:  819:		else {
+        -:  820:			/* change the select interval & selectStr & nSelect */
+    #####:  821:			AddSelect( pgdata, num );
+        -:  822:			/* second, call choice module */
+    #####:  823:			ChoiceSelect( pgdata, num );
+        -:  824:			/* automatically shift the cursor to next phrase */
+    #####:  825:			if ( pgdata->config.bAutoShiftCur != 0 &&
+        -:  826:			     /* if cursor at end of string, do not shift the cursor. */
+    #####:  827:			     pgdata->chiSymbolCursor < pgdata->chiSymbolBufLen ) {
+    #####:  828:				if ( pgdata->config.bPhraseChoiceRearward ) {
+    #####:  829:					++pgdata->chiSymbolCursor;
+        -:  830:				} else {
+    #####:  831:					pgdata->chiSymbolCursor +=
+    #####:  832:						pgdata->availInfo.avail[ pgdata->availInfo.currentAvail ].len;
+        -:  833:				}
+        -:  834:			}
+        -:  835:		}
+        8:  836:		return 0;
+        -:  837:	}
+        -:  838:
+    #####:  839:	return -1;
+        -:  840:}
+        -:  841:
+        8:  842:static void DoSelect( ChewingData *pgdata, int num )
+        -:  843:{
+       8*:  844:	assert( pgdata->choiceInfo.pageNo >= 0 );
+        8:  845:	if ( num >= 0 ) {
+        8:  846:		num += pgdata->choiceInfo.pageNo * pgdata->choiceInfo.nChoicePerPage;
+        8:  847:		SelectCandidate( pgdata, num );
+        -:  848:	}
+        8:  849:}
+        -:  850:
+        6:  851:CHEWING_API int chewing_handle_Space( ChewingContext *ctx )
+        -:  852:{
+        -:  853:	ChewingData *pgdata;
+        -:  854:
+        6:  855:	if ( !ctx ) {
+    #####:  856:		return -1;
+        -:  857:	}
+        6:  858:	pgdata = ctx->data;
+        -:  859:
+        6:  860:	LOG_API();
+        -:  861:
+        -:  862:	/*
+        -:  863:	 * Use chewing_handle_Default( ctx, ' ' ) to handle space when:
+        -:  864:	 * - "space as selection" mode is disable
+        -:  865:	 * - mode is not CHINESE_MODE
+        -:  866:	 * - has incompleted bopomofo (space is needed to complete it)
+        -:  867:	 */
+        6:  868:	if ( !pgdata->config.bSpaceAsSelection
+    #####:  869:	     || pgdata->bChiSym != CHINESE_MODE
+    #####:  870:	     || ZuinIsEntering( &ctx->data->zuinData ) ) {
+        6:  871:		return chewing_handle_Default( ctx, ' ' );
+        -:  872:	}
+        -:  873:
+    #####:  874:	CheckAndResetRange( pgdata );
+        -:  875:
+        -:  876:	/*
+        -:  877:	 * space = right when the follogin conditions are true
+        -:  878:	 * 1. In select mode
+        -:  879:	 * 2. The candidate page is not last page
+        -:  880:	 *
+        -:  881:	 * Otherwise, space = down
+        -:  882:	 */
+    #####:  883:	if ( pgdata->bSelect &&
+    #####:  884:	     ctx->output->pci->pageNo < ctx->output->pci->nPage - 1 ) {
+    #####:  885:		return chewing_handle_Right( ctx );
+        -:  886:	} else {
+    #####:  887:		return chewing_handle_Down( ctx );
+        -:  888:	}
+        -:  889:	return 0;
+        -:  890:}
+        -:  891:
+    #####:  892:CHEWING_API int chewing_handle_Esc( ChewingContext *ctx )
+        -:  893:{
+        -:  894:	ChewingData *pgdata;
+        -:  895:	ChewingOutput *pgo;
+    #####:  896:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -:  897:
+    #####:  898:	if ( !ctx ) {
+    #####:  899:		return -1;
+        -:  900:	}
+    #####:  901:	pgdata = ctx->data;
+    #####:  902:	pgo = ctx->output;
+        -:  903:
+    #####:  904:	LOG_API();
+        -:  905:
+    #####:  906:	CheckAndResetRange( pgdata );
+        -:  907:
+    #####:  908:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####:  909:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -:  910:	}
+    #####:  911:	else if ( pgdata->bSelect ) {
+    #####:  912:		ChoiceEndChoice( pgdata );
+        -:  913:	}
+    #####:  914:	else if ( ZuinIsEntering( &( pgdata->zuinData ) ) ) {
+    #####:  915:		ZuinRemoveAll( &( pgdata->zuinData ) );
+        -:  916:	}
+    #####:  917:	else if ( pgdata->config.bEscCleanAllBuf ) {
+    #####:  918:		CleanAllBuf( pgdata );
+    #####:  919:		pgo->commitBufLen = pgdata->chiSymbolBufLen;
+        -:  920:	}
+        -:  921:
+    #####:  922:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####:  923:	return 0;
+        -:  924:}
+        -:  925:
+        5:  926:CHEWING_API int chewing_handle_Enter( ChewingContext *ctx )
+        -:  927:{
+        -:  928:	ChewingData *pgdata;
+        -:  929:	ChewingOutput *pgo;
+        -:  930:	int nCommitStr;
+        5:  931:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -:  932:
+        5:  933:	if ( !ctx ) {
+    #####:  934:		return -1;
+        -:  935:	}
+        5:  936:	pgdata = ctx->data;
+        5:  937:	pgo = ctx->output;
+        -:  938:
+        5:  939:	LOG_API();
+        -:  940:
+        5:  941:	nCommitStr = pgdata->chiSymbolBufLen;
+        -:  942:
+        5:  943:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####:  944:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -:  945:	}
+        5:  946:	else if ( pgdata->bSelect ) {
+    #####:  947:		keystrokeRtn = KEYSTROKE_ABSORB | KEYSTROKE_BELL;
+        -:  948:	}
+        5:  949:	else if ( pgdata->PointStart > -1 ) {
+        2:  950:		int buf = pgdata->chiSymbolCursor;
+        -:  951:		int key;
+        2:  952:		if ( pgdata->PointEnd > 1 ) {
+        1:  953:			if ( ! pgdata->config.bAddPhraseForward ) {
+        1:  954:				pgdata->chiSymbolCursor = pgdata->PointStart;
+        1:  955:				key = '0' + pgdata->PointEnd;
+        -:  956:			}
+        -:  957:			else {
+    #####:  958:				pgdata->chiSymbolCursor = pgdata->PointStart + pgdata->PointEnd;
+    #####:  959:				key = '0' + pgdata->PointEnd;
+        -:  960:			}
+        -:  961:
+        1:  962:			chewing_handle_CtrlNum( ctx, key );
+        1:  963:			pgdata->chiSymbolCursor = buf;
+        -:  964:		}
+        1:  965:		else if ( pgdata->PointEnd < 1 ) {
+        1:  966:			if ( pgdata->config.bAddPhraseForward )
+    #####:  967:				pgdata->chiSymbolCursor = buf - pgdata->PointEnd;
+        1:  968:			key = '0' - pgdata->PointEnd;
+        1:  969:			chewing_handle_CtrlNum( ctx, key );
+        1:  970:			pgdata->chiSymbolCursor = buf;
+        -:  971:		}
+        2:  972:		pgdata->PointStart = -1;
+        2:  973:		pgdata->PointEnd = 0;
+        -:  974:	}
+        -:  975:	else {
+        3:  976:		keystrokeRtn = KEYSTROKE_COMMIT;
+        3:  977:		WriteChiSymbolToCommitBuf( pgdata, pgo, nCommitStr );
+        3:  978:		AutoLearnPhrase( pgdata );
+        3:  979:		CleanAllBuf( pgdata );
+        3:  980:		pgo->commitBufLen = nCommitStr;
+        -:  981:	}
+        -:  982:
+        5:  983:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        5:  984:	return 0;
+        -:  985:}
+        -:  986:
+    #####:  987:CHEWING_API int chewing_handle_Del( ChewingContext *ctx )
+        -:  988:{
+        -:  989:	ChewingData *pgdata;
+        -:  990:	ChewingOutput *pgo;
+    #####:  991:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -:  992:
+    #####:  993:	if ( !ctx ) {
+    #####:  994:		return -1;
+        -:  995:	}
+    #####:  996:	pgdata = ctx->data;
+    #####:  997:	pgo = ctx->output;
+        -:  998:
+    #####:  999:	LOG_API();
+        -: 1000:
+    #####: 1001:	CheckAndResetRange( pgdata );
+        -: 1002:
+    #####: 1003:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1004:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1005:	}
+        -: 1006:
+    #####: 1007:	if ( ! pgdata->bSelect ) {
+    #####: 1008:		if (
+    #####: 1009:			! ZuinIsEntering( &( pgdata->zuinData ) ) &&
+    #####: 1010:			pgdata->chiSymbolCursor < pgdata->chiSymbolBufLen ) {
+    #####: 1011:			ChewingKillChar(
+        -: 1012:				pgdata,
+        -: 1013:				pgdata->chiSymbolCursor,
+        -: 1014:				NONDECREASE_CURSOR );
+        -: 1015:		}
+    #####: 1016:		CallPhrasing( pgdata, 0 );
+        -: 1017:	}
+    #####: 1018:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1019:	return 0;
+        -: 1020:}
+        -: 1021:
+    #####: 1022:CHEWING_API int chewing_handle_Backspace( ChewingContext *ctx )
+        -: 1023:{
+        -: 1024:	ChewingData *pgdata;
+        -: 1025:	ChewingOutput *pgo;
+    #####: 1026:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1027:
+    #####: 1028:	if ( !ctx ) {
+    #####: 1029:		return -1;
+        -: 1030:	}
+    #####: 1031:	pgdata = ctx->data;
+    #####: 1032:	pgo = ctx->output;
+        -: 1033:
+    #####: 1034:	LOG_API();
+        -: 1035:
+    #####: 1036:	pgdata = ctx->data;
+    #####: 1037:	pgo = ctx->output;
+        -: 1038:
+    #####: 1039:	CheckAndResetRange( pgdata );
+        -: 1040:
+    #####: 1041:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1042:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1043:	}
+        -: 1044:
+    #####: 1045:	if ( ! pgdata->bSelect ) {
+    #####: 1046:		if ( ZuinIsEntering( &( pgdata->zuinData ) ) ) {
+    #####: 1047:			ZuinRemoveLast( &( pgdata->zuinData ) );
+        -: 1048:		}
+    #####: 1049:		else if ( pgdata->chiSymbolCursor > 0 ) {
+    #####: 1050:			ChewingKillChar(
+        -: 1051:				pgdata,
+    #####: 1052:				pgdata->chiSymbolCursor - 1,
+        -: 1053:				DECREASE_CURSOR );
+        -: 1054:		}
+    #####: 1055:		CallPhrasing( pgdata, 0 );
+        -: 1056:	}
+    #####: 1057:	else if ( pgdata->bSelect ) {
+    #####: 1058:		chewing_cand_close( ctx );
+        -: 1059:	}
+        -: 1060:
+    #####: 1061:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1062:	return 0;
+        -: 1063:}
+        -: 1064:
+    #####: 1065:CHEWING_API int chewing_handle_Up( ChewingContext *ctx )
+        -: 1066:{
+        -: 1067:	ChewingData *pgdata;
+        -: 1068:	ChewingOutput *pgo;
+    #####: 1069:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1070:	int key_buf_cursor;
+        -: 1071:
+    #####: 1072:	if ( !ctx ) {
+    #####: 1073:		return -1;
+        -: 1074:	}
+    #####: 1075:	pgdata = ctx->data;
+    #####: 1076:	pgo = ctx->output;
+        -: 1077:
+    #####: 1078:	LOG_API();
+        -: 1079:
+    #####: 1080:	CheckAndResetRange( pgdata );
+        -: 1081:
+    #####: 1082:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1083:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1084:	}
+        -: 1085:
+    #####: 1086:	key_buf_cursor = pgdata->chiSymbolCursor;
+        -: 1087:	// FIXME: when pgdata->chiSymbolBufLen == 0, key_buf_cursor will be -1.
+    #####: 1088:	if ( pgdata->chiSymbolCursor == pgdata->chiSymbolBufLen )
+    #####: 1089:		key_buf_cursor--;
+        -: 1090:
+        -: 1091:	/* close candidate list, compared to Down key to open candidate list. */
+    #####: 1092:	if ( ! pgdata->symbolKeyBuf[ key_buf_cursor ] ) {
+    #####: 1093:		if ( pgdata->bSelect ) {
+    #####: 1094:			ChoiceEndChoice( pgdata );
+        -: 1095:		}
+        -: 1096:	}
+        -: 1097:
+    #####: 1098:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1099:	return 0;
+        -: 1100:}
+        -: 1101:
+    #####: 1102:CHEWING_API int chewing_handle_Down( ChewingContext *ctx )
+        -: 1103:{
+        -: 1104:	ChewingData *pgdata;
+        -: 1105:	ChewingOutput *pgo;
+    #####: 1106:	int toSelect = 0;
+    #####: 1107:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1108:	int key_buf_cursor;
+        -: 1109:
+    #####: 1110:	if ( !ctx ) {
+    #####: 1111:		return -1;
+        -: 1112:	}
+    #####: 1113:	pgdata = ctx->data;
+    #####: 1114:	pgo = ctx->output;
+        -: 1115:
+    #####: 1116:	LOG_API();
+        -: 1117:
+    #####: 1118:	CheckAndResetRange( pgdata );
+        -: 1119:
+    #####: 1120:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1121:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1122:	}
+        -: 1123:
+    #####: 1124:	key_buf_cursor = pgdata->chiSymbolCursor;
+    #####: 1125:	if ( pgdata->chiSymbolCursor == pgdata->chiSymbolBufLen && key_buf_cursor > 0 )
+    #####: 1126:		key_buf_cursor--;
+        -: 1127:
+        -: 1128:	/* see if to select */
+    #####: 1129:	if ( ChewingIsChiAt( key_buf_cursor, pgdata ) )
+    #####: 1130:			toSelect = 1;
+        -: 1131:
+    #####: 1132:	chooseCandidate( ctx, toSelect, key_buf_cursor );
+        -: 1133:
+    #####: 1134:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1135:	return 0;
+        -: 1136:}
+        -: 1137:
+        -: 1138:/* Add phrase in Hanin Style */
+        3: 1139:CHEWING_API int chewing_handle_ShiftLeft( ChewingContext *ctx )
+        -: 1140:{
+        -: 1141:	ChewingData *pgdata;
+        -: 1142:	ChewingOutput *pgo;
+        3: 1143:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1144:
+        3: 1145:	if ( !ctx ) {
+    #####: 1146:		return -1;
+        -: 1147:	}
+        3: 1148:	pgdata = ctx->data;
+        3: 1149:	pgo = ctx->output;
+        -: 1150:
+        3: 1151:	LOG_API();
+        -: 1152:
+        3: 1153:	if ( ! ChewingIsEntering( pgdata ) ) {
+        1: 1154:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1155:	}
+        3: 1156:	if ( ! pgdata->bSelect ) {
+        -: 1157:		/*  PointEnd locates (-9, +9) */
+        3: 1158:		if (
+        3: 1159:			! ZuinIsEntering( &( pgdata->zuinData ) ) &&
+        3: 1160:			pgdata->chiSymbolCursor > 0 &&
+        2: 1161:			pgdata->PointEnd > -9 ) {
+        2: 1162:			if ( pgdata->PointStart == -1 )
+        1: 1163:				pgdata->PointStart = pgdata->chiSymbolCursor;
+        2: 1164:			pgdata->chiSymbolCursor--;
+        2: 1165:			if (
+        2: 1166:				ChewingIsChiAt( pgdata->chiSymbolCursor, pgdata ) ) {
+        2: 1167:				pgdata->PointEnd--;
+        -: 1168:			}
+        2: 1169:			if ( pgdata->PointEnd == 0 )
+    #####: 1170:				pgdata->PointStart = -1;
+        -: 1171:		}
+        -: 1172:	}
+        -: 1173:
+        3: 1174:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        3: 1175:	return 0;
+        -: 1176:}
+        -: 1177:
+        2: 1178:CHEWING_API int chewing_handle_Left( ChewingContext *ctx )
+        -: 1179:{
+        -: 1180:	ChewingData *pgdata;
+        -: 1181:	ChewingOutput *pgo;
+        2: 1182:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1183:
+        2: 1184:	if ( !ctx ) {
+    #####: 1185:		return -1;
+        -: 1186:	}
+        2: 1187:	pgdata = ctx->data;
+        2: 1188:	pgo = ctx->output;
+        -: 1189:
+        2: 1190:	LOG_API();
+        -: 1191:
+        2: 1192:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1193:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1194:	}
+        -: 1195:
+        2: 1196:	if ( pgdata->bSelect ) {
+    #####: 1197:		assert( pgdata->choiceInfo.nPage > 0 );
+    #####: 1198:		if ( pgdata->choiceInfo.pageNo > 0 )
+    #####: 1199:			pgdata->choiceInfo.pageNo--;
+        -: 1200:		else
+    #####: 1201:			pgdata->choiceInfo.pageNo = pgdata->choiceInfo.nPage - 1;
+        -: 1202:	}
+        -: 1203:	else {
+        2: 1204:		if (
+        2: 1205:			! ZuinIsEntering( &( pgdata->zuinData ) ) &&
+        2: 1206:			pgdata->chiSymbolCursor > 0 ) {
+        2: 1207:			CheckAndResetRange( pgdata );
+        2: 1208:			pgdata->chiSymbolCursor--;
+        -: 1209:		}
+        -: 1210:	}
+        2: 1211:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        2: 1212:	return 0;
+        -: 1213:}
+        -: 1214:
+        -: 1215:/* Add phrase in Hanin Style */
+        3: 1216:CHEWING_API int chewing_handle_ShiftRight( ChewingContext *ctx )
+        -: 1217:{
+        -: 1218:	ChewingData *pgdata;
+        -: 1219:	ChewingOutput *pgo;
+        3: 1220:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1221:
+        3: 1222:	if ( !ctx ) {
+    #####: 1223:		return -1;
+        -: 1224:	}
+        3: 1225:	pgdata = ctx->data;
+        3: 1226:	pgo = ctx->output;
+        -: 1227:
+        3: 1228:	LOG_API();
+        -: 1229:
+        3: 1230:	if ( ! ChewingIsEntering( pgdata ) ) {
+        1: 1231:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1232:	}
+        -: 1233:
+        3: 1234:	if ( ! pgdata->bSelect ) {
+        -: 1235:		/* PointEnd locates (-9, +9) */
+        3: 1236:		if (
+        3: 1237:			! ZuinIsEntering( &( pgdata->zuinData ) ) &&
+        3: 1238:			pgdata->chiSymbolCursor < pgdata->chiSymbolBufLen &&
+        2: 1239:			pgdata->PointEnd < 9 ) {
+        2: 1240:			if ( pgdata->PointStart == -1 )
+        1: 1241:				pgdata->PointStart = pgdata->chiSymbolCursor;
+        2: 1242:			if (
+        2: 1243:				ChewingIsChiAt( pgdata->chiSymbolCursor, pgdata ) ) {
+        2: 1244:				pgdata->PointEnd++;
+        -: 1245:			}
+        2: 1246:			pgdata->chiSymbolCursor++;
+        2: 1247:			if ( pgdata->PointEnd == 0 )
+    #####: 1248:				pgdata->PointStart = -1;
+        -: 1249:		}
+        -: 1250:	}
+        -: 1251:
+        3: 1252:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        3: 1253:	return 0;
+        -: 1254:}
+        -: 1255:
+    #####: 1256:CHEWING_API int chewing_handle_Right( ChewingContext *ctx )
+        -: 1257:{
+        -: 1258:	ChewingData *pgdata;
+        -: 1259:	ChewingOutput *pgo;
+    #####: 1260:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1261:
+    #####: 1262:	if ( !ctx ) {
+    #####: 1263:		return -1;
+        -: 1264:	}
+    #####: 1265:	pgdata = ctx->data;
+    #####: 1266:	pgo = ctx->output;
+        -: 1267:
+    #####: 1268:	LOG_API();
+        -: 1269:
+    #####: 1270:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1271:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1272:	}
+        -: 1273:
+    #####: 1274:	if ( pgdata->bSelect ) {
+    #####: 1275:		if ( pgdata->choiceInfo.pageNo < pgdata->choiceInfo.nPage - 1)
+    #####: 1276:			pgdata->choiceInfo.pageNo++;
+        -: 1277:		else
+    #####: 1278:			pgdata->choiceInfo.pageNo = 0;
+        -: 1279:	}
+        -: 1280:	else {
+    #####: 1281:		if (
+    #####: 1282:			! ZuinIsEntering( &( pgdata->zuinData ) ) &&
+    #####: 1283:			pgdata->chiSymbolCursor < pgdata->chiSymbolBufLen ) {
+    #####: 1284:			CheckAndResetRange( pgdata );
+    #####: 1285:			pgdata->chiSymbolCursor++;
+        -: 1286:		}
+        -: 1287:	}
+        -: 1288:
+    #####: 1289:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1290:	return 0;
+        -: 1291:}
+        -: 1292:
+    #####: 1293:CHEWING_API int chewing_handle_Tab( ChewingContext *ctx )
+        -: 1294:{
+        -: 1295:	ChewingData *pgdata;
+        -: 1296:	ChewingOutput *pgo;
+    #####: 1297:	int keystrokeRtn = KEYSTROKE_ABSORB;
+    #####: 1298:	int all_phrasing = 0;
+        -: 1299:	int cursor;
+        -: 1300:
+    #####: 1301:	if ( !ctx ) {
+    #####: 1302:		return -1;
+        -: 1303:	}
+    #####: 1304:	pgdata = ctx->data;
+    #####: 1305:	pgo = ctx->output;
+        -: 1306:
+    #####: 1307:	LOG_API();
+        -: 1308:
+    #####: 1309:	CheckAndResetRange( pgdata );
+        -: 1310:
+    #####: 1311:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1312:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1313:	}
+        -: 1314:
+        -: 1315:
+    #####: 1316:	if ( ! pgdata->bSelect ) {
+    #####: 1317:		if ( pgdata->chiSymbolCursor == pgdata->chiSymbolBufLen ) {
+    #####: 1318:			pgdata->phrOut.nNumCut++;
+    #####: 1319:			all_phrasing = 1;
+        -: 1320:		}
+    #####: 1321:		else if ( ChewingIsChiAt( pgdata->chiSymbolCursor - 1, pgdata ) ) {
+    #####: 1322:			cursor = PhoneSeqCursor( pgdata );
+    #####: 1323:			if ( IsPreferIntervalConnted( cursor, pgdata) ) {
+    #####: 1324:				pgdata->bUserArrBrkpt[ cursor ] = 1;
+    #####: 1325:				pgdata->bUserArrCnnct[ cursor ] = 0;
+        -: 1326:			}
+        -: 1327:			else {
+    #####: 1328:				pgdata->bUserArrBrkpt[ cursor ] = 0;
+    #####: 1329:				pgdata->bUserArrCnnct[ cursor ] = 1;
+        -: 1330:			}
+        -: 1331:		}
+    #####: 1332:		CallPhrasing( pgdata, all_phrasing );
+        -: 1333:	}
+    #####: 1334:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1335:	return 0;
+        -: 1336:}
+        -: 1337:
+    #####: 1338:CHEWING_API int chewing_handle_DblTab( ChewingContext *ctx )
+        -: 1339:{
+        -: 1340:	ChewingData *pgdata;
+        -: 1341:	ChewingOutput *pgo;
+    #####: 1342:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1343:	int cursor;
+        -: 1344:
+    #####: 1345:	if ( !ctx ) {
+    #####: 1346:		return -1;
+        -: 1347:	}
+    #####: 1348:	pgdata = ctx->data;
+    #####: 1349:	pgo = ctx->output;
+        -: 1350:
+    #####: 1351:	LOG_API();
+        -: 1352:
+    #####: 1353:	CheckAndResetRange( pgdata );
+        -: 1354:
+    #####: 1355:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1356:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1357:	}
+        -: 1358:
+    #####: 1359:	if ( ! pgdata->bSelect ) {
+    #####: 1360:		cursor = PhoneSeqCursor( pgdata );
+    #####: 1361:		pgdata->bUserArrBrkpt[ cursor ] = 0;
+    #####: 1362:		pgdata->bUserArrCnnct[ cursor ] = 0;
+        -: 1363:	}
+    #####: 1364:	CallPhrasing( pgdata, 0 );
+        -: 1365:
+    #####: 1366:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1367:	return 0;
+        -: 1368:}
+        -: 1369:
+        -: 1370:
+    #####: 1371:CHEWING_API int chewing_handle_Capslock( ChewingContext *ctx )
+        -: 1372:{
+        -: 1373:	ChewingData *pgdata;
+        -: 1374:	ChewingOutput *pgo;
+        -: 1375:
+    #####: 1376:	if ( !ctx ) {
+    #####: 1377:		return -1;
+        -: 1378:	}
+    #####: 1379:	pgdata = ctx->data;
+    #####: 1380:	pgo = ctx->output;
+        -: 1381:
+    #####: 1382:	LOG_API();
+        -: 1383:
+    #####: 1384:	chewing_set_ChiEngMode( ctx, 1 - chewing_get_ChiEngMode(ctx) );
+    #####: 1385:	MakeOutputWithRtn( pgo, pgdata, KEYSTROKE_ABSORB );
+    #####: 1386:	return 0;
+        -: 1387:}
+        -: 1388:
+        2: 1389:CHEWING_API int chewing_handle_Home( ChewingContext *ctx )
+        -: 1390:{
+        -: 1391:	ChewingData *pgdata;
+        -: 1392:	ChewingOutput *pgo;
+        2: 1393:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1394:
+        2: 1395:	if ( !ctx ) {
+    #####: 1396:		return -1;
+        -: 1397:	}
+        2: 1398:	pgdata = ctx->data;
+        2: 1399:	pgo = ctx->output;
+        -: 1400:
+        2: 1401:	LOG_API();
+        -: 1402:
+        2: 1403:	CheckAndResetRange( pgdata );
+        -: 1404:
+        2: 1405:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1406:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1407:	}
+        2: 1408:	else if ( ! pgdata->bSelect ) {
+        2: 1409:		pgdata->chiSymbolCursor = 0;
+        -: 1410:	}
+        2: 1411:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        2: 1412:	return 0;
+        -: 1413:}
+        -: 1414:
+    #####: 1415:CHEWING_API int chewing_handle_End( ChewingContext *ctx )
+        -: 1416:{
+        -: 1417:	ChewingData *pgdata;
+        -: 1418:	ChewingOutput *pgo;
+    #####: 1419:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1420:
+    #####: 1421:	if ( !ctx ) {
+    #####: 1422:		return -1;
+        -: 1423:	}
+    #####: 1424:	pgdata = ctx->data;
+    #####: 1425:	pgo = ctx->output;
+        -: 1426:
+    #####: 1427:	LOG_API();
+        -: 1428:
+    #####: 1429:	CheckAndResetRange( pgdata );
+        -: 1430:
+    #####: 1431:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1432:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1433:	}
+    #####: 1434:	else if ( ! pgdata->bSelect ) {
+    #####: 1435:		pgdata->chiSymbolCursor = pgdata->chiSymbolBufLen;
+        -: 1436:	}
+    #####: 1437:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1438:	return 0;
+        -: 1439:}
+        -: 1440:
+    #####: 1441:CHEWING_API int chewing_handle_PageUp( ChewingContext *ctx )
+        -: 1442:{
+        -: 1443:	ChewingData *pgdata;
+        -: 1444:	ChewingOutput *pgo;
+    #####: 1445:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1446:
+    #####: 1447:	if ( !ctx ) {
+    #####: 1448:		return -1;
+        -: 1449:	}
+    #####: 1450:	pgdata = ctx->data;
+    #####: 1451:	pgo = ctx->output;
+        -: 1452:
+    #####: 1453:	LOG_API();
+        -: 1454:
+    #####: 1455:	CheckAndResetRange( pgdata );
+        -: 1456:
+    #####: 1457:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1458:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1459:	}
+    #####: 1460:	else if ( ! pgdata->bSelect ) {
+    #####: 1461:		pgdata->chiSymbolCursor = pgdata->chiSymbolBufLen;
+        -: 1462:	}
+    #####: 1463:	else if ( pgdata->bSelect ) {
+    #####: 1464:		assert( pgdata->choiceInfo.nPage > 0 );
+    #####: 1465:		if ( pgdata->choiceInfo.pageNo > 0 )
+    #####: 1466:			pgdata->choiceInfo.pageNo--;
+        -: 1467:		else
+    #####: 1468:			pgdata->choiceInfo.pageNo = pgdata->choiceInfo.nPage - 1;
+        -: 1469:	}
+    #####: 1470:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1471:	return 0;
+        -: 1472:}
+        -: 1473:
+    #####: 1474:CHEWING_API int chewing_handle_PageDown( ChewingContext *ctx )
+        -: 1475:{
+        -: 1476:	ChewingData *pgdata;
+        -: 1477:	ChewingOutput *pgo;
+    #####: 1478:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1479:
+    #####: 1480:	if ( !ctx ) {
+    #####: 1481:		return -1;
+        -: 1482:	}
+    #####: 1483:	pgdata = ctx->data;
+    #####: 1484:	pgo = ctx->output;
+        -: 1485:
+    #####: 1486:	LOG_API();
+        -: 1487:
+    #####: 1488:	CheckAndResetRange( pgdata );
+        -: 1489:
+    #####: 1490:	if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1491:		keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1492:	}
+    #####: 1493:	else if ( ! pgdata->bSelect ) {
+    #####: 1494:		pgdata->chiSymbolCursor = pgdata->chiSymbolBufLen;
+        -: 1495:	}
+    #####: 1496:	else if ( pgdata->bSelect ) {
+    #####: 1497:		if ( pgdata->choiceInfo.pageNo < pgdata->choiceInfo.nPage - 1)
+    #####: 1498:			pgdata->choiceInfo.pageNo++;
+        -: 1499:		else
+    #####: 1500:			pgdata->choiceInfo.pageNo = 0;
+        -: 1501:	}
+    #####: 1502:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1503:	return 0;
+        -: 1504:}
+        -: 1505:
+        -: 1506:/* Dvorak <-> Qwerty keyboard layout converter */
+    #####: 1507:static int dvorak_convert( int key )
+        -: 1508:{
+    #####: 1509:	const char dkey[] = {
+        -: 1510:		'\'','\"',',','<','.','>','p','P','y','Y','f','F','g','G',
+        -: 1511:		'c','C','r','R','l','L','/','?','=','+','\\','|',
+        -: 1512:		'a','A','o','O','e','E','u','U','i','I','d','D','h','H',
+        -: 1513:		't','T','n','N','s','S','-','_',
+        -: 1514:		';',':','q','Q','j','J','k','K','x','X','b','B','m','M',
+        -: 1515:		'w','W','v','V','z','Z'};
+    #####: 1516:	const char qkey[] = {
+        -: 1517:		'q','Q','w','W','e','E','r','R','t','T','y','Y','u','U',
+        -: 1518:		'i','I','o','O','p','P','[','{',']','}','\\','|',
+        -: 1519:		'a','A','s','S','d','D','f','F','g','G','h','H','j','J',
+        -: 1520:		'k','K','l','L',';',':','\'','\"',
+        -: 1521:		'z','Z','x','X','c','C','v','V','b','B','n','N','m','M',
+        -: 1522:		',','<','.','>','/','?'};
+        -: 1523:	size_t i;
+        -: 1524:
+        -: 1525:	STATIC_ASSERT( ARRAY_SIZE( dkey ) == ARRAY_SIZE( qkey ) );
+        -: 1526:
+    #####: 1527:	for ( i = 0; i < ARRAY_SIZE( dkey ); i++ ) {
+    #####: 1528:		if ( key == qkey[ i ] ) {
+    #####: 1529:			key = dkey[ i ];
+    #####: 1530:			return key;
+        -: 1531:		}
+        -: 1532:	}
+    #####: 1533:	return key;
+        -: 1534:}
+        -: 1535:
+       72: 1536:CHEWING_API int chewing_handle_Default( ChewingContext *ctx, int key )
+        -: 1537:{
+        -: 1538:	ChewingData *pgdata;
+        -: 1539:	ChewingOutput *pgo;
+       72: 1540:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1541:	int rtn;
+        -: 1542:	int num;
+       72: 1543:	int bQuickCommit = 0;
+        -: 1544:
+       72: 1545:	if ( !ctx ) {
+    #####: 1546:		return -1;
+        -: 1547:	}
+       72: 1548:	pgdata = ctx->data;
+       72: 1549:	pgo = ctx->output;
+        -: 1550:
+       72: 1551:	LOG_API( "key = %d", key );
+        -: 1552:
+        -: 1553:	/* Update lifetime */
+       72: 1554:	IncreaseLifeTime( ctx->data );
+        -: 1555:
+        -: 1556:	/* Skip the special key */
+       72: 1557:	if ( key & 0xFF00 ) {
+    #####: 1558:		keystrokeRtn = KEYSTROKE_IGNORE;
+    #####: 1559:		goto End_KeyDefault;
+        -: 1560:	}
+        -: 1561:
+        -: 1562:	/* We ignore non-printable input */
+       72: 1563:	if ( ! isprint( key ) )
+    #####: 1564:		goto End_KeyDefault;
+        -: 1565:
+       72: 1566:	CheckAndResetRange( pgdata );
+        -: 1567:
+       72: 1568:	DEBUG_CHECKPOINT();
+       72: 1569:	DEBUG_OUT( "   key=%d", key );
+        -: 1570:
+        -: 1571:	/* Dvorak Hsu */
+       72: 1572:	if ( pgdata->zuinData.kbtype == KB_DVORAK_HSU ) {
+    #####: 1573:		key = dvorak_convert( key );
+        -: 1574:	}
+        -: 1575:
+        -: 1576:	/* selecting */
+       72: 1577:	if ( pgdata->bSelect ) {
+        8: 1578:		if ( key == ' ' )
+    #####: 1579:			return chewing_handle_Right( ctx );
+        -: 1580:		/* num starts from 0 */
+        8: 1581:		num = CountSelKeyNum( key, pgdata );
+        8: 1582:		if ( num >= 0 ) {
+        8: 1583:			DoSelect( pgdata, num );
+        8: 1584:			goto End_keyproc;
+        -: 1585:		}
+        -: 1586:
+        -: 1587:		/* Otherwise, use 'j' and 'k' for paging in selection mode */
+    #####: 1588:		DEBUG_OUT(
+        -: 1589:			"\t\tchecking paging key, got '%c'\n",
+        -: 1590:			key );
+    #####: 1591:		switch ( key ) {
+    #####: 1592:			case 'j':
+        -: 1593:			case 'J':
+    #####: 1594:				if ( pgdata->chiSymbolCursor > 0 ) {
+    #####: 1595:					if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1596:						keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1597:					}
+    #####: 1598:					CheckAndResetRange( pgdata );
+    #####: 1599:					pgdata->chiSymbolCursor--;
+    #####: 1600:					if ( ChewingIsChiAt( pgdata->chiSymbolCursor, pgdata ) )
+    #####: 1601:						ChoiceInitAvail( pgdata );
+        -: 1602:					else
+    #####: 1603:						OpenSymbolChoice( pgdata );
+        -: 1604:
+        -: 1605:				}
+    #####: 1606:				goto End_Paging;
+    #####: 1607:			case 'k':
+        -: 1608:			case 'K':
+    #####: 1609:				if ( pgdata->chiSymbolCursor < pgdata->chiSymbolBufLen ) {
+    #####: 1610:					if ( ! ChewingIsEntering( pgdata ) ) {
+    #####: 1611:						keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1612:					}
+    #####: 1613:					CheckAndResetRange( pgdata );
+    #####: 1614:					pgdata->chiSymbolCursor++;
+    #####: 1615:					if ( ChewingIsChiAt( pgdata->chiSymbolCursor, pgdata ) )
+    #####: 1616:						ChoiceInitAvail( pgdata );
+        -: 1617:					else
+    #####: 1618:						OpenSymbolChoice( pgdata );
+        -: 1619:				}
+    #####: 1620:				goto End_Paging;
+    #####: 1621:			default:
+    #####: 1622:				break;
+        -: 1623:		}
+        -: 1624:	}
+        -: 1625:	/* editing */
+        -: 1626:	else {
+       64: 1627:		if ( pgdata->bChiSym == CHINESE_MODE ) {
+       64: 1628:			if ( pgdata->config.bEasySymbolInput != 0 ) {
+    #####: 1629:				EasySymbolInput( key, pgdata );
+    #####: 1630:				goto End_keyproc;
+        -: 1631:			}
+        -: 1632:
+       64: 1633:			rtn = ZuinPhoInput( pgdata, key );
+       64: 1634:			DEBUG_OUT(
+        -: 1635:				"\t\tChinese mode key, "
+        -: 1636:				"ZuinPhoInput return value = %d\n",
+        -: 1637:				rtn );
+        -: 1638:
+       64: 1639:			if ( rtn == ZUIN_KEY_ERROR )
+    #####: 1640:				rtn = SpecialSymbolInput( key, pgdata );
+       64: 1641:			switch ( rtn ) {
+       37: 1642:				case ZUIN_ABSORB:
+       37: 1643:					keystrokeRtn = KEYSTROKE_ABSORB;
+       37: 1644:					break;
+       22: 1645:				case ZUIN_COMMIT:
+       22: 1646:					AddChi( pgdata->zuinData.phone, pgdata->zuinData.phoneAlt, pgdata );
+       22: 1647:					break;
+    #####: 1648:				case ZUIN_NO_WORD:
+    #####: 1649:					keystrokeRtn = KEYSTROKE_BELL | KEYSTROKE_ABSORB;
+    #####: 1650:					break;
+    #####: 1651:				case ZUIN_KEY_ERROR:
+        -: 1652:				case ZUIN_IGNORE:
+    #####: 1653:					DEBUG_OUT(
+        -: 1654:						"\t\tbefore isupper(key),key=%d\n",
+        -: 1655:						key );
+        -: 1656:					/* change upper case into lower case */
+    #####: 1657:					if ( isupper( key ) )
+    #####: 1658:						key = tolower( key );
+        -: 1659:
+    #####: 1660:					DEBUG_OUT(
+        -: 1661:						"\t\tafter isupper(key),key=%d\n",
+        -: 1662:						key );
+        -: 1663:
+        -: 1664:					/* see if buffer contains nothing */
+    #####: 1665:					if ( pgdata->chiSymbolBufLen == 0 ) {
+    #####: 1666:						bQuickCommit = 1;
+        -: 1667:					}
+        -: 1668:
+    #####: 1669:					if ( pgdata->config.bEasySymbolInput == 0 ) {
+    #####: 1670:						if ( pgdata->bFullShape )
+    #####: 1671:							rtn = FullShapeSymbolInput( key, pgdata );
+        -: 1672:						else
+    #####: 1673:							rtn = SymbolInput( key, pgdata );
+        -: 1674:					}
+        -: 1675:
+    #####: 1676:					if ( rtn == SYMBOL_KEY_ERROR ) {
+    #####: 1677:						keystrokeRtn = KEYSTROKE_IGNORE;
+        -: 1678:						/*
+        -: 1679:						 * If the key is not a printable symbol,
+        -: 1680:						 * then it's wrong to commit it.
+        -: 1681:						 */
+    #####: 1682:						bQuickCommit = 0;
+        -: 1683:					}
+        -: 1684:					else
+    #####: 1685:						keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1686:
+    #####: 1687:					break;
+        5: 1688:				default:
+        5: 1689:					goto End_KeyDefault;
+        -: 1690:			}
+        -: 1691:		}
+        -: 1692:		/* English mode */
+        -: 1693:		else {
+        -: 1694:			/* see if buffer contains nothing */
+    #####: 1695:			if ( pgdata->chiSymbolBufLen == 0 ) {
+    #####: 1696:				bQuickCommit = 1;
+        -: 1697:			}
+    #####: 1698:			if ( pgdata->bFullShape ) {
+    #####: 1699:				rtn = FullShapeSymbolInput( key, pgdata );
+        -: 1700:			}
+        -: 1701:			else {
+    #####: 1702:				rtn = SymbolInput( key, pgdata );
+        -: 1703:			}
+        -: 1704:
+    #####: 1705:			if ( rtn == SYMBOL_KEY_ERROR ) {
+    #####: 1706:				keystrokeRtn = KEYSTROKE_IGNORE;
+    #####: 1707:				bQuickCommit = 0;
+        -: 1708:			}
+        -: 1709:		}
+        -: 1710:	}
+        -: 1711:
+    #####: 1712:End_keyproc:
+       67: 1713:	if ( ! bQuickCommit ) {
+       67: 1714:		CallPhrasing( pgdata, 0 );
+       67: 1715:		if ( ReleaseChiSymbolBuf( pgdata, pgo ) != 0 )
+    #####: 1716:			keystrokeRtn = KEYSTROKE_COMMIT;
+        -: 1717:	}
+        -: 1718:	/* Quick commit */
+        -: 1719:	else {
+    #####: 1720:		DEBUG_OUT(
+        -: 1721:				"\t\tQuick commit buf[0]=%c\n",
+        -: 1722:				pgdata->preeditBuf[ 0 ].char_ );
+    #####: 1723:		WriteChiSymbolToCommitBuf( pgdata, pgo, 1 );
+    #####: 1724:		pgdata->chiSymbolBufLen = 0;
+    #####: 1725:		pgdata->chiSymbolCursor = 0;
+    #####: 1726:		keystrokeRtn = KEYSTROKE_COMMIT;
+        -: 1727:	}
+        -: 1728:
+       67: 1729:	if ( pgdata->phrOut.nNumCut > 0 ) {
+        -: 1730:		int i;
+    #####: 1731:		for ( i = 0; i < pgdata->phrOut.nDispInterval; i++ ) {
+    #####: 1732:			pgdata->bUserArrBrkpt[ pgdata->phrOut.dispInterval[ i ].from ] = 1;
+    #####: 1733:			pgdata->bUserArrBrkpt[ pgdata->phrOut.dispInterval[ i ].to ] = 1;
+        -: 1734:		}
+    #####: 1735:		pgdata->phrOut.nNumCut = 0;
+        -: 1736:	}
+        -: 1737:
+       67: 1738:End_KeyDefault:
+       72: 1739:	CallPhrasing( pgdata, 0 );
+       72: 1740:End_Paging:
+       72: 1741:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+       72: 1742:	return 0;
+        -: 1743:}
+        -: 1744:
+        8: 1745:CHEWING_API int chewing_handle_CtrlNum( ChewingContext *ctx, int key )
+        -: 1746:{
+        -: 1747:	ChewingData *pgdata;
+        -: 1748:	ChewingOutput *pgo;
+        8: 1749:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1750:	int newPhraseLen;
+        -: 1751:	int i;
+        -: 1752:	uint16_t addPhoneSeq[ MAX_PHONE_SEQ_LEN ];
+        -: 1753:	char addWordSeq[ MAX_PHONE_SEQ_LEN * MAX_UTF8_SIZE + 1 ];
+        -: 1754:	int phraseState;
+        -: 1755:	int cursor;
+        -: 1756:
+        8: 1757:	if ( !ctx ) {
+    #####: 1758:		return -1;
+        -: 1759:	}
+        8: 1760:	pgdata = ctx->data;
+        8: 1761:	pgo = ctx->output;
+        -: 1762:
+        8: 1763:	LOG_API();
+        -: 1764:
+        8: 1765:	CheckAndResetRange( pgdata );
+        -: 1766:
+        8: 1767:	if ( pgdata->bSelect )
+    #####: 1768:		return 0;
+        -: 1769:
+        8: 1770:	CallPhrasing( pgdata, 0 );
+        8: 1771:	newPhraseLen = key - '0';
+        -: 1772:
+        8: 1773:	if ( key == '0' || key == '1' ) {
+    #####: 1774:		pgdata->bSelect = 1;
+    #####: 1775:		pgdata->choiceInfo.oldChiSymbolCursor = pgdata->chiSymbolCursor;
+        -: 1776:
+    #####: 1777:		HaninSymbolInput( pgdata );
+    #####: 1778:		CallPhrasing( pgdata, 0 );
+    #####: 1779:		MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1780:		return 0;
+        -: 1781:	}
+        -: 1782:
+        8: 1783:	cursor = PhoneSeqCursor( pgdata );
+        8: 1784:	if ( ! pgdata->config.bAddPhraseForward ) {
+        5: 1785:		if (
+        5: 1786:			newPhraseLen >= 1 &&
+        5: 1787:			cursor + newPhraseLen - 1 <= pgdata->nPhoneSeq ) {
+        5: 1788:			if ( NoSymbolBetween(
+        -: 1789:				pgdata,
+        -: 1790:				cursor,
+        -: 1791:				cursor + newPhraseLen ) ) {
+        -: 1792:				/* Manually add phrase to the user phrase database. */
+        4: 1793:				memcpy( addPhoneSeq,
+        4: 1794:					&pgdata->phoneSeq[ cursor ],
+        -: 1795:					sizeof( uint16_t ) * newPhraseLen );
+        4: 1796:				addPhoneSeq[ newPhraseLen ] = 0;
+        -: 1797:
+        4: 1798:				copyStringFromPreeditBuf( pgdata, cursor, newPhraseLen, addWordSeq, sizeof( addWordSeq ) );
+        -: 1799:
+        4: 1800:				phraseState = UserUpdatePhrase( pgdata, addPhoneSeq, addWordSeq );
+        4: 1801:				SetUpdatePhraseMsg(
+        -: 1802:					pgdata,
+        -: 1803:					addWordSeq,
+        -: 1804:					newPhraseLen,
+        -: 1805:					phraseState );
+        -: 1806:
+        -: 1807:				/* Clear the breakpoint between the New Phrase */
+        8: 1808:				for ( i = 1; i < newPhraseLen; i++ )
+        4: 1809:					pgdata->bUserArrBrkpt[ cursor + i ] = 0;
+        -: 1810:			}
+        -: 1811:		}
+        -: 1812:	}
+        -: 1813:	else {
+        3: 1814:		if (
+        3: 1815:			newPhraseLen >= 1 &&
+        3: 1816:			cursor - newPhraseLen >= 0 ) {
+        3: 1817:			if ( NoSymbolBetween( pgdata,
+        -: 1818:				cursor - newPhraseLen,
+        -: 1819:				cursor ) ) {
+        -: 1820:				/* Manually add phrase to the user phrase database. */
+        2: 1821:				memcpy( addPhoneSeq,
+        2: 1822:					&pgdata->phoneSeq[ cursor - newPhraseLen ],
+        -: 1823:					sizeof( uint16_t ) * newPhraseLen );
+        2: 1824:				addPhoneSeq[ newPhraseLen ] = 0;
+        -: 1825:
+        2: 1826:				copyStringFromPreeditBuf( pgdata, cursor - newPhraseLen, newPhraseLen, addWordSeq, sizeof( addWordSeq ) );
+        -: 1827:
+        2: 1828:				phraseState = UserUpdatePhrase( pgdata, addPhoneSeq, addWordSeq );
+        2: 1829:				SetUpdatePhraseMsg(
+        -: 1830:					pgdata,
+        -: 1831:					addWordSeq,
+        -: 1832:					newPhraseLen,
+        -: 1833:					phraseState );
+        -: 1834:
+        -: 1835:				/* Clear the breakpoint between the New Phrase */
+        4: 1836:				for ( i = 1; i < newPhraseLen; i++ )
+        2: 1837:					pgdata->bUserArrBrkpt[ cursor - newPhraseLen + i ] = 0;
+        -: 1838:			}
+        -: 1839:		}
+        -: 1840:	}
+        8: 1841:	CallPhrasing( pgdata, 0 );
+        8: 1842:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+        8: 1843:	MakeOutputAddMsgAndCleanInterval( pgo, pgdata );
+        8: 1844:	return 0;
+        -: 1845:}
+        -: 1846:
+    #####: 1847:CHEWING_API int chewing_handle_ShiftSpace( ChewingContext *ctx )
+        -: 1848:{
+        -: 1849:	ChewingData *pgdata;
+        -: 1850:	ChewingOutput *pgo;
+    #####: 1851:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1852:
+    #####: 1853:	if ( !ctx ) {
+    #####: 1854:		return -1;
+        -: 1855:	}
+    #####: 1856:	pgdata = ctx->data;
+    #####: 1857:	pgo = ctx->output;
+        -: 1858:
+    #####: 1859:	LOG_API();
+        -: 1860:
+    #####: 1861:	if ( ! pgdata->bSelect ) {
+    #####: 1862:		CheckAndResetRange( pgdata );
+        -: 1863:	}
+    #####: 1864:	CallPhrasing( pgdata, 0 );
+    #####: 1865:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1866:	return 0;
+        -: 1867:}
+        -: 1868:
+    #####: 1869:CHEWING_API int chewing_handle_Numlock( ChewingContext *ctx, int key )
+        -: 1870:{
+        -: 1871:	ChewingData *pgdata;
+        -: 1872:	ChewingOutput *pgo;
+    #####: 1873:	int keystrokeRtn = KEYSTROKE_ABSORB;
+        -: 1874:	int rtn;
+    #####: 1875:	int QuickCommit = 0;
+        -: 1876:
+    #####: 1877:	if ( !ctx ) {
+    #####: 1878:		return -1;
+        -: 1879:	}
+    #####: 1880:	pgdata = ctx->data;
+    #####: 1881:	pgo = ctx->output;
+        -: 1882:
+    #####: 1883:	LOG_API();
+        -: 1884:
+    #####: 1885:	if ( ! pgdata->bSelect ) {
+        -: 1886:		/* If we're not selecting words, we should send out numeric
+        -: 1887:		 * characters at once.
+        -: 1888:		 */
+    #####: 1889:		if ( pgdata->chiSymbolBufLen == 0 ) {
+    #####: 1890:			QuickCommit = 1;
+        -: 1891:		}
+    #####: 1892:		rtn = SymbolInput( key, pgdata );
+        -: 1893:		/* copied from chewing_handle_Default */
+    #####: 1894:		if ( rtn == SYMBOL_KEY_ERROR ) {
+    #####: 1895:			keystrokeRtn = KEYSTROKE_IGNORE ;
+        -: 1896:		}
+    #####: 1897:		else if ( QuickCommit ) {
+    #####: 1898:			WriteChiSymbolToCommitBuf( pgdata, pgo, 1 );
+    #####: 1899:			pgdata->chiSymbolBufLen = 0;
+    #####: 1900:			pgdata->chiSymbolCursor = 0;
+    #####: 1901:			keystrokeRtn = KEYSTROKE_COMMIT;
+        -: 1902:		}
+        -: 1903:		else {	/* Not quick commit */
+    #####: 1904:			CallPhrasing( pgdata, 0 );
+    #####: 1905:			if( ReleaseChiSymbolBuf( pgdata, pgo ) != 0 )
+    #####: 1906:				keystrokeRtn = KEYSTROKE_COMMIT;
+        -: 1907:		}
+        -: 1908:	}
+        -: 1909:	else {
+        -: 1910:		/* Otherwise, if we are selecting words, we use numeric keys
+        -: 1911:		 * as selkey
+        -: 1912:		 * and submit the words.
+        -: 1913:		 */
+    #####: 1914:		int num = -1;
+    #####: 1915:		if ( key > '0' && key <= '9' )
+    #####: 1916:			num = key - '1';
+    #####: 1917:		else if ( key == '0' )
+    #####: 1918:			num = 9;
+    #####: 1919:		DoSelect( pgdata, num );
+        -: 1920:	}
+    #####: 1921:	CallPhrasing( pgdata, 0 );
+    #####: 1922:	if ( ReleaseChiSymbolBuf( pgdata, pgo ) != 0 )
+    #####: 1923:		keystrokeRtn = KEYSTROKE_COMMIT;
+    #####: 1924:	MakeOutputWithRtn( pgo, pgdata, keystrokeRtn );
+    #####: 1925:	return 0;
+        -: 1926:}
+        -: 1927:
+    #####: 1928:CHEWING_API unsigned short *chewing_get_phoneSeq( ChewingContext *ctx )
+        -: 1929:{
+        -: 1930:	ChewingData *pgdata;
+        -: 1931:	uint16_t *seq;
+        -: 1932:
+    #####: 1933:	if ( !ctx ) {
+    #####: 1934:		return NULL;
+        -: 1935:	}
+    #####: 1936:	pgdata = ctx->data;
+        -: 1937:
+    #####: 1938:	LOG_API();
+        -: 1939:
+    #####: 1940:	seq = ALC( uint16_t, ctx->data->nPhoneSeq );
+    #####: 1941:	if ( seq )
+    #####: 1942:		memcpy( seq, ctx->data->phoneSeq, sizeof(uint16_t)*ctx->data->nPhoneSeq );
+    #####: 1943:	return seq;
+        -: 1944:}
+        -: 1945:
+    #####: 1946:CHEWING_API int chewing_get_phoneSeqLen( ChewingContext *ctx )
+        -: 1947:{
+        -: 1948:	ChewingData *pgdata;
+        -: 1949:
+    #####: 1950:	if ( !ctx ) {
+    #####: 1951:		return -1;
+        -: 1952:	}
+    #####: 1953:	pgdata = ctx->data;
+        -: 1954:
+    #####: 1955:	LOG_API("nPhoneSeq = %d", ctx->data->nPhoneSeq);
+        -: 1956:
+    #####: 1957:	return ctx->data->nPhoneSeq;
+        -: 1958:}
+        -: 1959:
+       22: 1960:CHEWING_API void chewing_set_logger( ChewingContext *ctx,
+        -: 1961:	void (*logger)( void *data, int level, const char *fmt, ... ),
+        -: 1962:	void *data )
+        -: 1963:{
+        -: 1964:	ChewingData *pgdata;
+        -: 1965:
+       22: 1966:	if ( !ctx ) {
+    #####: 1967:		return;
+        -: 1968:	}
+       22: 1969:	pgdata = ctx->data;
+        -: 1970:
+       22: 1971:	LOG_API();
+        -: 1972:
+       22: 1973:	if ( !logger ) {
+    #####: 1974:		logger = NullLogger;
+    #####: 1975:		data = 0;
+        -: 1976:	}
+       22: 1977:	ctx->data->logger = logger;
+       22: 1978:	ctx->data->loggerData = data;
+        -: 1979:}
+        -: 1980:
+        4: 1981:CHEWING_API int chewing_userphrase_enumerate( ChewingContext *ctx )
+        -: 1982:{
+        -: 1983:	ChewingData *pgdata;
+        -: 1984:#if WITH_SQLITE3
+        -: 1985:	int ret;
+        -: 1986:#endif
+        -: 1987:
+        4: 1988:	if ( !ctx ) {
+    #####: 1989:		return -1;
+        -: 1990:	}
+        -: 1991:
+        4: 1992:	pgdata = ctx->data;
+        -: 1993:
+        4: 1994:	LOG_API();
+        -: 1995:
+        -: 1996:#if WITH_SQLITE3
+       4*: 1997:	assert( pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT] );
+        4: 1998:	ret = sqlite3_reset( pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT] );
+        4: 1999:	if ( ret != SQLITE_OK ) {
+    #####: 2000:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####: 2001:		return -1;
+        -: 2002:	}
+        -: 2003:#else
+        -: 2004:	pgdata->static_data.userphrase_enum = FindNextHash( pgdata, NULL );
+        -: 2005:#endif
+        4: 2006:	return 0;
+        -: 2007:}
+        -: 2008:
+        5: 2009:CHEWING_API int chewing_userphrase_has_next(
+        -: 2010:	ChewingContext *ctx,
+        -: 2011:	unsigned int *phrase_len,
+        -: 2012:	unsigned int *bopomofo_len)
+        -: 2013:{
+        -: 2014:	ChewingData *pgdata;
+        -: 2015:#if WITH_SQLITE3
+        -: 2016:	int ret;
+        -: 2017:#endif
+        -: 2018:
+        5: 2019:	if ( !ctx || !phrase_len || !bopomofo_len ) {
+    #####: 2020:		return 0;
+        -: 2021:	}
+        5: 2022:	pgdata = ctx->data;
+        -: 2023:
+        5: 2024:	LOG_API();
+        -: 2025:
+        -: 2026:#if WITH_SQLITE3
+        5: 2027:	ret = sqlite3_step( pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT] );
+        5: 2028:	if ( ret != SQLITE_ROW ) {
+        2: 2029:		if ( ret != SQLITE_DONE ) {
+    #####: 2030:			LOG_ERROR( "sqlite3_step returns %d", ret );
+        -: 2031:		}
+        2: 2032:		return 0;
+        -: 2033:	}
+        -: 2034:
+        6: 2035:	*phrase_len = strlen( (const char *) sqlite3_column_text(
+        -: 2036:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT],
+        3: 2037:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT].column[COLUMN_USERPHRASE_PHRASE] ) ) + 1;
+        -: 2038:
+        3: 2039:	*bopomofo_len = GetBopomofoBufLen( sqlite3_column_int(
+        -: 2040:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT],
+        3: 2041:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT].column[COLUMN_USERPHRASE_LENGTH] ) );
+        -: 2042:
+        3: 2043:	return 1;
+        -: 2044:#else
+        -: 2045:	if ( pgdata->static_data.userphrase_enum ) {
+        -: 2046:		*phrase_len = strlen(
+        -: 2047:			pgdata->static_data.userphrase_enum->data.wordSeq ) + 1;
+        -: 2048:		*bopomofo_len = BopomofoFromUintArray(
+        -: 2049:			NULL, 0, pgdata->static_data.userphrase_enum->data.phoneSeq );
+        -: 2050:		return 1;
+        -: 2051:
+        -: 2052:	}
+        -: 2053:	return 0;
+        -: 2054:#endif
+        -: 2055:}
+        -: 2056:
+        3: 2057:CHEWING_API int chewing_userphrase_get(
+        -: 2058:	ChewingContext *ctx,
+        -: 2059:	char *phrase_buf, unsigned int phrase_len,
+        -: 2060:	char *bopomofo_buf, unsigned int bopomofo_len)
+        -: 2061:{
+        -: 2062:	ChewingData *pgdata;
+        -: 2063:#if WITH_SQLITE3
+        -: 2064:	const char *phrase;
+        -: 2065:	int length;
+        -: 2066:	int i;
+        3: 2067:	uint16_t phone_array[MAX_PHRASE_LEN + 1] = { 0 };
+        -: 2068:#endif
+        -: 2069:
+        3: 2070:	if ( !ctx || !phrase_buf || !phrase_len ||
+        3: 2071:		!bopomofo_buf || !bopomofo_len ) {
+    #####: 2072:		return -1;
+        -: 2073:	}
+        3: 2074:	pgdata = ctx->data;
+        -: 2075:
+        3: 2076:	LOG_API();
+        -: 2077:
+        -: 2078:#if WITH_SQLITE3
+        3: 2079:	phrase = (const char *) sqlite3_column_text(
+        -: 2080:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT],
+        3: 2081:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT].column[COLUMN_USERPHRASE_PHRASE] );
+        3: 2082:	length = sqlite3_column_int(
+        -: 2083:		pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT],
+        3: 2084:		SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT].column[COLUMN_USERPHRASE_LENGTH] );
+        -: 2085:
+        3: 2086:	if ( phrase_len < strlen( phrase ) + 1 ) {
+    #####: 2087:		LOG_ERROR("phrase_len %d is smaller than %d", phrase_len, strlen( phrase ) + 1 );
+    #####: 2088:		return -1;
+        -: 2089:	}
+        -: 2090:
+        3: 2091:	if ( bopomofo_len < GetBopomofoBufLen( length ) ) {
+    #####: 2092:		LOG_ERROR("bopomofo_len %d is smaller than %d", bopomofo_len, GetBopomofoBufLen( length ) );
+    #####: 2093:		return -1;
+        -: 2094:	}
+        -: 2095:
+        9: 2096:	for ( i = 0; i < length && i < ARRAY_SIZE(phone_array); ++i ) {
+        6: 2097:		phone_array[i] = sqlite3_column_int(
+        -: 2098:			pgdata->static_data.stmt_userphrase[STMT_USERPHRASE_SELECT],
+        6: 2099:			SQL_STMT_USERPHRASE[STMT_USERPHRASE_SELECT].column[COLUMN_USERPHRASE_PHONE_0 + i]);
+        -: 2100:	}
+        -: 2101:
+        3: 2102:	strncpy( phrase_buf, phrase, phrase_len );
+        3: 2103:	BopomofoFromUintArray( bopomofo_buf, bopomofo_len, phone_array );
+        -: 2104:
+        3: 2105:	return 0;
+        -: 2106:#else
+        -: 2107:	if ( pgdata->static_data.userphrase_enum ) {
+        -: 2108:		strncpy( phrase_buf, pgdata->static_data.userphrase_enum->data.wordSeq, phrase_len );
+        -: 2109:		phrase_buf[ phrase_len - 1 ] = 0;
+        -: 2110:
+        -: 2111:		BopomofoFromUintArray( bopomofo_buf, bopomofo_len, pgdata->static_data.userphrase_enum->data.phoneSeq );
+        -: 2112:		bopomofo_buf[ bopomofo_len - 1 ] = 0;
+        -: 2113:
+        -: 2114:		pgdata->static_data.userphrase_enum = FindNextHash(
+        -: 2115:			pgdata, pgdata->static_data.userphrase_enum );
+        -: 2116:
+        -: 2117:		return 0;
+        -: 2118:	}
+        -: 2119:
+        -: 2120:	return -1;
+        -: 2121:#endif
+        -: 2122:}
+        -: 2123:
+       13: 2124:CHEWING_API int chewing_userphrase_add(
+        -: 2125:	ChewingContext *ctx,
+        -: 2126:	const char *phrase_buf,
+        -: 2127:	const char *bopomofo_buf)
+        -: 2128:{
+        -: 2129:	ChewingData *pgdata;
+        -: 2130:	ssize_t phrase_len;
+        -: 2131:	ssize_t phone_len;
+       13: 2132:	uint16_t *phone_buf = 0;
+        -: 2133:	int ret;
+        -: 2134:
+       13: 2135:	if ( !ctx || !phrase_buf || !bopomofo_buf ) {
+    #####: 2136:		return -1;
+        -: 2137:	}
+       13: 2138:	pgdata = ctx->data;
+        -: 2139:
+       13: 2140:	LOG_API();
+        -: 2141:
+       13: 2142:	phrase_len = ueStrLen( phrase_buf );
+       13: 2143:	phone_len = UintArrayFromBopomofo( NULL, 0, bopomofo_buf );
+        -: 2144:
+       13: 2145:	if ( phrase_len != phone_len ) {
+        1: 2146:		return 0;
+        -: 2147:	}
+        -: 2148:
+       12: 2149:	phone_buf = ALC( uint16_t, phone_len + 1 );
+      12*: 2150:	if ( !phone_buf ) return -1;
+       12: 2151:	ret = UintArrayFromBopomofo( phone_buf, phone_len + 1, bopomofo_buf );
+       12: 2152:	if ( ret == -1 ) {
+        1: 2153:		free( phone_buf );
+        1: 2154:		return 0;
+        -: 2155:	}
+        -: 2156:
+       11: 2157:	ret = UserUpdatePhrase( pgdata, phone_buf, phrase_buf );
+       11: 2158:	free( phone_buf );
+        -: 2159:
+       11: 2160:	if ( ret == USER_UPDATE_FAIL ) {
+        1: 2161:		return 0;
+        -: 2162:	}
+        -: 2163:
+       10: 2164:	return 1;
+        -: 2165:}
+        -: 2166:
+        7: 2167:CHEWING_API int chewing_userphrase_remove(
+        -: 2168:	ChewingContext *ctx,
+        -: 2169:	const char *phrase_buf,
+        -: 2170:	const char *bopomofo_buf)
+        -: 2171:{
+        -: 2172:	ChewingData *pgdata;
+        -: 2173:	ssize_t phone_len;
+        7: 2174:	uint16_t *phone_buf = 0;
+        -: 2175:	int ret;
+        -: 2176:
+        7: 2177:	if ( !ctx || !phrase_buf || !bopomofo_buf ) {
+    #####: 2178:		return -1;
+        -: 2179:	}
+        7: 2180:	pgdata = ctx->data;
+        -: 2181:
+        7: 2182:	LOG_API();
+        -: 2183:
+        7: 2184:	phone_len = UintArrayFromBopomofo( NULL, 0, bopomofo_buf );
+        7: 2185:	phone_buf = ALC( uint16_t, phone_len + 1 );
+       7*: 2186:	if ( !phone_buf ) return 0;
+        7: 2187:	ret = UintArrayFromBopomofo( phone_buf, phone_len + 1, bopomofo_buf );
+        7: 2188:	if ( ret == -1 ) {
+        1: 2189:		free( phone_buf );
+        1: 2190:		return 0;
+        -: 2191:	}
+        6: 2192:	ret = UserRemovePhrase( pgdata, phone_buf, phrase_buf );
+        6: 2193:	free( phone_buf );
+        -: 2194:
+        6: 2195:	return ret;
+        -: 2196:}
+        -: 2197:
+       24: 2198:CHEWING_API int chewing_userphrase_lookup(
+        -: 2199:	ChewingContext *ctx,
+        -: 2200:	const char *phrase_buf,
+        -: 2201:	const char *bopomofo_buf)
+        -: 2202:{
+        -: 2203:	ChewingData *pgdata;
+        -: 2204:	ssize_t phone_len;
+       24: 2205:	uint16_t *phone_buf = 0;
+        -: 2206:	int ret;
+        -: 2207:	UserPhraseData *user_phrase_data;
+        -: 2208:
+       24: 2209:	if ( !ctx || !phrase_buf || !bopomofo_buf ) {
+    #####: 2210:		return 0;
+        -: 2211:	}
+       24: 2212:	pgdata = ctx->data;
+        -: 2213:
+       24: 2214:	LOG_API();
+        -: 2215:
+       24: 2216:	phone_len = UintArrayFromBopomofo( NULL, 0, bopomofo_buf );
+       24: 2217:	phone_buf = ALC( uint16_t, phone_len + 1 );
+      24*: 2218:	if ( !phone_buf ) return 0;
+       24: 2219:	ret = UintArrayFromBopomofo( phone_buf, phone_len + 1, bopomofo_buf );
+       24: 2220:	if ( ret == -1 ) {
+        1: 2221:		free( phone_buf );
+        1: 2222:		return 0;
+        -: 2223:	}
+        -: 2224:
+       23: 2225:	user_phrase_data = UserGetPhraseFirst( pgdata, phone_buf );
+       25: 2226:	while ( user_phrase_data ) {
+       14: 2227:		if ( strcmp( phrase_buf, user_phrase_data->wordSeq ) == 0 )
+       12: 2228:			break;
+        2: 2229:		user_phrase_data = UserGetPhraseNext( pgdata, phone_buf );
+        -: 2230:	}
+       23: 2231:	UserGetPhraseEnd( pgdata, phone_buf );
+       23: 2232:	free( phone_buf );
+       23: 2233:	return user_phrase_data == NULL ? 0 : 1;
+        -: 2234:}
+        -: 2235:
+    #####: 2236:CHEWING_API const char *chewing_cand_string_by_index_static( ChewingContext *ctx, int index )
+        -: 2237:{
+        -: 2238:	ChewingData *pgdata;
+        -: 2239:	char *s;
+        -: 2240:
+    #####: 2241:	if ( !ctx ) {
+    #####: 2242:		return NULL;
+        -: 2243:	}
+    #####: 2244:	pgdata = ctx->data;
+        -: 2245:
+    #####: 2246:	LOG_API("index = %d", index);
+        -: 2247:
+    #####: 2248:	if ( 0 <= index && index < ctx->output->pci->nTotalChoice ) {
+    #####: 2249:		s = ctx->output->pci->totalChoiceStr[ index ];
+        -: 2250:	} else {
+    #####: 2251:		s = "";
+        -: 2252:	}
+    #####: 2253:	return s;
+        -: 2254:}
+        -: 2255:
+    #####: 2256:CHEWING_API int chewing_cand_choose_by_index( ChewingContext *ctx, int index )
+        -: 2257:{
+        -: 2258:	ChewingData *pgdata;
+        -: 2259:	ChewingOutput *pgo;
+        -: 2260:
+        -: 2261:	int ret;
+    #####: 2262:	if ( !ctx ) {
+    #####: 2263:		return -1;
+        -: 2264:	}
+    #####: 2265:	pgdata = ctx->data;
+    #####: 2266:	pgo = ctx->output;
+        -: 2267:
+    #####: 2268:	LOG_API("index = %d", index);
+        -: 2269:
+    #####: 2270:	if ( pgdata->choiceInfo.nTotalChoice == 0 ) return -1;
+        -: 2271:
+    #####: 2272:	ret = SelectCandidate( pgdata, index );
+    #####: 2273:	if ( ret == 0 ) {
+    #####: 2274:		CallPhrasing( pgdata, 0 );
+    #####: 2275:		MakeOutputWithRtn( pgo, pgdata, KEYSTROKE_ABSORB );
+        -: 2276:	}
+    #####: 2277:	return ret;
+        -: 2278:}
+        -: 2279:
+    #####: 2280:CHEWING_API int chewing_cand_open( ChewingContext *ctx )
+        -: 2281:{
+        -: 2282:	ChewingData *pgdata;
+        -: 2283:	int pos;
+        -: 2284:
+    #####: 2285:	if ( !ctx ) {
+    #####: 2286:		return -1;
+        -: 2287:	}
+    #####: 2288:	pgdata = ctx->data;
+        -: 2289:
+    #####: 2290:	LOG_API();
+        -: 2291:
+    #####: 2292:	if ( pgdata->bSelect ) return 0;
+    #####: 2293:	if ( pgdata->chiSymbolBufLen == 0 ) return -1;
+        -: 2294:
+    #####: 2295:	pos = pgdata->chiSymbolCursor;
+    #####: 2296:	if ( pgdata->chiSymbolCursor == pgdata->chiSymbolBufLen )
+    #####: 2297:		--pos;
+        -: 2298:
+    #####: 2299:	chooseCandidate( ctx, ChewingIsChiAt( pos, pgdata ), pos );
+        -: 2300:
+    #####: 2301:	return 0;
+        -: 2302:}
+        -: 2303:
+    #####: 2304:CHEWING_API int chewing_cand_close( ChewingContext *ctx )
+        -: 2305:{
+        -: 2306:	ChewingData *pgdata;
+    #####: 2307:	if ( !ctx ) {
+    #####: 2308:		return -1;
+        -: 2309:	}
+    #####: 2310:	pgdata = ctx->data;
+        -: 2311:
+    #####: 2312:	LOG_API();
+        -: 2313:
+    #####: 2314:	if ( ctx->data->bSelect ) {
+    #####: 2315:		ChoiceEndChoice( ctx->data );
+        -: 2316:	}
+        -: 2317:
+    #####: 2318:	return 0;
+        -: 2319:
+        -: 2320:}
+        -: 2321:
+    #####: 2322:CHEWING_API int chewing_cand_list_first( ChewingContext *ctx )
+        -: 2323:{
+        -: 2324:	ChewingData *pgdata;
+        -: 2325:
+    #####: 2326:	if ( !ctx ) {
+    #####: 2327:		return -1;
+        -: 2328:	}
+    #####: 2329:	pgdata = ctx->data;
+        -: 2330:
+    #####: 2331:	LOG_API();
+        -: 2332:
+    #####: 2333:	if ( !pgdata->bSelect ) return -1;
+        -: 2334:
+    #####: 2335:	return ChoiceFirstAvail( pgdata );
+        -: 2336:
+        -: 2337:	return 0;
+        -: 2338:}
+        -: 2339:
+    #####: 2340:CHEWING_API int chewing_cand_list_last( ChewingContext *ctx )
+        -: 2341:{
+        -: 2342:	ChewingData *pgdata;
+        -: 2343:
+    #####: 2344:	if ( !ctx ) {
+    #####: 2345:		return -1;
+        -: 2346:	}
+    #####: 2347:	pgdata = ctx->data;
+        -: 2348:
+    #####: 2349:	LOG_API();
+        -: 2350:
+    #####: 2351:	if ( !pgdata->bSelect ) return -1;
+        -: 2352:
+    #####: 2353:	return ChoiceLastAvail( pgdata );
+        -: 2354:}
+        -: 2355:
+    #####: 2356:CHEWING_API int chewing_cand_list_has_next( ChewingContext *ctx )
+        -: 2357:{
+        -: 2358:	ChewingData *pgdata;
+        -: 2359:
+    #####: 2360:	if ( !ctx ) {
+    #####: 2361:		return 0;
+        -: 2362:	}
+    #####: 2363:	pgdata = ctx->data;
+        -: 2364:
+    #####: 2365:	LOG_API();
+        -: 2366:
+    #####: 2367:	if ( !pgdata->bSelect ) return 0;
+        -: 2368:
+    #####: 2369:	return ChoiceHasNextAvail( pgdata );
+        -: 2370:}
+        -: 2371:
+    #####: 2372:CHEWING_API int chewing_cand_list_has_prev( ChewingContext *ctx )
+        -: 2373:{
+        -: 2374:	ChewingData *pgdata;
+        -: 2375:
+    #####: 2376:	if ( !ctx ) {
+    #####: 2377:		return 0;
+        -: 2378:	}
+    #####: 2379:	pgdata = ctx->data;
+        -: 2380:
+    #####: 2381:	LOG_API();
+        -: 2382:
+    #####: 2383:	if ( !pgdata->bSelect ) return 0;
+        -: 2384:
+    #####: 2385:	return ChoiceHasPrevAvail( pgdata);
+        -: 2386:}
+        -: 2387:
+    #####: 2388:CHEWING_API int chewing_cand_list_next( ChewingContext *ctx )
+        -: 2389:{
+        -: 2390:	ChewingData *pgdata;
+        -: 2391:
+    #####: 2392:	if ( !ctx ) {
+    #####: 2393:		return -1;
+        -: 2394:	}
+    #####: 2395:	pgdata = ctx->data;
+        -: 2396:
+    #####: 2397:	LOG_API();
+        -: 2398:
+    #####: 2399:	if ( !pgdata->bSelect ) return -1;
+        -: 2400:
+    #####: 2401:	return ChoiceNextAvail( pgdata );
+        -: 2402:}
+        -: 2403:
+    #####: 2404:CHEWING_API int chewing_cand_list_prev( ChewingContext *ctx )
+        -: 2405:{
+        -: 2406:	ChewingData *pgdata;
+        -: 2407:
+    #####: 2408:	if ( !ctx ) {
+    #####: 2409:		return -1;
+        -: 2410:	}
+    #####: 2411:	pgdata = ctx->data;
+        -: 2412:
+    #####: 2413:	LOG_API();
+        -: 2414:
+    #####: 2415:	if ( !pgdata->bSelect ) return -1;
+        -: 2416:
+    #####: 2417:	return ChoicePrevAvail( pgdata );
+        -: 2418:}
+        -: 2419:
+    #####: 2420:CHEWING_API int chewing_commit_preedit_buf( ChewingContext *ctx )
+        -: 2421:{
+        -: 2422:	ChewingData *pgdata;
+        -: 2423:	ChewingOutput *pgo;
+        -: 2424:	int len;
+        -: 2425:
+    #####: 2426:	if ( !ctx ) {
+    #####: 2427:		return -1;
+        -: 2428:	}
+    #####: 2429:	pgdata = ctx->data;
+    #####: 2430:	pgo = ctx->output;
+        -: 2431:
+    #####: 2432:	LOG_API();
+        -: 2433:
+    #####: 2434:	if ( pgdata->bSelect ) return -1;
+        -: 2435:
+    #####: 2436:	len = pgdata->chiSymbolBufLen;
+        -: 2437:
+    #####: 2438:	if ( !len ) return -1;
+        -: 2439:
+    #####: 2440:	WriteChiSymbolToCommitBuf( pgdata, pgo, len );
+    #####: 2441:	AutoLearnPhrase( pgdata );
+    #####: 2442:	CleanAllBuf( pgdata );
+        -: 2443:
+    #####: 2444:	MakeOutputWithRtn( pgo, pgdata, KEYSTROKE_COMMIT );
+        -: 2445:
+    #####: 2446:	return 0;
+        -: 2447:}
+        -: 2448:
+    #####: 2449:CHEWING_API int chewing_clean_preedit_buf( ChewingContext *ctx )
+        -: 2450:{
+        -: 2451:	ChewingData *pgdata;
+        -: 2452:	ChewingOutput *pgo;
+        -: 2453:
+    #####: 2454:	if ( !ctx ) {
+    #####: 2455:		return -1;
+        -: 2456:	}
+    #####: 2457:	pgdata = ctx->data;
+    #####: 2458:	pgo = ctx->output;
+        -: 2459:
+    #####: 2460:	LOG_API();
+        -: 2461:
+    #####: 2462:	if ( pgdata->bSelect ) return -1;
+        -: 2463:
+    #####: 2464:	CleanAllBuf( pgdata );
+        -: 2465:
+    #####: 2466:	MakeOutput( pgo, pgdata );
+    #####: 2467:	return 0;
+        -: 2468:}
+        -: 2469:
+    #####: 2470:CHEWING_API int chewing_clean_bopomofo_buf( ChewingContext *ctx )
+        -: 2471:{
+        -: 2472:	ChewingData *pgdata;
+        -: 2473:	ChewingOutput *pgo;
+        -: 2474:
+    #####: 2475:	if ( !ctx ) {
+    #####: 2476:		return -1;
+        -: 2477:	}
+    #####: 2478:	pgdata = ctx->data;
+    #####: 2479:	pgo = ctx->output;
+        -: 2480:
+    #####: 2481:	LOG_API();
+        -: 2482:
+    #####: 2483:	if ( ZuinIsEntering( &pgdata->zuinData ) ) {
+    #####: 2484:		ZuinRemoveAll( &pgdata->zuinData );
+        -: 2485:	}
+        -: 2486:
+    #####: 2487:	MakeOutput( pgo, pgdata );
+    #####: 2488:	return 0;
+        -: 2489:}
