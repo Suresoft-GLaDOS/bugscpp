@@ -393,6 +393,12 @@ class TestCommand(DockerCommand):
             action=ValidateCase,
         )
         self.parser.add_argument(
+            "--broken-cases",
+            help="run broken tests only",
+            dest="broken_cases",
+            action="store_true",
+        )
+        self.parser.add_argument(
             "--output-dir",
             help="output directory to generate coverage data instead of the current directory.",
             type=str,
@@ -409,7 +415,7 @@ class TestCommand(DockerCommand):
         self.parser.usage = (
             "bugcpp.py test PATH [-j|--jobs=JOBS] "
             "[--coverage [--additional-gcov-options=ADDITIONAL_GCOV_OPTIONS]] "
-            "[-v|--verbose] [-c|--case=expr] [--output-dir=directory]"
+            "[-v|--verbose] [--broken-cases] [-c|--case=expr] [--output-dir=directory]"
         )
         self.parser.description = dedent(
             """\
@@ -447,7 +453,9 @@ class TestCommand(DockerCommand):
         # Select cases to run. If none is given, select all.
         selected_defect = metadata.defects[index - 1]
 
-        if not args.case:
+        if args.broken_cases:
+            cases = selected_defect.case
+        elif not args.case:
             cases = set(range(1, selected_defect.num_cases + 1))
         else:
             included_cases, excluded_cases = args.case
