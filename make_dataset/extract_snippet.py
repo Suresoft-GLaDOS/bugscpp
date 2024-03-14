@@ -51,6 +51,10 @@ class BugscppInterface():
     def get_path_to_repo(self):
         return self._path_to_repo
     
+    def get_path_to_coverages(self):
+        subdir = os.listdir(self._output_dir)[0] # Assume single failing test, called after running build & test
+        return os.path.join(self._output_dir, subdir) if os.path.isdir(os.path.join(self._output_dir, subdir)) else ''
+    
     def get_failing_test_code(self):
         if not self._test_file:
             return ''
@@ -100,6 +104,26 @@ def get_signature(function_snippet, function_name):
     signature = ', '.join([term.strip() for term in signature.split(',')])
     return signature[signature.find(function_name):] # better replace this with cursor.spelling either
 
+def parse_gcov_file(path):
+    execution_count = list()
+    with open(path) as f:
+        lines = f.readlines()
+        for line in lines:
+            cov_info = line.split(':')
+            if len(cov_info) < 3 or int(cov_info[1].strip()) == 0: # line number == 0
+                continue
+            
+            exec_count = cov_info[0].strip()
+            if exec_count.endswith('*'): # appended if not all codes are executed
+                exec_count = exec_count[:-1]
+
+            if exec_count.isdigit():
+                execution_count.append(int(exec_count))
+            else:
+                execution_count.append(0)
+
+    return execution_count
+
 def collect_snippet(target_bugs):
     def iterate_over_source(src_path):
         index = clang.cindex.Index.create()
@@ -107,11 +131,17 @@ def collect_snippet(target_bugs):
         translation_unit = index.parse(src_path, args=[f'-std={standard}'])
 
         relative_path = src_path[len(repo_path) + 1:]
+        gcov_path = os.path.join(coverage_path, f'{relative_path.replace("/", "#")}.gcov')
+        execution_count = parse_gcov_file(gcov_path)
         class_name = relative_path[:-2].replace('/', '.').replace('src.', '') # should I trim src, too?
+
         for node in translation_unit.cursor.walk_preorder():
             if node.kind == clang.cindex.CursorKind.FUNCTION_DECL and node.is_definition(): # to exclude empty functions that came from headers
                 start_line = node.extent.start.line
                 end_line = node.extent.end.line
+                if sum(execution_count[start_line - 1:end_line]) == 0:
+                    continue
+                
                 function_snippet = get_corresponding_code(node)
                 signature = get_signature(function_snippet, node.spelling)
                 
@@ -146,11 +176,15 @@ def collect_snippet(target_bugs):
 
         bugscpp = BugscppInterface(project, bug_index)
         bugscpp.checkout()
+        bugscpp.build()
+        bugscpp.test()
+        
         repo_path = bugscpp.get_path_to_repo()
+        coverage_path = bugscpp.get_path_to_coverages()
         patch_info = bugscpp.extract_patch_info()
 
         src_dir = 'src' # for libchewing, libyara for yara
-        test_dir = 'test' # for libchewing, tests for yara
+        test_dir = 'tests' # for libchewing, tests for yara
         
         data = list()
         iterate_over_directory(os.path.join(repo_path, src_dir))        
@@ -163,4 +197,4 @@ def collect_snippet(target_bugs):
             json.dump(data, f, indent=4) 
             
 if __name__ == "__main__":
-    collect_snippet([('libchewing', '1')])
+    collect_snippet([('berry', '1')])
