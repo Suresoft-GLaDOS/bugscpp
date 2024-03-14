@@ -53,9 +53,6 @@ class BugscppInterface():
     
     def get_path_to_coverages(self):
         subdir = os.listdir(self._output_dir)[0] # Assume single failing test, called after running build & test
-        print(self._output_dir)
-        print(subdir)
-        print("h")
         return os.path.join(self._output_dir, subdir) if os.path.isdir(os.path.join(self._output_dir, subdir)) else ''
     
     def get_failing_test_code(self):
@@ -127,6 +124,13 @@ def parse_gcov_file(path):
 
     return execution_count
 
+def get_coverage_file(coverage_dir, src_file):
+    gcov_postfix = f'{src_file.replace("/", "#")}.gcov'
+    for file in os.listdir(coverage_dir):
+        if file.endswith(gcov_postfix):
+            return os.path.join(coverage_dir, file)
+    return os.path.join(coverage_dir, gcov_postfix)
+
 def collect_snippet(target_bugs):
     def iterate_over_source(src_path):
         index = clang.cindex.Index.create()
@@ -134,9 +138,7 @@ def collect_snippet(target_bugs):
         translation_unit = index.parse(src_path, args=[f'-std={standard}'])
 
         relative_path = src_path[len(repo_path) + 1:]
-        print(coverage_path)
-        print(relative_path)
-        gcov_path = os.path.join(coverage_path, f'{relative_path.replace("/", "#")}.gcov')
+        gcov_path = get_coverage_file(coverage_path, relative_path)
         execution_count = parse_gcov_file(gcov_path)
         class_name = relative_path[:-2].replace('/', '.').replace('src.', '') # should I trim src, too?
 
