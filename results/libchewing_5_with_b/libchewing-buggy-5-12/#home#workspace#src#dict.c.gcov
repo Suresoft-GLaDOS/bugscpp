@@ -1,0 +1,106 @@
+        -:    0:Source:/home/workspace/src/dict.c
+        -:    1:/**
+        -:    2: * dict.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004, 2005, 2008, 2012, 2014
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:#ifdef HAVE_CONFIG_H
+        -:   15:#    include <config.h>
+        -:   16:#endif
+        -:   17:
+        -:   18:#include <stdio.h>
+        -:   19:#include <assert.h>
+        -:   20:#include <string.h>
+        -:   21:#include <stdlib.h>
+        -:   22:
+        -:   23:#include "global-private.h"
+        -:   24:#include "plat_mmap.h"
+        -:   25:#include "dict-private.h"
+        -:   26:#include "memory-private.h"
+        -:   27:#include "tree-private.h"
+        -:   28:#include "private.h"
+        -:   29:
+        5:   30:void TerminateDict(ChewingData *pgdata)
+        -:   31:{
+        5:   32:    plat_mmap_close(&pgdata->static_data.dict_mmap);
+        5:   33:}
+        -:   34:
+        5:   35:int InitDict(ChewingData *pgdata, const char *prefix)
+        -:   36:{
+        -:   37:    char filename[PATH_MAX];
+        -:   38:    size_t len;
+        -:   39:    size_t offset;
+        -:   40:    size_t file_size;
+        -:   41:    size_t csize;
+        -:   42:
+        5:   43:    len = snprintf(filename, sizeof(filename), "%s" PLAT_SEPARATOR "%s", prefix, DICT_FILE);
+        5:   44:    if (len + 1 > sizeof(filename))
+    #####:   45:        return -1;
+        -:   46:
+        5:   47:    plat_mmap_set_invalid(&pgdata->static_data.dict_mmap);
+        5:   48:    file_size = plat_mmap_create(&pgdata->static_data.dict_mmap, filename, FLAG_ATTRIBUTE_READ);
+        5:   49:    if (file_size <= 0)
+    #####:   50:        return -1;
+        -:   51:
+        5:   52:    offset = 0;
+        5:   53:    csize = file_size;
+        5:   54:    pgdata->static_data.dict = (const char *) plat_mmap_set_view(&pgdata->static_data.dict_mmap, &offset, &csize);
+        5:   55:    if (!pgdata->static_data.dict)
+    #####:   56:        return -1;
+        -:   57:
+        5:   58:    return 0;
+        -:   59:}
+        -:   60:
+        -:   61:/*
+        -:   62: * The function gets string of vocabulary from dictionary and its frequency from
+        -:   63: * tree index mmap, and stores them into buffer given by phr_ptr.
+        -:   64: */
+      416:   65:static void GetVocabFromDict(ChewingData *pgdata, Phrase *phr_ptr)
+        -:   66:{
+      416:   67:    strcpy(phr_ptr->phrase, pgdata->static_data.dict + GetUint24(pgdata->static_data.tree_cur_pos->phrase.pos));
+      416:   68:    phr_ptr->freq = GetUint24(pgdata->static_data.tree_cur_pos->phrase.freq);
+      416:   69:    pgdata->static_data.tree_cur_pos++;
+      416:   70:}
+        -:   71:
+       16:   72:int GetCharFirst(ChewingData *pgdata, Phrase *wrd_ptr, uint16_t key)
+        -:   73:{
+        -:   74:    /* &key serves as an array whose begin and end are both 0. */
+       16:   75:    const TreeType *pinx = TreeFindPhrase(pgdata, 0, 0, &key);
+        -:   76:
+       16:   77:    if (!pinx)
+        1:   78:        return 0;
+       15:   79:    TreeChildRange(pgdata, pinx);
+       15:   80:    GetVocabFromDict(pgdata, wrd_ptr);
+       15:   81:    return 1;
+        -:   82:}
+        -:   83:
+        -:   84:/*
+        -:   85: * Given an index of parent whose children are phrase leaves (phrase_parent_id),
+        -:   86: * the function initializes reading position (tree_cur_pos) and ending position
+        -:   87: * (tree_end_pos), and fetches the first phrase into phr_ptr.
+        -:   88: */
+      106:   89:int GetPhraseFirst(ChewingData *pgdata, Phrase *phr_ptr, const TreeType *phrase_parent)
+        -:   90:{
+     106*:   91:    assert(phrase_parent);
+        -:   92:
+      106:   93:    TreeChildRange(pgdata, phrase_parent);
+      106:   94:    GetVocabFromDict(pgdata, phr_ptr);
+      106:   95:    return 1;
+        -:   96:}
+        -:   97:
+      307:   98:int GetVocabNext(ChewingData *pgdata, Phrase *phr_ptr)
+        -:   99:{
+      307:  100:    if (pgdata->static_data.tree_cur_pos >= pgdata->static_data.tree_end_pos
+      307:  101:        || GetUint16(pgdata->static_data.tree_cur_pos->key) != 0)
+       12:  102:        return 0;
+      295:  103:    GetVocabFromDict(pgdata, phr_ptr);
+      295:  104:    return 1;
+        -:  105:}

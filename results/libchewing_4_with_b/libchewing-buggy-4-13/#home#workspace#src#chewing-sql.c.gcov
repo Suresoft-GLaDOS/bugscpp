@@ -1,0 +1,519 @@
+        -:    0:Source:/home/workspace/src/chewing-sql.c
+        -:    1:/**
+        -:    2: * chewing-sql.c
+        -:    3: *
+        -:    4: * Copyright (c) 2013
+        -:    5: *	libchewing Core Team. See ChangeLog for details.
+        -:    6: *
+        -:    7: * See the file "COPYING" for information on usage and redistribution
+        -:    8: * of this file.
+        -:    9: */
+        -:   10:
+        -:   11:#include "chewing-sql.h"
+        -:   12:#include "chewing-private.h"
+        -:   13:
+        -:   14:#include <assert.h>
+        -:   15:#include <stdlib.h>
+        -:   16:#include <stdio.h>
+        -:   17:#include <string.h>
+        -:   18:
+        -:   19:#include "memory-private.h"
+        -:   20:#include "plat_types.h"
+        -:   21:#include "private.h"
+        -:   22:#include "sqlite3.h"
+        -:   23:#include "userphrase-private.h"
+        -:   24:
+        -:   25:const SqlStmtUserphrase SQL_STMT_USERPHRASE[STMT_USERPHRASE_COUNT] = {
+        -:   26:	{
+        -:   27:		"SELECT length, phrase, "
+        -:   28:			"phone_0, phone_1, phone_2, phone_3, phone_4, phone_5, "
+        -:   29:			"phone_6, phone_7, phone_8, phone_9, phone_10 "
+        -:   30:			"FROM userphrase_v1",
+        -:   31:		{ -1, -1, -1, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+        -:   32:	},
+        -:   33:	{
+        -:   34:		"SELECT time, orig_freq, max_freq, user_freq, phrase "
+        -:   35:			"FROM userphrase_v1 WHERE length = ?5 AND "
+        -:   36:			"phone_0 = ?10 AND phone_1 = ?11 AND phone_2 = ?12 AND "
+        -:   37:			"phone_3 = ?13 AND phone_4 = ?14 AND phone_5 = ?15 AND "
+        -:   38:			"phone_6 = ?16 AND phone_7 = ?17 AND phone_8 = ?18 AND "
+        -:   39:			"phone_9 = ?19 AND phone_10 = ?20",
+        -:   40:		{ 0, 1, 2, 3, -1, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+        -:   41:	},
+        -:   42:	{
+        -:   43:		"SELECT time, orig_freq, max_freq, user_freq "
+        -:   44:			"FROM userphrase_v1 WHERE length = ?5 AND phrase = ?6 AND "
+        -:   45:			"phone_0 = ?10 AND phone_1 = ?11 AND phone_2 = ?12 AND "
+        -:   46:			"phone_3 = ?13 AND phone_4 = ?14 AND phone_5 = ?15 AND "
+        -:   47:			"phone_6 = ?16 AND phone_7 = ?17 AND phone_8 = ?18 AND "
+        -:   48:			"phone_9 = ?19 AND phone_10 = ?20",
+        -:   49:		{ 0, 1, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+        -:   50:	},
+        -:   51:	{
+        -:   52:		"INSERT OR REPLACE INTO userphrase_v1 ("
+        -:   53:			"time, orig_freq, max_freq, user_freq, length, phrase, "
+        -:   54:			"phone_0, phone_1, phone_2, phone_3, phone_4, phone_5, "
+        -:   55:			"phone_6, phone_7, phone_8, phone_9, phone_10) "
+        -:   56:			"VALUES (?1, ?2, ?3, ?4, ?5, ?6, "
+        -:   57:			"?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        -:   58:		{ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+        -:   59:	},
+        -:   60:	{
+        -:   61:		"DELETE FROM userphrase_v1 WHERE length = ?5 AND phrase = ?6 AND "
+        -:   62:			"phone_0 = ?10 AND phone_1 = ?11 AND phone_2 = ?12 AND "
+        -:   63:			"phone_3 = ?13 AND phone_4 = ?14 AND phone_5 = ?15 AND "
+        -:   64:			"phone_6 = ?16 AND phone_7 = ?17 AND phone_8 = ?18 AND "
+        -:   65:			"phone_9 = ?19 AND phone_10 = ?20",
+        -:   66:		{ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+        -:   67:	},
+        -:   68:	{
+        -:   69:		"SELECT MAX(user_freq) FROM userphrase_v1 WHERE length = ?5 AND "
+        -:   70:			"phone_0 = ?10 AND phone_1 = ?11 AND phone_2 = ?12 AND "
+        -:   71:			"phone_3 = ?13 AND phone_4 = ?14 AND phone_5 = ?15 AND "
+        -:   72:			"phone_6 = ?16 AND phone_7 = ?17 AND phone_8 = ?18 AND "
+        -:   73:			"phone_9 = ?19 AND phone_10 = ?20",
+        -:   74:		{ -1, -1, -1, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+        -:   75:	},
+        -:   76:};
+        -:   77:
+        -:   78:const SqlStmtConfig SQL_STMT_CONFIG[STMT_CONFIG_COUNT] = {
+        -:   79:	{
+        -:   80:		"SELECT value FROM config_v1 WHERE id = ?1",
+        -:   81:		{ -1, 0 },
+        -:   82:	},
+        -:   83:	{
+        -:   84:		"INSERT OR IGNORE INTO config_v1 (id, value) VALUES (?1, ?2)",
+        -:   85:		{ -1, -1 },
+        -:   86:	},
+        -:   87:	{
+        -:   88:		"UPDATE config_v1 SET value = value + ?2 WHERE id = ?1",
+        -:   89:		{ -1, -1 },
+        -:   90:	},
+        -:   91:};
+        -:   92:
+        -:   93:#define HASH_FIELD_SIZE		(125)
+        -:   94:#define HASH_FIELD_START	(8)
+        -:   95:#define HASH_LENGTH_OFFSET	(16)
+        -:   96:#define HASH_NAME		"uhash.dat"
+        -:   97:#define HASH_OLD_NAME		"uhash.old"
+        -:   98:#define HASH_SIGS		"CBiH"
+        -:   99:
+        1:  100:static sqlite3 *GetSQLiteInstance(ChewingData *pgdata, const char *path)
+        -:  101:{
+        -:  102:	int ret;
+        1:  103:	sqlite3 *db = NULL;
+        -:  104:
+       1*:  105:	assert(pgdata);
+       1*:  106:	assert(path);
+        -:  107:
+        1:  108:	ret = sqlite3_open(path, &db);
+        1:  109:	if (ret != SQLITE_OK) {
+    #####:  110:		LOG_ERROR("sqlite3_open returns %d", ret);
+    #####:  111:		goto end;
+        -:  112:	}
+        -:  113:
+        1:  114:end:
+        1:  115:	return db;
+        -:  116:}
+        -:  117:
+        -:  118:
+        1:  119:static int CreateTable(ChewingData *pgdata)
+        -:  120:{
+        -:  121:	int ret;
+        -:  122:
+        -:  123:	STATIC_ASSERT(MAX_PHRASE_LEN == 11);
+        -:  124:
+        1:  125:	ret = sqlite3_exec(pgdata->static_data.db,
+        -:  126:		"CREATE TABLE IF NOT EXISTS userphrase_v1 ("
+        -:  127:		"time INTEGER,"
+        -:  128:		"user_freq INTEGER,"
+        -:  129:		"max_freq INTEGER,"
+        -:  130:		"orig_freq INTEGER,"
+        -:  131:		"length INTEGER,"
+        -:  132:		"phone_0 INTEGER,"
+        -:  133:		"phone_1 INTEGER,"
+        -:  134:		"phone_2 INTEGER,"
+        -:  135:		"phone_3 INTEGER,"
+        -:  136:		"phone_4 INTEGER,"
+        -:  137:		"phone_5 INTEGER,"
+        -:  138:		"phone_6 INTEGER,"
+        -:  139:		"phone_7 INTEGER,"
+        -:  140:		"phone_8 INTEGER,"
+        -:  141:		"phone_9 INTEGER,"
+        -:  142:		"phone_10 INTEGER,"
+        -:  143:		"phrase TEXT,"
+        -:  144:		"PRIMARY KEY ("
+        -:  145:			"phone_0,"
+        -:  146:			"phone_1,"
+        -:  147:			"phone_2,"
+        -:  148:			"phone_3,"
+        -:  149:			"phone_4,"
+        -:  150:			"phone_5,"
+        -:  151:			"phone_6,"
+        -:  152:			"phone_7,"
+        -:  153:			"phone_8,"
+        -:  154:			"phone_9,"
+        -:  155:			"phone_10,"
+        -:  156:			"phrase)"
+        -:  157:		")",
+        -:  158:		NULL, NULL, NULL );
+        1:  159:	if (ret != SQLITE_OK) {
+    #####:  160:		LOG_ERROR("Cannot create table userphrase_v1, error = %d", ret);
+    #####:  161:		return -1;
+        -:  162:	}
+        -:  163:
+        1:  164:	ret = sqlite3_exec(pgdata->static_data.db,
+        -:  165:		"CREATE TABLE IF NOT EXISTS config_v1 ("
+        -:  166:		"id INTEGER,"
+        -:  167:		"value INTEGER,"
+        -:  168:		"PRIMARY KEY (id)"
+        -:  169:		")",
+        -:  170:		NULL, NULL, NULL);
+        1:  171:	if (ret != SQLITE_OK) {
+    #####:  172:		LOG_ERROR("Cannot create table config_v1, error = %d", ret);
+    #####:  173:		return -1;
+        -:  174:	}
+        -:  175:
+        1:  176:	return 0;
+        -:  177:}
+        -:  178:
+        1:  179:static int SetupUserphraseLifeTime(ChewingData *pgdata)
+        -:  180:{
+        -:  181:	int ret;
+        -:  182:
+       1*:  183:	assert(pgdata->static_data.stmt_config[STMT_CONFIG_INSERT]);
+        -:  184:
+        1:  185:	ret = sqlite3_bind_int(pgdata->static_data.stmt_config[STMT_CONFIG_INSERT],
+        -:  186:		BIND_CONFIG_ID, CONFIG_ID_LIFETIME);
+        1:  187:	if (ret != SQLITE_OK) {
+    #####:  188:		LOG_ERROR("Cannot bind ?%d to %d in stmt %s, error = %d",
+        -:  189:			BIND_CONFIG_ID, CONFIG_ID_LIFETIME,
+        -:  190:			SQL_STMT_CONFIG[STMT_CONFIG_INSERT].stmt, ret);
+    #####:  191:		return -1;
+        -:  192:	}
+        -:  193:
+        1:  194:	ret = sqlite3_bind_int(pgdata->static_data.stmt_config[STMT_CONFIG_INSERT],
+        -:  195:		BIND_CONFIG_VALUE, 0);
+        1:  196:	if (ret != SQLITE_OK) {
+    #####:  197:		LOG_ERROR("Cannot bind ?%d to %d in stmt %s, error = %d",
+        -:  198:			BIND_CONFIG_VALUE, 0,
+        -:  199:			SQL_STMT_CONFIG[STMT_CONFIG_INSERT].stmt, ret);
+    #####:  200:		return -1;
+        -:  201:	}
+        -:  202:
+        1:  203:	ret = sqlite3_step(pgdata->static_data.stmt_config[STMT_CONFIG_INSERT]);
+        1:  204:	if (ret != SQLITE_DONE) {
+    #####:  205:		LOG_ERROR("sqlite3_step returns %d", ret);
+    #####:  206:		return -1;
+        -:  207:	}
+        -:  208:
+        1:  209:	ret = sqlite3_reset(pgdata->static_data.stmt_config[STMT_CONFIG_INSERT]);
+        1:  210:	if (ret != SQLITE_OK) {
+    #####:  211:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####:  212:		return -1;
+        -:  213:	}
+        -:  214:
+       1*:  215:	assert(pgdata->static_data.stmt_config[STMT_CONFIG_SELECT]);
+        -:  216:
+        1:  217:	ret = sqlite3_bind_int(pgdata->static_data.stmt_config[STMT_CONFIG_SELECT],
+        -:  218:		BIND_CONFIG_ID, CONFIG_ID_LIFETIME);
+        1:  219:	if (ret != SQLITE_OK) {
+    #####:  220:		LOG_ERROR("Cannot bind ?%d to %d in stmt %s, error = %d",
+        -:  221:			BIND_CONFIG_ID, CONFIG_ID_LIFETIME,
+        -:  222:			SQL_STMT_CONFIG[STMT_CONFIG_SELECT].stmt, ret);
+    #####:  223:		return -1;
+        -:  224:	}
+        -:  225:
+        1:  226:	ret = sqlite3_step(pgdata->static_data.stmt_config[STMT_CONFIG_SELECT]);
+        1:  227:	if (ret != SQLITE_ROW) {
+    #####:  228:		LOG_ERROR("sqlite3_step returns %d", ret);
+    #####:  229:		return -1;
+        -:  230:	}
+        -:  231:
+        2:  232:	pgdata->static_data.original_lifetime = sqlite3_column_int(
+        -:  233:		pgdata->static_data.stmt_config[STMT_CONFIG_SELECT],
+        1:  234:		SQL_STMT_CONFIG[STMT_CONFIG_SELECT].column[COLUMN_CONFIG_VALUE]);
+        1:  235:	pgdata->static_data.new_lifetime = pgdata->static_data.original_lifetime;
+        -:  236:
+        1:  237:	ret = sqlite3_reset(pgdata->static_data.stmt_config[STMT_CONFIG_SELECT]);
+        1:  238:	if (ret != SQLITE_OK) {
+    #####:  239:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####:  240:		return -1;
+        -:  241:	}
+        -:  242:
+        1:  243:	return 0;
+        -:  244:}
+        -:  245:
+        1:  246:static int UpdateLifeTime(ChewingData *pgdata)
+        -:  247:{
+        -:  248:	int ret;
+        1:  249:	int result = 0;
+        -:  250:
+        1:  251:	if (!pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE]) {
+    #####:  252:		LOG_ERROR("pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE] is NULL");
+    #####:  253:		result = -1;
+    #####:  254:		goto end;
+        -:  255:	}
+        -:  256:
+        1:  257:	ret = sqlite3_clear_bindings(pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE]);
+        1:  258:	if (ret != SQLITE_OK) {
+    #####:  259:		LOG_ERROR("sqlite3_clear_bindings returns %d", ret);
+    #####:  260:		result = -1;
+    #####:  261:		goto end;
+        -:  262:	}
+        -:  263:
+        1:  264:	ret = sqlite3_bind_int(pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE],
+        -:  265:		BIND_CONFIG_ID, CONFIG_ID_LIFETIME);
+        1:  266:	if (ret != SQLITE_OK) {
+    #####:  267:		LOG_ERROR("Cannot bind ?%d to %d in stmt %s, error = %d",
+        -:  268:			BIND_CONFIG_ID, CONFIG_ID_LIFETIME,
+        -:  269:			SQL_STMT_CONFIG[STMT_CONFIG_INCREASE].stmt, ret);
+    #####:  270:		result = -1;
+    #####:  271:		goto end;
+        -:  272:	}
+        -:  273:
+        1:  274:	ret = sqlite3_bind_int(pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE],
+        -:  275:		BIND_CONFIG_VALUE,
+        1:  276:		pgdata->static_data.new_lifetime - pgdata->static_data.original_lifetime);
+        1:  277:	if (ret != SQLITE_OK) {
+    #####:  278:		LOG_ERROR("Cannot bind ?%d to %d in stmt %s, error = %d",
+        -:  279:			BIND_CONFIG_VALUE,
+        -:  280:			pgdata->static_data.new_lifetime - pgdata->static_data.original_lifetime,
+        -:  281:			SQL_STMT_CONFIG[STMT_CONFIG_INCREASE].stmt, ret);
+    #####:  282:		result = -1;
+    #####:  283:		goto end;
+        -:  284:	}
+        -:  285:
+        1:  286:	ret = sqlite3_step(pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE]);
+        1:  287:	if (ret != SQLITE_DONE) {
+    #####:  288:		LOG_ERROR("sqlite3_step returns %d", ret);
+    #####:  289:		result = -1;
+    #####:  290:		goto end;
+        -:  291:	}
+        -:  292:
+        1:  293:end:
+        1:  294:	ret = sqlite3_reset(pgdata->static_data.stmt_config[STMT_CONFIG_INCREASE]);
+        1:  295:	if (ret != SQLITE_OK) {
+    #####:  296:		LOG_ERROR("sqlite3_reset returns %d", ret);
+    #####:  297:		result = -1;
+        -:  298:	}
+        -:  299:
+        1:  300:	return result;
+        -:  301:}
+        -:  302:
+        1:  303:static int ConfigDatabase(ChewingData *pgdata)
+        -:  304:{
+        -:  305:	int ret;
+        -:  306:
+       1*:  307:	assert(pgdata);
+       1*:  308:	assert(pgdata->static_data.db);
+        -:  309:
+        1:  310:	ret = sqlite3_exec(pgdata->static_data.db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+        1:  311:	if (ret != SQLITE_OK) {
+    #####:  312:		LOG_ERROR("Cannot set synchronous=OFF, error = %d", ret);
+    #####:  313:		return -1;
+        -:  314:	}
+        -:  315:
+        1:  316:	return 0;
+        -:  317:}
+        -:  318:
+        1:  319:static int CreateStmt(ChewingData *pgdata)
+        -:  320:{
+        -:  321:	int i;
+        -:  322:	int ret;
+        -:  323:
+       1*:  324:	assert(pgdata);
+        -:  325:
+        -:  326:	STATIC_ASSERT(ARRAY_SIZE(SQL_STMT_CONFIG) == ARRAY_SIZE(pgdata->static_data.stmt_config));
+        -:  327:	STATIC_ASSERT(ARRAY_SIZE(SQL_STMT_USERPHRASE) == ARRAY_SIZE(pgdata->static_data.stmt_userphrase))
+        -:  328:
+        4:  329:	for (i = 0; i < ARRAY_SIZE(SQL_STMT_CONFIG); ++i) {
+        3:  330:		ret = sqlite3_prepare_v2(pgdata->static_data.db,
+        -:  331:			SQL_STMT_CONFIG[i].stmt, -1,
+        -:  332:			&pgdata->static_data.stmt_config[i], NULL);
+        3:  333:		if (ret != SQLITE_OK) {
+    #####:  334:			LOG_ERROR("Cannot create stmt %s", SQL_STMT_CONFIG[i].stmt);
+    #####:  335:			return -1;
+        -:  336:		}
+        -:  337:	}
+        -:  338:
+        7:  339:	for (i = 0; i < ARRAY_SIZE(SQL_STMT_USERPHRASE); ++i) {
+        6:  340:		ret = sqlite3_prepare_v2(pgdata->static_data.db,
+        -:  341:			SQL_STMT_USERPHRASE[i].stmt, -1,
+        -:  342:			&pgdata->static_data.stmt_userphrase[i], NULL);
+        6:  343:		if (ret != SQLITE_OK) {
+    #####:  344:			LOG_ERROR("Cannot create stmt %s", SQL_STMT_USERPHRASE[i].stmt);
+    #####:  345:			return -1;
+        -:  346:		}
+        -:  347:	}
+        -:  348:
+        1:  349:	return 0;
+        -:  350:}
+        -:  351:
+        1:  352:static void MigrateOldFormat(ChewingData *pgdata, const char *path)
+        -:  353:{
+        -:  354:	char *uhash;
+        -:  355:	char *old_uhash;
+        1:  356:	FILE *fd = NULL;
+        -:  357:	char buf[HASH_FIELD_SIZE];
+        -:  358:	uint16_t phoneSeq[MAX_PHRASE_LEN + 1];
+        -:  359:	char *pos;
+        -:  360:	int len;
+        -:  361:	int i;
+        -:  362:	int ret;
+        -:  363:
+       1*:  364:	assert(pgdata);
+       1*:  365:	assert(path);
+        -:  366:
+        1:  367:	len = strlen(path) + 1 + strlen(HASH_NAME) + 1;
+        1:  368:	uhash = calloc(sizeof(*uhash), len);
+        1:  369:	if (!uhash) {
+    #####:  370:		LOG_ERROR("calloc returns %#p", uhash);
+    #####:  371:		exit(-1);
+        -:  372:	}
+        1:  373:	snprintf(uhash, len, "%s" PLAT_SEPARATOR "%s", path, HASH_NAME);
+        -:  374:
+        1:  375:	len = strlen(path) + 1 + strlen(HASH_OLD_NAME) + 1;
+        1:  376:	old_uhash = calloc(sizeof(*old_uhash), len);
+        1:  377:	if (!old_uhash) {
+    #####:  378:		LOG_ERROR("calloc returns %#p", old_uhash);
+    #####:  379:		exit(-1);
+        -:  380:	}
+        1:  381:	snprintf(old_uhash, len, "%s" PLAT_SEPARATOR "%s", path, HASH_OLD_NAME);
+        -:  382:
+        -:  383:	/*
+        -:  384:	 * The binary format is described as following:
+        -:  385:	 *
+        -:  386:	 * 0 ~ 3                signature (CBiH)
+        -:  387:	 * 4 ~ 7                lifttime, platform endianness
+        -:  388:	 * 8 ~ 8 + 125 * n      array of hash item, 125 bytes each
+        -:  389:	 *
+        -:  390:	 * 0 ~ 3                user frequency, platform endianness
+        -:  391:	 * 4 ~ 7                recent time, platform endianness
+        -:  392:	 * 8 ~ 11               max frequency, platform endianness
+        -:  393:	 * 12 ~ 15              original frequency, platform endianness
+        -:  394:	 * 16                   phone length
+        -:  395:	 * 17 ~ 17 + 2 * n      phone sequence, uint16_t, platform endianness
+        -:  396:	 * 17 + 2 * n + 1       phrase length in bytes
+        -:  397:	 * 17 + 2 * n + 2 ~ y   phrase in UTF-8
+        -:  398:	 *
+        -:  399:	 */
+        -:  400:
+        1:  401:	fd = fopen(uhash, "r");
+        1:  402:	if (!fd) goto end;
+        -:  403:
+    #####:  404:	LOG_INFO("Migrate old format from %s", uhash);
+    #####:  405:	ret = fread(buf, 4, 1, fd);
+    #####:  406:	if (ret != 1) {
+    #####:  407:		LOG_WARN("fread returns %d", ret);
+    #####:  408:		goto end_remove_hash;
+        -:  409:	}
+        -:  410:
+    #####:  411:	if (memcmp(buf, HASH_SIGS, 4) != 0) {
+    #####:  412:		LOG_WARN("signature is not %d", HASH_SIGS);
+    #####:  413:		goto end_remove_hash;
+        -:  414:	}
+        -:  415:
+    #####:  416:	ret = fseek(fd, 8, SEEK_SET);
+    #####:  417:	if (ret) {
+    #####:  418:		LOG_WARN("fseek returns %d", ret);
+    #####:  419:		goto end_remove_hash;
+        -:  420:	}
+        -:  421:
+    #####:  422:	while (fread(buf, HASH_FIELD_SIZE, 1, fd) == 1) {
+    #####:  423:		pos = &buf[HASH_LENGTH_OFFSET];
+    #####:  424:		len = *pos;
+    #####:  425:		++pos;
+        -:  426:
+    #####:  427:		if (len > MAX_PHRASE_LEN || len < 1) {
+    #####:  428:			LOG_WARN("skip field due to len = %d", len);
+    #####:  429:			continue;
+        -:  430:		}
+        -:  431:
+    #####:  432:		for (i = 0; i < len; ++i) {
+    #####:  433:			phoneSeq[i] = GetUint16PreservedEndian(pos);
+    #####:  434:			pos += 2;
+        -:  435:		}
+    #####:  436:		phoneSeq[len] = 0;
+        -:  437:
+    #####:  438:		++pos;
+    #####:  439:		UserUpdatePhrase(pgdata, phoneSeq, pos);
+        -:  440:	}
+        -:  441:
+    #####:  442:end_remove_hash:
+    #####:  443:	if (fd) fclose(fd);
+    #####:  444:	PLAT_RENAME(uhash, old_uhash);
+        1:  445:end:
+        1:  446:	free(old_uhash);
+        1:  447:	free(uhash);
+        1:  448:}
+        -:  449:
+        1:  450:int InitUserphrase(ChewingData *pgdata, const char *path)
+        -:  451:{
+        -:  452:	int ret;
+        -:  453:
+       1*:  454:	assert(!pgdata->static_data.db);
+       1*:  455:	assert(path);
+        -:  456:
+        1:  457:	pgdata->static_data.db = GetSQLiteInstance(pgdata, path);
+        1:  458:	if (!pgdata->static_data.db) {
+    #####:  459:		LOG_ERROR("GetSQLiteInstance fails");
+    #####:  460:		goto error;
+        -:  461:	}
+        -:  462:
+        1:  463:	ret = ConfigDatabase(pgdata);
+        1:  464:	if (ret) {
+    #####:  465:		LOG_ERROR("ConfigDatabase returns %d", ret);
+    #####:  466:		goto error;
+        -:  467:	}
+        -:  468:
+        1:  469:	ret = CreateTable(pgdata);
+        1:  470:	if (ret) {
+    #####:  471:		LOG_ERROR("CreateTable returns %d", ret);
+    #####:  472:		goto error;
+        -:  473:	}
+        -:  474:
+        1:  475:	ret = CreateStmt(pgdata);
+        1:  476:	if (ret) {
+    #####:  477:		LOG_ERROR("CreateStmt returns %d", ret);
+    #####:  478:		goto error;
+        -:  479:	}
+        -:  480:
+        1:  481:	ret = SetupUserphraseLifeTime(pgdata);
+        1:  482:	if (ret) {
+    #####:  483:		LOG_ERROR("SetupUserphraseLiftTime returns %d", ret);
+    #####:  484:		goto error;
+        -:  485:	}
+        -:  486:
+        -:  487:	/* FIXME: Normalize lifttime when necessary. */
+        -:  488:
+        1:  489:	MigrateOldFormat(pgdata, path);
+        -:  490:
+        1:  491:	return 0;
+        -:  492:
+    #####:  493:error:
+    #####:  494:	TerminateUserphrase(pgdata);
+    #####:  495:	return -1;
+        -:  496:}
+        -:  497:
+        1:  498:void TerminateUserphrase(ChewingData *pgdata)
+        -:  499:{
+        -:  500:	int i;
+        -:  501:	int ret;
+        -:  502:
+        1:  503:	UpdateLifeTime(pgdata);
+        -:  504:
+        4:  505:	for (i = 0; i < ARRAY_SIZE(pgdata->static_data.stmt_config); ++i) {
+        3:  506:		sqlite3_finalize(pgdata->static_data.stmt_config[i]);
+        3:  507:		pgdata->static_data.stmt_config[i] = NULL;
+        -:  508:	}
+        -:  509:
+        7:  510:	for (i = 0; i < ARRAY_SIZE(pgdata->static_data.stmt_userphrase); ++i) {
+        6:  511:		sqlite3_finalize(pgdata->static_data.stmt_userphrase[i]);
+        6:  512:		pgdata->static_data.stmt_userphrase[i] = NULL;
+        -:  513:	}
+        -:  514:
+        1:  515:	ret = sqlite3_close(pgdata->static_data.db);
+       1*:  516:	assert(SQLITE_OK == ret);
+        1:  517:	pgdata->static_data.db = NULL;
+        1:  518:}

@@ -1,0 +1,1091 @@
+        -:    0:Source:/home/workspace/src/tree.c
+        -:    1:/**
+        -:    2: * tree.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004, 2005, 2006, 2008, 2011
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/**
+        -:   16: *	@file tree.c
+        -:   17: *	@brief API for accessing the phrase tree.
+        -:   18: */
+        -:   19:#include <assert.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <stdlib.h>
+        -:   22:#include <string.h>
+        -:   23:
+        -:   24:#include "chewing-private.h"
+        -:   25:#include "chewing-utf8-util.h"
+        -:   26:#include "userphrase-private.h"
+        -:   27:#include "global.h"
+        -:   28:#include "global-private.h"
+        -:   29:#include "dict-private.h"
+        -:   30:#include "memory-private.h"
+        -:   31:#include "tree-private.h"
+        -:   32:#include "private.h"
+        -:   33:#include "plat_mmap.h"
+        -:   34:
+        -:   35:#define INTERVAL_SIZE ( ( MAX_PHONE_SEQ_LEN + 1 ) * MAX_PHONE_SEQ_LEN / 2 )
+        -:   36:
+        -:   37:typedef struct {
+        -:   38:	int from, to, source;
+        -:   39:	Phrase *p_phr;
+        -:   40:} PhraseIntervalType;
+        -:   41:
+        -:   42:typedef struct tagRecordNode {
+        -:   43:	int *arrIndex;		/* the index array of the things in "interval" */
+        -:   44:	int nInter, score;
+        -:   45:	struct tagRecordNode *next;
+        -:   46:	int nMatchCnnct;	/* match how many Cnnct. */
+        -:   47:} RecordNode;
+        -:   48:
+        -:   49:typedef struct {
+        -:   50:	int leftmost[ MAX_PHONE_SEQ_LEN + 1 ] ;
+        -:   51:	char graph[ MAX_PHONE_SEQ_LEN + 1 ][ MAX_PHONE_SEQ_LEN + 1 ];
+        -:   52:	PhraseIntervalType interval[ MAX_INTERVAL ];
+        -:   53:	int nInterval;
+        -:   54:	RecordNode *phList;
+        -:   55:	int nPhListLen;
+        -:   56:} TreeDataType;
+        -:   57:
+    #####:   58:static int IsContain( IntervalType in1, IntervalType in2 )
+        -:   59:{
+    #####:   60:	return ( in1.from <= in2.from && in1.to >= in2.to );
+        -:   61:}
+        -:   62:
+    #####:   63:int IsIntersect( IntervalType in1, IntervalType in2 )
+        -:   64:{
+    #####:   65:	return ( max( in1.from, in2.from ) < min( in1.to, in2.to ) );
+        -:   66:}
+        -:   67:
+    #####:   68:static int PhraseIntervalContain(PhraseIntervalType in1, PhraseIntervalType in2)
+        -:   69:{
+    #####:   70:	return ( in1.from <= in2.from && in1.to >= in2.to );
+        -:   71:}
+        -:   72:
+    #####:   73:static int PhraseIntervalIntersect(PhraseIntervalType in1, PhraseIntervalType in2)
+        -:   74:{
+    #####:   75:	return ( max( in1.from, in2.from ) < min( in1.to, in2.to ) );
+        -:   76:}
+        -:   77:
+        2:   78:void TerminateTree( ChewingData *pgdata )
+        -:   79:{
+        2:   80:		pgdata->static_data.tree = NULL;
+        2:   81:		plat_mmap_close( &pgdata->static_data.tree_mmap );
+        2:   82:}
+        -:   83:
+        -:   84:
+        2:   85:int InitTree( ChewingData *pgdata, const char * prefix )
+        -:   86:{
+        -:   87:	char filename[ PATH_MAX ];
+        -:   88:	size_t len;
+        -:   89:	size_t offset;
+        -:   90:
+        2:   91:	len = snprintf( filename, sizeof( filename ), "%s" PLAT_SEPARATOR "%s", prefix, PHONE_TREE_FILE );
+        2:   92:	if ( len + 1 > sizeof( filename ) )
+    #####:   93:		return -1;
+        -:   94:
+        2:   95:	plat_mmap_set_invalid( &pgdata->static_data.tree_mmap );
+        2:   96:	pgdata->static_data.tree_size = plat_mmap_create( &pgdata->static_data.tree_mmap, filename, FLAG_ATTRIBUTE_READ );
+        2:   97:	if ( pgdata->static_data.tree_size <= 0 )
+    #####:   98:		return -1;
+        -:   99:
+        2:  100:	offset = 0;
+        2:  101:	pgdata->static_data.tree = (const TreeType *) plat_mmap_set_view( &pgdata->static_data.tree_mmap, &offset, &pgdata->static_data.tree_size );
+        2:  102:	if ( !pgdata->static_data.tree )
+    #####:  103:		return -1;
+        -:  104:
+        2:  105:	return 0;
+        -:  106:}
+        -:  107:
+    #####:  108:static int CheckBreakpoint( int from, int to, int bArrBrkpt[] )
+        -:  109:{
+        -:  110:	int i;
+    #####:  111:	for ( i = from + 1; i < to; i++ )
+    #####:  112:		if ( bArrBrkpt[ i ] )
+    #####:  113:			return 0;
+    #####:  114:	return 1;
+        -:  115:}
+        -:  116:
+    #####:  117:static int CheckUserChoose(
+        -:  118:		ChewingData *pgdata,
+        -:  119:		uint16_t *new_phoneSeq, int from , int to,
+        -:  120:		Phrase **pp_phr,
+        -:  121:		char selectStr[][ MAX_PHONE_SEQ_LEN * MAX_UTF8_SIZE + 1 ],
+        -:  122:		IntervalType selectInterval[], int nSelect )
+        -:  123:{
+        -:  124:	IntervalType inte, c;
+        -:  125:	int chno, len;
+        -:  126:	int user_alloc;
+        -:  127:	UserPhraseData *pUserPhraseData;
+    #####:  128:	Phrase *p_phr = ALC( Phrase, 1 );
+        -:  129:
+    #####:  130:	assert( p_phr );
+    #####:  131:	inte.from = from;
+    #####:  132:	inte.to = to;
+    #####:  133:	*pp_phr = NULL;
+        -:  134:
+        -:  135:	/* pass 1
+        -:  136:	 * if these exist one selected interval which is not contained by inte
+        -:  137:	 * but has intersection with inte, then inte is an unacceptable interval
+        -:  138:	 */
+    #####:  139:	for ( chno = 0; chno < nSelect; chno++ ) {
+    #####:  140:		c = selectInterval[ chno ];
+    #####:  141:		if ( IsIntersect( inte, c ) && ! IsContain( inte, c ) ) {
+    #####:  142:			free( p_phr );
+    #####:  143:			return 0;
+        -:  144:		}
+        -:  145:	}
+        -:  146:
+        -:  147:	/* pass 2
+        -:  148:	 * if there exist one phrase satisfied all selectStr then return 1, else return 0.
+        -:  149:	 * also store the phrase with highest freq
+        -:  150:	 */
+    #####:  151:	pUserPhraseData = UserGetPhraseFirst( pgdata, new_phoneSeq );
+    #####:  152:	p_phr->freq = -1;
+        -:  153:	do {
+    #####:  154:		for ( chno = 0; chno < nSelect; chno++ ) {
+    #####:  155:			c = selectInterval[ chno ];
+        -:  156:
+    #####:  157:			if ( IsContain( inte, c ) ) {
+        -:  158:				/*
+        -:  159:				 * find a phrase of ph_id where the text contains
+        -:  160:				 * 'selectStr[chno]' test if not ok then return 0,
+        -:  161:				 * if ok then continue to test. */
+    #####:  162:				len = c.to - c.from;
+    #####:  163:				if ( memcmp(
+    #####:  164:					ueStrSeek( pUserPhraseData->wordSeq, c.from - from ),
+    #####:  165:					selectStr[ chno ],
+    #####:  166:					ueStrNBytes( selectStr[ chno ], len ) ) )
+    #####:  167:					break;
+        -:  168:			}
+        -:  169:
+        -:  170:		}
+    #####:  171:		if ( chno == nSelect ) {
+        -:  172:			/* save phrase data to "pp_phr" */
+    #####:  173:			if ( pUserPhraseData->userfreq > p_phr->freq ) {
+    #####:  174:				if ( ( user_alloc = ( to - from ) ) > 0 ) {
+    #####:  175:					ueStrNCpy( p_phr->phrase,
+    #####:  176:							pUserPhraseData->wordSeq,
+        -:  177:							user_alloc, 1);
+        -:  178:				}
+    #####:  179:				p_phr->freq = pUserPhraseData->userfreq;
+    #####:  180:				*pp_phr = p_phr;
+        -:  181:			}
+        -:  182:		}
+    #####:  183:	} while ( ( pUserPhraseData = UserGetPhraseNext( pgdata, new_phoneSeq ) ) != NULL );
+        -:  184:
+    #####:  185:	if ( p_phr->freq != -1 )
+    #####:  186:		return 1;
+        -:  187:
+    #####:  188:	free( p_phr );
+    #####:  189:	return 0;
+        -:  190:}
+        -:  191:
+        -:  192:/*
+        -:  193: * phrase is said to satisfy a choose interval if
+        -:  194: * their intersections are the same */
+    #####:  195:static int CheckChoose(
+        -:  196:		ChewingData *pgdata,
+        -:  197:		const TreeType *phrase_parent, int from, int to, Phrase **pp_phr,
+        -:  198:		char selectStr[][ MAX_PHONE_SEQ_LEN * MAX_UTF8_SIZE + 1 ],
+        -:  199:		IntervalType selectInterval[], int nSelect )
+        -:  200:{
+        -:  201:	IntervalType inte, c;
+        -:  202:	int chno, len;
+    #####:  203:	Phrase *phrase = ALC( Phrase, 1 );
+        -:  204:
+    #####:  205:	assert( phrase );
+    #####:  206:	inte.from = from;
+    #####:  207:	inte.to = to;
+    #####:  208:	*pp_phr = NULL;
+        -:  209:
+        -:  210:	/* if there exist one phrase satisfied all selectStr then return 1, else return 0. */
+    #####:  211:	GetPhraseFirst( pgdata, phrase, phrase_parent );
+        -:  212:	do {
+    #####:  213:		for ( chno = 0; chno < nSelect; chno++ ) {
+    #####:  214:			c = selectInterval[ chno ];
+        -:  215:
+    #####:  216:			if ( IsContain( inte, c ) ) {
+        -:  217:				/* find a phrase under phrase_parent where the text contains
+        -:  218:				 * 'selectStr[chno]' test if not ok then return 0, if ok
+        -:  219:				 * then continue to test
+        -:  220:				 */
+    #####:  221:				len = c.to - c.from;
+    #####:  222:				if ( memcmp(
+    #####:  223:					ueStrSeek( phrase->phrase, c.from - from ),
+    #####:  224:					selectStr[ chno ],
+    #####:  225:					ueStrNBytes( selectStr[ chno ], len ) ) )
+    #####:  226:					break;
+        -:  227:			}
+    #####:  228:			else if ( IsIntersect( inte, selectInterval[ chno ] ) ) {
+    #####:  229:				free( phrase );
+    #####:  230:				return 0;
+        -:  231:			}
+        -:  232:		}
+    #####:  233:		if ( chno == nSelect ) {
+    #####:  234:			*pp_phr = phrase;
+    #####:  235:			return 1;
+        -:  236:		}
+    #####:  237:	} while ( GetVocabNext( pgdata, phrase ) );
+    #####:  238:	free( phrase );
+    #####:  239:	return 0;
+        -:  240:}
+        -:  241:
+    #####:  242:static int CompTreeType( const void *a, const void *b )
+        -:  243:{
+    #####:  244:	return GetUint16(((TreeType*)a)->key) - GetUint16(((TreeType*)b)->key);
+        -:  245:}
+        -:  246:
+        -:  247:/** @brief search for the phrases have the same pronunciation.*/
+        -:  248:/* if phoneSeq[begin] ~ phoneSeq[end] is a phrase, then add an interval
+        -:  249: * from (begin) to (end+1)
+        -:  250: */
+    #####:  251:const TreeType *TreeFindPhrase( ChewingData *pgdata, int begin, int end, const uint16_t *phoneSeq )
+        -:  252:{
+        -:  253:	TreeType target;
+    #####:  254:	const TreeType *tree_p = pgdata->static_data.tree;
+        -:  255:	uint32_t range[2];
+        -:  256:	int i;
+        -:  257:
+    #####:  258:	for ( i = begin; i <= end; i++ ) {
+    #####:  259:		PutUint16(phoneSeq[i], target.key);
+    #####:  260:		range[0] = GetUint24(tree_p->child.begin);
+    #####:  261:		range[1] = GetUint24(tree_p->child.end);
+    #####:  262:		assert(range[1] >= range[0]);
+    #####:  263:		tree_p = (const TreeType*)bsearch(&target, pgdata->static_data.tree + range[0],
+    #####:  264:						  range[1] - range[0], sizeof(TreeType), CompTreeType);
+        -:  265:
+        -:  266:		/* if not found any word then fail. */
+    #####:  267:		if( !tree_p )
+    #####:  268:			return NULL;
+        -:  269:	}
+        -:  270:
+        -:  271:	/* If its child has no key value of 0, then it is only a "half" phrase. */
+    #####:  272:	if( GetUint16(pgdata->static_data.tree[ GetUint24(tree_p->child.begin) ].key) != 0)
+    #####:  273:		return NULL;
+    #####:  274:	return tree_p;
+        -:  275:}
+        -:  276:
+        -:  277:/**
+        -:  278: * @brief get child range of a given parent node.
+        -:  279: */
+    #####:  280:void TreeChildRange( ChewingData *pgdata, const TreeType *parent )
+        -:  281:{
+    #####:  282:	pgdata->static_data.tree_cur_pos = pgdata->static_data.tree + GetUint24(parent->child.begin);
+    #####:  283:	pgdata->static_data.tree_end_pos = pgdata->static_data.tree + GetUint24(parent->child.end);
+    #####:  284:}
+        -:  285:
+    #####:  286:static void AddInterval(
+        -:  287:		TreeDataType *ptd, int begin , int end,
+        -:  288:		Phrase *p_phrase, int dict_or_user )
+        -:  289:{
+    #####:  290:	ptd->interval[ ptd->nInterval ].from = begin;
+    #####:  291:	ptd->interval[ ptd->nInterval ].to = end + 1;
+    #####:  292:	ptd->interval[ ptd->nInterval ].p_phr = p_phrase;
+    #####:  293:	ptd->interval[ ptd->nInterval ].source = dict_or_user;
+    #####:  294:	ptd->nInterval++;
+    #####:  295:}
+        -:  296:
+        -:  297:/* Item which inserts to interval array */
+        -:  298:typedef enum {
+        -:  299:	USED_PHRASE_NONE,	/**< none of items used */
+        -:  300:	USED_PHRASE_USER,	/**< User phrase */
+        -:  301:	USED_PHRASE_DICT	/**< Dict phrase */
+        -:  302:} UsedPhraseMode;
+        -:  303:
+    #####:  304:static void internal_release_Phrase( UsedPhraseMode mode, Phrase *pUser, Phrase *pDict )
+        -:  305:{
+        -:  306:	/* we must free unused phrase entry to avoid memory leak. */
+    #####:  307:	switch ( mode ) {
+    #####:  308:		case USED_PHRASE_USER:
+    #####:  309:			if ( pDict != NULL )
+    #####:  310:				free( pDict );
+    #####:  311:			break;
+    #####:  312:		case USED_PHRASE_DICT:
+    #####:  313:			if ( pUser != NULL )
+    #####:  314:				free( pUser );
+    #####:  315:			break;
+    #####:  316:		default: /* In fact, it is alwyas 0 */
+    #####:  317:			if ( pDict != NULL )
+    #####:  318:				free( pDict );
+    #####:  319:			if ( pUser != NULL )
+    #####:  320:				free( pUser );
+    #####:  321:			break;
+        -:  322:	}
+    #####:  323:}
+        -:  324:
+     1472:  325:static void FindInterval( ChewingData *pgdata, TreeDataType *ptd )
+        -:  326:{
+        -:  327:	int end, begin;
+        -:  328:	const TreeType *phrase_parent;
+        -:  329:	Phrase *p_phrase, *puserphrase, *pdictphrase;
+        -:  330:	UsedPhraseMode i_used_phrase;
+        -:  331:	uint16_t new_phoneSeq[ MAX_PHONE_SEQ_LEN ];
+        -:  332:
+    1472*:  333:	for ( begin = 0; begin < pgdata->nPhoneSeq; begin++ ) {
+    #####:  334:		for ( end = begin; end < min( pgdata->nPhoneSeq, begin + MAX_PHRASE_LEN ); end++ ) {
+    #####:  335:			if ( ! CheckBreakpoint( begin, end + 1, pgdata->bArrBrkpt ) )
+    #####:  336:				break;
+        -:  337:
+        -:  338:			/* set new_phoneSeq */
+    #####:  339:			memcpy(
+        -:  340:				new_phoneSeq,
+    #####:  341:				&pgdata->phoneSeq[ begin ],
+    #####:  342:				sizeof( uint16_t ) * ( end - begin + 1 ) );
+    #####:  343:			new_phoneSeq[ end - begin + 1 ] = 0;
+    #####:  344:			puserphrase = pdictphrase = NULL;
+    #####:  345:			i_used_phrase = USED_PHRASE_NONE;
+        -:  346:
+        -:  347:			/* check user phrase */
+    #####:  348:			if ( UserGetPhraseFirst( pgdata, new_phoneSeq ) &&
+    #####:  349:					CheckUserChoose( pgdata, new_phoneSeq, begin, end + 1,
+    #####:  350:					&p_phrase, pgdata->selectStr, pgdata->selectInterval, pgdata->nSelect ) ) {
+    #####:  351:				puserphrase = p_phrase;
+        -:  352:			}
+        -:  353:
+        -:  354:			/* check dict phrase */
+    #####:  355:			phrase_parent = TreeFindPhrase( pgdata, begin, end, pgdata->phoneSeq );
+    #####:  356:			if (
+    #####:  357:				phrase_parent &&
+    #####:  358:				CheckChoose(
+        -:  359:					pgdata,
+        -:  360:					phrase_parent, begin, end + 1,
+    #####:  361:					&p_phrase, pgdata->selectStr,
+    #####:  362:					pgdata->selectInterval, pgdata->nSelect ) ) {
+    #####:  363:				pdictphrase = p_phrase;
+        -:  364:			}
+        -:  365:
+        -:  366:			/* add only one interval, which has the largest freqency
+        -:  367:			 * but when the phrase is the same, the user phrase overrides
+        -:  368:			 * static dict
+        -:  369:			 */
+    #####:  370:			if ( puserphrase != NULL && pdictphrase == NULL ) {
+    #####:  371:				i_used_phrase = USED_PHRASE_USER;
+        -:  372:			}
+    #####:  373:			else if ( puserphrase == NULL && pdictphrase != NULL ) {
+    #####:  374:				i_used_phrase = USED_PHRASE_DICT;
+        -:  375:			}
+    #####:  376:			else if ( puserphrase != NULL && pdictphrase != NULL ) {
+        -:  377:				/* the same phrase, userphrase overrides */
+    #####:  378:				if ( ! strcmp(
+    #####:  379:					puserphrase->phrase,
+    #####:  380:					pdictphrase->phrase ) ) {
+    #####:  381:					i_used_phrase = USED_PHRASE_USER;
+        -:  382:				}
+        -:  383:				else {
+    #####:  384:					if ( puserphrase->freq > pdictphrase->freq ) {
+    #####:  385:						i_used_phrase = USED_PHRASE_USER;
+        -:  386:					}
+        -:  387:					else {
+    #####:  388:						i_used_phrase = USED_PHRASE_DICT;
+        -:  389:					}
+        -:  390:				}
+        -:  391:			}
+    #####:  392:			switch ( i_used_phrase ) {
+    #####:  393:				case USED_PHRASE_USER:
+    #####:  394:					AddInterval( ptd, begin, end, puserphrase, IS_USER_PHRASE );
+    #####:  395:					break;
+    #####:  396:				case USED_PHRASE_DICT:
+    #####:  397:					AddInterval( ptd, begin, end, pdictphrase, IS_DICT_PHRASE );
+    #####:  398:					break;
+    #####:  399:				case USED_PHRASE_NONE:
+        -:  400:				default:
+    #####:  401:					break;
+        -:  402:			}
+    #####:  403:			internal_release_Phrase(
+        -:  404:				i_used_phrase,
+        -:  405:				puserphrase,
+        -:  406:				pdictphrase );
+        -:  407:		}
+        -:  408:	}
+     1472:  409:}
+        -:  410:
+     1472:  411:static void SetInfo( int len, TreeDataType *ptd )
+        -:  412:{
+        -:  413:	int i, a;
+        -:  414:
+     2944:  415:	for ( i = 0; i <= len; i++ )
+     1472:  416:		ptd->leftmost[ i ] = i;
+    1472*:  417:	for ( i = 0; i < ptd->nInterval; i++ ) {
+    #####:  418:		ptd->graph[ ptd->interval[ i ].from ][ ptd->interval[ i ].to ] = 1;
+    #####:  419:		ptd->graph[ ptd->interval[ i ].to ][ ptd->interval[ i ].from ] = 1;
+        -:  420:	}
+        -:  421:
+        -:  422:	/* set leftmost */
+     2944:  423:	for ( a = 0; a <= len; a++ ) {
+     2944:  424:		for ( i = 0; i <= len; i++ ) {
+     1472:  425:			if ( ! ( ptd->graph[ a ][ i ] ) )
+     1472:  426:				continue;
+    #####:  427:			if ( ptd->leftmost[ i ] < ptd->leftmost[ a ] )
+    #####:  428:				ptd->leftmost[ a ] = ptd->leftmost[ i ];
+        -:  429:		}
+        -:  430:	}
+     1472:  431:}
+        -:  432:
+        -:  433:/*
+        -:  434: * First we compare the 'nMatchCnnct'.
+        -:  435: * If the values are the same, we will compare the 'score'
+        -:  436: */
+    #####:  437:static int CompRecord( const RecordNode **pa, const RecordNode **pb )
+        -:  438:{
+    #####:  439:	int diff = (*pb)->nMatchCnnct - (*pa)->nMatchCnnct;
+        -:  440:
+    #####:  441:	if ( diff )
+    #####:  442:		return diff;
+    #####:  443:	return ( (*pb)->score - (*pa)->score );
+        -:  444:}
+        -:  445:
+        -:  446:/*
+        -:  447: * Remove the interval containing in another interval.
+        -:  448: *
+        -:  449: * Example:
+        -:  450: * 國民大會 has three interval: 國民, 大會, 國民大會. This function removes
+        -:  451: * 國名, 大會 becasue 國民大會 contains 國民 and 大會.
+        -:  452: */
+     1472:  453:static void Discard1( TreeDataType *ptd )
+        -:  454:{
+        -:  455:	int a, b;
+        -:  456:	char failflag[ INTERVAL_SIZE ];
+        -:  457:	int nInterval2;
+        -:  458:
+     1472:  459:	memset( failflag, 0, sizeof( failflag ) );
+    1472*:  460:	for ( a = 0; a < ptd->nInterval; a++ ) {
+    #####:  461:		if ( failflag[ a ] )
+    #####:  462:			continue;
+    #####:  463:		for ( b = 0; b < ptd->nInterval; b++ ) {
+    #####:  464:			if ( a == b || failflag[ b ] )
+    #####:  465:				continue ;
+        -:  466:
+        -:  467:			/* interval b is in interval a */
+    #####:  468:			if ( PhraseIntervalContain( ptd->interval[ a ], ptd->interval[ b ] ) )
+    #####:  469:				continue;
+        -:  470:
+        -:  471:			/* interval b is in front of interval a */
+    #####:  472:			if ( ptd->interval[ b ].to <= ptd->interval[ a ].from )
+    #####:  473:				continue;
+        -:  474:
+        -:  475:			/* interval b is in back of interval a */
+    #####:  476:			if ( ptd->interval[ a ].to <= ptd->interval[ b ].from )
+    #####:  477:				continue;
+        -:  478:
+    #####:  479:			break;
+        -:  480:		}
+        -:  481:		/* if any other interval b is inside or leftside or rightside the
+        -:  482:		 * interval a */
+    #####:  483:		if ( b >= ptd->nInterval ) {
+        -:  484:			/* then kill all the intervals inside the interval a */
+        -:  485:			int i;
+    #####:  486:			for ( i = 0; i < ptd->nInterval; i++ ) {
+    #####:  487:				if (! failflag[ i ] && i != a &&
+    #####:  488:					PhraseIntervalContain( ptd->interval[ a ], ptd->interval[ i ] ) ) {
+    #####:  489:					failflag[ i ] = 1;
+        -:  490:				}
+        -:  491:			}
+        -:  492:		}
+        -:  493:	}
+        -:  494:	/* discard all the intervals whose failflag[a] = 1 */
+     1472:  495:	nInterval2 = 0;
+    1472*:  496:	for ( a = 0; a < ptd->nInterval; a++ ) {
+    #####:  497:		if ( ! failflag[ a ] ) {
+    #####:  498:			ptd->interval[ nInterval2++ ] = ptd->interval[ a ];
+        -:  499:		}
+        -:  500:		else {
+    #####:  501:			if ( ptd->interval[ a ].p_phr != NULL ) {
+    #####:  502:				free( ptd->interval[ a ].p_phr );
+        -:  503:			}
+        -:  504:		}
+        -:  505:	}
+     1472:  506:	ptd->nInterval = nInterval2;
+     1472:  507:}
+        -:  508:
+        -:  509:/*
+        -:  510: * Remove the interval that cannot connect to head or tail by other intervals.
+        -:  511: *
+        -:  512: * Example:
+        -:  513: * The input string length is 5
+        -:  514: * The available intervals are [1,1], [1,2], [2,3], [2,4], [5,5], [3,5].
+        -:  515: *
+        -:  516: * The possible connection from head to tail are [1,2][3,5], and
+        -:  517: * [1,1][2,4][5,5]. Since [2,3] cannot connect to head or tail, it is removed
+        -:  518: * by this function.
+        -:  519: */
+     1472:  520:static void Discard2( TreeDataType *ptd )
+        -:  521:{
+        -:  522:	int i, j;
+        -:  523:	char overwrite[ MAX_PHONE_SEQ_LEN ];
+        -:  524:	char failflag[ INTERVAL_SIZE ];
+        -:  525:	int nInterval2;
+        -:  526:
+     1472:  527:	memset( failflag, 0, sizeof( failflag ) );
+    1472*:  528:	for ( i = 0; i < ptd->nInterval; i++ ) {
+    #####:  529:		if ( ptd->leftmost[ ptd->interval[ i ].from ] == 0 )
+    #####:  530:			continue;
+        -:  531:		/* test if interval i is overwrited by other intervals */
+    #####:  532:		memset( overwrite, 0, sizeof( overwrite ) );
+    #####:  533:		for ( j = 0; j < ptd->nInterval; j++ ) {
+    #####:  534:			if ( j == i )
+    #####:  535:				continue;
+    #####:  536:			memset(
+    #####:  537:				&overwrite[ ptd->interval[ j ].from ],
+        -:  538:				1,
+    #####:  539:				ptd->interval[ j ].to - ptd->interval[ j ].from );
+        -:  540:		}
+    #####:  541:		if ( memchr(
+    #####:  542:			&overwrite[ ptd->interval[ i ].from ],
+        -:  543:			1,
+    #####:  544:			ptd->interval[ i ].to - ptd->interval[ i ].from ) )
+    #####:  545:			failflag[ i ] = 1;
+        -:  546:	}
+        -:  547:	/* discard all the intervals whose failflag[a] = 1 */
+     1472:  548:	nInterval2 = 0;
+    1472*:  549:	for ( i = 0; i < ptd->nInterval; i++ )
+    #####:  550:		if ( ! failflag[ i ] )
+    #####:  551:			ptd->interval[ nInterval2++ ] = ptd->interval[ i ];
+     1472:  552:	ptd->nInterval = nInterval2;
+     1472:  553:}
+        -:  554:
+        -:  555:/* kpchen said, record is the index array of interval */
+     1472:  556:static void OutputRecordStr( ChewingData *pgdata, const TreeDataType *ptd )
+        -:  557:{
+        -:  558:	PhraseIntervalType inter;
+        -:  559:	int i;
+        -:  560:	int j;
+        -:  561:
+    1472*:  562:	for ( i = 0; i < ptd->phList->nInter; i++ ) {
+    #####:  563:		inter = ptd->interval[ ptd->phList->arrIndex[ i ] ];
+        -:  564:
+    #####:  565:		for ( j = inter.from; j < inter.to; ++j ) {
+    #####:  566:			ueStrNCpy( pgdata->preeditBuf[ j ].char_,
+    #####:  567:				ueStrSeek( inter.p_phr->phrase, j - inter.from ),
+        -:  568:				1, STRNCPY_CLOSE );
+        -:  569:		}
+        -:  570:	}
+        -:  571:
+    1472*:  572:	for ( i = 0; i < pgdata->nSelect; i++ ) {
+    #####:  573:		inter.from = pgdata->selectInterval[ i ].from;
+    #####:  574:		inter.to = pgdata->selectInterval[ i ].to ;
+        -:  575:
+    #####:  576:		for ( j = inter.from; j < inter.to; ++j ) {
+    #####:  577:			ueStrNCpy( pgdata->preeditBuf[ j ].char_,
+    #####:  578:				ueStrSeek( pgdata->selectStr[ i ], j - inter.from ),
+        -:  579:				1, STRNCPY_CLOSE );
+        -:  580:		}
+        -:  581:	}
+     1472:  582:}
+        -:  583:
+    #####:  584:static int rule_largest_sum( const int *record, int nRecord, const TreeDataType *ptd )
+        -:  585:{
+    #####:  586:	int i, score = 0;
+        -:  587:	PhraseIntervalType inter;
+        -:  588:
+    #####:  589:	for ( i = 0; i < nRecord; i++ ) {
+    #####:  590:		inter = ptd->interval[ record[ i ] ];
+    #####:  591:		assert( inter.p_phr );
+    #####:  592:		score += inter.to - inter.from;
+        -:  593:	}
+    #####:  594:	return score;
+        -:  595:}
+        -:  596:
+    #####:  597:static int rule_largest_avgwordlen( const int *record, int nRecord, const TreeDataType *ptd )
+        -:  598:{
+        -:  599:	/* constant factor 6=1*2*3, to keep value as integer */
+    #####:  600:	return 6 * rule_largest_sum( record, nRecord, ptd ) / nRecord;
+        -:  601:}
+        -:  602:
+    #####:  603:static int rule_smallest_lenvariance( const int *record, int nRecord, const TreeDataType *ptd )
+        -:  604:{
+    #####:  605:	int i, j, score = 0;
+        -:  606:	PhraseIntervalType inter1, inter2;
+        -:  607:
+        -:  608:	/* kcwu: heuristic? why variance no square function? */
+    #####:  609:	for ( i = 0; i < nRecord; i++ ) {
+    #####:  610:		for ( j = i + 1; j < nRecord; j++ ) {
+    #####:  611:			inter1 = ptd->interval[ record[ i ] ];
+    #####:  612:			inter2 = ptd->interval[ record[ j ] ];
+    #####:  613:			assert( inter1.p_phr && inter2.p_phr );
+    #####:  614:			score += abs((inter1.to - inter1.from) - (inter2.to - inter2.from));
+        -:  615:		}
+        -:  616:	}
+    #####:  617:	return -score;
+        -:  618:}
+        -:  619:
+    #####:  620:static int rule_largest_freqsum( const int *record, int nRecord, const TreeDataType *ptd )
+        -:  621:{
+    #####:  622:	int i, score = 0;
+        -:  623:	PhraseIntervalType inter;
+        -:  624:
+    #####:  625:	for ( i = 0; i < nRecord; i++ ) {
+    #####:  626:		inter = ptd->interval[ record[ i ] ];
+    #####:  627:		assert( inter.p_phr );
+        -:  628:
+        -:  629:		/* We adjust the 'freq' of One-word Phrase */
+    #####:  630:		score += ( inter.to - inter.from == 1 ) ?
+    #####:  631:			( inter.p_phr->freq / 512 ) :
+    #####:  632:			inter.p_phr->freq;
+        -:  633:	}
+    #####:  634:	return score;
+        -:  635:}
+        -:  636:
+    #####:  637:static int LoadPhraseAndCountScore( const int *record, int nRecord, const TreeDataType *ptd )
+        -:  638:{
+    #####:  639:	int total_score = 0;
+        -:  640:	/* NOTE: the balance factor is tuneable */
+    #####:  641:	if (nRecord) {
+    #####:  642:		total_score += 1000*rule_largest_sum( record, nRecord, ptd );
+    #####:  643:		total_score += 1000*rule_largest_avgwordlen( record, nRecord, ptd );
+    #####:  644:		total_score += 100*rule_smallest_lenvariance( record, nRecord, ptd );
+    #####:  645:		total_score += rule_largest_freqsum( record, nRecord, ptd );
+        -:  646:	}
+    #####:  647:	return total_score;
+        -:  648:}
+        -:  649:
+    #####:  650:static int IsRecContain( const int *intA, int nA, const int *intB, int nB, const TreeDataType *ptd )
+        -:  651:{
+        -:  652:	int big, sml;
+        -:  653:
+    #####:  654:	for ( big = 0, sml = 0; sml < nB; sml++ ) {
+    #####:  655:		while (
+    #####:  656:			( big < nA ) &&
+    #####:  657:			ptd->interval[ intA[ big ] ].from <
+    #####:  658:				ptd->interval[ intB[ sml ] ].to ) {
+    #####:  659:			if ( PhraseIntervalContain(
+    #####:  660:				ptd->interval[ intA[ big ] ],
+    #####:  661:				ptd->interval[ intB[ sml ] ] ) )
+    #####:  662:				break;
+    #####:  663:			big++;
+        -:  664:		}
+    #####:  665:		if (
+    #####:  666:			( big >= nA ) ||
+    #####:  667:			ptd->interval[ intA[ big ] ].from >=
+    #####:  668:				ptd->interval[ intB[ sml ] ].to )
+    #####:  669:			return 0;
+        -:  670:	}
+    #####:  671:	return 1;
+        -:  672:}
+        -:  673:
+    #####:  674:static void SortListByScore( TreeDataType *ptd )
+        -:  675:{
+        -:  676:	int i, listLen;
+        -:  677:	RecordNode *p, **arr;
+        -:  678:
+    #####:  679:	for (
+    #####:  680:		listLen = 0, p = ptd->phList;
+        -:  681:		p;
+    #####:  682:		listLen++, p = p->next )
+        -:  683:		;
+    #####:  684:	ptd->nPhListLen = listLen;
+        -:  685:
+    #####:  686:	arr = ALC( RecordNode *, listLen );
+    #####:  687:	assert( arr );
+        -:  688:
+    #####:  689:	for (
+    #####:  690:		i = 0, p = ptd->phList;
+        -:  691:		i < listLen;
+    #####:  692:		p = p->next, i++ ) {
+    #####:  693:		arr[ i ] = p;
+    #####:  694:		p->score = LoadPhraseAndCountScore(
+    #####:  695:			p->arrIndex,
+        -:  696:			p->nInter,
+        -:  697:			ptd );
+        -:  698:	}
+        -:  699:
+    #####:  700:	qsort( arr, listLen, sizeof( RecordNode * ), (CompFuncType) CompRecord );
+        -:  701:
+    #####:  702:	ptd->phList = arr[ 0 ];
+    #####:  703:	for ( i = 1; i < listLen; i++ ) {
+    #####:  704:		arr[ i - 1 ]->next = arr[ i ];
+        -:  705:	}
+    #####:  706:	arr[ listLen - 1 ]->next = NULL;
+        -:  707:
+    #####:  708:	free( arr );
+    #####:  709:}
+        -:  710:
+        -:  711:/* when record==NULL then output the "link list" */
+    #####:  712:static void SaveRecord( const int *record, int nInter, TreeDataType *ptd )
+        -:  713:{
+        -:  714:	RecordNode *now, *p, *pre;
+        -:  715:
+    #####:  716:	pre = NULL;
+    #####:  717:	for ( p = ptd->phList; p; ) {
+        -:  718:		/* if  'p' contains 'record', then discard 'record'. */
+    #####:  719:		if ( IsRecContain( p->arrIndex, p->nInter, record, nInter, ptd ) )
+    #####:  720:			return;
+        -:  721:
+        -:  722:		/* if 'record' contains 'p', then discard 'p'
+        -:  723:		 * -- We must deal with the linked list. */
+    #####:  724:		if ( IsRecContain( record, nInter, p->arrIndex, p->nInter, ptd ) ) {
+    #####:  725:			RecordNode *tp = p;
+        -:  726:
+    #####:  727:			if ( pre )
+    #####:  728:				pre->next = p->next;
+        -:  729:			else
+    #####:  730:				ptd->phList = ptd->phList->next;
+    #####:  731:			p = p->next;
+    #####:  732:			free( tp->arrIndex );
+    #####:  733:			free( tp );
+        -:  734:		}
+        -:  735:		else
+    #####:  736:			pre = p, p = p->next;
+        -:  737:	}
+    #####:  738:	now = ALC( RecordNode, 1 );
+    #####:  739:	assert( now );
+    #####:  740:	now->next = ptd->phList;
+    #####:  741:	now->arrIndex = ALC( int, nInter );
+    #####:  742:	assert( now->arrIndex );
+    #####:  743:	now->nInter = nInter;
+    #####:  744:	memcpy( now->arrIndex, record, nInter * sizeof( int ) );
+    #####:  745:	ptd->phList = now;
+        -:  746:}
+        -:  747:
+    #####:  748:static void RecursiveSave( int depth, int to, int *record, TreeDataType *ptd )
+        -:  749:{
+        -:  750:	int first, i;
+        -:  751:	/* to find first interval */
+    #####:  752:	for (
+    #####:  753:		first = record[ depth - 1 ] + 1;
+    #####:  754:		ptd->interval[ first ].from < to && first < ptd->nInterval;
+    #####:  755:		first++ )
+        -:  756:		;
+        -:  757:
+    #####:  758:	if ( first == ptd->nInterval ) {
+    #####:  759:		SaveRecord( record + 1, depth - 1, ptd );
+    #####:  760:		return;
+        -:  761:	}
+    #####:  762:	record[ depth ] = first;
+    #####:  763:	RecursiveSave( depth + 1, ptd->interval[ first ].to, record, ptd );
+        -:  764:	/* for each interval which intersects first */
+    #####:  765:	for (
+    #####:  766:		i= first + 1;
+    #####:  767:		PhraseIntervalIntersect(
+        -:  768:			ptd->interval[ first ],
+    #####:  769:			ptd->interval[ i ] ) && i < ptd->nInterval;
+    #####:  770:			i++ ) {
+    #####:  771:		record[ depth ] = i;
+    #####:  772:		RecursiveSave( depth + 1, ptd->interval[ i ].to,record, ptd );
+        -:  773:	}
+        -:  774:}
+        -:  775:
+    #####:  776:static void SaveList( TreeDataType *ptd )
+        -:  777:{
+    #####:  778:	int record[ MAX_PHONE_SEQ_LEN + 1 ] = { -1 };
+        -:  779:
+    #####:  780:	RecursiveSave( 1, 0, record, ptd );
+    #####:  781:}
+        -:  782:
+     1472:  783:static void InitPhrasing( TreeDataType *ptd )
+        -:  784:{
+     1472:  785:	memset( ptd, 0, sizeof( TreeDataType ) );
+     1472:  786:}
+        -:  787:
+     1472:  788:static void SaveDispInterval( PhrasingOutput *ppo, TreeDataType *ptd )
+        -:  789:{
+        -:  790:	int i;
+        -:  791:
+    1472*:  792:	for ( i = 0; i < ptd->phList->nInter; i++ ) {
+    #####:  793:		ppo->dispInterval[ i ].from =
+    #####:  794:			ptd->interval[ ptd->phList->arrIndex[ i ] ].from;
+    #####:  795:		ppo->dispInterval[ i ].to =
+    #####:  796:			ptd->interval[ ptd->phList->arrIndex[ i ] ].to;
+        -:  797:	}
+     1472:  798:	ppo->nDispInterval = ptd->phList->nInter;
+     1472:  799:}
+        -:  800:
+     1472:  801:static void CleanUpMem( TreeDataType *ptd )
+        -:  802:{
+        -:  803:	int i;
+        -:  804:	RecordNode *pNode;
+        -:  805:
+    1472*:  806:	for ( i = 0; i < ptd->nInterval; i++ ) {
+    #####:  807:		if ( ptd->interval[ i ].p_phr ) {
+    #####:  808:			free( ptd->interval[ i ].p_phr );
+    #####:  809:			ptd->interval[ i ].p_phr = NULL;
+        -:  810:		}
+        -:  811:	}
+     2944:  812:	while ( ptd->phList != NULL ) {
+     1472:  813:		pNode = ptd->phList;
+     1472:  814:		ptd->phList = pNode->next;
+     1472:  815:		free( pNode->arrIndex );
+     1472:  816:		free( pNode );
+        -:  817:	}
+     1472:  818:}
+        -:  819:
+    #####:  820:static void CountMatchCnnct( TreeDataType *ptd, const int *bUserArrCnnct, int nPhoneSeq )
+        -:  821:{
+        -:  822:	RecordNode *p;
+        -:  823:	int i, k, sum;
+        -:  824:
+    #####:  825:	for ( p = ptd->phList; p; p = p->next ) {
+        -:  826:		/* for each record, count its 'nMatchCnnct' */
+    #####:  827:		for ( sum = 0, i = 1; i < nPhoneSeq; i++ ) {
+    #####:  828:			if ( !bUserArrCnnct[ i ] )
+    #####:  829:				continue;
+        -:  830:			/* check if matching 'cnnct' */
+    #####:  831:			for ( k = 0; k < p->nInter; k++ ) {
+    #####:  832:				if (
+    #####:  833:					ptd->interval[ p->arrIndex[ k ] ].from < i &&
+    #####:  834:					ptd->interval[ p->arrIndex[ k ] ].to > i ) {
+    #####:  835:					sum++;
+    #####:  836:					break;
+        -:  837:				}
+        -:  838:			}
+        -:  839:		}
+    #####:  840:		p->nMatchCnnct = sum;
+        -:  841:	}
+    #####:  842:}
+        -:  843:
+     1472:  844:static void ShowList( ChewingData *pgdata, const TreeDataType *ptd )
+        -:  845:{
+        -:  846:	const RecordNode *p;
+        -:  847:	int i;
+        -:  848:
+     1472:  849:	DEBUG_OUT( "After SaveList :\n" );
+     2944:  850:	for ( p = ptd->phList; p; p = p->next ) {
+     1472:  851:		DEBUG_OUT( "  interval : " );
+    1472*:  852:		for ( i = 0; i < p->nInter; i++ ) {
+    #####:  853:			DEBUG_OUT(
+        -:  854:				"[%d %d] ",
+        -:  855:				ptd->interval[ p->arrIndex[ i ] ].from,
+        -:  856:				ptd->interval[ p->arrIndex[ i ] ].to );
+        -:  857:		}
+     1472:  858:		DEBUG_OUT(
+        -:  859:			"\n"
+        -:  860:			   "      score : %d , nMatchCnnct : %d\n",
+        -:  861:			p->score,
+        -:  862:			p->nMatchCnnct );
+        -:  863:	}
+     1472:  864:	DEBUG_OUT( "\n" );
+     1472:  865:}
+        -:  866:
+    #####:  867:static RecordNode* NextCut( TreeDataType *tdt, PhrasingOutput *ppo )
+        -:  868:{
+        -:  869:	/* pop nNumCut-th candidate to first */
+        -:  870:	int i;
+        -:  871:	RecordNode *former;
+        -:  872:	RecordNode *want;
+        -:  873:
+    #####:  874:	if ( ppo->nNumCut >= tdt->nPhListLen )
+    #####:  875:		ppo->nNumCut = 0;
+    #####:  876:	if (ppo->nNumCut == 0)
+    #####:  877:		return tdt->phList;
+        -:  878:
+        -:  879:	/* find the former of our candidate */
+    #####:  880:	former = tdt->phList;
+    #####:  881:	for ( i = 0; i < ppo->nNumCut - 1; i++ ) {
+    #####:  882:		former = former->next;
+    #####:  883:		assert( former );
+        -:  884:	}
+        -:  885:
+        -:  886:	/* take the candidate out of the listed list */
+    #####:  887:	want = former->next;
+    #####:  888:	assert( want );
+    #####:  889:	former->next = former->next->next;
+        -:  890:
+        -:  891:	/* prepend to front of list */
+    #####:  892:	want->next = tdt->phList;
+    #####:  893:	tdt->phList = want;
+        -:  894:
+    #####:  895:	return tdt->phList;
+        -:  896:}
+        -:  897:
+    #####:  898:static int SortByIncreaseEnd( const void *x, const void *y)
+        -:  899:{
+    #####:  900:	const PhraseIntervalType *interval_x = (const PhraseIntervalType *) x;
+    #####:  901:	const PhraseIntervalType *interval_y = (const PhraseIntervalType *) y;
+        -:  902:
+    #####:  903:	if ( interval_x->to < interval_y->to )
+    #####:  904:		return -1;
+        -:  905:
+    #####:  906:	if ( interval_x->to > interval_y->to )
+    #####:  907:		return 1;
+        -:  908:
+    #####:  909:	return 0;
+        -:  910:}
+        -:  911:
+    #####:  912:static RecordNode * DuplicateRecordAndInsertInterval(
+        -:  913:	const RecordNode *record,
+        -:  914:	TreeDataType *pdt,
+        -:  915:	const int interval_id )
+        -:  916:{
+    #####:  917:	RecordNode *ret = NULL;
+        -:  918:
+    #####:  919:	assert( record );
+    #####:  920:	assert( pdt );
+        -:  921:
+    #####:  922:	ret = ALC( RecordNode, 1 );
+    #####:  923:	if ( !ret )
+    #####:  924:		return NULL;
+        -:  925:
+    #####:  926:	ret->arrIndex = ALC( int, record->nInter + 1 );
+    #####:  927:	if ( !ret->arrIndex ) {
+    #####:  928:		free( ret );
+    #####:  929:		return NULL;
+        -:  930:	}
+    #####:  931:	ret->nInter = record->nInter + 1;
+    #####:  932:	memcpy( ret->arrIndex, record->arrIndex, sizeof(record->arrIndex[0]) * record->nInter );
+        -:  933:
+    #####:  934:	ret->arrIndex[ ret->nInter - 1 ] = interval_id;
+        -:  935:
+    #####:  936:	ret->score = LoadPhraseAndCountScore( ret->arrIndex, ret->nInter, pdt );
+        -:  937:
+    #####:  938:	return ret;
+        -:  939:}
+        -:  940:
+    #####:  941:static RecordNode * CreateSingleIntervalRecord( TreeDataType *pdt, const int interval_id )
+        -:  942:{
+    #####:  943:	RecordNode *ret = NULL;
+        -:  944:
+    #####:  945:	assert( pdt );
+        -:  946:
+    #####:  947:	ret = ALC( RecordNode, 1 );
+    #####:  948:	if ( !ret )
+    #####:  949:		return NULL;
+        -:  950:
+    #####:  951:	ret->arrIndex = ALC( int, 1 );
+    #####:  952:	if ( !ret->arrIndex ) {
+    #####:  953:		free( ret );
+    #####:  954:		return NULL;
+        -:  955:	}
+        -:  956:
+    #####:  957:	ret->nInter = 1;
+    #####:  958:	ret->arrIndex[0] = interval_id;
+        -:  959:
+    #####:  960:	ret->score = LoadPhraseAndCountScore( ret->arrIndex, ret->nInter, pdt );
+        -:  961:
+    #####:  962:	return ret;
+        -:  963:}
+        -:  964:
+     1472:  965:static RecordNode * CreateNullIntervalRecord()
+        -:  966:{
+     1472:  967:	RecordNode *ret = NULL;
+     1472:  968:	ret = ALC( RecordNode, 1 );
+     1472:  969:	if ( !ret )
+    #####:  970:		return NULL;
+        -:  971:
+     1472:  972:	ret->arrIndex = ALC( int, 1 );
+     1472:  973:	if ( !ret->arrIndex ) {
+    #####:  974:		free( ret );
+    #####:  975:		return NULL;
+        -:  976:	}
+        -:  977:
+     1472:  978:	ret->nInter = 0;
+     1472:  979:	ret->score = 0;
+        -:  980:
+     1472:  981:	return ret;
+        -:  982:}
+        -:  983:
+    #####:  984:static void FreeRecord( RecordNode *node )
+        -:  985:{
+    #####:  986:	if ( node ) {
+    #####:  987:		free( node->arrIndex );
+    #####:  988:		free( node );
+        -:  989:	}
+    #####:  990:}
+        -:  991:
+     1472:  992:static void DoDpPhrasing( ChewingData *pgdata, TreeDataType *pdt )
+        -:  993:{
+     1472:  994:	RecordNode *highest_score[ MAX_PHONE_SEQ_LEN ] = { 0 };
+        -:  995:	RecordNode *tmp;
+        -:  996:	int prev_end;
+        -:  997:	int end;
+        -:  998:	int interval_id;
+        -:  999:
+    1472*: 1000:	assert( pgdata );
+    1472*: 1001:	assert( pdt );
+        -: 1002:
+        -: 1003:	/*
+        -: 1004:	 * Assume P(x,y) is the highest score phrasing result from x to y. The
+        -: 1005:	 * following is formula for P(x,y):
+        -: 1006:	 *
+        -: 1007:	 * P(x,y) = MAX( P(x,y-1)+P(y-1,y), P(x,y-2)+P(y-2,y), ... )
+        -: 1008:	 *
+        -: 1009:	 * While P(x,y-1) is stored in highest_score array, and P(y-1,y) is
+        -: 1010:	 * interval end at y. In this formula, x is always 0.
+        -: 1011:	 *
+        -: 1012:	 * The format of highest_score array is described as following:
+        -: 1013:	 *
+        -: 1014:	 * highest_score[0] = P(0,0)
+        -: 1015:	 * highest_score[1] = P(0,1)
+        -: 1016:	 * ...
+        -: 1017:	 * highest_score[y-1] = P(0,y-1)
+        -: 1018:	 */
+        -: 1019:
+        -: 1020:	/* The interval shall be sorted by the increase order of end. */
+     1472: 1021:	qsort( pdt->interval, pdt->nInterval, sizeof( pdt->interval[0] ), SortByIncreaseEnd );
+        -: 1022:
+    1472*: 1023:	for ( interval_id = 0; interval_id < pdt->nInterval; ++interval_id ) {
+        -: 1024:		/*
+        -: 1025:		 * XXX: pdt->interval.to is excluding, while end is
+        -: 1026:		 * including, so we need to minus one here.
+        -: 1027:		 */
+    #####: 1028:		end = pdt->interval[interval_id].to - 1;
+        -: 1029:
+    #####: 1030:		prev_end = pdt->interval[interval_id].from - 1;
+        -: 1031:
+    #####: 1032:		if ( prev_end >= 0 )
+    #####: 1033:			tmp = DuplicateRecordAndInsertInterval(
+    #####: 1034:				highest_score[ prev_end ],
+        -: 1035:				pdt,
+        -: 1036:				interval_id );
+        -: 1037:		else
+    #####: 1038:			tmp = CreateSingleIntervalRecord( pdt, interval_id );
+        -: 1039:
+        -: 1040:		/* FIXME: shall exit immediately? */
+    #####: 1041:		if (!tmp)
+    #####: 1042:			continue;
+        -: 1043:
+    #####: 1044:		if ( highest_score[end] == NULL || highest_score[end]->score < tmp->score ) {
+    #####: 1045:			FreeRecord( highest_score[end] );
+    #####: 1046:			highest_score[end] = tmp;
+        -: 1047:		} else
+    #####: 1048:			FreeRecord( tmp );
+        -: 1049:	}
+        -: 1050:
+    1472*: 1051:	if ( pgdata->nPhoneSeq - 1 < 0 || highest_score[ pgdata->nPhoneSeq - 1 ] == NULL ) {
+     1472: 1052:		pdt->phList = CreateNullIntervalRecord();
+        -: 1053:	} else {
+    #####: 1054:		pdt->phList = highest_score[ pgdata->nPhoneSeq - 1 ];
+        -: 1055:	}
+     1472: 1056:	pdt->nPhListLen = 1;
+        -: 1057:
+    1472*: 1058:	for ( end = 0; end < pgdata->nPhoneSeq - 1; ++end )
+    #####: 1059:		FreeRecord( highest_score[end] );
+     1472: 1060:}
+        -: 1061:
+     1472: 1062:int Phrasing( ChewingData *pgdata, int all_phrasing )
+        -: 1063:{
+        -: 1064:	TreeDataType treeData;
+        -: 1065:
+     1472: 1066:	InitPhrasing( &treeData );
+        -: 1067:
+     1472: 1068:	FindInterval( pgdata, &treeData );
+     1472: 1069:	SetInfo( pgdata->nPhoneSeq, &treeData );
+     1472: 1070:	Discard1( &treeData );
+     1472: 1071:	Discard2( &treeData );
+     1472: 1072:	if ( all_phrasing ) {
+    #####: 1073:		SaveList( &treeData );
+    #####: 1074:		CountMatchCnnct( &treeData, pgdata->bUserArrCnnct, pgdata->nPhoneSeq );
+    #####: 1075:		SortListByScore( &treeData );
+    #####: 1076:		NextCut( &treeData, &pgdata->phrOut );
+        -: 1077:	} else {
+     1472: 1078:		DoDpPhrasing( pgdata, &treeData );
+        -: 1079:	}
+        -: 1080:
+     1472: 1081:	ShowList( pgdata, &treeData );
+        -: 1082:
+        -: 1083:	/* set phrasing output */
+     1472: 1084:	OutputRecordStr( pgdata, &treeData );
+     1472: 1085:	SaveDispInterval( &pgdata->phrOut, &treeData );
+        -: 1086:
+        -: 1087:	/* free "phrase" */
+     1472: 1088:	CleanUpMem( &treeData );
+     1472: 1089:	return 0;
+        -: 1090:}

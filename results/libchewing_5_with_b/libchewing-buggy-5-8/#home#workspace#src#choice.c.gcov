@@ -1,0 +1,508 @@
+        -:    0:Source:/home/workspace/src/choice.c
+        -:    1:/**
+        -:    2: * choice.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *	All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004-2008, 2010-2014
+        -:    9: *	libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/**
+        -:   16: * @file choice.c
+        -:   17: * @brief Choice module
+        -:   18: */
+        -:   19:
+        -:   20:#include <string.h>
+        -:   21:#include <assert.h>
+        -:   22:
+        -:   23:#include "chewing-utf8-util.h"
+        -:   24:#include "global.h"
+        -:   25:#include "dict-private.h"
+        -:   26:#include "chewingutil.h"
+        -:   27:#include "tree-private.h"
+        -:   28:#include "userphrase-private.h"
+        -:   29:#include "choice-private.h"
+        -:   30:#include "bopomofo-private.h"
+        -:   31:#include "private.h"
+        -:   32:
+        5:   33:static void ChangeSelectIntervalAndBreakpoint(ChewingData *pgdata, int from, int to, const char *str)
+        -:   34:{
+        -:   35:    int i;
+        -:   36:    int user_alloc;
+        -:   37:
+        -:   38:    IntervalType inte;
+        -:   39:
+        5:   40:    inte.from = from;
+        5:   41:    inte.to = to;
+       10:   42:    for (i = 0; i < pgdata->nSelect; i++) {
+        5:   43:        if (IsIntersect(inte, pgdata->selectInterval[i])) {
+        5:   44:            RemoveSelectElement(i, pgdata);
+        5:   45:            i--;
+        -:   46:        }
+        -:   47:    }
+        -:   48:
+        5:   49:    pgdata->selectInterval[pgdata->nSelect].from = from;
+        5:   50:    pgdata->selectInterval[pgdata->nSelect].to = to;
+        -:   51:
+        -:   52:    /* No available selection */
+        5:   53:    if ((user_alloc = (to - from)) == 0)
+    #####:   54:        return;
+        -:   55:
+        5:   56:    ueStrNCpy(pgdata->selectStr[pgdata->nSelect], str, user_alloc, 1);
+        5:   57:    pgdata->nSelect++;
+        -:   58:
+        5:   59:    if (user_alloc > 1) {
+        4:   60:        memset(&pgdata->bUserArrBrkpt[from + 1], 0, sizeof(int) * (user_alloc - 1));
+        4:   61:        memset(&pgdata->bUserArrCnnct[from + 1], 0, sizeof(int) * (user_alloc - 1));
+        -:   62:    }
+        -:   63:}
+        -:   64:
+        -:   65:/** @brief Loading all possible phrases after the cursor from long to short into AvailInfo structure.*/
+       15:   66:static void SetAvailInfo(ChewingData *pgdata, int begin, int end)
+        -:   67:{
+       15:   68:    AvailInfo *pai = &(pgdata->availInfo);
+       15:   69:    const uint16_t *phoneSeq = pgdata->phoneSeq;
+       15:   70:    int nPhoneSeq = pgdata->nPhoneSeq;
+       15:   71:    const int *bSymbolArrBrkpt = pgdata->bSymbolArrBrkpt;
+       15:   72:    int symbolArrBrkpt[ARRAY_SIZE(pgdata->bSymbolArrBrkpt)] = { 0 };
+        -:   73:
+        -:   74:    const TreeType *tree_pos;
+        -:   75:    int diff;
+        -:   76:    uint16_t userPhoneSeq[MAX_PHONE_SEQ_LEN];
+        -:   77:
+        -:   78:    int i, head, head_tmp;
+        -:   79:    int tail, tail_tmp;
+        -:   80:    int pos;
+        -:   81:
+       15:   82:    head = tail = 0;
+        -:   83:
+       15:   84:    pai->nAvail = 0;
+        -:   85:
+        -:   86:    /*
+        -:   87:     * XXX: The phoneSeq, nPhoneSeq skip any symbol in preedit buffer,
+        -:   88:     * while bSymbolArrBrkpt, does not skip any symbol in preedit
+        -:   89:     * buffer. So we need to do some translate here.
+        -:   90:     */
+       43:   91:    for (i = 0; i < pgdata->chiSymbolBufLen; ++i) {
+       28:   92:        if (bSymbolArrBrkpt[i]) {
+        -:   93:            /*
+        -:   94:             * XXX: If preedit buffer starts with symbol, the pos
+        -:   95:             * will become negative. In this case, we just ignore
+        -:   96:             * this symbol because it does not create any break
+        -:   97:             * point.
+        -:   98:             */
+    #####:   99:            pos = i - CountSymbols(pgdata, i + 1);
+    #####:  100:            if (pos >= 0)
+    #####:  101:                symbolArrBrkpt[pos] = 1;
+        -:  102:        }
+        -:  103:    }
+        -:  104:
+       15:  105:    if (pgdata->config.bPhraseChoiceRearward) {
+       11:  106:        for (i = end; i >= begin; i--) {
+        8:  107:            if (symbolArrBrkpt[i])
+    #####:  108:                break;
+        8:  109:            head = i;
+        -:  110:        }
+        3:  111:        head_tmp = end;
+        -:  112:    } else {
+       12:  113:        head_tmp = head = begin;
+        -:  114:    }
+        -:  115:
+       15:  116:    if (pgdata->config.bPhraseChoiceRearward) {
+        3:  117:        tail_tmp = tail = end;
+        -:  118:    } else {
+       29:  119:        for (i = begin; i < nPhoneSeq; i++) {
+       17:  120:            tail = i;
+       17:  121:            if (symbolArrBrkpt[i])
+    #####:  122:                break;
+        -:  123:        }
+       12:  124:        tail_tmp = begin;
+        -:  125:    }
+        -:  126:
+       40:  127:    while (head <= head_tmp && tail_tmp <= tail) {
+       25:  128:        diff = tail_tmp - head_tmp;
+       25:  129:        tree_pos = TreeFindPhrase(pgdata, head_tmp, tail_tmp, phoneSeq);
+        -:  130:
+       25:  131:        if (tree_pos) {
+        -:  132:            /* save it! */
+       25:  133:            pai->avail[pai->nAvail].len = diff + 1;
+       25:  134:            pai->avail[pai->nAvail].id = tree_pos;
+       25:  135:            pai->nAvail++;
+        -:  136:        } else {
+    #####:  137:            memcpy(userPhoneSeq, &phoneSeq[head_tmp], sizeof(uint16_t) * (diff + 1));
+    #####:  138:            userPhoneSeq[diff + 1] = 0;
+    #####:  139:            if (UserGetPhraseFirst(pgdata, userPhoneSeq)) {
+        -:  140:                /* save it! */
+    #####:  141:                pai->avail[pai->nAvail].len = diff + 1;
+    #####:  142:                pai->avail[pai->nAvail].id = NULL;
+    #####:  143:                pai->nAvail++;
+        -:  144:            } else {
+    #####:  145:                pai->avail[pai->nAvail].len = 0;
+    #####:  146:                pai->avail[pai->nAvail].id = NULL;
+        -:  147:            }
+    #####:  148:            UserGetPhraseEnd(pgdata, userPhoneSeq);
+        -:  149:        }
+        -:  150:
+       25:  151:        if (pgdata->config.bPhraseChoiceRearward) {
+        8:  152:            head_tmp--;
+        -:  153:        } else {
+       17:  154:            tail_tmp++;
+        -:  155:        }
+        -:  156:    }
+       15:  157:}
+        -:  158:
+        -:  159:/* FIXME: Improper use of len parameter */
+      865:  160:static int ChoiceTheSame(ChoiceInfo *pci, const char *str, int len)
+        -:  161:{
+        -:  162:    int i;
+        -:  163:
+    34071:  164:    for (i = 0; i < pci->nTotalChoice; i++)
+    33206:  165:        if (!memcmp(pci->totalChoiceStr[i], str, len))
+    #####:  166:            return 1;
+      865:  167:    return 0;
+        -:  168:}
+        -:  169:
+       15:  170:static void ChoiceInfoAppendChi(ChewingData *pgdata, ChoiceInfo *pci, uint16_t phone)
+        -:  171:{
+        -:  172:    Phrase tempWord;
+        -:  173:    int len;
+        -:  174:
+       15:  175:    if (GetCharFirst(pgdata, &tempWord, phone)) {
+        -:  176:        do {
+      817:  177:            len = ueBytesFromChar(tempWord.phrase[0]);
+      817:  178:            if (ChoiceTheSame(pci, tempWord.phrase, len))
+    #####:  179:                continue;
+     817*:  180:            assert(pci->nTotalChoice < MAX_CHOICE);
+      817:  181:            memcpy(pci->totalChoiceStr[pci->nTotalChoice], tempWord.phrase, len);
+      817:  182:            pci->totalChoiceStr[pci->nTotalChoice]
+      817:  183:                [len] = '\0';
+      817:  184:            pci->nTotalChoice++;
+      817:  185:        } while (GetVocabNext(pgdata, &tempWord));
+        -:  186:    }
+       15:  187:}
+        -:  188:
+        -:  189:/** @brief Loading all possible phrases of certain length.
+        -:  190: *
+        -:  191: * Loading all possible phrases of certain length into ChoiceInfo structure
+        -:  192: * from static and dynamic dictionaries, including number of total pages and
+        -:  193: * the number of current page.
+        -:  194: */
+       29:  195:static void SetChoiceInfo(ChewingData *pgdata)
+        -:  196:{
+        -:  197:    Phrase tempPhrase;
+        -:  198:    int len;
+        -:  199:    UserPhraseData *pUserPhraseData;
+        -:  200:    uint16_t userPhoneSeq[MAX_PHONE_SEQ_LEN];
+        -:  201:
+       29:  202:    ChoiceInfo *pci = &(pgdata->choiceInfo);
+       29:  203:    AvailInfo *pai = &(pgdata->availInfo);
+       29:  204:    uint16_t *phoneSeq = pgdata->phoneSeq;
+       29:  205:    uint16_t *phoneSeqAlt = pgdata->phoneSeqAlt;
+       29:  206:    int cursor = PhoneSeqCursor(pgdata);
+       29:  207:    int candPerPage = pgdata->config.candPerPage;
+        -:  208:
+        -:  209:    /* Clears previous candidates. */
+       29:  210:    memset(pci->totalChoiceStr, '\0', MAX_CHOICE * MAX_PHRASE_LEN * MAX_UTF8_SIZE + 1);
+        -:  211:
+       29:  212:    pci->nTotalChoice = 0;
+       29:  213:    len = pai->avail[pai->currentAvail].len;
+      29*:  214:    assert(len);
+        -:  215:
+        -:  216:    /* secondly, read tree phrase */
+       29:  217:    if (len == 1) {             /* single character */
+       15:  218:        ChoiceInfoAppendChi(pgdata, pci, phoneSeq[cursor]);
+        -:  219:
+       15:  220:        if (phoneSeq[cursor] != phoneSeqAlt[cursor]) {
+    #####:  221:            ChoiceInfoAppendChi(pgdata, pci, phoneSeqAlt[cursor]);
+        -:  222:        }
+        -:  223:
+       15:  224:        if (pgdata->bopomofoData.kbtype == KB_HSU || pgdata->bopomofoData.kbtype == KB_DVORAK_HSU) {
+    #####:  225:            switch (phoneSeq[cursor]) {
+    #####:  226:            case 0x2800:       /* 'ㄘ' */
+    #####:  227:                ChoiceInfoAppendChi(pgdata, pci, 0x30); /* 'ㄟ' */
+    #####:  228:                break;
+    #####:  229:            case 0x80:         /* 'ㄧ' */
+    #####:  230:                ChoiceInfoAppendChi(pgdata, pci, 0x20); /* 'ㄝ' */
+    #####:  231:                break;
+    #####:  232:            case 0x2A00:       /* 'ㄙ' */
+    #####:  233:                ChoiceInfoAppendChi(pgdata, pci, 0x1);  /* '˙' */
+    #####:  234:                break;
+    #####:  235:            case 0xA00:        /* 'ㄉ' */
+    #####:  236:                ChoiceInfoAppendChi(pgdata, pci, 0x2);  /* 'ˊ' */
+    #####:  237:                break;
+    #####:  238:            case 0x800:        /* 'ㄈ' */
+    #####:  239:                ChoiceInfoAppendChi(pgdata, pci, 0x3);  /* 'ˇ' */
+    #####:  240:                break;
+    #####:  241:            case 0x18:         /* 'ㄜ' */
+    #####:  242:                ChoiceInfoAppendChi(pgdata, pci, 0x1200);       /* 'ㄍ' */
+    #####:  243:                break;
+    #####:  244:            case 0x10:         /* 'ㄛ' */
+    #####:  245:                ChoiceInfoAppendChi(pgdata, pci, 0x1600);       /* 'ㄏ' */
+    #####:  246:                break;
+    #####:  247:            case 0x1E00:       /* 'ㄓ' */
+    #####:  248:                ChoiceInfoAppendChi(pgdata, pci, 0x1800);       /* 'ㄐ' */
+    #####:  249:                ChoiceInfoAppendChi(pgdata, pci, 0x4);  /* 'ˋ' */
+    #####:  250:                break;
+    #####:  251:            case 0x58:         /* 'ㄤ' */
+    #####:  252:                ChoiceInfoAppendChi(pgdata, pci, 0x1400);       /* 'ㄎ' */
+    #####:  253:                break;
+    #####:  254:            case 0x68:         /* 'ㄦ' */
+    #####:  255:                ChoiceInfoAppendChi(pgdata, pci, 0x1000);       /* 'ㄌ' */
+    #####:  256:                ChoiceInfoAppendChi(pgdata, pci, 0x60); /* 'ㄥ' */
+    #####:  257:                break;
+    #####:  258:            case 0x2200:       /* 'ㄕ' */
+    #####:  259:                ChoiceInfoAppendChi(pgdata, pci, 0x1C00);       /* 'ㄒ' */
+    #####:  260:                break;
+    #####:  261:            case 0x2000:       /* 'ㄔ' */
+    #####:  262:                ChoiceInfoAppendChi(pgdata, pci, 0x1A00);       /* 'ㄑ' */
+    #####:  263:                break;
+    #####:  264:            case 0x50:         /* 'ㄣ' */
+    #####:  265:                ChoiceInfoAppendChi(pgdata, pci, 0xE00);        /* 'ㄋ' */
+    #####:  266:                break;
+    #####:  267:            case 0x48:         /* 'ㄢ' */
+    #####:  268:                ChoiceInfoAppendChi(pgdata, pci, 0x600);        /* 'ㄇ' */
+    #####:  269:                break;
+    #####:  270:            default:
+    #####:  271:                break;
+        -:  272:            }
+       15:  273:        }
+        -:  274:    }
+        -:  275:    /* phrase */
+        -:  276:    else {
+       14:  277:        if (pai->avail[pai->currentAvail].id) {
+       14:  278:            GetPhraseFirst(pgdata, &tempPhrase, pai->avail[pai->currentAvail].id);
+        -:  279:            do {
+       48:  280:                if (ChoiceTheSame(pci, tempPhrase.phrase, len * ueBytesFromChar(tempPhrase.phrase[0]))) {
+    #####:  281:                    continue;
+        -:  282:                }
+       48:  283:                ueStrNCpy(pci->totalChoiceStr[pci->nTotalChoice], tempPhrase.phrase, len, 1);
+       48:  284:                pci->nTotalChoice++;
+       48:  285:            } while (GetVocabNext(pgdata, &tempPhrase));
+        -:  286:        }
+        -:  287:
+       14:  288:        memcpy(userPhoneSeq, &phoneSeq[cursor], sizeof(uint16_t) * len);
+       14:  289:        userPhoneSeq[len] = 0;
+       14:  290:        pUserPhraseData = UserGetPhraseFirst(pgdata, userPhoneSeq);
+       14:  291:        if (pUserPhraseData) {
+        -:  292:            do {
+        -:  293:                /* check if the phrase is already in the choice list */
+    #####:  294:                if (ChoiceTheSame(pci, pUserPhraseData->wordSeq, len * ueBytesFromChar(pUserPhraseData->wordSeq[0])))
+    #####:  295:                    continue;
+        -:  296:                /* otherwise store it */
+    #####:  297:                ueStrNCpy(pci->totalChoiceStr[pci->nTotalChoice], pUserPhraseData->wordSeq, len, 1);
+    #####:  298:                pci->nTotalChoice++;
+    #####:  299:            } while ((pUserPhraseData = UserGetPhraseNext(pgdata, userPhoneSeq)) != NULL);
+        -:  300:        }
+       14:  301:        UserGetPhraseEnd(pgdata, userPhoneSeq);
+        -:  302:
+        -:  303:    }
+        -:  304:
+        -:  305:    /* magic number */
+       29:  306:    pci->nChoicePerPage = candPerPage;
+      29*:  307:    assert(pci->nTotalChoice > 0);
+       29:  308:    pci->nPage = CEIL_DIV(pci->nTotalChoice, pci->nChoicePerPage);
+       29:  309:    pci->pageNo = 0;
+       29:  310:    pci->isSymbol = WORD_CHOICE;
+       29:  311:}
+        -:  312:
+        -:  313:/*
+        -:  314: * Seek the start of the phrase (English characters are skipped.)
+        -:  315: */
+        3:  316:static int SeekPhraseHead(ChewingData *pgdata)
+        -:  317:{
+        -:  318:    int i;
+        3:  319:    int phoneSeq = PhoneSeqCursor(pgdata);
+        -:  320:
+       3*:  321:    for (i = pgdata->nPrefer - 1; i >= 0; i--) {
+        3:  322:        if (pgdata->preferInterval[i].from > phoneSeq || pgdata->preferInterval[i].to < phoneSeq)
+    #####:  323:            continue;
+        3:  324:        return pgdata->preferInterval[i].from;
+        -:  325:    }
+    #####:  326:    return 0;
+        -:  327:}
+        -:  328:
+        -:  329:/** @brief Enter choice mode and relating initialisations. */
+       15:  330:int ChoiceInitAvail(ChewingData *pgdata)
+        -:  331:{
+        -:  332:    int end, begin;
+        -:  333:
+        -:  334:    /* save old cursor position */
+       15:  335:    pgdata->choiceInfo.oldChiSymbolCursor = pgdata->chiSymbolCursor;
+        -:  336:
+        -:  337:    /* see if there is some word in the cursor position */
+       15:  338:    if (pgdata->chiSymbolBufLen == pgdata->chiSymbolCursor) {
+       12:  339:        pgdata->chiSymbolCursor--;
+        -:  340:    }
+        -:  341:
+       15:  342:    end = PhoneSeqCursor(pgdata);
+        -:  343:
+       15:  344:    if (pgdata->config.bPhraseChoiceRearward) {
+        3:  345:        pgdata->chiSymbolCursor = SeekPhraseHead(pgdata) + CountSymbols(pgdata, pgdata->chiSymbolCursor);
+        -:  346:    }
+       15:  347:    begin = PhoneSeqCursor(pgdata);
+        -:  348:
+       15:  349:    pgdata->bSelect = 1;
+        -:  350:
+       15:  351:    SetAvailInfo(pgdata, begin, end);
+        -:  352:
+       15:  353:    if (!pgdata->availInfo.nAvail)
+    #####:  354:        return ChoiceEndChoice(pgdata);
+        -:  355:
+       15:  356:    pgdata->availInfo.currentAvail = pgdata->availInfo.nAvail - 1;
+       15:  357:    SetChoiceInfo(pgdata);
+       15:  358:    return 0;
+        -:  359:}
+        -:  360:
+       14:  361:static void ChangeCurrentAvailInfo(ChewingData *pgdata, int current)
+        -:  362:{
+      14*:  363:    assert(pgdata);
+        -:  364:
+       14:  365:    if (pgdata->config.bPhraseChoiceRearward) {
+        7:  366:        pgdata->chiSymbolCursor = pgdata->choiceInfo.oldChiSymbolCursor - pgdata->availInfo.avail[current].len + 1;
+        -:  367:
+        -:  368:        /*
+        -:  369:         * When oldChiSymbolCursor == chiSymbolBufLen, the old cursor is at the
+        -:  370:         * end of buffer. This mean the end of phrase is in (oldChiSymbolCursor
+        -:  371:         * - 1) instead of oldChiSymbolCursor. In this case, we need to adjust
+        -:  372:         * chiSymbolCursor.
+        -:  373:         */
+       7*:  374:        assert(pgdata->choiceInfo.oldChiSymbolCursor <= pgdata->chiSymbolBufLen);
+        7:  375:        if (pgdata->choiceInfo.oldChiSymbolCursor == pgdata->chiSymbolBufLen) {
+        7:  376:            --pgdata->chiSymbolCursor;
+        -:  377:        }
+        -:  378:    }
+        -:  379:
+       14:  380:    pgdata->availInfo.currentAvail = current;
+       14:  381:}
+        -:  382:
+        3:  383:int ChoiceFirstAvail(ChewingData *pgdata)
+        -:  384:{
+       3*:  385:    assert(pgdata);
+       3*:  386:    assert(pgdata->bSelect);
+        -:  387:
+        3:  388:    if (pgdata->choiceInfo.isSymbol != WORD_CHOICE)
+        1:  389:        return 0;
+        -:  390:
+        2:  391:    ChangeCurrentAvailInfo(pgdata, pgdata->availInfo.nAvail - 1);
+        -:  392:
+        2:  393:    SetChoiceInfo(pgdata);
+        -:  394:
+        2:  395:    return 0;
+        -:  396:}
+        -:  397:
+        5:  398:int ChoiceLastAvail(ChewingData *pgdata)
+        -:  399:{
+       5*:  400:    assert(pgdata);
+       5*:  401:    assert(pgdata->bSelect);
+        -:  402:
+        5:  403:    if (pgdata->choiceInfo.isSymbol != WORD_CHOICE)
+        1:  404:        return 0;
+        -:  405:
+        4:  406:    ChangeCurrentAvailInfo(pgdata, 0);
+        -:  407:
+        4:  408:    SetChoiceInfo(pgdata);
+        -:  409:
+        4:  410:    return 0;
+        -:  411:}
+        -:  412:
+       14:  413:int ChoiceHasNextAvail(ChewingData *pgdata)
+        -:  414:{
+      14*:  415:    assert(pgdata);
+      14*:  416:    assert(pgdata->bSelect);
+        -:  417:
+       14:  418:    if (pgdata->choiceInfo.isSymbol != WORD_CHOICE)
+        2:  419:        return 0;
+        -:  420:
+       12:  421:    return pgdata->availInfo.currentAvail > 0;
+        -:  422:}
+        -:  423:
+        -:  424:
+       14:  425:int ChoiceHasPrevAvail(ChewingData *pgdata)
+        -:  426:{
+      14*:  427:    assert(pgdata);
+      14*:  428:    assert(pgdata->bSelect);
+        -:  429:
+       14:  430:    if (pgdata->choiceInfo.isSymbol != WORD_CHOICE)
+        2:  431:        return 0;
+        -:  432:
+       12:  433:    return pgdata->availInfo.currentAvail < pgdata->availInfo.nAvail - 1;
+        -:  434:}
+        -:  435:
+        7:  436:int ChoicePrevAvail(ChewingData *pgdata)
+        -:  437:{
+       7*:  438:    assert(pgdata);
+       7*:  439:    assert(pgdata->bSelect);
+        -:  440:
+        7:  441:    if (!ChoiceHasPrevAvail(pgdata)) {
+        3:  442:        return -1;
+        -:  443:    }
+        -:  444:
+        4:  445:    ChangeCurrentAvailInfo(pgdata, pgdata->availInfo.currentAvail + 1);
+        -:  446:
+        4:  447:    SetChoiceInfo(pgdata);
+        -:  448:
+        4:  449:    return 0;
+        -:  450:}
+        -:  451:
+        7:  452:int ChoiceNextAvail(ChewingData *pgdata)
+        -:  453:{
+       7*:  454:    assert(pgdata);
+       7*:  455:    assert(pgdata->bSelect);
+        -:  456:
+        7:  457:    if (!ChoiceHasNextAvail(pgdata)) {
+        3:  458:        return -1;
+        -:  459:    }
+        -:  460:
+        4:  461:    ChangeCurrentAvailInfo(pgdata, pgdata->availInfo.currentAvail - 1);
+        -:  462:
+        4:  463:    SetChoiceInfo(pgdata);
+        -:  464:
+        4:  465:    return 0;
+        -:  466:}
+        -:  467:
+       12:  468:int ChoiceEndChoice(ChewingData *pgdata)
+        -:  469:{
+       12:  470:    pgdata->bSelect = 0;
+       12:  471:    pgdata->choiceInfo.nTotalChoice = 0;
+       12:  472:    pgdata->choiceInfo.nPage = 0;
+        -:  473:
+       12:  474:    if (pgdata->choiceInfo.isSymbol != WORD_CHOICE || pgdata->choiceInfo.isSymbol != SYMBOL_CHOICE_INSERT) {
+        -:  475:        /* return to the old chiSymbolCursor position */
+       12:  476:        pgdata->chiSymbolCursor = pgdata->choiceInfo.oldChiSymbolCursor;
+      12*:  477:        assert(pgdata->chiSymbolCursor <= pgdata->chiSymbolBufLen);
+        -:  478:    }
+       12:  479:    pgdata->choiceInfo.isSymbol = WORD_CHOICE;
+       12:  480:    return 0;
+        -:  481:}
+        -:  482:
+        5:  483:static void ChangeUserData(ChewingData *pgdata, int selectNo)
+        -:  484:{
+        -:  485:    uint16_t userPhoneSeq[MAX_PHONE_SEQ_LEN];
+        -:  486:    int len;
+        -:  487:
+        5:  488:    len = ueStrLen(pgdata->choiceInfo.totalChoiceStr[selectNo]);
+        5:  489:    memcpy(userPhoneSeq, &(pgdata->phoneSeq[PhoneSeqCursor(pgdata)]), len * sizeof(uint16_t));
+        5:  490:    userPhoneSeq[len] = 0;
+        5:  491:    UserUpdatePhrase(pgdata, userPhoneSeq, pgdata->choiceInfo.totalChoiceStr[selectNo]);
+        5:  492:}
+        -:  493:
+        -:  494:/** @brief commit the selected phrase. */
+        5:  495:int ChoiceSelect(ChewingData *pgdata, int selectNo)
+        -:  496:{
+        5:  497:    ChoiceInfo *pci = &(pgdata->choiceInfo);
+        5:  498:    AvailInfo *pai = &(pgdata->availInfo);
+        -:  499:
+        5:  500:    ChangeUserData(pgdata, selectNo);
+        5:  501:    ChangeSelectIntervalAndBreakpoint(pgdata,
+        -:  502:                                      PhoneSeqCursor(pgdata),
+        5:  503:                                      PhoneSeqCursor(pgdata) + pai->avail[pai->currentAvail].len,
+        5:  504:                                      pci->totalChoiceStr[selectNo]);
+        5:  505:    ChoiceEndChoice(pgdata);
+        5:  506:    return 0;
+        -:  507:}

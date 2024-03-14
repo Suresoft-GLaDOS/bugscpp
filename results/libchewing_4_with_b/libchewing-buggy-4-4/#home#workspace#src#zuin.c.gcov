@@ -1,0 +1,715 @@
+        -:    0:Source:/home/workspace/src/zuin.c
+        -:    1:/**
+        -:    2: * zuin.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *      Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *      All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004-2006, 2008-2010, 2012
+        -:    9: *      libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/**
+        -:   16: * @file zuin.c
+        -:   17: *
+        -:   18: * control keyboard mapping
+        -:   19: * include the definition of ZuinData structure
+        -:   20: */
+        -:   21:
+        -:   22:#include <ctype.h>
+        -:   23:#include <string.h>
+        -:   24:
+        -:   25:#include "zuin-private.h"
+        -:   26:#include "chewingutil.h"
+        -:   27:#include "dict-private.h"
+        -:   28:#include "key2pho-private.h"
+        -:   29:#include "pinyin-private.h"
+        -:   30:#include "private.h"
+        -:   31:
+        -:   32:/*
+        -:   33: * process a key input
+        -:   34: * return value:
+        -:   35: *	ZUIN_ABSORB
+        -:   36: *	ZUIN_COMMIT
+        -:   37: *	ZUIN_KEY_ERROR
+        -:   38: *	ZUIN_ERROR
+        -:   39: */
+    #####:   40:static int IsHsuPhoEndKey( const int pho_inx[], int key )
+        -:   41:{
+    #####:   42:	switch ( key ) {
+    #####:   43:		case 's':
+        -:   44:		case 'd':
+        -:   45:		case 'f':
+        -:   46:		case 'j':
+        -:   47:		case ' ':
+    #####:   48:			return ( pho_inx[ 0 ] || pho_inx[ 1 ] || pho_inx[ 2 ] );
+    #####:   49:		default:
+    #####:   50:			return 0;
+        -:   51:	}
+        -:   52:}
+        -:   53:
+        -:   54:/* copy the idea from HSU keyboard */
+    #####:   55:static int IsET26PhoEndKey( const int pho_inx[], int key )
+        -:   56:{
+    #####:   57:	switch ( key ) {
+    #####:   58:		case 'd':
+        -:   59:		case 'f':
+        -:   60:		case 'j':
+        -:   61:		case 'k':
+        -:   62:		case ' ':
+    #####:   63:			return ( pho_inx[ 0 ] || pho_inx[ 1 ] || pho_inx[ 2 ] );
+    #####:   64:		default:
+    #####:   65:			return 0;
+        -:   66:	}
+        -:   67:}
+        -:   68:
+        -:   69:/* copy the idea from HSU keyboard */
+    #####:   70:static int IsDACHENCP26PhoEndKey( const int pho_inx[], int key )
+        -:   71:{
+    #####:   72:	switch ( key ) {
+    #####:   73:		case 'e':
+        -:   74:		case 'r':
+        -:   75:		case 'd':
+        -:   76:		case 'y':
+        -:   77:		case ' ':
+    #####:   78:			return ( pho_inx[ 0 ] || pho_inx[ 1 ] || pho_inx[ 2 ] );
+    #####:   79:		default:
+    #####:   80:			return 0;
+        -:   81:	}
+        -:   82:}
+        -:   83:
+    #####:   84:static int IsDefPhoEndKey( int key, int kbtype )
+        -:   85:{
+    #####:   86:	if ( PhoneInxFromKey( key, 3, kbtype, 1 )  )
+    #####:   87:		return 1;
+        -:   88:
+    #####:   89:	if ( key == ' ' )
+    #####:   90:		return 1;
+    #####:   91:	return 0;
+        -:   92:}
+        -:   93:
+    #####:   94:static int EndKeyProcess( ChewingData *pgdata, int key, int searchTimes )
+        -:   95:{
+    #####:   96:	ZuinData *pZuin = &(pgdata->zuinData);
+        -:   97:	uint16_t u16Pho, u16PhoAlt;
+        -:   98:	Phrase tempword;
+        -:   99:	int pho_inx;
+        -:  100:
+    #####:  101:	if (
+    #####:  102:		pZuin->pho_inx[ 0 ] == 0 &&
+    #####:  103:		pZuin->pho_inx[ 1 ] == 0 &&
+    #####:  104:		pZuin->pho_inx[ 2 ] == 0 &&
+    #####:  105:		pZuin->pho_inx[ 3 ] == 0 ) {
+        -:  106:		/*
+        -:  107:		 * Special handle for space key (Indeed very special one).
+        -:  108:		 * Un-break the situation that OnKeySpace() is not called,
+        -:  109:		 * hence the Candidate window doesn't show up, because
+        -:  110:		 * ZUIN_NO_WORD is returned.
+        -:  111:		 */
+    #####:  112:		return (key == ' ') ? ZUIN_KEY_ERROR : ZUIN_NO_WORD;
+        -:  113:	}
+        -:  114:
+    #####:  115:	pho_inx = PhoneInxFromKey( key, 3, pZuin->kbtype, searchTimes );
+    #####:  116:	if ( pZuin->pho_inx[ 3 ] == 0 ) {
+    #####:  117:		pZuin->pho_inx[ 3 ] = pho_inx;
+    #####:  118:		pZuin->pho_inx_alt[ 3 ] = pho_inx;
+        -:  119:	}
+    #####:  120:	else if ( key != ' ' ) {
+    #####:  121:		pZuin->pho_inx[ 3 ] = pho_inx;
+    #####:  122:		pZuin->pho_inx_alt[ 3 ] = pho_inx;
+    #####:  123:		return ZUIN_NO_WORD;
+        -:  124:	}
+        -:  125:
+    #####:  126:	u16Pho = UintFromPhoneInx( pZuin->pho_inx );
+    #####:  127:	if ( GetCharFirst( pgdata, &tempword, u16Pho ) == 0 ) {
+    #####:  128:		ZuinRemoveAll( pZuin );
+    #####:  129:		return ZUIN_NO_WORD;
+        -:  130:	}
+        -:  131:
+    #####:  132:	pZuin->phone = u16Pho;
+        -:  133:
+    #####:  134:	if ( pZuin->pho_inx_alt[ 0 ] == 0 &&
+    #####:  135:	     pZuin->pho_inx_alt[ 1 ] == 0 &&
+    #####:  136:	     pZuin->pho_inx_alt[ 2 ] == 0 ) {
+        -:  137:		/* no alternative phone, copy from default as alt */
+    #####:  138:		pZuin->phoneAlt = u16Pho;
+        -:  139:	}
+        -:  140:	else {
+    #####:  141:		u16PhoAlt = UintFromPhoneInx( pZuin->pho_inx_alt );
+    #####:  142:		pZuin->phoneAlt = u16PhoAlt;
+        -:  143:	}
+        -:  144:
+    #####:  145:	memset( pZuin->pho_inx, 0, sizeof( pZuin->pho_inx ) );
+    #####:  146:	memset( pZuin->pho_inx_alt, 0, sizeof( pZuin->pho_inx_alt ) );
+    #####:  147:	return ZUIN_COMMIT;
+        -:  148:}
+        -:  149:
+    #####:  150:static int DefPhoInput( ChewingData *pgdata, int key )
+        -:  151:{
+    #####:  152:	ZuinData *pZuin = &(pgdata->zuinData);
+    #####:  153:	int type = 0, inx = 0;
+        -:  154:	int i;
+        -:  155:
+    #####:  156:	if ( IsDefPhoEndKey( key, pZuin->kbtype ) ) {
+    #####:  157:		for ( i = 0; i < ZUIN_SIZE; ++i )
+    #####:  158:			if ( pZuin->pho_inx[ i ] != 0 )
+    #####:  159:				break;
+    #####:  160:		if ( i < ZUIN_SIZE )
+    #####:  161:			return EndKeyProcess( pgdata, key, 1 );
+        -:  162:	}
+        -:  163:	else {
+    #####:  164:		pZuin->pho_inx[ 3 ] = 0;
+        -:  165:	}
+        -:  166:
+        -:  167:	/* decide if the key is a phone */
+    #####:  168:	for ( type = 0; type <= 3; type++ ) {
+    #####:  169:		inx = PhoneInxFromKey( key, type, pZuin->kbtype, 1 );
+    #####:  170:		if ( inx )
+    #####:  171:			break;
+        -:  172:	}
+        -:  173:
+        -:  174:	/* the key is NOT a phone */
+    #####:  175:	if ( type > 3 ) {
+    #####:  176:		return ZUIN_KEY_ERROR;
+        -:  177:	}
+        -:  178:
+        -:  179:	/* fill the key into the phone buffer */
+    #####:  180:	pZuin->pho_inx[ type ] = inx;
+    #####:  181:	return ZUIN_ABSORB;
+        -:  182:}
+        -:  183:
+    #####:  184:static int HsuPhoInput( ChewingData *pgdata, int key )
+        -:  185:{
+    #####:  186:	ZuinData *pZuin = &(pgdata->zuinData);
+    #####:  187:	int type = 0, searchTimes = 0, inx = 0;
+        -:  188:
+        -:  189:	/* Dvorak Hsu key has already converted to Hsu */
+    #####:  190:	if ( IsHsuPhoEndKey( pZuin->pho_inx, key ) ) {
+    #####:  191:		if ( pZuin->pho_inx[ 1 ] == 0 && pZuin->pho_inx[ 2 ] == 0 ) {
+        -:  192:			/* convert "ㄐㄑㄒ" to "ㄓㄔㄕ" */
+    #####:  193:			if ( 12 <= pZuin->pho_inx[ 0 ] && pZuin->pho_inx[ 0 ] <= 14 ) {
+    #####:  194:				pZuin->pho_inx[ 0 ] += 3 ;
+        -:  195:			}
+        -:  196:			/* convert "ㄏ" to "ㄛ" */
+    #####:  197:			else if ( pZuin->pho_inx[ 0 ] == 11 ) {
+    #####:  198:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  199:				pZuin->pho_inx[ 2 ] = 2;
+        -:  200:			}
+        -:  201:			/* convert "ㄍ" to "ㄜ" */
+    #####:  202:			else if ( pZuin->pho_inx[ 0 ] == 9 ) {
+    #####:  203:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  204:				pZuin->pho_inx[ 2 ] = 3;
+        -:  205:			}
+        -:  206:			/* convert "ㄇ" to "ㄢ" */
+    #####:  207:			else if ( pZuin->pho_inx[ 0 ] == 3 ) {
+    #####:  208:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  209:				pZuin->pho_inx[ 2 ] = 9;
+        -:  210:			}
+        -:  211:			/* convert "ㄋ" to "ㄣ" */
+    #####:  212:			else if ( pZuin->pho_inx[ 0 ] == 7 ) {
+    #####:  213:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  214:				pZuin->pho_inx[ 2 ] = 10;
+        -:  215:			}
+        -:  216:			/* convert "ㄎ" to "ㄤ" */
+    #####:  217:			else if ( pZuin->pho_inx[ 0 ] == 10 ) {
+    #####:  218:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  219:				pZuin->pho_inx[ 2 ] = 11;
+        -:  220:			}
+        -:  221:			/* convert "ㄌ" to "ㄦ" */
+    #####:  222:			else if ( pZuin->pho_inx[ 0 ] == 8 ) {
+    #####:  223:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  224:				pZuin->pho_inx[ 2 ] = 13;
+        -:  225:			}
+        -:  226:		}
+        -:  227:
+    #####:  228:		if (
+    #####:  229:			( pZuin->pho_inx[ 0 ] == 9 ) &&
+    #####:  230:			( ( pZuin->pho_inx[ 1 ] == 1 ) ||
+    #####:  231:				( pZuin->pho_inx[ 1 ] == 3 ) ) ) {
+    #####:  232:			pZuin->pho_inx[ 0 ] = 12;
+        -:  233:		}
+        -:  234:
+    #####:  235:		searchTimes = ( key == 'j' ) ? 3 : 2;
+        -:  236:
+    #####:  237:		return EndKeyProcess( pgdata, key, searchTimes );
+        -:  238:	}
+        -:  239:	else {
+        -:  240:		/* decide if the key is a phone */
+    #####:  241:		for ( type = 0, searchTimes = 1; type < 3; type++ ) {
+    #####:  242:			inx = PhoneInxFromKey( key, type, pZuin->kbtype, searchTimes );
+    #####:  243:			if ( ! inx )
+    #####:  244:				continue; /* if inx == 0, next type */
+    #####:  245:			else if ( type == 0 ) {
+    #####:  246:				if ( pZuin->pho_inx[ 0 ] || pZuin->pho_inx[ 1 ] ) {
+        -:  247:					/* if inx !=0 */
+    #####:  248:					searchTimes = 2 ; /* possible infinite loop here */
+        -:  249:				}
+        -:  250:				else
+        -:  251:					break;
+        -:  252:			}
+    #####:  253:			else if ( type == 1 && inx == 1 ) { /* handle i and e*/
+    #####:  254:				if ( pZuin->pho_inx[ 1 ] ) {
+    #####:  255:					searchTimes = 2;
+        -:  256:				}
+        -:  257:				else
+    #####:  258:					break;
+        -:  259:			}
+        -:  260:			else
+        -:  261:				break;
+        -:  262:		}
+        -:  263:		/* processing very special cases "j v c" */
+    #####:  264:		if (
+    #####:  265:			type == 1 &&
+    #####:  266:			inx == 2 &&
+    #####:  267:			12 <= pZuin->pho_inx[ 0 ] &&
+    #####:  268:			pZuin->pho_inx[ 0 ] <= 14 ) {
+    #####:  269:			pZuin->pho_inx[ 0 ] += 3;
+        -:  270:		}
+        -:  271:
+        -:  272:		/* Fuzzy "g e" to "j e" */
+    #####:  273:		if (
+    #####:  274:			( pZuin->pho_inx[ 0 ] == 9 ) &&
+    #####:  275:			( ( pZuin->pho_inx[ 1 ] == 1 ) || ( pZuin->pho_inx[ 1 ] == 3 ) ) ) {
+    #####:  276:			pZuin->pho_inx[ 0 ] = 12;
+        -:  277:		}
+        -:  278:
+        -:  279:		/* ㄐㄑㄒ must follow ㄧㄩ */
+    #####:  280:		if (
+    #####:  281:			type == 2 &&
+    #####:  282:			pZuin->pho_inx[ 1 ] == 0 &&
+    #####:  283:			12 <= pZuin->pho_inx[ 0 ] &&
+    #####:  284:			pZuin->pho_inx[ 0 ] <= 14 ) {
+    #####:  285:			pZuin->pho_inx[ 0 ] += 3;
+        -:  286:		}
+        -:  287:
+    #####:  288:		if ( type == 3 ) { /* the key is NOT a phone */
+    #####:  289:			if ( isalpha( key ) )
+    #####:  290:				return ZUIN_NO_WORD;
+    #####:  291:			return ZUIN_KEY_ERROR;
+        -:  292:		}
+        -:  293:		/* fill the key into the phone buffer */
+    #####:  294:		pZuin->pho_inx[ type ] = inx;
+    #####:  295:		return ZUIN_ABSORB;
+        -:  296:	}
+        -:  297:}
+        -:  298:
+        -:  299:/* copy the idea from hsu */
+    #####:  300:static int ET26PhoInput( ChewingData *pgdata, int key )
+        -:  301:{
+    #####:  302:	ZuinData *pZuin = &(pgdata->zuinData);
+    #####:  303:	int type = 0, searchTimes = 0, inx = 0;
+        -:  304:
+    #####:  305:	if ( IsET26PhoEndKey( pZuin->pho_inx, key ) ) {
+    #####:  306:		if ( pZuin->pho_inx[ 1 ] == 0 && pZuin->pho_inx[ 2 ] == 0 ) {
+        -:  307:			/* convert "ㄐㄒ" to "ㄓㄕ" */
+    #####:  308:			if ( pZuin->pho_inx[ 0 ] == 12 || pZuin->pho_inx[ 0 ] == 14 ) {
+    #####:  309:				pZuin->pho_inx[ 0 ] += 3;
+        -:  310:			}
+        -:  311:			/* convert "ㄆ" to "ㄡ" */
+    #####:  312:			else if ( pZuin->pho_inx[ 0 ] == 2 ) {
+    #####:  313:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  314:				pZuin->pho_inx[ 2 ] = 8;
+        -:  315:			}
+        -:  316:			/* convert "ㄇ" to "ㄢ" */
+    #####:  317:			else if ( pZuin->pho_inx[ 0 ] == 3 ) {
+    #####:  318:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  319:				pZuin->pho_inx[ 2 ] = 9;
+        -:  320:			}
+        -:  321:			/* convert "ㄋ" to "ㄣ" */
+    #####:  322:			else if ( pZuin->pho_inx[ 0 ] == 7) {
+    #####:  323:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  324:				pZuin->pho_inx[ 2 ] = 10;
+        -:  325:			}
+        -:  326:			/* convert "ㄊ" to "ㄤ" */
+    #####:  327:			else if ( pZuin->pho_inx[ 0 ] == 6 ) {
+    #####:  328:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  329:				pZuin->pho_inx[ 2 ] = 11;
+        -:  330:			}
+        -:  331:			/* convert "ㄌ" to "ㄥ" */
+    #####:  332:			else if ( pZuin->pho_inx[ 0 ] == 8 ) {
+    #####:  333:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  334:				pZuin->pho_inx[ 2 ] = 12;
+        -:  335:			}
+        -:  336:			/* convert "ㄏ" to "ㄦ" */
+    #####:  337:			else if ( pZuin->pho_inx[ 0 ] == 11 ) {
+    #####:  338:				pZuin->pho_inx[ 0 ] = 0;
+    #####:  339:				pZuin->pho_inx[ 2 ] = 13;
+        -:  340:			}
+        -:  341:		}
+    #####:  342:		searchTimes = 2;
+    #####:  343:		return EndKeyProcess( pgdata, key, searchTimes );
+        -:  344:	}
+        -:  345:	else {
+        -:  346:		/* decide if the key is a phone */
+    #####:  347:		for ( type = 0, searchTimes = 1; type < 3; type++ ) {
+    #####:  348:			inx = PhoneInxFromKey( key, type, pZuin->kbtype, searchTimes );
+    #####:  349:			if ( ! inx )
+    #####:  350:				continue; /* if inx == 0, next type */
+    #####:  351:			else if ( type == 0 ) {
+    #####:  352:				if ( pZuin->pho_inx[ 0 ] || pZuin->pho_inx[ 1 ] ) {
+        -:  353:					/* if inx !=0 */
+    #####:  354:					searchTimes = 2 ; /* possible infinite loop here */
+        -:  355:				}
+        -:  356:				else
+        -:  357:					break;
+        -:  358:			}
+        -:  359:			else
+    #####:  360:				break;
+        -:  361:		}
+        -:  362:		/* convert "ㄐㄒ" to "ㄓㄕ" */
+    #####:  363:		if ( type == 1 ) {
+    #####:  364:			if ( inx == 2 ) {
+    #####:  365:				if (
+    #####:  366:					pZuin->pho_inx[ 0 ] == 12 ||
+    #####:  367:					pZuin->pho_inx[ 0 ] == 14 ) {
+    #####:  368:					pZuin->pho_inx[ 0 ] += 3;
+        -:  369:				}
+        -:  370:			}
+        -:  371:			else {
+        -:  372:				/* convert "ㄍ" to "ㄑ" */
+    #####:  373:				if ( pZuin->pho_inx[ 0 ] == 9 ) {
+    #####:  374:					pZuin->pho_inx[ 0 ] = 13;
+        -:  375:				}
+        -:  376:			}
+        -:  377:		}
+        -:  378:
+    #####:  379:		if (
+    #####:  380:			type == 2 &&
+    #####:  381:			pZuin->pho_inx[ 1 ] == 0 &&
+    #####:  382:			(pZuin->pho_inx[ 0 ] == 12 || pZuin->pho_inx[ 0 ] == 14 ) ) {
+    #####:  383:			pZuin->pho_inx[ 0 ] += 3;
+        -:  384:		}
+        -:  385:
+    #####:  386:		if ( type == 3 ) { /* the key is NOT a phone */
+    #####:  387:			if ( isalpha( key ) )
+    #####:  388:				return ZUIN_NO_WORD;
+    #####:  389:			return ZUIN_KEY_ERROR;
+        -:  390:		}
+        -:  391:		/* fill the key into the phone buffer */
+    #####:  392:		pZuin->pho_inx[ type ] = inx;
+    #####:  393:		return ZUIN_ABSORB;
+        -:  394:	}
+        -:  395:}
+        -:  396:
+    #####:  397:static int SwitchingBetween( int *pho_idx, int a, int b ) {
+    #####:  398:	if ( *pho_idx == a ) {
+    #####:  399:		*pho_idx = b;
+    #####:  400:		return 1;
+    #####:  401:	} else if ( *pho_idx == b ) {
+    #####:  402:		*pho_idx = a;
+    #####:  403:		return 1;
+        -:  404:	}
+    #####:  405:	return 0;
+        -:  406:}
+        -:  407:
+    #####:  408:static int DACHENCP26PhoInput( ChewingData *pgdata, int key )
+        -:  409:{
+    #####:  410:	ZuinData *pZuin = &(pgdata->zuinData);
+    #####:  411:	int type = 0, searchTimes = 0, inx = 0;
+        -:  412:
+    #####:  413:	if ( IsDACHENCP26PhoEndKey( pZuin->pho_inx, key ) ) {
+    #####:  414:		searchTimes = 2;
+    #####:  415:		return EndKeyProcess( pgdata, key, searchTimes );
+        -:  416:	}
+        -:  417:	else {
+        -:  418:		/* decide if the key is a phone */
+    #####:  419:		for ( type = 0, searchTimes = 1; type < 3; type++ ) {
+    #####:  420:			inx = PhoneInxFromKey( key, type, pZuin->kbtype, searchTimes );
+    #####:  421:			if ( ! inx )
+    #####:  422:				continue; /* if inx == 0, next type */
+    #####:  423:			else if ( type == 0 ) {
+    #####:  424:				break;
+        -:  425:				if ( pZuin->pho_inx[ 0 ] || pZuin->pho_inx[ 1 ] ) {
+        -:  426:					/* if inx !=0 */
+        -:  427:					searchTimes = 2 ; /* possible infinite loop here */
+        -:  428:				}
+        -:  429:				else
+        -:  430:					break;
+        -:  431:			}
+        -:  432:			else
+    #####:  433:				break;
+        -:  434:		}
+        -:  435:		/* switching between "ㄅ" and "ㄆ" */
+    #####:  436:		if ( key == 'q' ) {
+    #####:  437:			if ( SwitchingBetween ( &pZuin->pho_inx[ 0 ], 1, 2 ) ) {
+    #####:  438:				return ZUIN_ABSORB;
+        -:  439:			}
+        -:  440:		}
+        -:  441:		/* switching between "ㄉ" and "ㄊ" */
+    #####:  442:		else if ( key == 'w' ) {
+    #####:  443:			if ( SwitchingBetween ( &pZuin->pho_inx[ 0 ], 5, 6 ) ) {
+    #####:  444:				return ZUIN_ABSORB;
+        -:  445:			}
+        -:  446:		}
+        -:  447:		/* switching between "ㄓ" and "ㄔ" */
+    #####:  448:		else if ( key == 't' ) {
+    #####:  449:			if ( SwitchingBetween ( &pZuin->pho_inx[ 0 ], 15, 16 ) ) {
+    #####:  450:				return ZUIN_ABSORB;
+        -:  451:			}
+        -:  452:		}
+        -:  453:		/* converting "ㄖ" to "ㄝ" */
+    #####:  454:		else if ( key == 'b' ) {
+    #####:  455:			if ( pZuin->pho_inx[ 0 ] != 0 || pZuin->pho_inx[1] != 0 ) {
+    #####:  456:			pZuin->pho_inx[ 2 ] = 4;
+    #####:  457:				return ZUIN_ABSORB;
+        -:  458:			}
+        -:  459:		}
+        -:  460:		/* converting "ㄙ" to "ㄣ" */
+    #####:  461:		else if ( key == 'n' ) {
+    #####:  462:			if ( pZuin->pho_inx[ 0 ] != 0 || pZuin->pho_inx[1] != 0 ) {
+    #####:  463:				pZuin->pho_inx[ 2 ] = 12;
+    #####:  464:				return ZUIN_ABSORB;
+        -:  465:			}
+        -:  466:		}
+        -:  467:		/* switching between "ㄧ", "ㄚ", and "ㄧㄚ" */
+    #####:  468:		else if ( key == 'u' ) {
+    #####:  469:			if ( pZuin->pho_inx[ 1 ] == 1 && pZuin->pho_inx[ 2 ] != 1 ) {
+    #####:  470:				pZuin->pho_inx[1] = 0;
+    #####:  471:				pZuin->pho_inx[2] = 1;
+    #####:  472:				return ZUIN_ABSORB;
+        -:  473:			}
+    #####:  474:			else if (pZuin->pho_inx[ 1 ] != 1 && pZuin->pho_inx[2] == 1) {
+    #####:  475:				pZuin->pho_inx[1] = 1;
+    #####:  476:				return ZUIN_ABSORB;
+        -:  477:			}
+    #####:  478:			else if (pZuin->pho_inx[1] == 1 && pZuin->pho_inx[2]==1) {
+    #####:  479:				pZuin->pho_inx[1]=0;
+    #####:  480:				pZuin->pho_inx[2]=0;
+    #####:  481:				return ZUIN_ABSORB;
+        -:  482:			}
+    #####:  483:			else if (pZuin->pho_inx[1] != 0) {
+    #####:  484:				pZuin->pho_inx[2] = 1;
+    #####:  485:				return ZUIN_ABSORB;
+        -:  486:			}
+        -:  487:		}
+        -:  488:		/* switching between "ㄩ" and "ㄡ" */
+    #####:  489:		else if ( key == 'm' ) {
+    #####:  490:			if ( pZuin->pho_inx[ 1 ] == 3 && pZuin->pho_inx[ 2 ] != 8 ) {
+    #####:  491:				pZuin->pho_inx[1] = 0;
+    #####:  492:				pZuin->pho_inx[2] = 8;
+    #####:  493:				return ZUIN_ABSORB;
+        -:  494:			}
+    #####:  495:			else if (pZuin->pho_inx[ 1 ] != 3 && pZuin->pho_inx[2] == 8) {
+    #####:  496:				pZuin->pho_inx[1] = 3;
+    #####:  497:				pZuin->pho_inx[2] = 0;
+    #####:  498:				return ZUIN_ABSORB;
+        -:  499:			}
+    #####:  500:			else if (pZuin->pho_inx[ 1 ] != 0) {
+    #####:  501:				pZuin->pho_inx[2] = 8;
+    #####:  502:				return ZUIN_ABSORB;
+        -:  503:			}
+        -:  504:		}
+        -:  505:		/* switching between "ㄛ" and "ㄞ" */
+    #####:  506:		else if ( key == 'i' ) {
+    #####:  507:			if ( SwitchingBetween ( &pZuin->pho_inx[ 2 ], 2, 5 ) ) {
+    #####:  508:				return ZUIN_ABSORB;
+        -:  509:			}
+        -:  510:		}
+        -:  511:		/* switching between "ㄟ" and "ㄢ" */
+    #####:  512:		else if ( key == 'o' ) {
+    #####:  513:			if ( SwitchingBetween ( &pZuin->pho_inx[ 2 ], 6, 9 ) ) {
+    #####:  514:				return ZUIN_ABSORB;
+        -:  515:			}
+        -:  516:		}
+        -:  517:		/* switching between "ㄠ" and "ㄤ" */
+    #####:  518:		else if ( key == 'l' ) {
+    #####:  519:			if ( SwitchingBetween ( &pZuin->pho_inx[ 2 ], 7, 11 ) ) {
+    #####:  520:				return ZUIN_ABSORB;
+        -:  521:			}
+        -:  522:		}
+        -:  523:		/* switching between "ㄣ" and "ㄦ" */
+    #####:  524:		else if ( key == 'p' ) {
+    #####:  525:			if ( SwitchingBetween ( &pZuin->pho_inx[ 2 ], 10, 13 ) ) {
+    #####:  526:				return ZUIN_ABSORB;
+        -:  527:			}
+        -:  528:		}
+    #####:  529:		if ( type == 3 ) { /* the key is NOT a phone */
+    #####:  530:			if ( isalpha( key ) )
+    #####:  531:				return ZUIN_NO_WORD;
+    #####:  532:			return ZUIN_KEY_ERROR;
+        -:  533:		}
+        -:  534:		/* fill the key into the phone buffer */
+    #####:  535:		pZuin->pho_inx[ type ] = inx;
+    #####:  536:		return ZUIN_ABSORB;
+        -:  537:	}
+        -:  538:}
+        -:  539:
+    #####:  540:static int IsPinYinEndKey(int key )
+        -:  541:{
+    #####:  542:	if ( (key == ' ') || (key == '1') || (key == '2') ||
+    #####:  543:			(key == '3') || (key == '4') || (key == '5') ) {
+    #####:  544:		return 1;
+        -:  545:	}
+    #####:  546:	return 0;
+        -:  547:}
+        -:  548:
+    #####:  549:static int IsSymbolKey(int key)
+        -:  550:{
+    #####:  551:	if ( (key < 97) || (key > 122) ) {
+    #####:  552:		return 1;
+        -:  553:	}
+        -:  554:
+    #####:  555:	return 0;
+        -:  556:}
+        -:  557:
+    #####:  558:static int PinYinInput( ChewingData *pgdata, int key )
+        -:  559:{
+    #####:  560:	ZuinData *pZuin = &(pgdata->zuinData);
+    #####:  561:	int err = 0;
+        -:  562:	unsigned int i;
+        -:  563:	char zuinKeySeq[ 5 ], zuinKeySeqAlt[ 5 ], buf[ 2 ];
+        -:  564:	size_t len;
+        -:  565:
+    #####:  566:	DEBUG_CHECKPOINT();
+        -:  567:
+    #####:  568:	if ( pZuin->pinYinData.keySeq[ 0 ] == 0 && IsSymbolKey( key ) ) {
+    #####:  569:		return ZUIN_KEY_ERROR;
+        -:  570:	}
+        -:  571:
+    #####:  572:	if ( IsPinYinEndKey( key ) ) {
+    #####:  573:		err = PinyinToZuin( pgdata, pZuin->pinYinData.keySeq,
+        -:  574:		                    zuinKeySeq, zuinKeySeqAlt );
+    #####:  575:		if ( err ) {
+    #####:  576:			pZuin->pinYinData.keySeq[ 0 ] = '\0';
+    #####:  577:			return ZUIN_ABSORB;
+        -:  578:		}
+        -:  579:
+    #####:  580:		DEBUG_OUT( "zuinKeySeq: %s\n", zuinKeySeq );
+    #####:  581:		DEBUG_OUT( "zuinKeySeqAlt: %s\n", zuinKeySeqAlt );
+        -:  582:
+    #####:  583:		len = strlen( zuinKeySeq );
+    #####:  584:		for ( i = 0; i < len; i++ ) {
+    #####:  585:			int type = 0, inx = 0;
+    #####:  586:			for ( type = 0; type <= 3; type++ ) {
+    #####:  587:				inx = PhoneInxFromKey( zuinKeySeq[ i ],
+        -:  588:				                       type, pZuin->kbtype, 1 );
+    #####:  589:				if ( inx )
+    #####:  590:					break;
+        -:  591:			}
+        -:  592:
+        -:  593:			/* the key is NOT a phone */
+    #####:  594:			if ( type > 3 ) {
+    #####:  595:				return ZUIN_KEY_ERROR;
+        -:  596:			}
+        -:  597:
+    #####:  598:			pZuin->pho_inx[ type ] = inx;
+        -:  599:
+        -:  600:		}
+        -:  601:
+    #####:  602:		len = strlen( zuinKeySeqAlt );
+    #####:  603:		for ( i = 0; i < len; i++ ) {
+    #####:  604:			int type = 0, inx = 0;
+    #####:  605:			for ( type = 0; type <= 3; type++ ) {
+    #####:  606:				inx = PhoneInxFromKey( zuinKeySeqAlt[ i ],
+        -:  607:				                       type, pZuin->kbtype, 1 );
+    #####:  608:				if ( inx )
+    #####:  609:					break;
+        -:  610:			}
+        -:  611:
+        -:  612:			/* the key is NOT a phone */
+    #####:  613:			if ( type > 3 ) {
+    #####:  614:				return ZUIN_KEY_ERROR;
+        -:  615:			}
+        -:  616:
+    #####:  617:			pZuin->pho_inx_alt[ type ] = inx;
+        -:  618:
+        -:  619:		}
+        -:  620:
+    #####:  621:		switch ( key ) {
+    #####:  622:			case '1':
+    #####:  623:				key = ' ';
+    #####:  624:				break;
+    #####:  625:			case '2':
+    #####:  626:				key = '6';
+    #####:  627:				break;
+    #####:  628:			case '5':
+    #####:  629:				key = '7';
+        -:  630:		}
+    #####:  631:		pZuin->pinYinData.keySeq[ 0 ] = '\0';
+    #####:  632:		return EndKeyProcess( pgdata, key, 1 );
+        -:  633:	}
+    #####:  634:	buf[ 0 ] = key; buf[ 1 ] = '\0';
+    #####:  635:	strcat( pZuin->pinYinData.keySeq, buf );
+        -:  636:
+    #####:  637:	DEBUG_OUT( "PinYin Seq: %s\n", pZuin->pinYinData.keySeq );
+        -:  638:
+    #####:  639:	return ZUIN_ABSORB;
+        -:  640:}
+        -:  641:
+        -:  642:/* key: ascii code of input, including space */
+    #####:  643:int ZuinPhoInput( ChewingData *pgdata, int key )
+        -:  644:{
+    #####:  645:	ZuinData *pZuin = &(pgdata->zuinData);
+        -:  646:
+        -:  647:	/* open symbol table */
+    #####:  648:	if ( key == '`' ) {
+    #####:  649:		pgdata->bSelect = 1;
+    #####:  650:		pgdata->choiceInfo.oldChiSymbolCursor = pgdata->chiSymbolCursor;
+    #####:  651:		HaninSymbolInput( pgdata );
+    #####:  652:		return ZUIN_OPEN_SYMBOL_TABLE;
+        -:  653:	}
+    #####:  654:	switch ( pZuin->kbtype ) {
+    #####:  655:		case KB_HSU:
+        -:  656:		case KB_DVORAK_HSU:
+    #####:  657:			return HsuPhoInput( pgdata, key );
+        -:  658:			break;
+    #####:  659:		case KB_ET26:
+    #####:  660:			return ET26PhoInput( pgdata, key );
+        -:  661:			break;
+    #####:  662:		case KB_DACHEN_CP26:
+    #####:  663:			return DACHENCP26PhoInput( pgdata, key );
+        -:  664:			break;
+    #####:  665:		case KB_HANYU_PINYIN:
+        -:  666:		case KB_THL_PINYIN:
+        -:  667:		case KB_MPS2_PINYIN:
+    #####:  668:			return PinYinInput( pgdata, key );
+        -:  669:			break;
+    #####:  670:		default:
+    #####:  671:			return DefPhoInput( pgdata, key );
+        -:  672:	}
+        -:  673:	return ZUIN_ERROR;
+        -:  674:}
+        -:  675:
+        -:  676:/* remove the latest key */
+    #####:  677:int ZuinRemoveLast( ZuinData *pZuin )
+        -:  678:{
+        -:  679:	int i;
+    #####:  680:	if ( pZuin->kbtype >= KB_HANYU_PINYIN ) {
+    #####:  681:		i = strlen( pZuin->pinYinData.keySeq );
+    #####:  682:		pZuin->pinYinData.keySeq[ i - 1 ] = '\0';
+        -:  683:	} else {
+    #####:  684:		for ( i = 3; i >= 0; i-- ) {
+    #####:  685:			if ( pZuin->pho_inx[ i ] ) {
+    #####:  686:				pZuin->pho_inx[ i ] = 0;
+    #####:  687:				return 0;
+        -:  688:			}
+        -:  689:		}
+        -:  690:	}
+    #####:  691:	return 0;
+        -:  692:}
+        -:  693:
+        -:  694:/* remove all the key entered */
+    #####:  695:int ZuinRemoveAll( ZuinData *pZuin )
+        -:  696:{
+    #####:  697:	memset( pZuin->pho_inx, 0, sizeof( pZuin->pho_inx ) );
+    #####:  698:	memset( pZuin->pinYinData.keySeq, 0, sizeof( pZuin->pinYinData.keySeq ) );
+    #####:  699:	return 0;
+        -:  700:}
+        -:  701:
+    #####:  702:int ZuinIsEntering( ZuinData *pZuin )
+        -:  703:{
+        -:  704:	int i;
+    #####:  705:	if ( pZuin->kbtype >= KB_HANYU_PINYIN ) {
+    #####:  706:		if ( pZuin->pinYinData.keySeq[0] )
+    #####:  707:			return 1;
+        -:  708:	} else {
+    #####:  709:		for ( i = 0; i < ZUIN_SIZE; i++ )
+    #####:  710:			if ( pZuin->pho_inx[ i ] )
+    #####:  711:				return 1;
+        -:  712:	}
+    #####:  713:	return 0;
+        -:  714:}

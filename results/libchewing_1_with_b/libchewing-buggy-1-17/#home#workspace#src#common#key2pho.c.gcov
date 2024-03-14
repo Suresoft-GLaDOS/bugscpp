@@ -1,0 +1,313 @@
+        -:    0:Source:/home/workspace/src/common/key2pho.c
+        -:    1:/**
+        -:    2: * @file key2pho.c
+        -:    3: * @brief Map bopomofos to uint16_t type according to different keyboard type.
+        -:    4: *
+        -:    5: * Copyright (c) 1999, 2000, 2001
+        -:    6: *	Lu-chuan Kung and Kang-pen Chen.
+        -:    7: *	All rights reserved.
+        -:    8: *
+        -:    9: * Copyright (c) 2004-2006, 2008, 2010, 2012-2014
+        -:   10: *	libchewing Core Team. See ChangeLog for details.
+        -:   11: *
+        -:   12: * See the file "COPYING" for information on usage and redistribution
+        -:   13: * of this file.
+        -:   14: */
+        -:   15:
+        -:   16:/* This file is encoded in UTF-8 */
+        -:   17:#include "key2pho-private.h"
+        -:   18:
+        -:   19:#include <assert.h>
+        -:   20:#include <stdio.h>
+        -:   21:#include <string.h>
+        -:   22:#include "chewing-utf8-util.h"
+        -:   23:
+        -:   24:/* NOTE:
+        -:   25: * The reason why we convert string literal to hex representation is for the
+        -:   26: * sake of portability, that avoid some buggy or faulty environment like
+        -:   27: * Microsoft VC9 to misinterpret the string.
+        -:   28: */
+        -:   29:const char *const zhuin_tab[] = {               /* number of bits */
+        -:   30:    "\xE3\x84\x85\xE3\x84\x86\xE3\x84\x87\xE3\x84\x88\xE3\x84\x89"
+        -:   31:    "\xE3\x84\x8A\xE3\x84\x8B\xE3\x84\x8C\xE3\x84\x8D\xE3\x84\x8E"
+        -:   32:    "\xE3\x84\x8F\xE3\x84\x90\xE3\x84\x91\xE3\x84\x92\xE3\x84\x93"
+        -:   33:    "\xE3\x84\x94\xE3\x84\x95\xE3\x84\x96\xE3\x84\x97\xE3\x84\x98"
+        -:   34:    "\xE3\x84\x99",                             /* 5 */
+        -:   35:    /* ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙ */
+        -:   36:    "\xE3\x84\xA7\xE3\x84\xA8\xE3\x84\xA9",   /* 2 */
+        -:   37:    /* ㄧㄨㄩ */
+        -:   38:    "\xE3\x84\x9A\xE3\x84\x9B\xE3\x84\x9C\xE3\x84\x9D\xE3\x84\x9E"
+        -:   39:    "\xE3\x84\x9F\xE3\x84\xA0\xE3\x84\xA1\xE3\x84\xA2\xE3\x84\xA3"
+        -:   40:    "\xE3\x84\xA4\xE3\x84\xA5\xE3\x84\xA6",     /* 4 */
+        -:   41:    /* ㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦ */
+        -:   42:    "\xCB\x99\xCB\x8A\xCB\x87\xCB\x8B"        /* 3 */
+        -:   43:    /* ˙ˊˇˋ */
+        -:   44:};
+        -:   45:
+        -:   46:static const int zhuin_tab_num[] = { 22, 4, 14, 5 };
+        -:   47:static const int shift[] = { 9, 7, 3, 0 };
+        -:   48:static const int mask[] = { 0x1F, 0x3, 0xF, 0x7 };
+        -:   49:
+        -:   50:static const char *const ph_str =
+        -:   51:    "\xE3\x84\x85\xE3\x84\x86\xE3\x84\x87\xE3\x84\x88"
+        -:   52:    /* ㄅㄆㄇㄈ */
+        -:   53:    "\xE3\x84\x89\xE3\x84\x8A\xE3\x84\x8B\xE3\x84\x8C"
+        -:   54:    /* ㄉㄊㄋㄌ */
+        -:   55:    "\xE3\x84\x8D\xE3\x84\x8E\xE3\x84\x8F\xE3\x84\x90"
+        -:   56:    /* ㄍㄎㄏㄐ */
+        -:   57:    "\xE3\x84\x91\xE3\x84\x92\xE3\x84\x93\xE3\x84\x94"
+        -:   58:    /* ㄑㄒㄓㄔ */
+        -:   59:    "\xE3\x84\x95\xE3\x84\x96\xE3\x84\x97\xE3\x84\x98"
+        -:   60:    /* ㄕㄖㄗㄘ */
+        -:   61:    "\xE3\x84\x99\xE3\x84\xA7\xE3\x84\xA8\xE3\x84\xA9"
+        -:   62:    /* ㄙㄧㄨㄩ */
+        -:   63:    "\xE3\x84\x9A\xE3\x84\x9B\xE3\x84\x9C\xE3\x84\x9D"
+        -:   64:    /* ㄚㄛㄜㄝ */
+        -:   65:    "\xE3\x84\x9E\xE3\x84\x9F\xE3\x84\xA0\xE3\x84\xA1"
+        -:   66:    /* ㄞㄟㄠㄡ */
+        -:   67:    "\xE3\x84\xA2\xE3\x84\xA3\xE3\x84\xA4\xE3\x84\xA5\xE3\x84\xA6"
+        -:   68:    /* ㄢㄣㄤㄥㄦ */
+        -:   69:    "\xCB\x99\xCB\x8A\xCB\x87\xCB\x8B";
+        -:   70:    /* ˙ˊˇˋ */
+        -:   71:
+        -:   72:static const char *const key_str[KBTYPE_COUNT] = {
+        -:   73:    "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-7634",        /* standard kb */
+        -:   74:    "bpmfdtnlgkhjvcjvcrzasexuyhgeiawomnkllsdfj",        /* hsu */
+        -:   75:    "1234567890-qwertyuiopasdfghjkl;zxcvbn/m,.",        /* IBM */
+        -:   76:    "2wsx3edcrfvtgb6yhnujm8ik,9ol.0p;/-['=1qaz",        /* Gin-yieh */
+        -:   77:    "bpmfdtnlvkhg7c,./j;'sexuaorwiqzy890-=1234",        /* ET  */
+        -:   78:    "bpmfdtnlvkhgvcgycjqwsexuaorwiqzpmntlhdfjk",        /* ET26 */
+        -:   79:    "1'a;2,oq.ejpuk5yixfdbghm8ctw9rnv0lsz[7634",        /* Dvorak */
+        -:   80:    "bpmfdtnlgkhjvcjvcrzasexuyhgeiawomnkllsdfj",        /* Dvorak Hsu */
+        -:   81:    "qqazwwsxedcrfvttgbyhnujmuikbiolmoplnpyerd",        /* DACHEN-CP26 */
+        -:   82:    "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-7634",        /* Hanyu Pinyin */
+        -:   83:    "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-7634",        /* Luoma Pinyin */
+        -:   84:    "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-7634",        /* secondary Bopomofo Pinyin */
+        -:   85:    "1qdz2gsxmtclnv5wrjyikfap8ue,9bo.0;h/-7634",        /* Carpalx */
+        -:   86:};
+        -:   87:
+        -:   88:/*
+        -:   89: * Read one zhuin string,
+        -:   90: *
+        -:   91: * return the number it means. 0 means error.
+        -:   92: */
+      214:   93:uint16_t UintFromPhone(const char *zhuin)
+        -:   94:{
+        -:   95:    const char *iter;
+        -:   96:    char *pos;
+        -:   97:    char buf[MAX_UTF8_SIZE + 1];
+      214:   98:    int len, result = 0;
+      214:   99:    int zhuin_index = 0;
+        -:  100:
+      214:  101:    iter = zhuin;
+        -:  102:
+        -:  103:    /* 0x20: space character */
+      762:  104:    while (*iter && *iter != 0x20) {
+      551:  105:        len = ueStrNCpy(buf, iter, 1, STRNCPY_CLOSE);
+        -:  106:
+      822:  107:        for (; zhuin_index < BOPOMOFO_SIZE; ++zhuin_index) {
+      819:  108:            pos = strstr(zhuin_tab[zhuin_index], buf);
+      819:  109:            if (pos) {
+      548:  110:                break;
+        -:  111:            }
+        -:  112:        }
+        -:  113:
+      551:  114:        if (zhuin_index >= BOPOMOFO_SIZE) {
+        3:  115:            return 0;
+        -:  116:        }
+        -:  117:
+      548:  118:        result |= (zhuin_tab_num[zhuin_index] - ueStrLen(pos)) << shift[zhuin_index];
+      548:  119:        ++zhuin_index;
+      548:  120:        iter += len;
+        -:  121:    }
+      211:  122:    return result;
+        -:  123:}
+        -:  124:
+      200:  125:int PhoneFromKey(char *pho, const char *inputkey, KBTYPE kbtype, int searchTimes)
+        -:  126:{
+        -:  127:    int len;
+        -:  128:    int i;
+        -:  129:    int s;
+        -:  130:    const char *pTarget;
+        -:  131:
+      200:  132:    len = strlen(inputkey);
+        -:  133:
+      200:  134:    pho[0] = '\0';
+      382:  135:    for (i = 0; i < len; i++) {
+      200:  136:        char *findptr = NULL;
+        -:  137:        int _index;
+        -:  138:
+      200:  139:        pTarget = key_str[kbtype];
+      382:  140:        for (s = 0; s < searchTimes; s++) {
+      200:  141:            findptr = strchr(pTarget, inputkey[i]);
+      200:  142:            if (!findptr) {
+       18:  143:                return 0;
+        -:  144:            }
+      182:  145:            pTarget = findptr + 1;
+        -:  146:        }
+      182:  147:        _index = findptr - key_str[kbtype];
+      182:  148:        ueStrNCpy(ueStrSeek(pho, i), ueConstStrSeek(ph_str, _index), 1, STRNCPY_NOT_CLOSE);
+        -:  149:    }
+      182:  150:    pho = ueStrSeek(pho, len);
+      182:  151:    pho[0] = '\0';
+      182:  152:    return 1;
+        -:  153:}
+        -:  154:
+        6:  155:int PhoneFromUint(char *phone, size_t phone_len, uint16_t phone_num)
+        -:  156:{
+        -:  157:    int i;
+        -:  158:    int index;
+        -:  159:    const char *pos;
+        -:  160:    char tmp[MAX_UTF8_SIZE + 1];
+        6:  161:    char buffer[MAX_UTF8_SIZE * BOPOMOFO_SIZE + 1] = { 0 };
+        -:  162:
+       30:  163:    for (i = 0; i < BOPOMOFO_SIZE; ++i) {
+        -:  164:        /* The first two characters in zhuin_tab are space, so we need
+        -:  165:           to add 1 here. */
+       24:  166:        index = ((phone_num >> shift[i]) & mask[i]);
+       24:  167:        if (index >= 1) {
+       15:  168:            pos = ueConstStrSeek(zhuin_tab[i], index - 1);
+       15:  169:            ueStrNCpy(tmp, pos, 1, STRNCPY_CLOSE);
+       15:  170:            strcat(buffer, tmp);
+        -:  171:        }
+        -:  172:    }
+        6:  173:    if (!buffer[0]) {
+    #####:  174:        phone[0] = 0;
+    #####:  175:        return -1;
+        -:  176:    }
+        6:  177:    strncpy(phone, buffer, phone_len);
+        6:  178:    phone[phone_len - 1] = 0;
+        6:  179:    if (phone_len < strlen(buffer) + 1)
+    #####:  180:        return -1;
+        6:  181:    return 0;
+        -:  182:}
+        -:  183:
+      200:  184:int PhoneInxFromKey(int key, int type, KBTYPE kbtype, int searchTimes)
+        -:  185:{
+        -:  186:    char keyStr[2];
+        -:  187:    char rtStr[10];
+        -:  188:    char *p;
+        -:  189:
+      200:  190:    keyStr[0] = key;
+      200:  191:    keyStr[1] = '\0';
+        -:  192:
+      200:  193:    if (!PhoneFromKey(rtStr, keyStr, kbtype, searchTimes))
+       18:  194:        return 0;
+        -:  195:
+      182:  196:    p = strstr(zhuin_tab[type], rtStr);
+      182:  197:    if (!p)
+       92:  198:        return 0;
+        -:  199:
+       90:  200:    return zhuin_tab_num[type] - ueStrLen(p);
+        -:  201:}
+        -:  202:
+       29:  203:uint16_t UintFromPhoneInx(const int ph_inx[])
+        -:  204:{
+        -:  205:    int i;
+       29:  206:    uint16_t result = 0;
+        -:  207:
+      145:  208:    for (i = 0; i < BOPOMOFO_SIZE; i++) {
+      116:  209:        if (ph_inx[i] < 0 || ph_inx[i] >= zhuin_tab_num[i])
+    #####:  210:            return 0;
+        -:  211:
+      116:  212:        result |= ph_inx[i] << shift[i];
+        -:  213:    }
+        -:  214:
+       29:  215:    return result;
+        -:  216:}
+        -:  217:
+      562:  218:size_t GetPhoneLen(const uint16_t *phoneSeq)
+        -:  219:{
+      562:  220:    size_t len = 0;
+        -:  221:
+     562*:  222:    assert(phoneSeq);
+        -:  223:
+     1528:  224:    while (phoneSeq[len])
+      966:  225:        ++len;
+      562:  226:    return len;
+        -:  227:}
+        -:  228:
+      173:  229:static size_t GetBopomofoCount(const char *bopomofo_buf)
+        -:  230:{
+      173:  231:    size_t count = 0;
+        -:  232:
+     173*:  233:    assert(bopomofo_buf);
+        -:  234:
+      429:  235:    while ((bopomofo_buf = strpbrk(bopomofo_buf, " ")) != NULL) {
+      256:  236:        ++count;
+      256:  237:        bopomofo_buf += 1;
+        -:  238:    }
+        -:  239:
+      173:  240:    return count;
+        -:  241:}
+        -:  242:
+        3:  243:size_t BopomofoFromUintArray(char *const bopomofo_buf, const size_t bopomofo_len, const uint16_t *phoneSeq)
+        -:  244:{
+        -:  245:    size_t i;
+        -:  246:    size_t len;
+        -:  247:    size_t buf_len;
+        3:  248:    size_t shift = 0;
+        -:  249:
+       3*:  250:    assert(phoneSeq);
+        -:  251:
+        3:  252:    len = GetPhoneLen(phoneSeq);
+        3:  253:    buf_len = GetBopomofoBufLen(len);
+        -:  254:
+        3:  255:    if (bopomofo_buf && bopomofo_len >= buf_len) {
+        9:  256:        for (i = 0; i < len; ++i) {
+        6:  257:            PhoneFromUint(bopomofo_buf + shift, bopomofo_len - shift, phoneSeq[i]);
+        6:  258:            strcat(bopomofo_buf + shift, " ");
+        6:  259:            shift += strlen(bopomofo_buf + shift);
+        -:  260:        }
+        3:  261:        if (shift)
+        3:  262:            bopomofo_buf[shift - 1] = 0;
+        -:  263:    }
+        3:  264:    return buf_len;
+        -:  265:}
+        -:  266:
+      173:  267:ssize_t UintArrayFromBopomofo(uint16_t *phone_seq, const size_t phone_len, const char *bopomofo_buf)
+        -:  268:{
+        -:  269:    size_t i;
+        -:  270:    size_t len;
+        -:  271:
+     173*:  272:    assert(bopomofo_buf);
+        -:  273:
+      173:  274:    len = GetBopomofoCount(bopomofo_buf) + 1;
+      173:  275:    if (!phone_seq)
+       87:  276:        return len;
+        -:  277:
+       86:  278:    if (phone_len <= len)
+    #####:  279:        return -1;
+        -:  280:
+      297:  281:    for (i = 0; i < len; ++i) {
+      214:  282:        phone_seq[i] = UintFromPhone(bopomofo_buf);
+      214:  283:        if (phone_seq[i] == 0)
+        3:  284:            return -1;
+      211:  285:        bopomofo_buf = strpbrk(bopomofo_buf, " ") + 1;
+        -:  286:    }
+       83:  287:    phone_seq[len] = 0;
+        -:  288:
+       83:  289:    return len;
+        -:  290:}
+        -:  291:
+        9:  292:size_t GetBopomofoBufLen(size_t len)
+        -:  293:{
+        9:  294:    return (MAX_UTF8_SIZE * BOPOMOFO_SIZE + 1) * len;
+        -:  295:}
+        -:  296:
+    #####:  297:size_t GetPhoneLenFromUint(uint16_t phone_num)
+        -:  298:{
+        -:  299:    int i;
+    #####:  300:    size_t len = 0 ;
+        -:  301:
+    #####:  302:    for (i = 0; i < BOPOMOFO_SIZE; ++i) {
+        -:  303:        /* The first two characters in zhuin_tab are space, so we need
+        -:  304:           to add 1 here. */
+    #####:  305:        int index = ((phone_num >> shift[i]) & mask[i]);
+    #####:  306:        if (index >= 1) {
+    #####:  307:            const char *pos = ueConstStrSeek(zhuin_tab[i], index - 1);
+    #####:  308:            len += ueStrNBytes(pos, 1);
+        -:  309:        }
+        -:  310:    }
+    #####:  311:    return len > 0 ? (len + 1) : -1;
+        -:  312:}

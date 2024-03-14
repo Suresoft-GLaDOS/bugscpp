@@ -1,0 +1,673 @@
+        -:    0:Source:/home/workspace/src/bopomofo.c
+        -:    1:/**
+        -:    2: * bopomofo.c
+        -:    3: *
+        -:    4: * Copyright (c) 1999, 2000, 2001
+        -:    5: *      Lu-chuan Kung and Kang-pen Chen.
+        -:    6: *      All rights reserved.
+        -:    7: *
+        -:    8: * Copyright (c) 2004-2006, 2008-2010, 2012-2014
+        -:    9: *      libchewing Core Team. See ChangeLog for details.
+        -:   10: *
+        -:   11: * See the file "COPYING" for information on usage and redistribution
+        -:   12: * of this file.
+        -:   13: */
+        -:   14:
+        -:   15:/**
+        -:   16: * @file bopomofo.c
+        -:   17: *
+        -:   18: * control keyboard mapping
+        -:   19: * include the definition of BopomofoData structure
+        -:   20: */
+        -:   21:
+        -:   22:#include <ctype.h>
+        -:   23:#include <string.h>
+        -:   24:
+        -:   25:#include "bopomofo-private.h"
+        -:   26:#include "chewingutil.h"
+        -:   27:#include "dict-private.h"
+        -:   28:#include "key2pho-private.h"
+        -:   29:#include "pinyin-private.h"
+        -:   30:#include "private.h"
+        -:   31:
+        -:   32:/*
+        -:   33: * process a key input
+        -:   34: * return value:
+        -:   35: *	BOPOMOFO_ABSORB
+        -:   36: *	BOPOMOFO_COMMIT
+        -:   37: *	BOPOMOFO_KEY_ERROR
+        -:   38: *	BOPOMOFO_ERROR
+        -:   39: */
+    #####:   40:static int IsHsuPhoEndKey(const int pho_inx[], int key)
+        -:   41:{
+    #####:   42:    switch (key) {
+    #####:   43:    case 's':
+        -:   44:    case 'd':
+        -:   45:    case 'f':
+        -:   46:    case 'j':
+        -:   47:    case ' ':
+    #####:   48:        return (pho_inx[0] || pho_inx[1] || pho_inx[2]);
+    #####:   49:    default:
+    #####:   50:        return 0;
+        -:   51:    }
+        -:   52:}
+        -:   53:
+        -:   54:/* copy the idea from HSU keyboard */
+    #####:   55:static int IsET26PhoEndKey(const int pho_inx[], int key)
+        -:   56:{
+    #####:   57:    switch (key) {
+    #####:   58:    case 'd':
+        -:   59:    case 'f':
+        -:   60:    case 'j':
+        -:   61:    case 'k':
+        -:   62:    case ' ':
+    #####:   63:        return (pho_inx[0] || pho_inx[1] || pho_inx[2]);
+    #####:   64:    default:
+    #####:   65:        return 0;
+        -:   66:    }
+        -:   67:}
+        -:   68:
+        -:   69:/* copy the idea from HSU keyboard */
+    #####:   70:static int IsDACHENCP26PhoEndKey(const int pho_inx[], int key)
+        -:   71:{
+    #####:   72:    switch (key) {
+    #####:   73:    case 'e':
+        -:   74:    case 'r':
+        -:   75:    case 'd':
+        -:   76:    case 'y':
+        -:   77:    case ' ':
+    #####:   78:        return (pho_inx[0] || pho_inx[1] || pho_inx[2]);
+    #####:   79:    default:
+    #####:   80:        return 0;
+        -:   81:    }
+        -:   82:}
+        -:   83:
+      266:   84:static int IsDefPhoEndKey(int key, int kbtype)
+        -:   85:{
+      266:   86:    if (PhoneInxFromKey(key, 3, kbtype, 1))
+       86:   87:        return 1;
+        -:   88:
+      180:   89:    if (key == ' ')
+       11:   90:        return 1;
+      169:   91:    return 0;
+        -:   92:}
+        -:   93:
+       95:   94:static int EndKeyProcess(ChewingData *pgdata, int key, int searchTimes)
+        -:   95:{
+       95:   96:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+        -:   97:    uint16_t u16Pho, u16PhoAlt;
+        -:   98:    Phrase tempword;
+        -:   99:    int pho_inx;
+        -:  100:
+       95:  101:    if (pBopomofo->pho_inx[0] == 0 && pBopomofo->pho_inx[1] == 0 && pBopomofo->pho_inx[2] == 0 && pBopomofo->pho_inx[3] == 0) {
+        -:  102:        /*
+        -:  103:         * Special handle for space key (Indeed very special one).
+        -:  104:         * Un-break the situation that OnKeySpace() is not called,
+        -:  105:         * hence the Candidate window doesn't show up, because
+        -:  106:         * BOPOMOFO_NO_WORD is returned.
+        -:  107:         */
+    #####:  108:        return (key == ' ') ? BOPOMOFO_KEY_ERROR : BOPOMOFO_NO_WORD;
+        -:  109:    }
+        -:  110:
+       95:  111:    pho_inx = PhoneInxFromKey(key, 3, pBopomofo->kbtype, searchTimes);
+       95:  112:    if (pBopomofo->pho_inx[3] == 0) {
+       94:  113:        pBopomofo->pho_inx[3] = pho_inx;
+       94:  114:        pBopomofo->pho_inx_alt[3] = pho_inx;
+        1:  115:    } else if (key != ' ') {
+    #####:  116:        pBopomofo->pho_inx[3] = pho_inx;
+    #####:  117:        pBopomofo->pho_inx_alt[3] = pho_inx;
+    #####:  118:        return BOPOMOFO_NO_WORD;
+        -:  119:    }
+        -:  120:
+       95:  121:    u16Pho = UintFromPhoneInx(pBopomofo->pho_inx);
+       95:  122:    if (GetCharFirst(pgdata, &tempword, u16Pho) == 0) {
+    #####:  123:        BopomofoRemoveAll(pBopomofo);
+    #####:  124:        return BOPOMOFO_NO_WORD;
+        -:  125:    }
+        -:  126:
+       95:  127:    pBopomofo->phone = u16Pho;
+        -:  128:
+       95:  129:    if (pBopomofo->pho_inx_alt[0] == 0 && pBopomofo->pho_inx_alt[1] == 0 && pBopomofo->pho_inx_alt[2] == 0) {
+        -:  130:        /* no alternative phone, copy from default as alt */
+       95:  131:        pBopomofo->phoneAlt = u16Pho;
+        -:  132:    } else {
+    #####:  133:        u16PhoAlt = UintFromPhoneInx(pBopomofo->pho_inx_alt);
+    #####:  134:        pBopomofo->phoneAlt = u16PhoAlt;
+        -:  135:    }
+        -:  136:
+       95:  137:    memset(pBopomofo->pho_inx, 0, sizeof(pBopomofo->pho_inx));
+       95:  138:    memset(pBopomofo->pho_inx_alt, 0, sizeof(pBopomofo->pho_inx_alt));
+       95:  139:    return BOPOMOFO_COMMIT;
+        -:  140:}
+        -:  141:
+      266:  142:static int DefPhoInput(ChewingData *pgdata, int key)
+        -:  143:{
+      266:  144:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+      266:  145:    int type = 0, inx = 0;
+        -:  146:    int i;
+        -:  147:
+      266:  148:    if (IsDefPhoEndKey(key, pBopomofo->kbtype)) {
+      125:  149:        for (i = 0; i < BOPOMOFO_SIZE; ++i)
+      123:  150:            if (pBopomofo->pho_inx[i] != 0)
+       95:  151:                break;
+       97:  152:        if (i < BOPOMOFO_SIZE)
+       95:  153:            return EndKeyProcess(pgdata, key, 1);
+        -:  154:    } else {
+      169:  155:        pBopomofo->pho_inx[3] = 0;
+        -:  156:    }
+        -:  157:
+        -:  158:    /* decide if the key is a phone */
+      331:  159:    for (type = 0; type <= 3; type++) {
+      329:  160:        inx = PhoneInxFromKey(key, type, pBopomofo->kbtype, 1);
+      329:  161:        if (inx)
+      169:  162:            break;
+        -:  163:    }
+        -:  164:
+        -:  165:    /* the key is NOT a phone */
+      171:  166:    if (type > 3) {
+        2:  167:        return BOPOMOFO_KEY_ERROR;
+        -:  168:    }
+        -:  169:
+        -:  170:    /* fill the key into the phone buffer */
+      169:  171:    pBopomofo->pho_inx[type] = inx;
+      169:  172:    return BOPOMOFO_ABSORB;
+        -:  173:}
+        -:  174:
+    #####:  175:static int HsuPhoInput(ChewingData *pgdata, int key)
+        -:  176:{
+    #####:  177:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+    #####:  178:    int type = 0, searchTimes = 0, inx = 0;
+        -:  179:
+        -:  180:    /* Dvorak Hsu key has already converted to Hsu */
+    #####:  181:    if (IsHsuPhoEndKey(pBopomofo->pho_inx, key)) {
+    #####:  182:        if (pBopomofo->pho_inx[1] == 0 && pBopomofo->pho_inx[2] == 0) {
+        -:  183:            /* convert "ㄐㄑㄒ" to "ㄓㄔㄕ" */
+    #####:  184:            if (12 <= pBopomofo->pho_inx[0] && pBopomofo->pho_inx[0] <= 14) {
+    #####:  185:                pBopomofo->pho_inx[0] += 3;
+        -:  186:            }
+        -:  187:            /* convert "ㄏ" to "ㄛ" */
+    #####:  188:            else if (pBopomofo->pho_inx[0] == 11) {
+    #####:  189:                pBopomofo->pho_inx[0] = 0;
+    #####:  190:                pBopomofo->pho_inx[2] = 2;
+        -:  191:            }
+        -:  192:            /* convert "ㄍ" to "ㄜ" */
+    #####:  193:            else if (pBopomofo->pho_inx[0] == 9) {
+    #####:  194:                pBopomofo->pho_inx[0] = 0;
+    #####:  195:                pBopomofo->pho_inx[2] = 3;
+        -:  196:            }
+        -:  197:            /* convert "ㄇ" to "ㄢ" */
+    #####:  198:            else if (pBopomofo->pho_inx[0] == 3) {
+    #####:  199:                pBopomofo->pho_inx[0] = 0;
+    #####:  200:                pBopomofo->pho_inx[2] = 9;
+        -:  201:            }
+        -:  202:            /* convert "ㄋ" to "ㄣ" */
+    #####:  203:            else if (pBopomofo->pho_inx[0] == 7) {
+    #####:  204:                pBopomofo->pho_inx[0] = 0;
+    #####:  205:                pBopomofo->pho_inx[2] = 10;
+        -:  206:            }
+        -:  207:            /* convert "ㄎ" to "ㄤ" */
+    #####:  208:            else if (pBopomofo->pho_inx[0] == 10) {
+    #####:  209:                pBopomofo->pho_inx[0] = 0;
+    #####:  210:                pBopomofo->pho_inx[2] = 11;
+        -:  211:            }
+        -:  212:            /* convert "ㄌ" to "ㄦ" */
+    #####:  213:            else if (pBopomofo->pho_inx[0] == 8) {
+    #####:  214:                pBopomofo->pho_inx[0] = 0;
+    #####:  215:                pBopomofo->pho_inx[2] = 13;
+        -:  216:            }
+        -:  217:        }
+        -:  218:
+    #####:  219:        if ((pBopomofo->pho_inx[0] == 9) && ((pBopomofo->pho_inx[1] == 1) || (pBopomofo->pho_inx[1] == 3))) {
+    #####:  220:            pBopomofo->pho_inx[0] = 12;
+        -:  221:        }
+        -:  222:
+    #####:  223:        searchTimes = (key == 'j') ? 3 : 2;
+        -:  224:
+    #####:  225:        return EndKeyProcess(pgdata, key, searchTimes);
+        -:  226:    } else {
+        -:  227:        /* decide if the key is a phone */
+    #####:  228:        for (type = 0, searchTimes = 1; type < 3; type++) {
+    #####:  229:            inx = PhoneInxFromKey(key, type, pBopomofo->kbtype, searchTimes);
+    #####:  230:            if (!inx)
+    #####:  231:                continue;       /* if inx == 0, next type */
+    #####:  232:            else if (type == 0) {
+    #####:  233:                if (pBopomofo->pho_inx[0] || pBopomofo->pho_inx[1]) {
+        -:  234:                    /* if inx !=0 */
+    #####:  235:                    searchTimes = 2;    /* possible infinite loop here */
+        -:  236:                } else
+        -:  237:                    break;
+    #####:  238:            } else if (type == 1 && inx == 1) { /* handle i and e */
+    #####:  239:                if (pBopomofo->pho_inx[1]) {
+    #####:  240:                    searchTimes = 2;
+        -:  241:                } else
+    #####:  242:                    break;
+        -:  243:            } else
+        -:  244:                break;
+        -:  245:        }
+        -:  246:        /* processing very special cases "j v c" */
+    #####:  247:        if (type == 1 && inx == 2 && 12 <= pBopomofo->pho_inx[0] && pBopomofo->pho_inx[0] <= 14) {
+    #####:  248:            pBopomofo->pho_inx[0] += 3;
+        -:  249:        }
+        -:  250:
+        -:  251:        /* Fuzzy "g e" to "j e" */
+    #####:  252:        if ((pBopomofo->pho_inx[0] == 9) && ((pBopomofo->pho_inx[1] == 1) || (pBopomofo->pho_inx[1] == 3))) {
+    #####:  253:            pBopomofo->pho_inx[0] = 12;
+        -:  254:        }
+        -:  255:
+        -:  256:        /* ㄐㄑㄒ must follow ㄧㄩ */
+    #####:  257:        if (type == 2 && pBopomofo->pho_inx[1] == 0 && 12 <= pBopomofo->pho_inx[0] && pBopomofo->pho_inx[0] <= 14) {
+    #####:  258:            pBopomofo->pho_inx[0] += 3;
+        -:  259:        }
+        -:  260:
+    #####:  261:        if (type == 3) {        /* the key is NOT a phone */
+    #####:  262:            if (isalpha(key))
+    #####:  263:                return BOPOMOFO_NO_WORD;
+    #####:  264:            return BOPOMOFO_KEY_ERROR;
+        -:  265:        }
+        -:  266:        /* fill the key into the phone buffer */
+    #####:  267:        pBopomofo->pho_inx[type] = inx;
+    #####:  268:        return BOPOMOFO_ABSORB;
+        -:  269:    }
+        -:  270:}
+        -:  271:
+        -:  272:/* copy the idea from hsu */
+    #####:  273:static int ET26PhoInput(ChewingData *pgdata, int key)
+        -:  274:{
+    #####:  275:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+    #####:  276:    int type = 0, searchTimes = 0, inx = 0;
+        -:  277:
+    #####:  278:    if (IsET26PhoEndKey(pBopomofo->pho_inx, key)) {
+    #####:  279:        if (pBopomofo->pho_inx[1] == 0 && pBopomofo->pho_inx[2] == 0) {
+        -:  280:            /* convert "ㄐㄒ" to "ㄓㄕ" */
+    #####:  281:            if (pBopomofo->pho_inx[0] == 12 || pBopomofo->pho_inx[0] == 14) {
+    #####:  282:                pBopomofo->pho_inx[0] += 3;
+        -:  283:            }
+        -:  284:            /* convert "ㄆ" to "ㄡ" */
+    #####:  285:            else if (pBopomofo->pho_inx[0] == 2) {
+    #####:  286:                pBopomofo->pho_inx[0] = 0;
+    #####:  287:                pBopomofo->pho_inx[2] = 8;
+        -:  288:            }
+        -:  289:            /* convert "ㄇ" to "ㄢ" */
+    #####:  290:            else if (pBopomofo->pho_inx[0] == 3) {
+    #####:  291:                pBopomofo->pho_inx[0] = 0;
+    #####:  292:                pBopomofo->pho_inx[2] = 9;
+        -:  293:            }
+        -:  294:            /* convert "ㄋ" to "ㄣ" */
+    #####:  295:            else if (pBopomofo->pho_inx[0] == 7) {
+    #####:  296:                pBopomofo->pho_inx[0] = 0;
+    #####:  297:                pBopomofo->pho_inx[2] = 10;
+        -:  298:            }
+        -:  299:            /* convert "ㄊ" to "ㄤ" */
+    #####:  300:            else if (pBopomofo->pho_inx[0] == 6) {
+    #####:  301:                pBopomofo->pho_inx[0] = 0;
+    #####:  302:                pBopomofo->pho_inx[2] = 11;
+        -:  303:            }
+        -:  304:            /* convert "ㄌ" to "ㄥ" */
+    #####:  305:            else if (pBopomofo->pho_inx[0] == 8) {
+    #####:  306:                pBopomofo->pho_inx[0] = 0;
+    #####:  307:                pBopomofo->pho_inx[2] = 12;
+        -:  308:            }
+        -:  309:            /* convert "ㄏ" to "ㄦ" */
+    #####:  310:            else if (pBopomofo->pho_inx[0] == 11) {
+    #####:  311:                pBopomofo->pho_inx[0] = 0;
+    #####:  312:                pBopomofo->pho_inx[2] = 13;
+        -:  313:            }
+        -:  314:        }
+    #####:  315:        searchTimes = 2;
+    #####:  316:        return EndKeyProcess(pgdata, key, searchTimes);
+        -:  317:    } else {
+        -:  318:        /* decide if the key is a phone */
+    #####:  319:        for (type = 0, searchTimes = 1; type < 3; type++) {
+    #####:  320:            inx = PhoneInxFromKey(key, type, pBopomofo->kbtype, searchTimes);
+    #####:  321:            if (!inx)
+    #####:  322:                continue;       /* if inx == 0, next type */
+    #####:  323:            else if (type == 0) {
+    #####:  324:                if (pBopomofo->pho_inx[0] || pBopomofo->pho_inx[1]) {
+        -:  325:                    /* if inx !=0 */
+    #####:  326:                    searchTimes = 2;    /* possible infinite loop here */
+        -:  327:                } else
+        -:  328:                    break;
+        -:  329:            } else
+    #####:  330:                break;
+        -:  331:        }
+        -:  332:        /* convert "ㄐㄒ" to "ㄓㄕ" */
+    #####:  333:        if (type == 1) {
+    #####:  334:            if (inx == 2) {
+    #####:  335:                if (pBopomofo->pho_inx[0] == 12 || pBopomofo->pho_inx[0] == 14) {
+    #####:  336:                    pBopomofo->pho_inx[0] += 3;
+        -:  337:                }
+        -:  338:            } else {
+        -:  339:                /* convert "ㄍ" to "ㄑ" */
+    #####:  340:                if (pBopomofo->pho_inx[0] == 9) {
+    #####:  341:                    pBopomofo->pho_inx[0] = 13;
+        -:  342:                }
+        -:  343:            }
+        -:  344:        }
+        -:  345:
+    #####:  346:        if (type == 2 && pBopomofo->pho_inx[1] == 0 && (pBopomofo->pho_inx[0] == 12 || pBopomofo->pho_inx[0] == 14)) {
+    #####:  347:            pBopomofo->pho_inx[0] += 3;
+        -:  348:        }
+        -:  349:
+    #####:  350:        if (type == 3) {        /* the key is NOT a phone */
+    #####:  351:            if (isalpha(key))
+    #####:  352:                return BOPOMOFO_NO_WORD;
+    #####:  353:            return BOPOMOFO_KEY_ERROR;
+        -:  354:        }
+        -:  355:        /* fill the key into the phone buffer */
+    #####:  356:        pBopomofo->pho_inx[type] = inx;
+    #####:  357:        return BOPOMOFO_ABSORB;
+        -:  358:    }
+        -:  359:}
+        -:  360:
+    #####:  361:static int SwitchingBetween(int *pho_idx, int a, int b)
+        -:  362:{
+    #####:  363:    if (*pho_idx == a) {
+    #####:  364:        *pho_idx = b;
+    #####:  365:        return 1;
+    #####:  366:    } else if (*pho_idx == b) {
+    #####:  367:        *pho_idx = a;
+    #####:  368:        return 1;
+        -:  369:    }
+    #####:  370:    return 0;
+        -:  371:}
+        -:  372:
+    #####:  373:static int DACHENCP26PhoInput(ChewingData *pgdata, int key)
+        -:  374:{
+    #####:  375:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+    #####:  376:    int type = 0, searchTimes = 0, inx = 0;
+        -:  377:
+    #####:  378:    if (IsDACHENCP26PhoEndKey(pBopomofo->pho_inx, key)) {
+    #####:  379:        searchTimes = 2;
+    #####:  380:        return EndKeyProcess(pgdata, key, searchTimes);
+        -:  381:    } else {
+        -:  382:        /* decide if the key is a phone */
+    #####:  383:        for (type = 0, searchTimes = 1; type < 3; type++) {
+    #####:  384:            inx = PhoneInxFromKey(key, type, pBopomofo->kbtype, searchTimes);
+    #####:  385:            if (!inx)
+    #####:  386:                continue;       /* if inx == 0, next type */
+    #####:  387:            else if (type == 0) {
+    #####:  388:                break;
+        -:  389:                if (pBopomofo->pho_inx[0] || pBopomofo->pho_inx[1]) {
+        -:  390:                    /* if inx !=0 */
+        -:  391:                    searchTimes = 2;    /* possible infinite loop here */
+        -:  392:                } else
+        -:  393:                    break;
+        -:  394:            } else
+    #####:  395:                break;
+        -:  396:        }
+        -:  397:        /* switching between "ㄅ" and "ㄆ" */
+    #####:  398:        if (key == 'q') {
+    #####:  399:            if (SwitchingBetween(&pBopomofo->pho_inx[0], 1, 2)) {
+    #####:  400:                return BOPOMOFO_ABSORB;
+        -:  401:            }
+        -:  402:        }
+        -:  403:        /* switching between "ㄉ" and "ㄊ" */
+    #####:  404:        else if (key == 'w') {
+    #####:  405:            if (SwitchingBetween(&pBopomofo->pho_inx[0], 5, 6)) {
+    #####:  406:                return BOPOMOFO_ABSORB;
+        -:  407:            }
+        -:  408:        }
+        -:  409:        /* switching between "ㄓ" and "ㄔ" */
+    #####:  410:        else if (key == 't') {
+    #####:  411:            if (SwitchingBetween(&pBopomofo->pho_inx[0], 15, 16)) {
+    #####:  412:                return BOPOMOFO_ABSORB;
+        -:  413:            }
+        -:  414:        }
+        -:  415:        /* converting "ㄖ" to "ㄝ" */
+    #####:  416:        else if (key == 'b') {
+    #####:  417:            if (pBopomofo->pho_inx[0] != 0 || pBopomofo->pho_inx[1] != 0) {
+    #####:  418:                pBopomofo->pho_inx[2] = 4;
+    #####:  419:                return BOPOMOFO_ABSORB;
+        -:  420:            }
+        -:  421:        }
+        -:  422:        /* converting "ㄙ" to "ㄣ" */
+    #####:  423:        else if (key == 'n') {
+    #####:  424:            if (pBopomofo->pho_inx[0] != 0 || pBopomofo->pho_inx[1] != 0) {
+    #####:  425:                pBopomofo->pho_inx[2] = 12;
+    #####:  426:                return BOPOMOFO_ABSORB;
+        -:  427:            }
+        -:  428:        }
+        -:  429:        /* switching between "ㄧ", "ㄚ", and "ㄧㄚ" */
+    #####:  430:        else if (key == 'u') {
+    #####:  431:            if (pBopomofo->pho_inx[1] == 1 && pBopomofo->pho_inx[2] != 1) {
+    #####:  432:                pBopomofo->pho_inx[1] = 0;
+    #####:  433:                pBopomofo->pho_inx[2] = 1;
+    #####:  434:                return BOPOMOFO_ABSORB;
+    #####:  435:            } else if (pBopomofo->pho_inx[1] != 1 && pBopomofo->pho_inx[2] == 1) {
+    #####:  436:                pBopomofo->pho_inx[1] = 1;
+    #####:  437:                return BOPOMOFO_ABSORB;
+    #####:  438:            } else if (pBopomofo->pho_inx[1] == 1 && pBopomofo->pho_inx[2] == 1) {
+    #####:  439:                pBopomofo->pho_inx[1] = 0;
+    #####:  440:                pBopomofo->pho_inx[2] = 0;
+    #####:  441:                return BOPOMOFO_ABSORB;
+    #####:  442:            } else if (pBopomofo->pho_inx[1] != 0) {
+    #####:  443:                pBopomofo->pho_inx[2] = 1;
+    #####:  444:                return BOPOMOFO_ABSORB;
+        -:  445:            }
+        -:  446:        }
+        -:  447:        /* switching between "ㄩ" and "ㄡ" */
+    #####:  448:        else if (key == 'm') {
+    #####:  449:            if (pBopomofo->pho_inx[1] == 3 && pBopomofo->pho_inx[2] != 8) {
+    #####:  450:                pBopomofo->pho_inx[1] = 0;
+    #####:  451:                pBopomofo->pho_inx[2] = 8;
+    #####:  452:                return BOPOMOFO_ABSORB;
+    #####:  453:            } else if (pBopomofo->pho_inx[1] != 3 && pBopomofo->pho_inx[2] == 8) {
+    #####:  454:                pBopomofo->pho_inx[1] = 3;
+    #####:  455:                pBopomofo->pho_inx[2] = 0;
+    #####:  456:                return BOPOMOFO_ABSORB;
+    #####:  457:            } else if (pBopomofo->pho_inx[1] != 0) {
+    #####:  458:                pBopomofo->pho_inx[2] = 8;
+    #####:  459:                return BOPOMOFO_ABSORB;
+        -:  460:            }
+        -:  461:        }
+        -:  462:        /* switching between "ㄛ" and "ㄞ" */
+    #####:  463:        else if (key == 'i') {
+    #####:  464:            if (SwitchingBetween(&pBopomofo->pho_inx[2], 2, 5)) {
+    #####:  465:                return BOPOMOFO_ABSORB;
+        -:  466:            }
+        -:  467:        }
+        -:  468:        /* switching between "ㄟ" and "ㄢ" */
+    #####:  469:        else if (key == 'o') {
+    #####:  470:            if (SwitchingBetween(&pBopomofo->pho_inx[2], 6, 9)) {
+    #####:  471:                return BOPOMOFO_ABSORB;
+        -:  472:            }
+        -:  473:        }
+        -:  474:        /* switching between "ㄠ" and "ㄤ" */
+    #####:  475:        else if (key == 'l') {
+    #####:  476:            if (SwitchingBetween(&pBopomofo->pho_inx[2], 7, 11)) {
+    #####:  477:                return BOPOMOFO_ABSORB;
+        -:  478:            }
+        -:  479:        }
+        -:  480:        /* switching between "ㄣ" and "ㄦ" */
+    #####:  481:        else if (key == 'p') {
+    #####:  482:            if (SwitchingBetween(&pBopomofo->pho_inx[2], 10, 13)) {
+    #####:  483:                return BOPOMOFO_ABSORB;
+        -:  484:            }
+        -:  485:        }
+    #####:  486:        if (type == 3) {        /* the key is NOT a phone */
+    #####:  487:            if (isalpha(key))
+    #####:  488:                return BOPOMOFO_NO_WORD;
+    #####:  489:            return BOPOMOFO_KEY_ERROR;
+        -:  490:        }
+        -:  491:        /* fill the key into the phone buffer */
+    #####:  492:        pBopomofo->pho_inx[type] = inx;
+    #####:  493:        return BOPOMOFO_ABSORB;
+        -:  494:    }
+        -:  495:}
+        -:  496:
+    #####:  497:static int IsPinYinEndKey(int key)
+        -:  498:{
+    #####:  499:    if ((key == ' ') || (key == '1') || (key == '2') || (key == '3') || (key == '4') || (key == '5')) {
+    #####:  500:        return 1;
+        -:  501:    }
+    #####:  502:    return 0;
+        -:  503:}
+        -:  504:
+    #####:  505:static int IsSymbolKey(int key)
+        -:  506:{
+    #####:  507:    if ((key < 97) || (key > 122)) {
+    #####:  508:        return 1;
+        -:  509:    }
+        -:  510:
+    #####:  511:    return 0;
+        -:  512:}
+        -:  513:
+    #####:  514:static int PinYinInput(ChewingData *pgdata, int key)
+        -:  515:{
+    #####:  516:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+    #####:  517:    int err = 0;
+        -:  518:    unsigned int i;
+        -:  519:    char bopomofoKeySeq[5], bopomofoKeySeqAlt[5], buf[2];
+        -:  520:    size_t len;
+        -:  521:
+    #####:  522:    DEBUG_CHECKPOINT();
+        -:  523:
+    #####:  524:    if (pBopomofo->pinYinData.keySeq[0] == 0 && IsSymbolKey(key)) {
+    #####:  525:        return BOPOMOFO_KEY_ERROR;
+        -:  526:    }
+        -:  527:
+    #####:  528:    if (IsPinYinEndKey(key)) {
+    #####:  529:        err = PinyinToBopomofo(pgdata, pBopomofo->pinYinData.keySeq, bopomofoKeySeq, bopomofoKeySeqAlt);
+    #####:  530:        if (err) {
+    #####:  531:            pBopomofo->pinYinData.keySeq[0] = '\0';
+    #####:  532:            return BOPOMOFO_ABSORB;
+        -:  533:        }
+        -:  534:
+    #####:  535:        DEBUG_OUT("bopomofoKeySeq: %s\n", bopomofoKeySeq);
+    #####:  536:        DEBUG_OUT("bopomofoKeySeqAlt: %s\n", bopomofoKeySeqAlt);
+        -:  537:
+    #####:  538:        len = strlen(bopomofoKeySeq);
+    #####:  539:        for (i = 0; i < len; i++) {
+    #####:  540:            int type = 0, inx = 0;
+        -:  541:
+    #####:  542:            for (type = 0; type <= 3; type++) {
+    #####:  543:                inx = PhoneInxFromKey(bopomofoKeySeq[i], type, pBopomofo->kbtype, 1);
+    #####:  544:                if (inx)
+    #####:  545:                    break;
+        -:  546:            }
+        -:  547:
+        -:  548:            /* the key is NOT a phone */
+    #####:  549:            if (type > 3) {
+    #####:  550:                return BOPOMOFO_KEY_ERROR;
+        -:  551:            }
+        -:  552:
+    #####:  553:            pBopomofo->pho_inx[type] = inx;
+        -:  554:
+        -:  555:        }
+        -:  556:
+    #####:  557:        len = strlen(bopomofoKeySeqAlt);
+    #####:  558:        for (i = 0; i < len; i++) {
+    #####:  559:            int type = 0, inx = 0;
+        -:  560:
+    #####:  561:            for (type = 0; type <= 3; type++) {
+    #####:  562:                inx = PhoneInxFromKey(bopomofoKeySeqAlt[i], type, pBopomofo->kbtype, 1);
+    #####:  563:                if (inx)
+    #####:  564:                    break;
+        -:  565:            }
+        -:  566:
+        -:  567:            /* the key is NOT a phone */
+    #####:  568:            if (type > 3) {
+    #####:  569:                return BOPOMOFO_KEY_ERROR;
+        -:  570:            }
+        -:  571:
+    #####:  572:            pBopomofo->pho_inx_alt[type] = inx;
+        -:  573:
+        -:  574:        }
+        -:  575:
+    #####:  576:        switch (key) {
+    #####:  577:        case '1':
+    #####:  578:            key = ' ';
+    #####:  579:            break;
+    #####:  580:        case '2':
+    #####:  581:            key = '6';
+    #####:  582:            break;
+    #####:  583:        case '5':
+    #####:  584:            key = '7';
+        -:  585:        }
+    #####:  586:        pBopomofo->pinYinData.keySeq[0] = '\0';
+    #####:  587:        return EndKeyProcess(pgdata, key, 1);
+        -:  588:    }
+    #####:  589:    buf[0] = key;
+    #####:  590:    buf[1] = '\0';
+    #####:  591:    strcat(pBopomofo->pinYinData.keySeq, buf);
+        -:  592:
+    #####:  593:    DEBUG_OUT("PinYin Seq: %s\n", pBopomofo->pinYinData.keySeq);
+        -:  594:
+    #####:  595:    return BOPOMOFO_ABSORB;
+        -:  596:}
+        -:  597:
+        -:  598:/* key: ascii code of input, including space */
+      280:  599:int BopomofoPhoInput(ChewingData *pgdata, int key)
+        -:  600:{
+      280:  601:    BopomofoData *pBopomofo = &(pgdata->bopomofoData);
+        -:  602:
+        -:  603:    /* open symbol table */
+      280:  604:    if (key == '`') {
+       14:  605:        pgdata->bSelect = 1;
+       14:  606:        pgdata->choiceInfo.oldChiSymbolCursor = pgdata->chiSymbolCursor;
+       14:  607:        HaninSymbolInput(pgdata);
+       14:  608:        return BOPOMOFO_OPEN_SYMBOL_TABLE;
+        -:  609:    }
+      266:  610:    switch (pBopomofo->kbtype) {
+    #####:  611:    case KB_HSU:
+        -:  612:    case KB_DVORAK_HSU:
+    #####:  613:        return HsuPhoInput(pgdata, key);
+        -:  614:        break;
+    #####:  615:    case KB_ET26:
+    #####:  616:        return ET26PhoInput(pgdata, key);
+        -:  617:        break;
+    #####:  618:    case KB_DACHEN_CP26:
+    #####:  619:        return DACHENCP26PhoInput(pgdata, key);
+        -:  620:        break;
+    #####:  621:    case KB_HANYU_PINYIN:
+        -:  622:    case KB_THL_PINYIN:
+        -:  623:    case KB_MPS2_PINYIN:
+    #####:  624:        return PinYinInput(pgdata, key);
+        -:  625:        break;
+      266:  626:    default:
+      266:  627:        return DefPhoInput(pgdata, key);
+        -:  628:    }
+        -:  629:    return BOPOMOFO_ERROR;
+        -:  630:}
+        -:  631:
+        -:  632:/* remove the latest key */
+        1:  633:int BopomofoRemoveLast(BopomofoData *pBopomofo)
+        -:  634:{
+        -:  635:    int i;
+        -:  636:
+        1:  637:    if (pBopomofo->kbtype >= KB_HANYU_PINYIN) {
+    #####:  638:        i = strlen(pBopomofo->pinYinData.keySeq);
+    #####:  639:        pBopomofo->pinYinData.keySeq[i - 1] = '\0';
+        -:  640:    } else {
+        2:  641:        for (i = 3; i >= 0; i--) {
+        2:  642:            if (pBopomofo->pho_inx[i]) {
+        1:  643:                pBopomofo->pho_inx[i] = 0;
+        1:  644:                return 0;
+        -:  645:            }
+        -:  646:        }
+        -:  647:    }
+    #####:  648:    return 0;
+        -:  649:}
+        -:  650:
+        -:  651:/* remove all the key entered */
+        6:  652:int BopomofoRemoveAll(BopomofoData *pBopomofo)
+        -:  653:{
+        6:  654:    memset(pBopomofo->pho_inx, 0, sizeof(pBopomofo->pho_inx));
+        6:  655:    memset(pBopomofo->pinYinData.keySeq, 0, sizeof(pBopomofo->pinYinData.keySeq));
+        6:  656:    return 0;
+        -:  657:}
+        -:  658:
+       67:  659:int BopomofoIsEntering(BopomofoData *pBopomofo)
+        -:  660:{
+        -:  661:    int i;
+        -:  662:
+       67:  663:    if (pBopomofo->kbtype >= KB_HANYU_PINYIN) {
+    #####:  664:        if (pBopomofo->pinYinData.keySeq[0])
+    #####:  665:            return 1;
+        -:  666:    } else {
+      319:  667:        for (i = 0; i < BOPOMOFO_SIZE; i++)
+      256:  668:            if (pBopomofo->pho_inx[i])
+        4:  669:                return 1;
+        -:  670:    }
+       63:  671:    return 0;
+        -:  672:}

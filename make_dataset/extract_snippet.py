@@ -18,7 +18,7 @@ class BugscppInterface():
         return f'{self._project}-{self._bug_index}'
         
     def _prepare_test_output_directory(self):
-        self._output_dir = os.path.join(os.getcwd(), f'./benchmark/{self._project}-{self._bug_index}')
+        self._output_dir = os.path.join(os.getcwd(), f'benchmark/{self._project}-{self._bug_index}')
         if not os.path.exists(self._output_dir):
             os.makedirs(self._output_dir)
     
@@ -53,6 +53,9 @@ class BugscppInterface():
     
     def get_path_to_coverages(self):
         subdir = os.listdir(self._output_dir)[0] # Assume single failing test, called after running build & test
+        print(self._output_dir)
+        print(subdir)
+        print("h")
         return os.path.join(self._output_dir, subdir) if os.path.isdir(os.path.join(self._output_dir, subdir)) else ''
     
     def get_failing_test_code(self):
@@ -131,6 +134,8 @@ def collect_snippet(target_bugs):
         translation_unit = index.parse(src_path, args=[f'-std={standard}'])
 
         relative_path = src_path[len(repo_path) + 1:]
+        print(coverage_path)
+        print(relative_path)
         gcov_path = os.path.join(coverage_path, f'{relative_path.replace("/", "#")}.gcov')
         execution_count = parse_gcov_file(gcov_path)
         class_name = relative_path[:-2].replace('/', '.').replace('src.', '') # should I trim src, too?
@@ -197,4 +202,4 @@ def collect_snippet(target_bugs):
             json.dump(data, f, indent=4) 
             
 if __name__ == "__main__":
-    collect_snippet([('berry', '1')])
+    collect_snippet([('libchewing', '1')])
