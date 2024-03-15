@@ -11,7 +11,7 @@ class BugscppInterface():
         self._commands = CommandList()
         self._project = project
         self._bug_index = bug_index
-        self._path_to_repo = f'./benchmark/{self._project}/buggy-{self._bug_index}'
+        self._path_to_repo = f'benchmark/{self._project}/buggy-{self._bug_index}'
         self._prepare_test_output_directory()
     
     def __str__(self):
@@ -53,9 +53,6 @@ class BugscppInterface():
     
     def get_path_to_coverages(self):
         subdir = os.listdir(self._output_dir)[0] # Assume single failing test, called after running build & test
-        print(self._output_dir)
-        print(subdir)
-        print("h")
         return os.path.join(self._output_dir, subdir) if os.path.isdir(os.path.join(self._output_dir, subdir)) else ''
     
     def get_failing_test_code(self):
@@ -109,6 +106,8 @@ def get_signature(function_snippet, function_name):
 
 def parse_gcov_file(path):
     execution_count = list()
+    if not path:
+        return execution_count
     with open(path) as f:
         lines = f.readlines()
         for line in lines:
@@ -127,16 +126,23 @@ def parse_gcov_file(path):
 
     return execution_count
 
+def get_coverage_file(coverage_dir, src_file):
+    gcov_postfix = f'{src_file.replace("/", "#")}.gcov'
+    for file in os.listdir(coverage_dir):
+        if file.endswith(gcov_postfix):
+            return os.path.join(coverage_dir, file)
+    return ''
+
 def collect_snippet(target_bugs):
-    def iterate_over_source(src_path):
+    def iterate_over_source(src_path, consider_coverage=True):
         index = clang.cindex.Index.create()
         standard = 'c11'
         translation_unit = index.parse(src_path, args=[f'-std={standard}'])
 
         relative_path = src_path[len(repo_path) + 1:]
-        print(coverage_path)
-        print(relative_path)
-        gcov_path = os.path.join(coverage_path, f'{relative_path.replace("/", "#")}.gcov')
+        gcov_path = get_coverage_file(coverage_path, relative_path)
+        if consider_coverage and not gcov_path:
+            return
         execution_count = parse_gcov_file(gcov_path)
         class_name = relative_path[:-2].replace('/', '.').replace('src.', '') # should I trim src, too?
 
@@ -144,7 +150,7 @@ def collect_snippet(target_bugs):
             if node.kind == clang.cindex.CursorKind.FUNCTION_DECL and node.is_definition(): # to exclude empty functions that came from headers
                 start_line = node.extent.start.line
                 end_line = node.extent.end.line
-                if sum(execution_count[start_line - 1:end_line]) == 0:
+                if consider_coverage and sum(execution_count[start_line - 1:end_line]) == 0:
                     continue
                 
                 function_snippet = get_corresponding_code(node)
@@ -165,17 +171,17 @@ def collect_snippet(target_bugs):
                              'end_line': end_line, \
                              'is_bug': is_buggy})
 
-    def iterate_over_directory(dir_path):
+    def iterate_over_directory(dir_path, consider_coverage=True):
         for file_name in os.listdir(dir_path):
             full_path = os.path.join(dir_path, file_name)
             if os.path.isdir(full_path):
-                iterate_over_directory(full_path)
+                iterate_over_directory(full_path, consider_coverage)
             elif file_name.endswith('.c'):
-                iterate_over_source(full_path)
+                iterate_over_source(full_path, consider_coverage)
 
     for project, bug_index in target_bugs:
         print(f'\nWorking on {project}-{bug_index}...')
-        data_dir = f'./data/{project}-{bug_index}'
+        data_dir = f'data/{project}-{bug_index}'
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)        
 
@@ -189,17 +195,17 @@ def collect_snippet(target_bugs):
         patch_info = bugscpp.extract_patch_info()
 
         src_dir = 'src' # for libchewing, libyara for yara
-        test_dir = 'tests' # for libchewing, tests for yara
+        test_dir = 'test' # for libchewing, tests for yara
         
         data = list()
         iterate_over_directory(os.path.join(repo_path, src_dir))        
         with open(os.path.join(data_dir, 'snippet.json'), 'w') as f:
-            json.dump(data, f, indent=4)
+            json.dump(sorted(data, key=lambda info: info['name']), f, indent=4)
 
         data.clear()
-        iterate_over_directory(os.path.join(repo_path, test_dir))
+        iterate_over_directory(os.path.join(repo_path, test_dir), consider_coverage=False)
         with open(os.path.join(data_dir, 'test_snippet.json'), 'w') as f:
-            json.dump(data, f, indent=4) 
+            json.dump(sorted(data, key=lambda info: info['name']), f, indent=4) 
             
 if __name__ == "__main__":
     collect_snippet([('libchewing', '1')])
