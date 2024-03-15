@@ -11,7 +11,7 @@ class BugscppInterface():
         self._commands = CommandList()
         self._project = project
         self._bug_index = bug_index
-        self._path_to_repo = f'./benchmark/{self._project}/buggy-{self._bug_index}'
+        self._path_to_repo = f'benchmark/{self._project}/buggy-{self._bug_index}'
         self._prepare_test_output_directory()
     
     def __str__(self):
@@ -177,7 +177,7 @@ def collect_snippet(target_bugs):
 
     for project, bug_index in target_bugs:
         print(f'\nWorking on {project}-{bug_index}...')
-        data_dir = f'./data/{project}-{bug_index}'
+        data_dir = f'data/{project}-{bug_index}'
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)        
 
