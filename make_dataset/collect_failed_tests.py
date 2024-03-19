@@ -16,8 +16,17 @@ for dir in dir_list:
                 with open(os.path.join(pre_path, dir, outfile)) as rf:
                     
                     for l in rf:
+                        if l.startswith("    Start "):
+                            test_file = l.split(':')[-1].strip() 
                         wf.write(l)
                 wf.write('End\n')
-                
+
+wf.write('\nLogfile starts\n')
+
+log_file = './bugscpp/proj/libchewing/buggy-5/build/test/'+test_file+".log"
+with open(log_file, encoding = 'utf-8', errors='ignore') as lf:
+    for l in lf:
+        wf.write(l)       
 wf.close()
+
 
