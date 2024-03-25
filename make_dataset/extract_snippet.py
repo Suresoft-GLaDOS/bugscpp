@@ -208,4 +208,4 @@ def collect_snippet(target_bugs):
             json.dump(sorted(data, key=lambda info: info['name']), f, indent=4) 
             
 if __name__ == "__main__":
-    collect_snippet([('libchewing', '5')])
+    collect_snippet([('libchewing', '1')])
