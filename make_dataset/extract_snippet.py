@@ -260,5 +260,5 @@ def collect_token_statistics(target_bugs):
             json.dump(sorted(data, key=lambda info: info['name']), f, indent=4)
  
 if __name__ == "__main__":
-    collect_snippet([('libchewing', '1')])
-    collect_token_statistics([('zsh', '1', 'Src', True), ('libchewing', '1', 'src', True), ('berry', '1', 'src', True), ('yara', '1', 'libyara', True)])
+    collect_snippet([('libchewing', '8')])
+    # collect_token_statistics([('zsh', '1', 'Src', True), ('libchewing', '1', 'src', True), ('berry', '1', 'src', True), ('yara', '1', 'libyara', True)])
