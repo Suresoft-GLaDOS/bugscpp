@@ -206,6 +206,59 @@ def collect_snippet(target_bugs):
         iterate_over_directory(os.path.join(repo_path, test_dir), consider_coverage=False)
         with open(os.path.join(data_dir, 'test_snippet.json'), 'w') as f:
             json.dump(sorted(data, key=lambda info: info['name']), f, indent=4) 
-            
+
+import tiktoken
+ENCODING = tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+def collect_token_statistics(target_bugs):
+    def iterate_over_source(src_path):
+        index = clang.cindex.Index.create()
+        standard = 'c11' if is_c else 'c++11'
+        translation_unit = index.parse(src_path, args=[f'-std={standard}'])
+
+        relative_path = src_path[len(repo_path) + 1:]
+        class_name = relative_path[:-2].replace('/', '.')
+
+        for node in translation_unit.cursor.walk_preorder():
+            if node.kind == clang.cindex.CursorKind.FUNCTION_DECL and node.is_definition(): # to exclude empty functions that came from headers
+                start_line = node.extent.start.line
+                end_line = node.extent.end.line
+
+                is_buggy = False
+                if relative_path in patch_info:
+                    for line in patch_info[relative_path]:
+                        is_buggy |= start_line <= line and line <= end_line 
+                
+                data.append({'name' : f'{class_name}.{node.spelling}#{start_line}', \
+                             'loc': end_line - start_line + 1, \
+                             'token_count': len(ENCODING.encode(get_corresponding_code(node))), \
+                             'is_bug': is_buggy})
+
+    def iterate_over_directory(dir_path):
+        for file_name in os.listdir(dir_path):
+            full_path = os.path.join(dir_path, file_name)
+            if os.path.isdir(full_path):
+                iterate_over_directory(full_path)
+            elif (is_c and file_name.endswith('.c')) or (not is_c and file_name.endswith('.cpp')):
+                iterate_over_source(full_path)
+
+    for project, bug_index, src_dir, is_c in target_bugs:
+        print(f'\nWorking on {project}-{bug_index}...')
+        data_dir = f'data/{project}-{bug_index}'
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)        
+
+        bugscpp = BugscppInterface(project, bug_index)
+        bugscpp.checkout()
+        
+        repo_path = bugscpp.get_path_to_repo()
+        patch_info = bugscpp.extract_patch_info()
+        
+        data = list()
+        iterate_over_directory(os.path.join(repo_path, src_dir))        
+        with open(os.path.join(data_dir, 'token_statistics.json'), 'w') as f:
+            json.dump(sorted(data, key=lambda info: info['name']), f, indent=4)
+ 
 if __name__ == "__main__":
     collect_snippet([('libchewing', '1')])
+    collect_token_statistics([('zsh', '1', 'Src', True), ('libchewing', '1', 'src', True), ('berry', '1', 'src', True), ('yara', '1', 'libyara', True)])
